@@ -184,6 +184,9 @@ func commandTable() []command {
 		// file, or make a second permanent app. Reuse is the third, and it is the
 		// one most people want.
 		{"setup", "[--app <id>|--reregister]", "register a Feishu app, or reuse one you have, and prove it works", cmdSetup},
+		// A binary somebody downloaded has to be able to say what it is, so
+		// version lives in the table like everything else and shows up in help.
+		{"version", "", "print the version, commit and build date stamped into this binary", cmdVersion},
 		{"help", "", "show this help", cmdHelp},
 	}
 }

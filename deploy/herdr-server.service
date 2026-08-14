@@ -1,0 +1,161 @@
+# herdr-server.service — the herdr server the bridge talks to.
+#
+# A systemd USER unit, the Linux counterpart of
+# deploy/com.hewenyu.herdr-server.plist. Install it the same way as
+# deploy/herdr-agent.service (see the INSTALL block there) and read this whole
+# comment first: the two paths and one variable you have to check are all below,
+# and getting the environment wrong here breaks a feature silently rather than
+# loudly.
+#
+# =====================================================================
+# WHY THIS RUNS UNDER /usr/bin/env -i AND NOT JUST "herdr server"
+# =====================================================================
+#
+# Measured (G7): herdr server hands its own environment, unchanged, to every pane
+# it spawns. Start the server from inside a claude session and every claude in
+# every pane inherits that session's CLAUDE_CODE_CHILD_SESSION marker, and
+# answers it by switching transcript saving OFF:
+#
+#     ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker
+#
+# Nothing crashes. Nothing is logged. There is simply no transcript file
+# afterwards, so the bridge's L2 mirror tails a file that will never exist and
+# the phone shows an agent that never says anything. The feature is dead and the
+# failure is silent — which is why the scrub is pinned in this unit file rather
+# than left to whoever types the start command.
+#
+# Three notes on the shape of the fix, all specific to systemd:
+#
+#   * A user unit does not inherit your interactive shell's environment, but it
+#     does inherit the user MANAGER's — and that is populated by desktop
+#     sessions, by pam_systemd, and by anyone who has ever run
+#     `systemctl --user import-environment` or dbus-update-activation-environment
+#     from a shell. Running that one command from inside a claude session is
+#     enough to poison every unit started afterwards. `env -i` is what makes this
+#     unit independent of all of it.
+#
+#   * It is an ALLOWLIST on purpose. CLAUDE_CODE_CHILD_SESSION,
+#     CLAUDE_CODE_ENTRYPOINT and every other CLAUDE_CODE_* variable, plus
+#     CLAUDECODE, CLAUDE_PID and CLAUDE_EFFORT, are gone because nothing survives
+#     -i. systemd's UnsetEnvironment= could not express that: like `env -u` it
+#     takes exact names, not the CLAUDE_CODE_* prefix, so it would need an edit
+#     every time a claude release invents another marker.
+#
+#   * Consequence to know before you "fix" this unit: `env -i` also wipes
+#     anything set with systemd's own Environment= or EnvironmentFile= keys,
+#     because those are applied to the process systemd execs — which is env, and
+#     env then clears them. Add variables to the ExecStart line below, not to an
+#     Environment= key, or they will silently not be there.
+#
+# =====================================================================
+# WHAT YOU MUST CHECK BEFORE STARTING THIS
+# =====================================================================
+#
+#   1. The herdr binary path at the end of ExecStart. `command -v herdr` prints
+#      yours; ~/.cargo/bin/herdr and /usr/local/bin/herdr are the common answers.
+#      systemd expands %h to your home directory but does no PATH lookup, so this
+#      has to be an absolute path.
+#
+#   2. PATH. This is the PATH every pane starts with, so it MUST contain the
+#      agents you intend to run: check with `command -v claude codex`. It is not
+#      systemd's default, and it is not yours.
+#
+#   3. Whether /usr/bin/env exists (it does on every merged-/usr distro; use
+#      `command -v env` if your distro is unusual).
+#
+# Three absences are worth naming by hand, because every pane inherits this
+# environment (G7) and the panes here run coding agents:
+#
+#   XDG_CONFIG_HOME is gone, so herdr keeps its socket at
+#   ~/.config/herdr/herdr.sock — the same place the bridge looks by default. If
+#   you deliberately set XDG_CONFIG_HOME in your shell, add it to the ExecStart
+#   line, or your terminal's `herdr` CLI and this server will use two different
+#   config directories and two different sockets.
+#
+#   SSH_AUTH_SOCK is gone, so no pane has an ssh-agent, and `git push` over SSH
+#   inside an agent stops on a passphrase prompt or fails outright — which on a
+#   phone reads as the agent freezing mid task with nothing on screen to explain
+#   it. Unlike macOS, where launchd regenerates that path at every login, on
+#   Linux it is stable and can be pinned here: add
+#
+#       SSH_AUTH_SOCK=%t/keyring/ssh
+#
+#   to the ExecStart line (%t is your XDG_RUNTIME_DIR, /run/user/<uid>). Check
+#   which one you actually have first — gnome-keyring, gpg-agent and a plain
+#   `ssh-agent` all put it somewhere different:
+#
+#       systemctl --user show-environment | grep SSH_AUTH_SOCK
+#
+#   TMPDIR is gone, and on Linux that costs nothing: /tmp is the fallback and
+#   also the default. (On macOS the same scrub loses a per-user directory under
+#   /var/folders, which is why the plist has a paragraph about it.)
+#
+# LANG=C.UTF-8 rather than the plist's en_US.UTF-8, on purpose. The agent TUIs
+# draw box-drawing characters, and herdr's blocked-detection matches literal
+# English strings on that screen (G11) — a broken locale mangles the frame,
+# the match fails, and herdr reports `idle` instead of `blocked`, silently.
+# en_US.UTF-8 only exists if somebody generated it (locales / locale-gen), and a
+# LANG naming a locale that is not installed falls back to C, which is not
+# UTF-8. C.UTF-8 is built into glibc and always present. Confirm with:
+#
+#     locale -a | grep -i -E 'utf-?8'
+#
+# Verify after install:  herdr-agent doctor
+# (the "herdr server environment is clean" check reads this process's real
+# environment with `ps eww`, so it confirms the scrub actually happened.)
+#
+# ---------------------------------------------------------------------------
+# BEFORE YOU RESTART THIS UNIT: stopping herdr closes every pane, and every
+# agent running in one, mid-task. `systemctl --user restart herdr-server` is not
+# a harmless refresh. install.sh refuses to do it to you automatically on macOS
+# for the same reason.
+
+[Unit]
+Description=herdr server (terminal panes for coding agents), started from a scrubbed environment
+Documentation=https://herdr.dev https://github.com/hewenyu/herdr-agent
+
+# The product assumes this machine is up and reachable; a server that stayed
+# down would just make the phone show nothing. See the same key in
+# herdr-agent.service for why the default rate limiter is the wrong end state.
+StartLimitIntervalSec=0
+
+[Service]
+# herdr server run directly stays in the foreground; only herdr's TUI forks a
+# standalone server that reparents to PID 1 (G6). If `systemctl --user status
+# herdr-server` shows this unit as activating or exited while a herdr server is
+# in fact running, your build forks and wants Type=forking instead.
+Type=simple
+
+# One long line on purpose: every variable the panes get is visible in one
+# place, and `env -i` means this list is exhaustive. Order is HOME, PATH, SHELL,
+# TERM, LANG, then the binary.
+ExecStart=/usr/bin/env -i HOME=%h PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin SHELL=/bin/bash TERM=xterm-256color LANG=C.UTF-8 %h/.local/bin/herdr server
+
+WorkingDirectory=%h
+
+# Restart=on-failure, not always. Everything that is a genuine fault (the socket
+# already owned by a hand-started server, a missing binary) exits non-zero and is
+# covered; systemd already declines to restart a unit that an admin stopped, so
+# `systemctl --user stop herdr-server` means stop whatever this key says.
+#
+# The one case this key does decide is a server that shuts ITSELF down cleanly
+# and exits 0: here it stays down. That is the deliberate divergence from the
+# mirrored plist, which has KeepAlive=true and brings such a server back within
+# ThrottleInterval — so `herdr server stop` sticks on Linux and does not on
+# macOS.
+Restart=on-failure
+
+# 30s. If a hand-started herdr server already owns the socket, this copy exits
+# immediately; 30s keeps that argument readable in the journal instead of a
+# spin, and the loop ends by itself once the other server goes away.
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=herdr-server
+
+[Install]
+# Not enabled by anything shipping in this repo. `systemctl --user enable
+# herdr-server.service` is yours to type, and remember `loginctl enable-linger`
+# (see herdr-agent.service) or this stops when you log out.
+WantedBy=default.target

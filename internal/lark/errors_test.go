@@ -140,6 +140,13 @@ func TestKnownCodesAreExplained(t *testing.T) {
 				"card.action.trigger",
 				"交互卡片",
 				"https://open.feishu.cn/app/" + appID + "/event",
+				// This advice also ends in a publish step, and publishing is
+				// conditional (G12): it is the fix after a console edit made by
+				// hand, and a step the setup confirmation page already did. Both
+				// halves have to be named or the sentence sends half its readers
+				// looking for a button that does not apply to them.
+				"BY HAND",
+				"herdr-agent setup",
 			},
 		},
 	}

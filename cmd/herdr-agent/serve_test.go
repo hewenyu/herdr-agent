@@ -112,10 +112,12 @@ func buildForTest(t *testing.T, ctx context.Context, h *harness, hooks serveHook
 
 // TestServeTakesTheLockBeforeItTouchesFeishu is the G15 assertion.
 //
-// One app_id may hold exactly one WebSocket. Two bridges do not fail loudly:
-// they take the connection from each other, and the user reads that as "Feishu
-// is flaky". A second instance therefore has to die BEFORE it connects, which
-// means the pid file has to be locked before anything reaches the network.
+// Long-connection delivery is cluster mode: up to 50 connections per app, each
+// event dealt to a randomly chosen one. Two bridges on one app_id therefore
+// never error and never disconnect each other — they receive about half the
+// events each, which the user reads as "Feishu is flaky" and cannot falsify from
+// outside. A second instance has to die BEFORE it connects, which means the pid
+// file has to be locked before anything reaches the network.
 func TestServeTakesTheLockBeforeItTouchesFeishu(t *testing.T) {
 	h, hooks, p := newServeHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -285,7 +287,8 @@ func TestServeReleasesTheLockAndFlushesStateOnShutdown(t *testing.T) {
 }
 
 // TestServeSecondInstanceRefusesToStart is the other half of G15: the process
-// that loses the race exits instead of stealing the WebSocket.
+// that loses the race exits, instead of opening a second connection on the same
+// app_id and being dealt a random share of the events nobody would then read.
 func TestServeSecondInstanceRefusesToStart(t *testing.T) {
 	h, hooks, _ := newServeHarness(t)
 	hooks.lock = defaultServeHooks().lock
@@ -342,8 +345,9 @@ func TestServeStartupRefusals(t *testing.T) {
 		},
 		{
 			// The bridge never starts herdr (S1 §2), and connecting to Feishu
-			// anyway would burn the one WebSocket this app_id gets in order to
-			// serve an empty agent list.
+			// anyway would take a slot in this app's connection pool and be
+			// dealt a random share of the user's messages (G15) with no agent
+			// to route them to.
 			name: "herdr is not running",
 			mutate: func(_ *testing.T, h *harness, _ *serveParts) {
 				h.rc.OnPing = func(context.Context) (herdrapi.PingResult, error) {

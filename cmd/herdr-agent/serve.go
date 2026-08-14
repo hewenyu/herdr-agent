@@ -157,10 +157,12 @@ func defaultServeHooks() serveHooks {
 //
 //  1. state directory and configuration — a bridge with no allowlist is a
 //     bridge that hands shell access to whoever finds the bot (G10);
-//  2. the single-instance lock, BEFORE anything reaches a network. Feishu
-//     allows one WebSocket per app_id, so a second instance does not fail
-//     loudly: the two take the connection from each other and the user
-//     experiences it as "Feishu is flaky" (G15);
+//  2. the single-instance lock, BEFORE anything reaches a network. Feishu's long
+//     connection is a cluster — up to 50 connections per app, each event dealt
+//     to a randomly chosen one (G15) — so a second instance neither errors nor
+//     disconnects anybody: the two split the user's events, invisibly from both
+//     ends, and the user calls it "Feishu is flaky". It has to die before it
+//     connects, because afterwards nothing reveals it;
 //  3. the startup checks, so a machine with no herdr never connects to Feishu
 //     at all;
 //  4. state, agent plumbing, the bot, the bridge.
@@ -303,8 +305,10 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 // The two fatal ones are different in kind:
 //
 //   - a dead herdr leaves nothing to bridge. The bridge never starts herdr
-//     itself (S1 §2), and connecting to Feishu anyway would burn the one
-//     WebSocket this app_id is allowed (G15) to serve an empty agent list.
+//     itself (S1 §2), and connecting to Feishu anyway would put a connection into
+//     this app's pool that gets dealt a random share of the user's messages (G15)
+//     with no agent to route any of them to. Staying off the socket at least
+//     leaves Feishu holding them for redelivery (G14).
 //   - a server below protocol 19 is worse than a dead one, because it looks
 //     alive. S1 §3.1 requires the ping at startup and a refusal below 19,
 //     printing the version actually found: the wire types here were measured

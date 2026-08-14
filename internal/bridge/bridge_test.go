@@ -229,8 +229,13 @@ func TestRunReportsAFailedConnection(t *testing.T) {
 	}
 }
 
-// TestRunSetsTheLifecycleHooks: reconnect churn is the only local evidence of
-// two instances sharing one app_id (G15), so it has to be logged somewhere.
+// TestRunSetsTheLifecycleHooks: the connection is the one dependency with no
+// other symptom, so dial errors and reconnect churn have to be logged somewhere
+// or they are invisible.
+//
+// What this log is NOT is evidence about a second instance on the same app_id:
+// cluster-mode delivery gives both of them a clean connection and half the
+// events each (G15). That is the single-instance lock's job, not this one's.
 func TestRunSetsTheLifecycleHooks(t *testing.T) {
 	h := newHarness(t)
 

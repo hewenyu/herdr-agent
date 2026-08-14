@@ -125,8 +125,13 @@ func (r *Runner) verify(ctx context.Context, rep *reporter, in verifyInput) veri
 	}()
 	defer func() {
 		cancel()
-		// WithoutCancel: ctx may already be done, and Stop's whole job is to
-		// hand the app's single allowed WebSocket connection back (G15).
+		// WithoutCancel: ctx may already be done, and Stop's whole job is to take
+		// this process OUT of the app's connection pool. Long-connection delivery
+		// is cluster mode — up to 50 connections per app, with each event dealt to
+		// a randomly chosen one of them (G15) — so a socket nobody reads any more
+		// is not merely idle: it keeps being handed a share of the user's events,
+		// and that share is lost. Same reason the probe runs under the bridge's
+		// single-instance lock (see acquireLock) instead of alongside a live one.
 		_ = bot.Stop(context.WithoutCancel(ctx))
 		select {
 		case <-conn.ended:

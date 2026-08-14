@@ -67,6 +67,95 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# -------------------------------------------------------------- platform ----
+
+# Everything below renders plists and drives launchctl, so this script is macOS
+# only. It refuses here, before anything else, for one specific reason: the
+# --uninstall path runs ahead of pre-flight, and `launchctl bootout` failures are
+# swallowed with `|| true` while `rm -f` on a file that was never there succeeds.
+# On Linux that combination printed "removed" twice and exited 0, which is the
+# one outcome worse than refusing — the user believes something was undone.
+if [ "$(uname -s)" != "Darwin" ]; then
+  if [ "$do_uninstall" -eq 1 ]; then
+    cat >&2 <<EOF
+
+install.sh: this machine is $(uname -s). launchd is macOS only, there is no
+LaunchAgent here to remove, and this script has removed NOTHING.
+
+The systemd counterpart, if that is what you installed:
+
+  systemctl --user disable --now herdr-agent.service
+  systemctl --user disable --now herdr-server.service   # this closes every pane,
+                                                        # and every agent in one
+  rm -f ~/.config/systemd/user/herdr-agent.service ~/.config/systemd/user/herdr-server.service
+  systemctl --user daemon-reload
+  loginctl disable-linger "\$USER"   # only if nothing else of yours needs linger
+
+$STATE_DIR (config, credentials, dedup state, logs) is left alone by all of
+that. Remove it yourself if you mean it:  rm -rf $STATE_DIR
+EOF
+    exit 1
+  fi
+  cat >&2 <<EOF
+
+install.sh: this machine is $(uname -s). launchd is macOS only, so this script
+cannot install anything here and has written NOTHING.
+
+Use the systemd user units next to it instead. Each one carries the reasoning
+for every setting at the top, and herdr-server.service explains why herdr has to
+start from a scrubbed environment — an inherited CLAUDE_CODE_CHILD_SESSION turns
+claude's transcript saving off and kills the mirror silently (G7). Read that file
+before you start it:
+
+  $SCRIPT_DIR/herdr-agent.service
+  $SCRIPT_DIR/herdr-server.service
+
+  mkdir -p "$STATE_DIR" ~/.local/bin ~/.config/systemd/user
+  chmod 700 "$STATE_DIR"
+  install -m 755 ./herdr-agent ~/.local/bin/herdr-agent   # what the unit expects
+
+  # Credentials and the allowlist, before either unit is enabled. setup writes
+  # the .env at mode 0600, creates config.toml from the same example that ships
+  # in deploy/, fills in feishu.allowed_open_ids and feishu.notify_chat_id, and
+  # then makes you send a real message and press a real button, because each of
+  # those fails the same invisible way when it is wrong. With no browser here it
+  # prints the confirmation link instead of claiming it opened one.
+  ~/.local/bin/herdr-agent setup
+
+  # By hand instead — the supported fallback, since the endpoint setup uses is
+  # undocumented (G18). Two files, and a console change on this path only takes
+  # effect once you create and publish a version (an app that came out of setup
+  # already has one). feishu.allowed_open_ids must not stay empty: hard startup
+  # error by design, default deny, because driving an agent is equivalent to
+  # shell access on this machine. The credentials come from the Feishu open
+  # platform console, 凭证与基础信息, and are read from the .env and nowhere
+  # else — config.toml has no field for them on purpose.
+  #   cp "$SCRIPT_DIR/config.example.toml" "$CONFIG_FILE"
+  #   \$EDITOR "$CONFIG_FILE"
+  #   printf 'FEISHU_APP_ID=cli_xxx\nFEISHU_APP_SECRET=xxx\n' > "$ENV_FILE"
+  #   chmod 600 "$ENV_FILE"
+
+  cp "$SCRIPT_DIR/herdr-agent.service" "$SCRIPT_DIR/herdr-server.service" ~/.config/systemd/user/
+
+  # In herdr-server.service, check the herdr binary path and the PATH the panes
+  # inherit from it: that PATH has to contain claude / codex or no pane will
+  # find them.
+  \$EDITOR ~/.config/systemd/user/herdr-server.service
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now herdr-server.service herdr-agent.service
+
+  # Without linger both units stop when you log out, and nothing starts at boot.
+  loginctl enable-linger "\$USER"
+
+Then check it and watch it:
+
+  ~/.local/bin/herdr-agent doctor
+  journalctl --user -u herdr-agent -f
+EOF
+  exit 1
+fi
+
 # --------------------------------------------------------------- helpers ----
 
 # abspath normalises a path for launchd, which resolves nothing itself: no ~,
@@ -154,9 +243,8 @@ fi
 
 step "pre-flight"
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  die "launchd is macOS only; this machine is $(uname -s)"
-fi
+# The platform gate above already refused anything that is not Darwin, with the
+# systemd instructions; this only reports which macOS.
 ok "macOS $(sw_vers -productVersion 2>/dev/null || echo '?')"
 
 # The refusal the deployment story hangs on: without credentials the bridge
@@ -379,7 +467,10 @@ worth knowing
     login window, nothing here runs until somebody logs in.
   * After changing ANY permission, event or the interactive-card toggle in the
     Feishu console, you must create and publish a version. Nothing takes effect
-    otherwise, and the failure looks like a bug in the bridge.
+    otherwise, and the failure looks like a bug in the bridge. That is about
+    later hand edits only: an app registered by herdr-agent setup arrived with
+    its scopes granted and a version already published, so there is nothing to
+    publish after it runs.
   * stop:     launchctl bootout   $DOMAIN/$LABEL_BRIDGE
   * restart:  launchctl kickstart -k $DOMAIN/$LABEL_BRIDGE
   * status:   launchctl print     $DOMAIN/$LABEL_BRIDGE

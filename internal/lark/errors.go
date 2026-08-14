@@ -166,10 +166,22 @@ func newFailure(op, appID string, err error) error {
 // what the bridge DOES — only about what it SAYS, which is what these are for.
 const (
 	// CodeScopeNotInEffect (99991672) is Feishu's "this app does not hold the
-	// scope this call needs". The trap is that granting the scope in the
-	// console is not enough: it takes effect only once a version is published,
-	// and until then the token works, the WebSocket connects, and the call
-	// still fails.
+	// scope this call needs".
+	//
+	// Which fix applies depends on where the app came from, and stating it
+	// unconditionally is how this advice was wrong before (G12):
+	//
+	//   - hand-made in the console: granting the scope there is not enough. It
+	//     takes effect only once a version is published, and until then the token
+	//     works, the WebSocket connects, and the call still fails. This is the
+	//     hour-long trap.
+	//   - registered by `herdr-agent setup`: its confirmation page grants the
+	//     scopes AND publishes a version itself (G18), so there is no publish
+	//     step to go looking for. Telling that user to publish sends them after
+	//     something already done, and when they cannot find it they conclude they
+	//     configured something wrong.
+	//
+	// adviseCode therefore names both cases rather than picking one.
 	CodeScopeNotInEffect = 99991672
 
 	// CodeCardCallbackFailed (200340) is Feishu refusing an interactive-card
@@ -248,8 +260,10 @@ func adviseCode(code int, appID string) string {
 		return "Feishu refused this card operation with 200340 — the interactive-card path is not working. " +
 			"Two causes produce it and the code cannot tell them apart: the card.action.trigger callback is not " +
 			"subscribed, or the 交互卡片 capability is off. Check both — the subscription at " +
-			"https://open.feishu.cn/app/" + appID + "/event, and 应用能力 → 机器人 → 交互卡片 — and if either changed, " +
-			"publish a new version before retrying."
+			"https://open.feishu.cn/app/" + appID + "/event, and 应用能力 → 机器人 → 交互卡片. " +
+			"If you change either BY HAND in the console, publish a new version afterwards or the change never " +
+			"takes effect; an app registered by `herdr-agent setup` had its callback subscribed and a version " +
+			"published by that same confirmation page, so there is no publish step to hunt for on that path."
 	default:
 		return ""
 	}

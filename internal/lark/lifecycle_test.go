@@ -37,7 +37,9 @@ func TestStartUsesChannelStart(t *testing.T) {
 		t.Fatal("Start did not return after the context was cancelled")
 	}
 
-	// The connection must be released: G15, one WebSocket per app_id.
+	// The connection must be released. Feishu deals each event to a randomly
+	// chosen one of the connections open for this app (G15), so one left open
+	// after cancellation keeps drawing a share of the events with nobody reading.
 	if _, stops := fc.counts(); stops != 1 {
 		t.Fatalf("ch.Stop called %d times after cancellation, want 1", stops)
 	}
@@ -72,7 +74,8 @@ func TestDoubleStartRefused(t *testing.T) {
 	awaitStart(t, fc)
 
 	if err := b.Start(context.Background()); err == nil {
-		t.Fatal("second Start succeeded; a second connection would fight the first for the one socket this app_id gets (G15)")
+		t.Fatal("second Start succeeded; a second connection would join this app's pool and be dealt a " +
+			"random share of its events instead of conflicting with the first (G15)")
 	}
 	if s, _ := fc.counts(); s != 1 {
 		t.Fatalf("ch.Start called %d times, want 1", s)
