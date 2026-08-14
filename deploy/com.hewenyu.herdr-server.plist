@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.hewenyu.herdr-server — the herdr server the bridge talks to.
+
+  Install with deploy/install.sh. It substitutes every placeholder below (a name
+  between double underscores) with an absolute path: launchd does no variable
+  expansion at all, so "$HOME" and "~" inside a plist are literal characters,
+  never a home directory.
+
+  =====================================================================
+  WHY THIS RUNS UNDER /usr/bin/env -i AND NOT JUST "herdr server"
+  =====================================================================
+
+  Measured (G7): herdr server hands its own environment, unchanged, to every
+  pane it spawns. Start the server from inside a claude session and every claude
+  in every pane inherits that session's CLAUDE_CODE_CHILD_SESSION marker, and
+  answers it by switching transcript saving OFF:
+
+      ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker
+
+  Nothing crashes. Nothing is logged. There is simply no ~/.claude/projects
+  transcript file afterwards, so the bridge's L2 mirror tails a file that will
+  never exist and the phone shows an agent that never says anything. The feature
+  is dead and the failure is silent — which is exactly why it is pinned here in
+  the unit file rather than left to whoever types the start command.
+
+  "env -i" therefore empties the environment and this job adds back only what a
+  terminal multiplexer genuinely needs. Three notes on the shape of that fix:
+
+    * It is an ALLOWLIST on purpose. CLAUDE_CODE_CHILD_SESSION,
+      CLAUDE_CODE_ENTRYPOINT and every other CLAUDE_CODE_* variable, plus
+      CLAUDECODE, CLAUDE_PID and CLAUDE_EFFORT, are all gone because nothing
+      survives -i. A denylist could not express that anyway: `env -u` takes
+      exact names, not the CLAUDE_CODE_* prefix, so it would need an edit every
+      time a claude release invents another marker.
+
+    * launchd's own EnvironmentVariables key cannot replace this. It MERGES with
+      the per-user domain environment (anything set by `launchctl setenv`, or
+      inherited when someone bootstraps this job by hand), it does not replace
+      it. Only exec'ing env -i guarantees what the server does not have.
+
+    * The allowlist below is HOME, PATH, SHELL, TERM, LANG and nothing else.
+      Three of the absences are worth naming by hand, because every pane
+      inherits this environment (G7) and the panes here run coding agents. Two
+      of the three are variables launchd itself supplies to a gui job, so they
+      are lost to the scrub rather than never having been there:
+
+      XDG_CONFIG_HOME is gone, so herdr keeps its socket at
+      ~/.config/herdr/herdr.sock — the same place the bridge looks by default.
+      If you deliberately set XDG_CONFIG_HOME in your shell, add it to the
+      allowlist below, or your terminal's `herdr` CLI and this server will use
+      two different config directories and two different sockets.
+
+      SSH_AUTH_SOCK is gone, so no pane has an ssh-agent. `git push` / `git
+      fetch` over SSH from inside an agent then stops on a passphrase prompt or
+      fails outright, and on a phone that reads as the agent freezing mid task
+      with nothing on screen to explain it. Add it back with a line in the array
+      below, next to HOME:
+
+          <string>SSH_AUTH_SOCK=/private/tmp/com.apple.launchd.XXXX/Listeners</string>
+
+      using the value `launchctl getenv SSH_AUTH_SOCK` prints. install.sh does
+      not render this for you on purpose: that path carries a random component
+      that launchd regenerates at every login, so a value baked in at install
+      time is wrong after the next logout — and a stale SSH_AUTH_SOCK fails
+      exactly the way a missing one does. If you want it to survive logins,
+      resolve it when the job starts instead of when it is installed, by making
+      the program `/bin/sh -c` and having the shell substitute it:
+
+          /bin/sh -c 'exec /usr/bin/env -i HOME=... PATH=...
+              SSH_AUTH_SOCK="$(/bin/launchctl getenv SSH_AUTH_SOCK)"
+              /path/to/herdr server'
+
+      i.e. three strings in the array: /bin/sh, -c, and that whole command as
+      one. env -i still empties everything; the shell only computes one of the
+      arguments it is handed, at start rather than at install.
+
+      TMPDIR is gone, so tools in a pane fall back to /tmp instead of the per
+      user /var/folders/... directory. Usually harmless: it costs the per user
+      isolation and the automatic cleanup, and a few tools are noisier about it.
+
+  Verify after install:  herdr-agent doctor
+  (the "herdr server environment is clean" check reads this process's real
+  environment with `ps eww`, so it confirms the scrub actually happened.)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hewenyu.herdr-server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>-i</string>
+
+    <!-- HOME: herdr resolves its config, socket and state from it. -->
+    <string>HOME=__HOME__</string>
+
+    <!-- PATH: this is the PATH every pane starts with, so it must contain the
+         agents you intend to run (claude, codex) and their toolchains. It is
+         NOT launchd's minimal default; install.sh builds it from the
+         directories where it found herdr, claude and codex. -->
+    <string>PATH=__CLEAN_PATH__</string>
+
+    <!-- SHELL: what herdr spawns in a new pane. Without it the panes fall back
+         to /bin/sh, which reads none of your login files. -->
+    <string>SHELL=__LOGIN_SHELL__</string>
+
+    <!-- TERM/LANG: the agent TUIs draw box-drawing characters and colour. A
+         missing UTF-8 locale turns Claude's dialog frame into mojibake, and
+         herdr's blocked-detection matches literal strings on that screen
+         (G11), so a broken locale degrades to a silent "idle". -->
+    <string>TERM=xterm-256color</string>
+    <string>LANG=en_US.UTF-8</string>
+
+    <string>__HERDR_BIN__</string>
+    <string>server</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__HOME__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Always restart. The product assumes this Mac is up and reachable; there
+       is no offline compensation anywhere in the bridge, so a server that
+       stayed down would just make the phone show nothing.
+       Consequence worth knowing: `herdr server stop` will be undone by launchd
+       within ThrottleInterval. To stop it for real:
+           launchctl bootout gui/$(id -u)/com.hewenyu.herdr-server -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- If a hand-started herdr server already owns the socket, this copy exits
+       immediately. 30s keeps that argument readable in the log instead of a
+       spin; the loop ends by itself once the other server goes away. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.herdr-agent/log/herdr-server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.herdr-agent/log/herdr-server.err.log</string>
+
+  <!-- Deliberately no EnvironmentVariables dict: see the comment above. -->
+</dict>
+</plist>

@@ -1,0 +1,387 @@
+#!/bin/bash
+#
+# install.sh — install and (re)start the two LaunchAgents the bridge needs:
+#
+#   com.hewenyu.herdr-server   herdr itself, started from a scrubbed environment
+#   com.hewenyu.herdr-agent    the Feishu bridge (`herdr-agent serve`)
+#
+# Idempotent. Run it again after rebuilding the binary, after editing a plist,
+# or whenever you are not sure what state things are in: it rewrites both unit
+# files from the templates next to it, boots the jobs out and back in, and
+# prints what to do next.
+#
+# What it will not do: overwrite an existing config.toml, write your
+# credentials, or kill a herdr server you started by hand — that would take
+# every running agent down with it.
+#
+# Overrides:  HERDR_BIN=/path/to/herdr  HERDR_AGENT_BIN=/path/to/herdr-agent
+# Flags:      --bridge-only  --server-only  --uninstall  --help
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+
+STATE_DIR="$HOME/.herdr-agent"
+ENV_FILE="$STATE_DIR/.env"
+CONFIG_FILE="$STATE_DIR/config.toml"
+LOG_DIR="$STATE_DIR/log"
+LA_DIR="$HOME/Library/LaunchAgents"
+UID_NUM=$(id -u)
+DOMAIN="gui/$UID_NUM"
+
+LABEL_SERVER="com.hewenyu.herdr-server"
+LABEL_BRIDGE="com.hewenyu.herdr-agent"
+
+do_server=1
+do_bridge=1
+do_uninstall=0
+
+# ---------------------------------------------------------------- output ----
+
+info() { printf '%s\n' "$*"; }
+step() { printf '\n== %s\n' "$*"; }
+ok()   { printf '   ok    %s\n' "$*"; }
+warn() { printf '   WARN  %s\n' "$*" >&2; }
+die()  { printf '\ninstall.sh: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage: deploy/install.sh [--bridge-only | --server-only] [--uninstall]
+
+  --bridge-only   install only com.hewenyu.herdr-agent (you run herdr yourself)
+  --server-only   install only com.hewenyu.herdr-server
+  --uninstall     bootout and remove the plists; leaves ~/.herdr-agent alone.
+                  Obeys the two flags above: --bridge-only --uninstall keeps the
+                  herdr server, and therefore every pane, running.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bridge-only) do_server=0 ;;
+    --server-only) do_bridge=0 ;;
+    --uninstall)   do_uninstall=1 ;;
+    -h|--help)     usage; exit 0 ;;
+    *)             usage >&2; die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+# --------------------------------------------------------------- helpers ----
+
+# abspath normalises a path for launchd, which resolves nothing itself: no ~,
+# no $HOME, no PATH lookup, and no "..".
+abspath() {
+  printf '%s\n' "$(cd -- "$(dirname -- "$1")" && pwd -P)/$(basename -- "$1")"
+}
+
+# A plist is XML. A path containing & or < would produce a file that either
+# fails to parse or, worse, parses into something else.
+#
+# | and \ are rejected for a second reason: render_plist substitutes these same
+# values with `sed -e "s|__X__|$value|g"`, where | closes the pattern and \ is
+# the escape character. A | makes sed fail with its own syntax error instead of
+# the diagnostic below; a \ is silently consumed, and the plist then passes
+# plutil -lint holding a subtly wrong absolute path — a job that fails to spawn
+# later, with a message nobody is watching for.
+assert_xml_safe() {
+  case "$2" in
+    *[\&\<\>\"\'\|\\]*) die "$1 contains a character that cannot go into a plist or through sed unescaped: $2" ;;
+  esac
+}
+
+job_loaded() { launchctl print "$DOMAIN/$1" >/dev/null 2>&1; }
+
+unload_job() {
+  local i
+  launchctl bootout "$DOMAIN/$1" >/dev/null 2>&1 || true
+  # bootout returns before the job is gone; bootstrapping into a domain that is
+  # still tearing the label down fails with "Operation already in progress".
+  i=0
+  while job_loaded "$1"; do
+    i=$((i + 1))
+    if [ "$i" -gt 50 ]; then
+      warn "$1 is still loaded 5s after bootout; continuing anyway"
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
+load_job() {
+  local label=$1
+  local plist=$2
+  unload_job "$label"
+  # A job disabled earlier (launchctl disable, or a bootout -w from the old
+  # syntax) stays disabled across bootstrap, silently and permanently.
+  launchctl enable "$DOMAIN/$label" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "$DOMAIN" "$plist"; then
+    die "launchctl bootstrap $DOMAIN $plist failed"
+  fi
+  ok "$label bootstrapped"
+}
+
+remove_job() {
+  local label=$1
+  unload_job "$label"
+  rm -f "$LA_DIR/$label.plist"
+  ok "$label removed"
+}
+
+# ------------------------------------------------------------- uninstall ----
+
+if [ "$do_uninstall" -eq 1 ]; then
+  step "uninstalling"
+  if [ "$do_bridge" -eq 1 ]; then remove_job "$LABEL_BRIDGE"; fi
+  # --uninstall honours --bridge-only / --server-only for the same reason the
+  # install path refuses to restart a hand-started server: booting this label
+  # out SIGTERMs herdr, and herdr owns every pane, so every agent in one dies
+  # mid-task. "I run herdr myself" must not be a way to lose your work.
+  if [ "$do_server" -eq 1 ]; then
+    if job_loaded "$LABEL_SERVER"; then
+      warn "booting out $LABEL_SERVER closes every pane, and every agent running in one."
+      warn "Keep it: deploy/install.sh --bridge-only --uninstall"
+    fi
+    remove_job "$LABEL_SERVER"
+  fi
+  info ""
+  info "Left in place on purpose: $STATE_DIR (config, credentials, dedup state, logs)."
+  info "Remove it yourself if you mean it:  rm -rf $STATE_DIR"
+  exit 0
+fi
+
+# ------------------------------------------------------------ pre-flight ----
+
+step "pre-flight"
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  die "launchd is macOS only; this machine is $(uname -s)"
+fi
+ok "macOS $(sw_vers -productVersion 2>/dev/null || echo '?')"
+
+# The refusal the deployment story hangs on: without credentials the bridge
+# boots, fails to authenticate, exits, and gets restarted by launchd every 30
+# seconds forever. Better to stop here, where there is a human reading.
+if [ ! -f "$ENV_FILE" ]; then
+  cat >&2 <<EOF
+
+install.sh: $ENV_FILE is missing.
+
+The bridge reads its Feishu credentials from that file and from nowhere else —
+config.toml has no field for them, on purpose. Create it first:
+
+mkdir -p $STATE_DIR && chmod 700 $STATE_DIR
+cat > $ENV_FILE <<'ENV'
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ENV
+chmod 600 $ENV_FILE
+
+Both values come from the Feishu open platform console, 凭证与基础信息.
+EOF
+  exit 1
+fi
+ok "$ENV_FILE exists"
+
+env_mode=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || echo "?")
+if [ "$env_mode" != "600" ]; then
+  warn "$ENV_FILE is mode $env_mode; it holds an app secret — chmod 600 $ENV_FILE"
+fi
+for key in FEISHU_APP_ID FEISHU_APP_SECRET; do
+  if ! grep -Eq "^[[:space:]]*$key[[:space:]]*=[[:space:]]*[^[:space:]]" "$ENV_FILE"; then
+    warn "$ENV_FILE has no non-empty $key; the bridge will refuse to start"
+  fi
+done
+
+# Binaries: launchd has no PATH worth speaking of, so both are baked in as
+# absolute paths and both have to exist now rather than at first launch.
+if [ "$do_bridge" -eq 1 ]; then
+  bridge_bin="${HERDR_AGENT_BIN:-}"
+  if [ -z "$bridge_bin" ]; then
+    for candidate in "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
+      if [ -x "$candidate" ]; then bridge_bin="$candidate"; break; fi
+    done
+  fi
+  if [ -z "$bridge_bin" ]; then
+    bridge_bin=$(command -v herdr-agent || true)
+  fi
+  if [ -z "$bridge_bin" ] || [ ! -x "$bridge_bin" ]; then
+    die "cannot find the herdr-agent binary.
+     build it:     (cd $(dirname "$SCRIPT_DIR") && go build -o $STATE_DIR/bin/herdr-agent ./cmd/herdr-agent)
+     or point at it: HERDR_AGENT_BIN=/path/to/herdr-agent $0"
+  fi
+  bridge_bin=$(abspath "$bridge_bin")
+  assert_xml_safe "herdr-agent path" "$bridge_bin"
+  ok "bridge binary $bridge_bin"
+fi
+
+if [ "$do_server" -eq 1 ]; then
+  server_bin="${HERDR_BIN:-$(command -v herdr || true)}"
+  if [ -z "$server_bin" ] || [ ! -x "$server_bin" ]; then
+    die "cannot find the herdr binary. Install herdr, or: HERDR_BIN=/path/to/herdr $0"
+  fi
+  server_bin=$(abspath "$server_bin")
+  assert_xml_safe "herdr path" "$server_bin"
+  ok "herdr binary   $server_bin"
+fi
+
+assert_xml_safe "home directory" "$HOME"
+
+# The PATH the scrubbed herdr server gets, and therefore the PATH every pane it
+# spawns starts with. It has to contain the agents, so it is built from where
+# they actually are rather than from a guess.
+clean_path=""
+path_add() {
+  if [ ! -d "$1" ]; then return 0; fi
+  case ":$clean_path:" in *":$1:"*) return 0 ;; esac
+  if [ -z "$clean_path" ]; then clean_path="$1"; else clean_path="$clean_path:$1"; fi
+}
+for tool in herdr claude codex; do
+  tool_path=$(command -v "$tool" || true)
+  if [ -n "$tool_path" ]; then path_add "$(dirname "$(abspath "$tool_path")")"; fi
+done
+path_add "$HOME/.local/bin"
+path_add "$HOME/.cargo/bin"
+path_add "/opt/homebrew/bin"
+path_add "/usr/local/bin"
+path_add "/usr/bin"
+path_add "/bin"
+path_add "/usr/sbin"
+path_add "/sbin"
+assert_xml_safe "PATH for panes" "$clean_path"
+ok "pane PATH      $clean_path"
+
+for tool in claude codex; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    warn "$tool is not on your PATH, so panes started by herdr will not find it either"
+  fi
+done
+
+# What herdr opens in a new pane. Without SHELL a scrubbed environment falls
+# back to /bin/sh, which reads none of your login files.
+login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{print $2}' || true)
+if [ -z "${login_shell:-}" ] || [ ! -x "$login_shell" ]; then login_shell="${SHELL:-/bin/zsh}"; fi
+if [ ! -x "$login_shell" ]; then login_shell="/bin/sh"; fi
+assert_xml_safe "login shell" "$login_shell"
+ok "pane shell     $login_shell"
+
+# ------------------------------------------------------------ state dirs ----
+
+step "state directory"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" "$LA_DIR"
+chmod 700 "$STATE_DIR"
+# launchd will not create the directory behind StandardOutPath; it just fails
+# to open it and the job's output vanishes.
+ok "$LOG_DIR"
+
+if [ -f "$CONFIG_FILE" ]; then
+  ok "$CONFIG_FILE (left untouched)"
+else
+  cp "$SCRIPT_DIR/config.example.toml" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE"
+  ok "$CONFIG_FILE created from config.example.toml"
+fi
+
+if grep -Eq '^[[:space:]]*allowed_open_ids[[:space:]]*=[[:space:]]*\[[[:space:]]*\]' "$CONFIG_FILE"; then
+  warn "feishu.allowed_open_ids is empty in $CONFIG_FILE."
+  warn "That is a hard startup error by design: default deny, because driving an"
+  warn "agent is equivalent to shell access on this Mac. Put your own open_id in it."
+fi
+
+# --------------------------------------------------------------- plists -----
+
+render_plist() {
+  local src="$SCRIPT_DIR/$1"
+  local dst="$LA_DIR/$1"
+  local tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/herdr-plist.XXXXXX")
+
+  sed -e "s|__HOME__|$HOME|g" \
+      -e "s|__HERDR_AGENT_BIN__|${bridge_bin:-}|g" \
+      -e "s|__HERDR_BIN__|${server_bin:-}|g" \
+      -e "s|__CLEAN_PATH__|$clean_path|g" \
+      -e "s|__LOGIN_SHELL__|$login_shell|g" \
+      "$src" >"$tmp"
+
+  # A placeholder that survived would reach launchd as a literal path and the
+  # job would fail to spawn with a message nobody reads.
+  if grep -q '__[A-Z_][A-Z_]*__' "$tmp"; then
+    rm -f "$tmp"
+    die "$1 still contains an unsubstituted __PLACEHOLDER__ after rendering"
+  fi
+  if ! plutil -lint "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    die "$1 did not render into a valid plist"
+  fi
+
+  if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+    ok "$dst (unchanged)"
+  else
+    install -m 644 "$tmp" "$dst"
+    ok "$dst written"
+  fi
+  rm -f "$tmp"
+}
+
+step "unit files"
+if [ "$do_server" -eq 1 ]; then render_plist "$LABEL_SERVER.plist"; fi
+if [ "$do_bridge" -eq 1 ]; then render_plist "$LABEL_BRIDGE.plist"; fi
+
+# ------------------------------------------------------------ (re)launch ----
+
+step "launchctl"
+
+if [ "$do_server" -eq 1 ]; then
+  # Never kill a running server automatically: it owns every pane, and every
+  # pane owns an agent that may be halfway through something.
+  if pgrep -f 'herdr server' >/dev/null 2>&1 && ! job_loaded "$LABEL_SERVER"; then
+    warn "a 'herdr server' is already running and was not started by launchd."
+    warn "It keeps the socket, so this job will fail and retry every 30s until it stops."
+    warn "It probably also has a dirty environment (G7). When no agent is mid-task:"
+    warn "    pkill -f 'herdr server'   # this closes every pane"
+  fi
+  load_job "$LABEL_SERVER" "$LA_DIR/$LABEL_SERVER.plist"
+fi
+
+if [ "$do_bridge" -eq 1 ]; then
+  load_job "$LABEL_BRIDGE" "$LA_DIR/$LABEL_BRIDGE.plist"
+fi
+
+# ----------------------------------------------------------- next steps -----
+
+cat <<EOF
+
+next steps
+
+  1. ${bridge_bin:-herdr-agent} doctor
+     The bar is: no FAIL for the agents you actually use. Two non-PASS results
+     are expected on a correct install, and doctor exits 1 on the first of them:
+       * "claude integration installed" / "codex integration installed" FAIL for
+         the agent you do not use. Only the one you run has to pass.
+       * "herdr detection manifests pinned" stays WARN until you set
+         [update] manifest_check = false in HERDR's own config.toml — not this
+         product's. doctor prints the exact command for your machine.
+     The check that matters most is "herdr server environment is clean": it
+     reads the running server's real environment, so it proves the scrub in the
+     plist actually happened.
+
+  2. tail -f $LOG_DIR/herdr-agent.err.log
+     Wait for the WebSocket to report ready. If you see the bridge exiting every
+     30 seconds, the log line above the exit says why — usually an empty
+     allowed_open_ids or a credential that did not load.
+
+  3. From your phone, message the bot:  /ls
+
+worth knowing
+
+  * LaunchAgents start at GUI login, not at boot. If the Mac reboots to the
+    login window, nothing here runs until somebody logs in.
+  * After changing ANY permission, event or the interactive-card toggle in the
+    Feishu console, you must create and publish a version. Nothing takes effect
+    otherwise, and the failure looks like a bug in the bridge.
+  * stop:     launchctl bootout   $DOMAIN/$LABEL_BRIDGE
+  * restart:  launchctl kickstart -k $DOMAIN/$LABEL_BRIDGE
+  * status:   launchctl print     $DOMAIN/$LABEL_BRIDGE
+  * Nothing rotates $LOG_DIR. Truncate it when it bothers you.
+EOF

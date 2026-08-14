@@ -1,0 +1,31 @@
+╭───────────────────────────────────────────────────╮
+│ ✻ Welcome to Claude Code!                         │
+│   cwd: /tmp/herdr-accept                          │
+╰───────────────────────────────────────────────────╯
+
+> create DANGER.txt and write hello into it, use
+  a shell command please
+
+⏺ Bash(touch /tmp/herdr-accept/DANGER.txt &&
+  echo "hello" > /tmp/herdr-accept/DANGER.txt)
+  ⎿  Waiting…
+
+─────────────────────────────────────────────────────
+ Bash command
+
+   touch /tmp/herdr-accept/DANGER.txt && echo
+   "hello" > /tmp/herdr-accept/DANGER.txt
+
+ Do you want to
+ proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for touch
+      commands in /tmp/herdr-accept
+   3. No, and tell Claude what to do
+      differently (esc)
+
+─────────────────────────────────────────────────────
+╭───────────────────────────────────────────────────╮
+│ >                                                 │
+╰───────────────────────────────────────────────────╯
+  ⏵⏵ accept edits on (shift+tab to cycle)

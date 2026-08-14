@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# The bridge binary: `go build ./cmd/herdr-agent` drops a 13 MB executable here,
+# and the deny list above only covers Windows and shared-library suffixes.
+/herdr-agent
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -30,3 +34,31 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- herdr-agent ---
+# macOS
+.DS_Store
+
+# Build output
+/herdr-agent
+/ha
+
+# Orchestration scaffolding: the workflow scripts used to build this, plus the
+# review findings they consumed. Useful locally, noise in the history, and they
+# embed absolute paths from the machine they ran on.
+.workflows/
+
+# Bridge runtime state. Never commit: it holds the chat/agent bindings and the
+# pid file, and .env holds the Feishu app secret.
+.herdr-agent/
+*.pid
+
+# Local herdr-agent config produced from deploy/config.example.toml — it names
+# the operator's Feishu open_id and chat id.
+config.toml
+
+# Specs and acceptance scripts stay local: they quote absolute paths from the
+# machine they were written on and document this operator's Feishu app setup.
+# The measured facts they record (G1..G17) are what the code comments cite, so
+# keep the local copy — the code alone does not explain itself.
+specs/

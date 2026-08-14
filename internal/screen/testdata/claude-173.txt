@@ -1,0 +1,31 @@
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✻ Welcome to Claude Code!                                                                                                                                                 │
+│                                                                                                                                                                           │
+│   /help for help, /status for your current setup                                                                                                                          │
+│                                                                                                                                                                           │
+│   cwd: /tmp/herdr-accept                                                                                                                                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+> create DANGER.txt in /tmp/herdr-accept and write hello into it, use a shell command please
+
+⏺ I'll create it with touch and a redirect. That writes outside the project, so it needs your approval.
+
+⏺ Bash(touch /tmp/herdr-accept/DANGER.txt && echo "hello" > /tmp/herdr-accept/DANGER.txt)
+  ⎿  Waiting…
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   touch /tmp/herdr-accept/DANGER.txt && echo "hello" > /tmp/herdr-accept/DANGER.txt
+   Create DANGER.txt and write hello into it
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for touch commands in /tmp/herdr-accept
+   3. No, and tell Claude what to do differently (esc)
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ > Reply with exactly the single word MARKER4 and nothing else.                                                                                                            │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ⏵⏵ accept edits on (shift+tab to cycle)                                   ↑/↓ to navigate · esc to cancel
