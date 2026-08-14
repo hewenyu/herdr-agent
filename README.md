@@ -20,26 +20,66 @@ laptop behind NAT works fine.
 - `claude` and/or `codex`, with `herdr integration install claude` / `codex` done.
   For codex you must also press `t` inside codex once to trust the hook, or herdr never
   learns the session id and the mirror has nothing to follow.
-- A Feishu 自建应用. See the checklist below; it is the part that goes wrong.
+- A Feishu account. `herdr-agent setup` creates the app for you; the manual console
+  checklist further down is the documented fallback for when it cannot.
 
-## 60-second setup
+## Setup
 
 ```sh
 git clone https://github.com/hewenyu/herdr-agent && cd herdr-agent
 go build -o ~/.herdr-agent/bin/herdr-agent ./cmd/herdr-agent
 
-mkdir -p ~/.herdr-agent && chmod 700 ~/.herdr-agent
-cat > ~/.herdr-agent/.env <<'ENV'
-FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
-FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-ENV
-chmod 600 ~/.herdr-agent/.env
+~/.herdr-agent/bin/herdr-agent setup   # one page to confirm, then two taps on your phone
 
-deploy/install.sh          # refuses without that .env; installs two LaunchAgents
-$EDITOR ~/.herdr-agent/config.toml   # allowed_open_ids = ["ou_..."]  <- required
-~/.herdr-agent/bin/herdr-agent doctor        # no FAIL for the agents you use
-launchctl kickstart -k gui/$(id -u)/com.hewenyu.herdr-agent  # pick up the edit
+deploy/install.sh                              # installs two LaunchAgents
+~/.herdr-agent/bin/herdr-agent doctor          # no FAIL for the agents you use
 ```
+
+`setup` prints a confirmation link, opens it, and waits. Pressing 确认 on that page
+creates the app, **grants** the four scopes, subscribes `im.message.receive_v1`,
+selects long-connection delivery — and publishes a version. That last one is measured,
+not assumed: the new app's `online_version_id` was already non-empty before any publish
+step of ours, and a real direct message from a phone arrived with zero console
+interactions. It is also the reason this command exists. Every one of those settings is
+invisible when it is wrong, and they all have the same symptom: the bridge connects,
+says so, and then nothing ever arrives.
+
+The page also **requests** the `card.action.trigger` callback. Whether interactive cards
+then work is the one thing setup cannot confirm for you in advance: in the measurement a
+card was sent successfully and no callback came back, and that observation cannot tell a
+交互卡片 capability that needs a manual toggle from a human who did not tap in time. That
+is what the card half of the verification is for (see exit 3), and why the checklist it
+prints covers both.
+
+The command then writes `~/.herdr-agent/.env` at mode 0600 — the only place the app
+secret is allowed to exist, and it is printed nowhere, not even as a prefix or a
+length — puts your `open_id` in `allowed_open_ids`, asks you to message the bot, and
+asks you to press the button on the card it sends back. Nothing less than both of
+those round trips is treated as success:
+
+| exit | meaning |
+|---|---|
+| 0 | verified end to end: your message arrived and your button press came back |
+| 3 | the app exists and its credentials are on disk, but a round trip was not proven. A numbered checklist with one URL per item says what is left; re-running `setup` skips registration and re-verifies |
+| 1 | nothing usable was produced |
+
+Three things to know before you run it:
+
+- **It creates a real app in your Feishu tenant, and no API we could find deletes one.**
+  Re-running `setup` is safe and is the intended repair path — with credentials on disk
+  it skips registration entirely. `--reregister` is the one that creates a second
+  permanent app, which is why it is a flag and not a fallback.
+- **Stop the bridge first.** Feishu's long connection is cluster mode — up to 50
+  connections per app, events split randomly between them — so a second client does not
+  fail cleanly, it silently takes a random share of your real messages. `setup` takes
+  the same single-instance lock `serve` does and refuses rather than sharing. Once
+  `install.sh` has run, the bridge is that second client. Stop it with
+  `launchctl bootout gui/$(id -u)/com.hewenyu.herdr-agent`, run setup, then bring it back
+  with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hewenyu.herdr-agent.plist`.
+- The device-authorization endpoint it uses is **undocumented**. It appears nowhere on
+  open.feishu.cn; its only description is in two SDK READMEs. It can change or vanish
+  without notice, which is why the manual checklist below is a supported path rather
+  than a footnote.
 
 Then message the bot `/ls` from your phone.
 
@@ -66,15 +106,17 @@ herdr under `env -i` and adds back only `HOME`, `PATH`, `SHELL`, `TERM` and `LAN
 you prefer to run herdr yourself, use `deploy/install.sh --bridge-only` and start it with
 something equivalent.
 
-To find your own `open_id`: read it from the open-platform API explorer, or message the
-bot before you have configured the allowlist and look for the rejected-sender WARN in
-`~/.herdr-agent/log/herdr-agent.err.log`.
-
 Every knob lives in `~/.herdr-agent/config.toml`; `deploy/config.example.toml` documents
 each one with its default and the trade-off it makes. Credentials are not among them —
 `config.toml` has no field for a secret, so one cannot end up there by accident.
 
-## Feishu app checklist
+## Feishu app checklist — the manual fallback
+
+Use this when `setup` cannot run: the undocumented endpoint it depends on changed or
+went away, your tenant refuses it, or you already have an app you would rather reuse.
+It is the same result reached by hand, and it is why the bridge only ever needs
+`FEISHU_APP_ID` and `FEISHU_APP_SECRET` in `~/.herdr-agent/.env` (mode 0600, in a 0700
+directory) plus your own `open_id` in `allowed_open_ids`.
 
 In the open platform console, for your 自建应用:
 
@@ -92,13 +134,37 @@ no verification token; the bridge connects outward.
 - `card.action.trigger`
 
 **应用能力 → 机器人** — enable the bot, and turn the 交互卡片 (interactive card) toggle
-**on**. With it off, cards still send perfectly; every button press then fails with
-`200340`, which reads like a bug in the bridge and is not one.
+**on**. Cards still send perfectly when something here is wrong; only the button press
+fails, with `200340`, which reads like a bug in the bridge and is not one. Note that the
+same code appears when `card.action.trigger` is not subscribed — the two are
+indistinguishable from the outside, so check both before concluding.
 
 **版本管理与发布 — create a version and publish it.** This is measured, not folklore:
-permissions, events and the card toggle do not take effect on the live app until a
-version is published. Every time you change anything above, publish again. If the bot
-behaves exactly as it did before your change, this is why.
+a permission, event or toggle you changed in the console does not take effect on the
+live app until a version is published. Every time you change anything above, publish
+again. If the bot behaves exactly as it did before your change, this is why.
+
+That step belongs to **this** path only. An app created through `herdr-agent setup`
+arrives with a version already published — also measured, and the opposite of what the
+console flow teaches you to expect — so there is nothing to publish after it runs.
+
+Then put the credentials where the bridge reads them — `config.toml` has no field for a
+secret, on purpose, so this file is the only place one can live:
+
+```sh
+mkdir -p ~/.herdr-agent && chmod 700 ~/.herdr-agent
+cat > ~/.herdr-agent/.env <<'ENV'
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ENV
+chmod 600 ~/.herdr-agent/.env
+$EDITOR ~/.herdr-agent/config.toml   # allowed_open_ids = ["ou_..."]  <- required
+```
+
+Both values are in 凭证与基础信息. Your own `open_id` is not: read it from the
+open-platform API explorer, or message the bot before configuring the allowlist and look
+for the rejected-sender WARN in `~/.herdr-agent/log/herdr-agent.err.log`. Without an
+allowlist entry the bridge refuses to start.
 
 One more constraint: Feishu allows **one WebSocket per `app_id`**. Two processes using
 the same app steal the connection from each other and the symptom is "Feishu is flaky".
@@ -134,6 +200,7 @@ On the Mac, the same capabilities are a CLI, and it is the acceptance surface fo
 control layer:
 
 ```
+herdr-agent setup [--reregister]    register a Feishu app and prove it works
 herdr-agent doctor                  check the things that break the bridge silently
 herdr-agent ls                      list agents
 herdr-agent dialog <pane>           what the agent is asking
@@ -201,8 +268,8 @@ rotates the logs.
 |---|---|
 | bridge restarts every 30s | it exits at startup; the reason is in `log/herdr-agent.err.log`, usually an empty `allowed_open_ids` or a credential that did not load |
 | `serve: not implemented yet` | the binary predates the bridge — rebuild and re-run `install.sh` |
-| nothing arrives on the phone | you changed the Feishu app and did not publish a version |
-| a card button fails with `200340` | the 交互卡片 toggle is off |
+| nothing arrives on the phone | the log says `feishu long connection up` and never `first feishu event delivered`: the credentials are fine and something about the app's events is not. If you configured it by hand, you probably did not publish a version after your last change. Run `herdr-agent setup` against the existing credentials — it skips registration and tells you which round trip is broken |
+| a card button fails with `200340` | either the 交互卡片 toggle is off or `card.action.trigger` is not subscribed — the code cannot tell them apart, so check both, then publish a version |
 | mirroring shows nothing | the herdr server has `CLAUDE_CODE_*` in its environment; `herdr-agent doctor` says so, `install.sh` fixes it |
 | an agent is reported `idle` while it is clearly waiting | herdr detects claude's dialog with English string matching, and reports `idle` when it fails to match — a pane narrower than 60 columns wraps those strings and breaks it. `doctor` warns about narrow panes; attach a terminal to the pane once to widen it |
 | bridge is up but sees no agents | it is talking to a different socket than your `herdr` CLI — check `XDG_CONFIG_HOME` and `HERDR_SESSION` |

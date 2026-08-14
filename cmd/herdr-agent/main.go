@@ -25,6 +25,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/config"
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 	"github.com/hewenyu/herdr-agent/internal/screen"
+	"github.com/hewenyu/herdr-agent/internal/setup"
 )
 
 func main() { os.Exit(cli()) }
@@ -144,6 +145,16 @@ func wire(ctx context.Context, o wireOptions, out, errw io.Writer) (*deps, func(
 		NewRegistry: func(pollInterval time.Duration) (agents.Registry, error) {
 			return agents.NewRegistry(client, agents.WithPollInterval(pollInterval))
 		},
+		NewSetup: func(dir string, p setup.Progress) (SetupRunner, error) {
+			r, err := setup.New(dir, p)
+			if err != nil {
+				// Returning r would put a typed nil in the interface, and the
+				// caller's `if r != nil` would then be true.
+				return nil, err
+			}
+			return r, nil
+		},
+		OpenURL:        openInBrowser,
 		ServerEnv:      lookupServerEnv,
 		Home:           home,
 		HerdrConfigDir: herdrConfigDir(),

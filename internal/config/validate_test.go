@@ -134,3 +134,48 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 		}
 	}
 }
+
+// The console lists App ID immediately above App Secret, so pasting them
+// transposed is an ordinary slip. Caught only by non-emptiness it is worse than
+// a bad credential: the secret becomes an "app id", and every place that quotes
+// the app id — log lines, the console URLs the error advice builds — leaks it.
+func TestValidateRejectsASecretPastedIntoTheAppIDField(t *testing.T) {
+	// Deliberately NOT shaped like a real secret. A 32-char alphanumeric
+	// literal is exactly what a Lark app secret looks like, so GitHub push
+	// protection blocks it — and the right response to a secret alert is
+	// never to add an exception. The test only needs a value it can prove
+	// the error does not quote.
+	const secret = "not-a-real-secret-just-a-test-value"
+
+	tests := []struct {
+		name  string
+		appID string
+		want  bool // want a malformed-app-id error
+	}{
+		{"a real app id", "cli_0123456789abcdef", false},
+		{"the secret, transposed", secret, true},
+		{"missing the prefix", "aaf4647d33f95be8", true},
+		{"trailing whitespace from a paste", "cli_0123456789abcdef ", true},
+		{"a quoted value", `"cli_0123456789abcdef"`, true},
+		{"a whole URL", "https://open.feishu.cn/app/cli_x", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Default()
+			c.Feishu.AppID = tt.appID
+			c.Feishu.AppSecret = secret
+			c.Feishu.AllowedOpenIDs = []string{"ou_00000000000000000000000000000001"}
+
+			err := c.Validate()
+			got := errors.Is(err, ErrMalformedAppID)
+			if got != tt.want {
+				t.Fatalf("ErrMalformedAppID = %v, want %v (err = %v)", got, tt.want, err)
+			}
+			// Whatever the verdict, the offending value must not be quoted back:
+			// on the transposed input that value IS the secret.
+			if err != nil && strings.Contains(err.Error(), secret) {
+				t.Fatalf("the error quotes the secret: %v", err)
+			}
+		})
+	}
+}

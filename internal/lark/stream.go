@@ -16,6 +16,9 @@ import (
 type streamAdapter struct {
 	sc types.StreamController
 
+	// appID only feeds the console URL in Failure.Advice; see bot.appID.
+	appID string
+
 	mu     sync.Mutex
 	closed bool
 	// closeErr is the raw error from the one sc.Close that ran, nil if it
@@ -30,7 +33,7 @@ func (s *streamAdapter) Append(ctx context.Context, chunk string) error {
 		return err
 	}
 	if err := s.sc.Append(ctx, chunk); err != nil {
-		return newFailure("stream append", err)
+		return newFailure("stream append", s.appID, err)
 	}
 	return nil
 }
@@ -40,7 +43,7 @@ func (s *streamAdapter) Flush(ctx context.Context) error {
 		return err
 	}
 	if err := s.sc.Flush(ctx); err != nil {
-		return newFailure("stream flush", err)
+		return newFailure("stream flush", s.appID, err)
 	}
 	return nil
 }
@@ -68,7 +71,7 @@ func (s *streamAdapter) Close(ctx context.Context) error {
 		s.closed = true
 	}
 	if s.closeErr != nil {
-		return newFailure("stream close", s.closeErr)
+		return newFailure("stream close", s.appID, s.closeErr)
 	}
 	return nil
 }

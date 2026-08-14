@@ -1,0 +1,143 @@
+# herdr-agent · example configuration
+#
+# Install to ~/.herdr-agent/config.toml (deploy/install.sh copies it there if
+# that file does not exist yet) and edit `allowed_open_ids`. Every key below is
+# shown with the value the bridge uses when the key is absent, so deleting a
+# line changes nothing.
+#
+# Credentials are NOT configurable here. FEISHU_APP_ID and FEISHU_APP_SECRET are
+# read from the process environment or ~/.herdr-agent/.env (mode 0600). This
+# file has no field for them at all — writing `app_secret` here is a startup
+# error, not a key that is quietly ignored, so a secret cannot end up in a file
+# you might paste into a chat.
+#
+# Unknown keys are rejected at startup. `allowed_open_id` (singular, a plausible
+# typo) must not read as "the allowlist is empty" and lock you out of your own
+# bridge, and it must certainly not read as "no allowlist configured".
+
+[feishu]
+
+# The authorization boundary of the entire product, so it gets the long comment.
+#
+# Anyone on this list can approve any command any agent on this Mac is asking to
+# run. That is not an exaggeration of the threat model: the herdr socket has no
+# authentication of its own and is protected only by its 0600 file mode, so
+# reaching it is equivalent to a shell here (G10). The bridge is the thing that
+# puts a door on that socket, and this list is the lock.
+#
+# Default deny, and an EMPTY list is a hard startup error BY DESIGN. Not a
+# warning, not "allow everyone until configured": a bridge that fell back to
+# allow-all would hand a shell to whoever found the bot, and the failure would
+# look like everything working. Refusing to boot is the whole trade-off — you
+# cannot start the product without having answered this question.
+#
+# Fill in your own Feishu open_id (it looks like ou_<32 hex chars>). One entry
+# is the intended shape; v1 is a single-user tool.
+#
+# The id below is a PLACEHOLDER and grants nothing. An example allowlist must
+# never ship a value that actually works: install.sh copies this file to
+# ~/.herdr-agent/config.toml verbatim, so anything syntactically complete here
+# is one `#` away from being live in someone else's config, and "the bot ignores
+# me" is what they would notice — not "a stranger can drive my agents".
+# Replace the whole string, do not uncomment it as it stands.
+#
+#   allowed_open_ids = ["ou_REPLACE_WITH_YOUR_OWN_OPEN_ID"]
+allowed_open_ids = []
+
+# Where proactive pushes go — the "this agent is blocked" cards, the "it
+# finished" notes, the "its pane is gone" line. Usually your own p2p chat with
+# the bot (oc_...); read it from the open-platform API explorer, or from the
+# bridge's own log after you message the bot.
+#
+# It is read only from here, never from an incoming message: a runtime-settable
+# destination would let anyone who can talk to the bot redirect your agents'
+# screen contents — which include whatever command they were about to run — to
+# themselves.
+#
+# Default "": no proactive pushes. You can still drive agents by messaging the
+# bot, you just will not be told when one needs you, which gives up most of the
+# point of the product.
+notify_chat_id = ""
+
+[herdr]
+
+# Path to herdr's API socket.
+#
+# Default "": resolve exactly the way herdr's own CLI does — $HERDR_SOCKET_PATH,
+# then $HERDR_SESSION=<name>, then ~/.config/herdr/herdr.sock. Leave it empty
+# unless you run a named session; a hardcoded path here would keep pointing at
+# the old socket after you switch sessions, and the bridge would report an
+# empty machine rather than an error.
+socket_path = ""
+
+# How often `agent.list` is polled.
+#
+# The bridge polls instead of subscribing on purpose: herdr's
+# pane.agent_status_changed subscription needs a concrete pane_id with no
+# wildcard, its event ring silently overflows at 512, and a reconnect replays
+# from sequence 0 — which on a phone is a notification storm (G10). herdr's own
+# detector runs every 300ms, so polling at 1s costs at most a second of latency.
+#
+# Trade-off: lower is faster to notice a blocked agent, but every tick is a new
+# connection and a round trip through herdr's single UI thread. Default "1s".
+poll_interval = "1s"
+
+# Deadline for one herdr call.
+#
+# herdr has NO server-side timeout and answers every request from one UI thread,
+# so a modal dialog open on the desktop blocks your call forever (G10). Without
+# a client deadline the bridge would hang, not degrade.
+#
+# Trade-off: too low turns a busy-but-healthy herdr into spurious failures and
+# a "degraded" bridge; too high delays noticing that herdr is wedged.
+# Default "10s".
+call_timeout = "10s"
+
+[ui]
+
+# Column budget for screen text pushed to the phone.
+#
+# A pane that has ever had a terminal attached is typically 173 columns (G5).
+# Lines are CROPPED to this width, never wrapped: wrapping a TUI destroys its
+# alignment and makes the dialog unreadable. Cropping loses the right-hand side
+# and says so on the card.
+#
+# Trade-off: wider keeps more of each line but forces the phone to scroll
+# sideways. Default 56.
+max_cols = 56
+
+# How many lines of the visible viewport `/card` and the "finished" push show.
+#
+# Trade-off: more context per card versus a card you have to scroll to find the
+# buttons on. Default 18.
+tail_lines = 18
+
+# Minimum gap between two pushes about the same pane. Transitions arriving
+# inside the window are coalesced and the latest one is sent when it expires.
+#
+# Trade-off: an agent that flips blocked/working repeatedly can otherwise ring
+# your phone continuously; a long cooldown delays the notification that
+# actually matters. Idempotency is separate and unconditional — the same
+# (pane, state_seq) is pushed once, ever. Default "30s".
+notify_cooldown = "30s"
+
+# How many messages may queue for one busy agent.
+#
+# Prose is never delivered to a `working` agent; it waits until the agent is
+# idle. If the agent comes back `blocked` instead, the queued line is NOT sent —
+# it was written for the old context, and prose reaching a blocked agent is an
+# approval (G1) — you get a card to decide again.
+#
+# Trade-off: a longer queue means more of what you typed eventually lands, but
+# it lands further from the situation you typed it about. Default 5.
+queue_limit = 5
+
+[mirror]
+
+# Mirror every agent's transcript into the chat without an explicit
+# `/mirror <pane> on`.
+#
+# Default false: one chatty agent turns your chat with the bot into a firehose,
+# and the takeover features (cards, replies) then scroll away. Turn mirroring on
+# per agent, when you actually want to read along.
+default_on = false

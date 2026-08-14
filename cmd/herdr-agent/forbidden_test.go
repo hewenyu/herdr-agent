@@ -14,6 +14,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/agents"
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 	"github.com/hewenyu/herdr-agent/internal/screen"
+	"github.com/hewenyu/herdr-agent/internal/setup"
 )
 
 // forbiddenForCLI is the S1 §3.1 blacklist, restated here as the acceptance
@@ -123,6 +124,13 @@ func TestForbidden(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(h.d.Home, ".claude", "hooks", "herdr-agent-state.sh"), "#!/bin/sh\n")
 	writeFile(t, filepath.Join(h.d.Home, ".codex", "hooks.json"), "{}\n")
+	// setup reaches herdr through nothing at all, and that has to be asserted
+	// rather than left to the harness happening not to wire a runner. The fake
+	// is what makes this safe to run: the real flow registers an app in a
+	// Feishu tenant and no API was found that deletes one.
+	h.withSetup(t, &fakeSetupRunner{res: setup.Result{
+		Outcome: setup.OutcomeVerified, AppID: "cli_x", InboundOK: true, CardOK: true,
+	}})
 
 	// Every subcommand, in an order that keeps the agent's state usable: the
 	// key answers a blocked agent, then say talks to the settled one.
@@ -152,6 +160,9 @@ func TestForbidden(t *testing.T) {
 		// this same recording client.
 		{name: "serve", argv: []string{"serve"}, allow: errAny},
 		{name: "watch", argv: []string{"watch", "-interval", "1ms"}},
+		// It drives the fake runner above, so nothing is registered; what is
+		// being asserted is that the command reaches herdr not at all.
+		{name: "setup", argv: []string{"setup"}, allow: errAny},
 	}
 	for _, r := range runs {
 		runCtx := ctx
