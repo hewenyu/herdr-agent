@@ -244,28 +244,44 @@ func unroutedReplyNote(m lark.Msg, list []agents.Agent) string {
 // blocked, because a bracketed paste at a permission dialog is discarded and
 // the Enter that follows it selects the highlighted "1. Yes" — measured, with
 // the pasted text being an explicit refusal (G1).
+//
+// NOTHING IS HELD BACK HERE, and this is where something used to be. The bridge
+// kept a per-pane FIFO for prose aimed at a working agent, because Say refused
+// that with ErrAgentBusy. Measured (G19/M1), a working agent ACCEPTS the text: it
+// has an input queue of its own, the words land in its composer and are submitted
+// as a prompt when the turn ends. The bridge's queue was therefore a second queue
+// in front of the agent's, and its only observable effect was that a user who
+// typed three sentences watched the bridge sit on two of them. Every message now
+// goes straight through, in arrival order, for as long as the user keeps talking.
+//
+// THE SAFETY RULE THAT WENT WITH IT, and why its absence is not an oversight. The
+// queue carried one: "if the agent is blocked when the queue drains, do not
+// deliver the queued text — push a card instead", because a sentence written
+// against one screen could arrive at a permission dialog that appeared while it
+// waited, and prose typed at a dialog answers it (G1). That hazard was
+// manufactured by the waiting. Nothing is held across a state change any more, so
+// every message is delivered against the state it was written for, and the blocked
+// case is handled at delivery time by Say — which escapes the dialog first,
+// confirms it is gone before writing a byte, and reports that it did (G1, G2, and
+// deliveryNote's Escaped line). The rule is retired because its precondition can
+// no longer arise, not because it stopped mattering. Restoring any hold-and-drain
+// here restores the hazard, and would need that card path restored with it.
+//
+// What is NOT promised is ordering between two messages that race: the larksuite
+// SDK runs a goroutine per inbound frame, so two sentences a second apart reach
+// this function concurrently and no lock here could pick a winner. agents.Say
+// serialises per pane so that the second one SEES the first and separates itself
+// from it rather than being glued to its tail (G19/M2, agents/paneLocks). A
+// swapped pair is legible; a garbled merge is data loss.
 func (b *bridge) deliver(ctx context.Context, chatID, replyTo string, t aim, text string) error {
 	a := t.agent
 
-	// Anything already parked for this pane goes first. Sending this one now
-	// would deliver the user's second thought before their first.
-	//
-	// The routing note is not repeated on the queue receipt: that receipt names
-	// the agent it queued for, which answers the same question, and it is
-	// throttled per pane so a note attached to it could be swallowed anyway.
-	if b.queue.pending(a.PaneID) {
-		return b.enqueue(ctx, chatID, replyTo, a, text)
-	}
-
 	d, err := b.deps.Controller.Say(ctx, b.guardFor(a), text)
-	if errors.Is(err, agents.ErrAgentBusy) {
-		return b.enqueue(ctx, chatID, replyTo, a, text)
-	}
 	if err != nil {
 		b.log.Error("bridge: prose was not delivered", "pane", a.PaneID, "err", err)
 		return b.say(ctx, chatID, replyTo, a.PaneID, withNote(t.note, b.deliveryFailed(a, err)))
 	}
-	return b.say(ctx, chatID, replyTo, a.PaneID, withNote(t.note, deliveryNote(a, d)))
+	return b.reportDelivery(ctx, chatID, replyTo, a, t.note, d)
 }
 
 // withNote puts the routing explanation above the delivery report, so the first
@@ -297,6 +313,10 @@ func (b *bridge) guardFor(a agents.Agent) agents.Guard {
 // a state change were measured being swallowed with no error at all. "Sent but
 // not confirmed" is the honest description, and it is the one a user can act
 // on — they go and look at the Mac.
+//
+// This is the full report. A clean delivery no longer reaches it on the ordinary
+// path — reportDelivery folds that into one acknowledgement per burst — so every
+// sentence below describes something the user has to know NOW.
 func deliveryNote(a agents.Agent, d agents.Delivery) string {
 	var lines []string
 	// d.Escaped, not a status read from before the call: the agent can become
@@ -309,6 +329,12 @@ func deliveryNote(a agents.Agent, d agents.Delivery) string {
 	}
 
 	switch {
+	case d.Verified && d.Queued:
+		// Delivered into the agent's own input queue rather than acted on: it was
+		// mid-turn, so the text sits in its composer until the turn ends (G19/M1).
+		lines = append(lines, fmt.Sprintf(
+			"✅ Delivered to %s, which is mid-turn — it reads this when the current turn ends. It is now %s.",
+			agentLabel(a), d.FinalStatus))
 	case d.Verified:
 		lines = append(lines, fmt.Sprintf("✅ Delivered to %s. It is now %s.", agentLabel(a), d.FinalStatus))
 	case d.Acked:
@@ -321,8 +347,40 @@ func deliveryNote(a agents.Agent, d agents.Delivery) string {
 			"⚠️ %s did not acknowledge your message and I could not confirm it on screen. "+
 				"Treat it as not sent.", agentLabel(a)))
 	}
+
+	if d.MayHaveAnsweredADialog {
+		// The G1 disclosure, and the reason a delivery to a working agent can never
+		// be silent. herdr's agent.prompt writes the paste and then a lone Enter
+		// 300ms later; that Enter is not ours to see or cancel, and a working agent
+		// can raise `Do you want to proceed? ❯ 1. Yes` inside that window, where an
+		// Enter selects the highlighted default. Say refuses when it can see a
+		// dialog beforehand; this says a dialog is there NOW, so one may have been
+		// there during the write. The inverse does not clear it, which is why the
+		// wording asks the user to look rather than reassuring them.
+		lines = append(lines, fmt.Sprintf(
+			"🚨 %s is showing a permission dialog now. herdr sends its own Enter 300ms after the text, "+
+				"and at a dialog an Enter picks the highlighted option — so your message may have ANSWERED "+
+				"a question you never saw, whatever it said. Check the Mac before trusting anything it did.",
+			agentLabel(a)))
+	}
 	if d.Attempts > 1 {
-		lines = append(lines, fmt.Sprintf("(%d attempts: herdr reported the earlier ones stalled.)", d.Attempts))
+		// Not a footnote about plumbing: this is the only sign, from the chat, that
+		// the agent may be holding the same sentence twice. herdr's stall report
+		// means "no state change observed", not "the text is absent" (G3) — a paste
+		// in a composer the agent has not consumed changes no state — so a retry
+		// can paste a second copy below the first. The newline the retry prepends
+		// (G19/M2) keeps the duplicate legible on the AGENT'S screen; it does not
+		// make it one instruction, and the phone cannot see that screen at all.
+		// This is also why a retried delivery is never folded into a burst
+		// acknowledgement (mustReportNow).
+		earlier := "the earlier attempt"
+		if d.Attempts > 2 {
+			earlier = "the earlier attempts"
+		}
+		lines = append(lines, fmt.Sprintf(
+			"🔁 %s: herdr reported %s stalled, which is not proof the text never arrived — %s may have "+
+				"your message more than once, one copy per line. Check the Mac before trusting the result if "+
+				"doing it twice would matter.", plural(d.Attempts, "attempt", "attempts"), earlier, agentLabel(a)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -347,6 +405,37 @@ func (b *bridge) deliveryFailed(a agents.Agent, err error) string {
 
 	case errors.Is(err, agents.ErrGuardStale):
 		return fmt.Sprintf("⌛ That decision was too old to act on, so nothing was sent to %s. Send it again.", a.PaneID)
+
+	case errors.Is(err, agents.ErrAgentBusy):
+		// No longer "it is working, I will queue it": prose to a working agent is
+		// delivered (G19/M1). What is left under this sentinel is the set of states
+		// that genuinely cannot take text — a managed agent still launching, a
+		// status herdr reported that we cannot map, or a retry after a stall into an
+		// agent that has started working again. None of them is worth parking a
+		// message on: by the time such a state clears, the user has moved on, and
+		// re-sending is one tap.
+		//
+		// THIS MAY NOT CLAIM THE MESSAGE WAS NOT SENT, and that is not hedging for
+		// its own sake. The third state above is reached AFTER bytes were written:
+		// Say's retry gate (agents/input.go, "the agent picked the prompt up after
+		// all") only runs because attempt 1 already called agent.prompt and herdr
+		// answered agent_prompt_stalled — and a stall means "no state change
+		// observed", not "the text is absent" (G3, measured as routine right after
+		// esc or agent.start). Nothing available here separates that case from the
+		// two harmless ones: the error is one sentinel for all three, and the
+		// Delivery cannot help either (Say returns the refusal before the attempt
+		// count is bumped, and deliver drops the Delivery on the error path
+		// regardless). So the honest report is the one that covers both, and it must
+		// not end in "send it again": telling a user to re-send a command that may
+		// already be sitting in a live coding agent's composer is the bridge asking
+		// for the second injection that G14 cites persistent dedup to prevent —
+		// the migration runs twice.
+		return fmt.Sprintf(
+			"⏳ %s is in a state I will not type into — herdr reports it as %q — so I could not confirm your "+
+				"message was sent. It is a launch still finishing, a state herdr could not identify, or an "+
+				"agent that started working again while I was retrying — and in that last case an earlier "+
+				"attempt may already have left your text in its input box. Look at the Mac before sending it "+
+				"again, or /stop %s if it is stuck.", agentLabel(a), a.Status, a.PaneID)
 
 	default:
 		return fmt.Sprintf("❌ Could not deliver to %s: %v", agentLabel(a), err)
@@ -386,12 +475,10 @@ func (b *bridge) commandStop(ctx context.Context, m lark.Msg, paneID string) err
 		return b.reply(ctx, m, paneID, fmt.Sprintf("❌ Could not send esc to %s: %v", agentLabel(a), err))
 	}
 
-	note := fmt.Sprintf("⎋ esc sent to %s. It is now %s.", agentLabel(a), next.Status)
-	if depth := b.queue.depth(paneID); depth > 0 {
-		note += fmt.Sprintf("\n(%s still queued for it, and goes out once the agent settles.)",
-			plural(depth, "message is", "messages are"))
-	}
-	return b.reply(ctx, m, paneID, note)
+	// Nothing to add about held-back messages: the bridge holds none. Anything
+	// the user typed is already in the agent, which is what makes esc the escape
+	// hatch rather than half of one — see deliver.
+	return b.reply(ctx, m, paneID, fmt.Sprintf("⎋ esc sent to %s. It is now %s.", agentLabel(a), next.Status))
 }
 
 // commandCard is /card <pane>: push that pane's current screen as a card.
@@ -564,9 +651,6 @@ func (b *bridge) agentList() string {
 		if title := strings.TrimSpace(a.Title); title != "" {
 			row += "\n    " + title
 		}
-		if depth := b.queue.depth(a.PaneID); depth > 0 {
-			row += fmt.Sprintf("\n    ⏳ %s waiting", plural(depth, "message", "messages"))
-		}
 		lines = append(lines, row)
 	}
 	lines = append(lines, "Send /ls for the card that lets you pick one with a tap, "+
@@ -609,11 +693,10 @@ func (b *bridge) doctor() string {
 		if b.deps.Watcher.Enabled(a.PaneID) {
 			mirroring = "on"
 		}
-		row := "    mirror: " + mirroring
-		if depth := b.queue.depth(a.PaneID); depth > 0 {
-			row += fmt.Sprintf(" · queue: %s waiting", plural(depth, "message", "messages"))
-		}
-		lines = append(lines, row)
+		// No queue line: there is no queue to report. A message the bridge accepted
+		// is in the agent (deliver), so what would once have shown up here as
+		// "2 messages waiting" is now visible on the agent's own screen.
+		lines = append(lines, "    mirror: "+mirroring)
 	}
 
 	lines = append(lines,

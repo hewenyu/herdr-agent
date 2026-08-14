@@ -29,6 +29,11 @@ const nonceBytes = 16
 // this tab and clear `done` back to `idle`, destroying the very signal the
 // notifier depends on (G10).
 func (b *bridge) PushBlocked(ctx context.Context, a agents.Agent, dialog screen.Screen) error {
+	// This card IS the reply to whatever the user last typed at this agent: the
+	// agent stopped, and it stopped to ask them something. So it closes the burst
+	// (see bursts.close) — the next message they send is acknowledged again.
+	b.acks.close(a.PaneID)
+
 	if b.deps.NotifyChatID == "" {
 		return fmt.Errorf("%w: cannot tell you that %s is waiting", ErrNoNotifyTarget, a.PaneID)
 	}
@@ -39,9 +44,10 @@ func (b *bridge) PushBlocked(ctx context.Context, a agents.Agent, dialog screen.
 // cardTarget is where a blocked card goes.
 //
 // The notifier's cards arrive unasked in the configured notify chat. A card the
-// user provoked — /card, or the one that replaces a queued message when the
-// agent goes back to waiting — answers them where they typed, so the question
-// and whatever prompted it stay in one thread.
+// user provoked — today that is /card, and it was also the card that replaced a
+// message the bridge had been holding for an agent that went back to waiting,
+// before it stopped holding any (see deliver) — answers them where they typed, so
+// the question and whatever prompted it stay in one thread.
 type cardTarget struct {
 	ChatID  string
 	ReplyTo string
@@ -122,6 +128,13 @@ func (b *bridge) blockedFallback(ctx context.Context, to cardTarget, a agents.Ag
 // and must keep doing so. The screen is still one tap away here, behind the
 // card's Screen button, which is where the detail belongs.
 func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Screen) error {
+	// The settle reply. A burst of messages produces exactly one of these — the
+	// agent goes working once and finishes once, and the notifier coalesces
+	// anything closer together than its cooldown — which is why the deliveries
+	// themselves stay quiet (reportDelivery). It closes the burst, so the next
+	// thing typed is acknowledged again.
+	b.acks.close(a.PaneID)
+
 	if b.deps.NotifyChatID == "" {
 		return fmt.Errorf("%w: cannot tell you that %s finished", ErrNoNotifyTarget, a.PaneID)
 	}
@@ -232,12 +245,19 @@ func (b *bridge) donePost(ctx context.Context, a agents.Agent, ans cards.Answer,
 // lets the reply fall through to the normal routing rules, which will pick the
 // remaining agent or ask which one was meant.
 func (b *bridge) PushGone(ctx context.Context, a agents.Agent) error {
+	// Forget the pane's burst state too: nothing about that agent is true any
+	// more, and this is the last message that will ever mention it.
+	b.acks.close(a.PaneID)
+
 	if b.deps.NotifyChatID == "" {
 		return fmt.Errorf("%w: cannot tell you that %s is gone", ErrNoNotifyTarget, a.PaneID)
 	}
 
-	text := fmt.Sprintf("👋 %s is gone — the pane was closed or the agent exited. "+
-		"Anything still queued for it has been dropped.", agentLabel(a))
+	// It no longer says "anything still queued has been dropped", because the
+	// bridge queues nothing: every message the user typed was delivered when they
+	// typed it, into the agent that has now exited (see deliver). Claiming a drop
+	// would be describing a queue that does not exist.
+	text := fmt.Sprintf("👋 %s is gone — the pane was closed or the agent exited.", agentLabel(a))
 
 	if _, err := b.send(ctx, outgoing{
 		ChatID: b.deps.NotifyChatID,

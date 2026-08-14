@@ -117,8 +117,25 @@ func writeDelivery(d *deps, pane string, del agents.Delivery, err error) {
 	fmt.Fprintf(d.Out, "%s: %s (acked=%t verified=%t attempts=%d final=%s)\n",
 		pane, verdict, del.Acked, del.Verified, del.Attempts, orDash(string(del.FinalStatus)))
 	if del.Acked && !del.Verified && err == nil {
+		// Name the region that was actually searched. Verification is asymmetric:
+		// a settled agent has consumed its input box, so a match there is a ghost
+		// completion and only text OUTSIDE counts (G4); a working agent has not
+		// consumed it yet, so the pending text INSIDE is the only evidence there
+		// is (G19). Printing the settled wording for a queued delivery sends the
+		// reader to look in the wrong half of the screen.
+		region := "outside the input box"
+		if del.Queued {
+			region = "in its input box, where a queued message waits"
+		}
 		fmt.Fprintf(d.Err,
-			"herdr accepted the text but it could not be found on %s outside the input box, so delivery is unproven (G3, G4). Look at the pane before sending it again — a resend says the same thing twice.\n",
+			"herdr accepted the text but it could not be found on %s %s, so delivery is unproven (G3, G4). Look at the pane before sending it again — a resend says the same thing twice.\n",
+			pane, region)
+	}
+	if del.MayHaveAnsweredADialog {
+		// The one thing worse than an unconfirmed send: a send that may have
+		// answered a question the user never saw (G1).
+		fmt.Fprintf(d.Err,
+			"%s is now BLOCKED. Your text went in while it was working, and herdr's trailing Enter may have answered a permission dialog that came up in between — check the pane before assuming your message was read as text.\n",
 			pane)
 	}
 }
