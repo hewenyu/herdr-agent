@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -273,6 +274,91 @@ func TestBridgeImplementsTheSinkInterface(t *testing.T) {
 		t.Fatal("New did not build a notifier")
 	}
 	var _ = []any{h.b.PushBlocked, h.b.PushDone, h.b.PushGone}
+}
+
+// TestFirstEventIsAnnouncedOnceAndOnlyOnce.
+//
+// The two halves are one behaviour: a connection that came up says nothing
+// about whether events will arrive — an app with no published version, no
+// subscribed event or the wrong delivery mode connects perfectly and then stays
+// silent forever — so OnReady must not claim it works, and the line that DOES
+// claim it must fire on the first event and never again. A line per event would
+// be a log of the user's whole conversation.
+func TestFirstEventIsAnnouncedOnceAndOnlyOnce(t *testing.T) {
+	h := newHarness(t)
+	var logged safeBuffer
+	h.b.log = slog.New(slog.NewTextHandler(&logged, nil))
+	h.b.installHandlers()
+
+	msg, act := h.bot.handlers()
+	if msg == nil || act == nil {
+		t.Fatal("installHandlers did not register both handlers")
+	}
+
+	// The connection comes up first, and says only what it knows.
+	h.b.lifecycle().OnReady()
+	if got := logged.String(); strings.Contains(got, "first feishu event") {
+		t.Errorf("connecting was reported as an event being delivered:\n%s", got)
+	}
+	for _, want := range []string{"NOT that", "credentials only"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("the OnReady line does not say a connection proves nothing about delivery (%q missing):\n%s",
+				want, logged.String())
+		}
+	}
+
+	for _, id := range []string{"e1", "e2"} {
+		if err := msg(context.Background(), lark.Msg{EventID: id, UserID: testOwner, ChatID: testChat}); err != nil {
+			t.Fatalf("message handler: %v", err)
+		}
+	}
+	if err := act(context.Background(), lark.Action{EventID: "e3", Operator: testOwner, ChatID: testChat}); err != nil {
+		t.Fatalf("card handler: %v", err)
+	}
+	// A stranger proves delivery works just as well as the owner does, and this
+	// is the case where the allowlist is what is wrong.
+	if err := msg(context.Background(), lark.Msg{EventID: "e4", UserID: testStranger, ChatID: testChat}); err != nil {
+		t.Fatalf("message handler: %v", err)
+	}
+
+	if n := strings.Count(logged.String(), "first feishu event delivered"); n != 1 {
+		t.Fatalf("the first-event line was logged %d times, want exactly 1:\n%s", n, logged.String())
+	}
+}
+
+// TestFirstEventIsAnnouncedForAnUnauthorizedSenderToo pins the half of the rule
+// above that is easiest to "tidy up" by moving the call inside the guard.
+func TestFirstEventIsAnnouncedForAnUnauthorizedSenderToo(t *testing.T) {
+	h := newHarness(t)
+	var logged safeBuffer
+	h.b.log = slog.New(slog.NewTextHandler(&logged, nil))
+	h.b.installHandlers()
+
+	msg, _ := h.bot.handlers()
+	if err := msg(context.Background(), lark.Msg{EventID: "e1", UserID: testStranger, ChatID: testChat}); err != nil {
+		t.Fatalf("message handler: %v", err)
+	}
+	if !strings.Contains(logged.String(), "first feishu event delivered") {
+		t.Errorf("an event from a stranger proves delivery works and was not reported:\n%s", logged.String())
+	}
+}
+
+// safeBuffer is a strings.Builder a handler may write to from any goroutine.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func TestSilenceUnauthorized(t *testing.T) {

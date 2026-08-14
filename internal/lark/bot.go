@@ -68,6 +68,7 @@ func New(appID, appSecret string, opts ...Option) (Bot, error) {
 		ws:        ws,
 		api:       api,
 		ch:        ch,
+		appID:     appID,
 		botOpenID: s.botOpenID,
 		log:       s.log,
 	}
@@ -87,6 +88,10 @@ type bot struct {
 	ws  *larkws.Client
 	api *lark.Client
 	ch  types.Channel
+
+	// appID is kept for one purpose: a failed call can print the console URL
+	// for THIS app (see Failure.Advice). It is the id, never the secret.
+	appID string
 
 	log *slog.Logger
 
@@ -383,13 +388,13 @@ func (b *bot) Send(ctx context.Context, o Out) (string, error) {
 
 	res, err := b.ch.Send(ctx, in)
 	if err != nil {
-		return "", newFailure("send", err)
+		return "", newFailure("send", b.appID, err)
 	}
 	if res == nil {
 		return "", errors.New("lark: send returned no result")
 	}
 	if res.Error != nil {
-		return res.MessageID, newFailure("send", res.Error)
+		return res.MessageID, newFailure("send", b.appID, res.Error)
 	}
 	if len(res.ChunkIDs) > 1 {
 		// The message went out; what is broken is the binding. Return the
@@ -435,10 +440,10 @@ func (b *bot) UpdateCard(ctx context.Context, messageID, cardJSON string) error 
 	op := "patch message " + messageID
 	resp, err := b.api.Im.V1.Message.Patch(ctx, req)
 	if err != nil {
-		return newFailure(op, err)
+		return newFailure(op, b.appID, err)
 	}
 	if !resp.Success() {
-		return newFailure(op, &larkcore.CodeError{Code: resp.Code, Msg: resp.Msg})
+		return newFailure(op, b.appID, &larkcore.CodeError{Code: resp.Code, Msg: resp.Msg})
 	}
 	return nil
 }
@@ -454,12 +459,12 @@ func (b *bot) Stream(ctx context.Context, o Out) (Stream, error) {
 
 	sc, err := b.ch.Stream(ctx, in)
 	if err != nil {
-		return nil, newFailure("open stream", err)
+		return nil, newFailure("open stream", b.appID, err)
 	}
 	if sc == nil {
 		return nil, errors.New("lark: channel returned a nil stream controller")
 	}
-	return &streamAdapter{sc: sc}, nil
+	return &streamAdapter{sc: sc, appID: b.appID}, nil
 }
 
 // BotOpenID returns the bot's own open_id, empty if it is not known.

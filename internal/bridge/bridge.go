@@ -81,6 +81,10 @@ type bridge struct {
 	newTicker func(time.Duration) (<-chan time.Time, func())
 
 	started atomic.Bool
+
+	// firstEvent guards the one line that says Feishu is actually delivering.
+	// See noteFirstEvent.
+	firstEvent atomic.Bool
 }
 
 var _ Bridge = (*bridge)(nil)
@@ -287,6 +291,7 @@ func (b *bridge) Run(ctx context.Context) error {
 // neither can be written in a way that forgets to authorize or to deduplicate.
 func (b *bridge) installHandlers() {
 	b.deps.Bot.OnMessage(func(ctx context.Context, m lark.Msg) error {
+		b.noteFirstEvent("message")
 		err := b.guard(ctx, messageEvent(m), func(ctx context.Context) error {
 			return b.handleMessage(ctx, m)
 		})
@@ -294,11 +299,33 @@ func (b *bridge) installHandlers() {
 	})
 
 	b.deps.Bot.OnCardAction(func(ctx context.Context, a lark.Action) error {
+		b.noteFirstEvent("card action")
 		err := b.guard(ctx, actionEvent(a), func(ctx context.Context) error {
 			return b.handleCardAction(ctx, a)
 		})
 		return silenceUnauthorized(err)
 	})
+}
+
+// noteFirstEvent logs exactly once that Feishu is delivering events to this
+// process. It is the line OnReady is careful not to be.
+//
+// Once, because it answers a question that is only asked at startup — "is this
+// thing actually receiving?" — and a line per event would be a log of the user's
+// entire conversation.
+//
+// Before the guard on purpose: the fact being reported is that the subscription,
+// the delivery mode and the published version work, and an event from a stranger
+// proves that exactly as well as one from the owner. Firing it only for
+// authorized events would stay silent in the one case where the allowlist is
+// what is misconfigured — which is the case that looks identical to a dead
+// subscription from the outside.
+func (b *bridge) noteFirstEvent(kind string) {
+	if !b.firstEvent.CompareAndSwap(false, true) {
+		return
+	}
+	b.log.Info("bridge: first feishu event delivered; the event subscription, the delivery mode and a "+
+		"published version are now all confirmed working", "kind", kind)
 }
 
 // silenceUnauthorized keeps a rejected sender from being reported as a handler
@@ -317,7 +344,17 @@ func silenceUnauthorized(err error) error {
 // from each other, and the only local evidence is a reconnect loop here.
 func (b *bridge) lifecycle() lark.Lifecycle {
 	return lark.Lifecycle{
-		OnReady:        func() { b.log.Info("bridge: feishu connected") },
+		// Deliberately NOT "connected", full stop. A socket that comes up proves
+		// the credentials and nothing else: if the app has no event subscribed,
+		// is not on long-connection delivery, or has no published version, this
+		// line still appears and then nothing ever arrives. That silence is the
+		// single most expensive failure mode in this product, and an operator
+		// reading "feishu connected" concludes the bridge works. The line that
+		// means it works is the one noteFirstEvent writes.
+		OnReady: func() {
+			b.log.Info("bridge: feishu long connection up. This proves the credentials only, NOT that " +
+				"events will arrive; wait for the first delivered event below")
+		},
 		OnError:        func(err error) { b.log.Error("bridge: feishu error", "err", err) },
 		OnReconnecting: func() { b.log.Warn("bridge: feishu reconnecting") },
 		OnReconnected:  func() { b.log.Info("bridge: feishu reconnected") },

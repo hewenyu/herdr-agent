@@ -13,6 +13,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/config"
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 	"github.com/hewenyu/herdr-agent/internal/screen"
+	"github.com/hewenyu/herdr-agent/internal/setup"
 )
 
 // Exit codes are part of this CLI's contract with the S1 acceptance script,
@@ -34,6 +35,12 @@ const (
 var (
 	// errUnconfirmed is the honest outcome of Delivery{Acked: true, Verified: false}.
 	errUnconfirmed = errors.New("prompt sent but NOT confirmed on screen")
+
+	// errUnverified is the honest outcome of setup.OutcomeCredentials. It shares
+	// exit code 3 with errUnconfirmed because it is the same kind of answer:
+	// something real was produced — here a permanent Feishu app whose
+	// credentials are on disk — and it was not proven to work.
+	errUnverified = errors.New("app registered but NOT verified end to end")
 
 	// errChecksFailed means doctor printed at least one FAIL.
 	errChecksFailed = errors.New("doctor found problems")
@@ -88,6 +95,31 @@ type deps struct {
 
 	// ServerEnv reads the herdr server's process environment (G7).
 	ServerEnv ServerEnvFunc
+
+	// NewSetup builds the onboarding flow. It is a factory because setup.New
+	// takes the Progress the command constructs, and a dependency rather than a
+	// direct call because the real implementation creates a Feishu app that no
+	// API we could find can delete: a deps that nobody wired must refuse to
+	// register, not register by default.
+	//
+	// The options carry the three things only the command line knows: which app
+	// to reuse, whether a human may be asked anything, and where the answers come
+	// from.
+	NewSetup func(stateDir string, p setup.Progress, opts ...setup.Option) (SetupRunner, error)
+
+	// OpenURL hands the confirmation link to the desktop browser. A nil one
+	// means this machine has no launcher, and setup then only prints the link —
+	// which is also what every test gets, so no test can pop a browser open.
+	OpenURL func(url string) error
+
+	// In is where an answer to a setup question is read from, and it is read
+	// only when IsTTY agrees there is a human at the other end.
+	In io.Reader
+
+	// IsTTY reports whether In is a terminal, and so whether setup's two
+	// questions are questions at all. A nil one means "no", which is what every
+	// test gets: nothing in a suite is there to answer them.
+	IsTTY func() bool
 
 	// Home is the directory the agent integrations install into, and
 	// HerdrConfigDir is where herdr keeps config.toml. Both are fields rather
@@ -147,6 +179,11 @@ func commandTable() []command {
 		{"transcript", "<pane>", "print the agent's native transcript file path", cmdTranscript},
 		{"watch", "", "stream status transitions, one timestamped line each", cmdWatch},
 		{"serve", "", "run the Feishu bridge until SIGINT or SIGTERM", cmdServe},
+		// "or reuse one" is in the summary because the run that motivated these
+		// flags had an app already and was offered only two ways forward: move a
+		// file, or make a second permanent app. Reuse is the third, and it is the
+		// one most people want.
+		{"setup", "[--app <id>|--reregister]", "register a Feishu app, or reuse one you have, and prove it works", cmdSetup},
 		{"help", "", "show this help", cmdHelp},
 	}
 }
@@ -184,7 +221,20 @@ commands:
 		if c.args != "" {
 			name += " " + c.args
 		}
-		fmt.Fprintf(w, "  %-24s %s\n", name, c.summary)
+		fmt.Fprintf(w, "  %-32s %s\n", name, c.summary)
+	}
+	// setup is the only command with modes rather than options, and it is the
+	// first one anybody runs. Listing them here costs four lines and is the
+	// difference between "reuse the app I already have" being discoverable and
+	// being a flag nobody finds.
+	fmt.Fprint(w, "\nsetup modes (all optional, and the first run needs none of them):\n")
+	for _, m := range []struct{ flag, when string }{
+		{"(no flags)", "confirm one page: create a new app there, or pick an app you already have"},
+		{"--app <app_id>", "use THAT app — preferred, because every registration is permanent clutter"},
+		{"--reregister", "create a SECOND app on purpose; the first one stays, no API deletes it"},
+		{"--yes", "never prompt (scripts, launchd): two apps is an error, an expired wait is exit 3"},
+	} {
+		fmt.Fprintf(w, "  %-32s %s\n", m.flag, m.when)
 	}
 	fmt.Fprint(w, `
 global flags (before the command):
@@ -194,7 +244,9 @@ global flags (before the command):
   -state-dir <path>   bridge state directory holding config.toml (default ~/.herdr-agent)
 
 exit codes:
-  0 ok   1 failure   2 usage   3 sent but NOT confirmed   4 input rejected by a guard
+  0 ok   1 failure   2 usage   4 input rejected by a guard
+  3 something real happened but was NOT proven: prose that herdr accepted and the screen
+    never showed (say), or an app that was registered and not verified end to end (setup)
 `)
 }
 
@@ -293,7 +345,7 @@ func report(w io.Writer, err error) int {
 	}
 	fmt.Fprintf(w, "herdr-agent: %v\n", err)
 	switch {
-	case errors.Is(err, errUnconfirmed):
+	case errors.Is(err, errUnconfirmed), errors.Is(err, errUnverified):
 		return exitUnconfirmed
 	case isGuardRejection(err):
 		return exitRejected

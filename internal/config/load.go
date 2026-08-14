@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ const (
 // errors.Is rather than equality.
 var (
 	ErrMissingAppID     = errors.New("feishu app id is not set")
+	ErrMalformedAppID   = errors.New("feishu app id is malformed")
 	ErrMissingAppSecret = errors.New("feishu app secret is not set")
 	ErrEmptyAllowlist   = errors.New("feishu.allowed_open_ids is empty")
 	ErrBlankOpenID      = errors.New("feishu.allowed_open_ids contains a blank entry")
@@ -103,12 +105,25 @@ func DefaultDir() (string, error) {
 	return filepath.Join(home, StateDir), nil
 }
 
+// appIDShape is what every Feishu app id looks like. Used to reject a secret
+// pasted into the app-id field before it can be echoed anywhere.
+var appIDShape = regexp.MustCompile(`^cli_[A-Za-z0-9]+$`)
+
 // Validate reports every problem it finds, joined into one error.
 func (c Config) Validate() error {
 	var errs []error
 
-	if c.Feishu.AppID == "" {
+	switch {
+	case c.Feishu.AppID == "":
 		errs = append(errs, fmt.Errorf("%w: export %s or put it in %s", ErrMissingAppID, EnvAppID, DotEnvFileName))
+	case !appIDShape.MatchString(c.Feishu.AppID):
+		// The console lists App ID directly above App Secret, so pasting them
+		// transposed is a normal mistake. Caught only by non-emptiness, the
+		// secret then travels as an "app id" into log lines and console URLs
+		// built from it — a leak produced by a typo. Fail here instead, and
+		// never quote the offending value.
+		errs = append(errs, fmt.Errorf("%w: %s does not look like an app id (expected cli_...); "+
+			"check you did not swap it with the app secret", ErrMalformedAppID, EnvAppID))
 	}
 	if c.Feishu.AppSecret == "" {
 		errs = append(errs, fmt.Errorf("%w: export %s or put it in %s (never in %s)",

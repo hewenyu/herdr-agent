@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +56,12 @@ func newHarness(t *testing.T) *harness {
 		PollInterval:   10 * time.Millisecond,
 		TailLines:      18,
 		Now:            fixedClock(baseTime),
+		// No terminal, and a stdin that fails the test if anything reads it. `go
+		// test` hands the process /dev/null, which IS a character device, so a
+		// prompt that trusted the file mode alone would read EOF here — in a suite
+		// that never meant to answer a question.
+		In:    noStdin{t},
+		IsTTY: nil,
 	}
 	h.d.Out = &h.out
 	h.d.Err = &h.errb
@@ -62,6 +70,23 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) stdout() string { return h.out.String() }
 func (h *harness) stderr() string { return h.errb.String() }
+
+// withTerminal puts a human at the other end of stdin, with input queued up.
+func (h *harness) withTerminal(input string) {
+	h.d.In = strings.NewReader(input)
+	h.d.IsTTY = func() bool { return true }
+}
+
+// noStdin fails the test if it is read.
+//
+// Every command in this CLI is non-interactive except setup's two questions, and
+// those must be reachable only when a terminal was deliberately wired for them.
+type noStdin struct{ t *testing.T }
+
+func (r noStdin) Read([]byte) (int, error) {
+	r.t.Error("something read stdin: nothing may, unless a test wired a terminal for it")
+	return 0, io.EOF
+}
 
 func cleanServerEnv(context.Context) ([]ProcEnv, error) {
 	return []ProcEnv{{PID: 4242, Vars: []string{"PATH=/usr/bin", "HOME=/Users/x"}, Readable: true}}, nil
