@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -325,6 +326,68 @@ func TestSayEscapesABlockedAgentBeforeAnyProse(t *testing.T) {
 	for _, c := range h.rc.Calls() {
 		if c.Method == "agent.send_keys" && (len(c.Keys) != 1 || c.Keys[0] != "esc") {
 			t.Errorf("say sent keys %v; the only key it may ever send on its own is esc", c.Keys)
+		}
+	}
+}
+
+// Verification is asymmetric, so the message that reports a failure must name
+// the half of the screen that was actually searched. A settled agent has
+// consumed its input box, so a match there is a ghost completion and only text
+// outside counts (G4); a working agent has not consumed it, so the pending text
+// inside is the only evidence there is (G19). The first live run of the queued
+// path printed the settled wording, sending the reader to the wrong half.
+func TestUnverifiedDeliveryNamesTheRegionItSearched(t *testing.T) {
+	tests := []struct {
+		name       string
+		del        agents.Delivery
+		wantErrHas []string
+		wantErrNot []string
+	}{
+		{
+			name:       "settled",
+			del:        agents.Delivery{Acked: true, FinalStatus: agents.StatusIdle},
+			wantErrHas: []string{"outside the input box"},
+			wantErrNot: []string{"queued message waits"},
+		},
+		{
+			name:       "queued into a working agent",
+			del:        agents.Delivery{Acked: true, Queued: true, FinalStatus: agents.StatusWorking},
+			wantErrHas: []string{"input box", "queued message waits"},
+			wantErrNot: []string{"outside the input box"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			writeDelivery(&deps{Out: &out, Err: &errb}, "w1:p1", tt.del, nil)
+			got := errb.String()
+			for _, want := range tt.wantErrHas {
+				if !strings.Contains(got, want) {
+					t.Errorf("stderr missing %q:\n%s", want, got)
+				}
+			}
+			for _, bad := range tt.wantErrNot {
+				if strings.Contains(got, bad) {
+					t.Errorf("stderr should not contain %q:\n%s", bad, got)
+				}
+			}
+		})
+	}
+}
+
+// A send that may have answered a question the user never saw is worse than an
+// unconfirmed send, so it cannot be silent (G1, G19).
+func TestDeliveryThatMayHaveAnsweredADialogSaysSo(t *testing.T) {
+	var out, errb bytes.Buffer
+	writeDelivery(&deps{Out: &out, Err: &errb},
+		"w1:p1",
+		agents.Delivery{Acked: true, Verified: true, Queued: true,
+			MayHaveAnsweredADialog: true, FinalStatus: agents.StatusBlocked},
+		nil)
+	got := errb.String()
+	for _, want := range []string{"BLOCKED", "permission dialog", "trailing Enter"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr missing %q:\n%s", want, got)
 		}
 	}
 }

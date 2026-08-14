@@ -106,9 +106,29 @@ var (
 	ErrAgentReplaced   = errors.New("a different agent now occupies this pane")
 	ErrGuardStale      = errors.New("guard issued too long ago")
 	ErrNoLongerBlocked = errors.New("agent is no longer waiting for input")
-	ErrAgentBusy       = errors.New("agent is working")
-	ErrCannotUnblock   = errors.New("agent stayed blocked after escape")
-	ErrKeyNotAllowed   = errors.New("key not in allowlist")
+	// ErrAgentBusy no longer means "the agent is working, try later": prose to a
+	// working agent is delivered (G19/M1), so this is now the refusal for the
+	// states that genuinely cannot take text — a status herdr reported that we
+	// cannot map, a managed agent whose launch is still pending, and a retry
+	// after a stall into an agent that is no longer settled (where a second
+	// submission would risk saying the same thing twice). Its message text is
+	// left alone because callers already match on the sentinel.
+	ErrAgentBusy     = errors.New("agent is working")
+	ErrCannotUnblock = errors.New("agent stayed blocked after escape")
+	ErrKeyNotAllowed = errors.New("key not in allowlist")
+
+	// ErrDialogOnScreen means the screen read immediately before the paste
+	// carried the markers herdr's own detector matches for a permission dialog
+	// (G11), whatever agent.get said the status was. Nothing was written.
+	//
+	// It is the G11 false negative caught from the other side: herdr's claude
+	// detector is a literal match that silently reports `idle` when it fails
+	// (src/detect/manifest.rs:527-542), and pasting prose at a menu approves the
+	// command the prose was refusing (G1). Errors carrying it also wrap
+	// ErrCannotUnblock, because the user-facing consequence is the same one —
+	// there is a dialog to answer and the message was not sent — and callers
+	// already match on that sentinel.
+	ErrDialogOnScreen = errors.New("a permission dialog is on screen")
 )
 
 // Delivery reports honestly what happened to a prompt.
@@ -126,6 +146,42 @@ type Delivery struct {
 	// was waiting on them. Reporting only "delivered" hides a consequential
 	// side effect (G1).
 	Escaped bool
+
+	// Queued records that the agent was working when the text was submitted, so
+	// the text is parked in the AGENT's own input queue rather than being acted
+	// on: it sits in the input box and is submitted as a prompt when the current
+	// turn ends (G19/M1). Delivered, not started — and the caller phrases its
+	// reply differently, because "it will read this when it finishes" is a
+	// different promise from "it is reading this now".
+	//
+	// It also records which region proved the delivery: for a queued message the
+	// evidence is inside the input box, for every other one it is outside (G19,
+	// third corollary).
+	Queued bool
+
+	// MayHaveAnsweredADialog records that a queued delivery was made into an
+	// agent that is showing a permission dialog now.
+	//
+	// It exists because delivering to a working agent carries a G1 exposure that
+	// can be narrowed but not closed. agent.prompt writes a bracketed paste and
+	// then a lone Enter 300ms later; that Enter is herdr's, we cannot observe or
+	// cancel it, and if the working agent puts up `Do you want to proceed? ❯ 1.
+	// Yes` inside that window the Enter selects the highlighted default. Say
+	// re-reads the status and the screen immediately before the paste and refuses
+	// when a dialog is already up (ErrDialogOnScreen), which is as narrow as this
+	// gets from outside herdr.
+	//
+	// So this flag is a disclosure, not a detection: a dialog on screen after the
+	// write means one was up during it. The inverse does not clear the delivery —
+	// an Enter that DID answer a dialog leaves the agent working, which looks
+	// exactly like an agent that simply went on working. A caller must say that
+	// the message may have answered a question the user never saw, the same way
+	// Escaped says a question was cancelled.
+	//
+	// Never set for a submission into a settled agent: an idle agent has no turn
+	// running and cannot raise a dialog on its own, so a dialog after that write
+	// is the one the user's own prompt caused.
+	MayHaveAnsweredADialog bool
 }
 
 // AllowedKeys is the complete set of keys that may be sent to an agent.
@@ -147,6 +203,18 @@ type Controller interface {
 	// Sending prose to a blocked agent without doing so silently approves the
 	// pending dialog, because agent.prompt pastes the text (which the menu
 	// discards) and then presses Enter, selecting the highlighted default (G1).
+	//
+	// If the agent is working, Say delivers anyway and reports Delivery.Queued:
+	// the agent has its own input queue and holds the text until the current turn
+	// ends (G19/M1). It is not refused and not held back here — a bridge-side
+	// queue in front of the agent's own queue is what made a user's second and
+	// third sentences sit undelivered.
+	//
+	// Concurrent Says for the SAME pane are serialised inside the implementation,
+	// so callers need no lock of their own. They must not rely on ordering: a
+	// delivery is a screen read plus a paste that depends on it, and serialising
+	// is what keeps two messages from merging into a third neither of them said
+	// (G19/M2), not what decides which of two racing sentences goes first.
 	Say(ctx context.Context, g Guard, text string) (Delivery, error)
 
 	// Interrupt sends esc and nothing else.

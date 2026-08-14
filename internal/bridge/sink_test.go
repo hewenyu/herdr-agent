@@ -1162,6 +1162,14 @@ func TestPushGoneIsPlainAndUnbound(t *testing.T) {
 	if !strings.Contains(out.Text, a.PaneID) {
 		t.Errorf("the message does not name the pane: %q", out.Text)
 	}
+	// It used to end "anything still queued for it has been dropped". The bridge
+	// queues nothing now (see deliver), so that sentence described a loss that did
+	// not happen — every message the user typed was delivered into the agent that
+	// has since exited, and telling them otherwise invites them to re-send work the
+	// agent already did.
+	if strings.Contains(strings.ToLower(out.Text), "queue") {
+		t.Errorf("the message claims something was queued and dropped: %q", out.Text)
+	}
 	if bound := h.routes.bound(); len(bound) != 0 {
 		t.Fatalf("a dead pane was bound for reply-routing: %+v", bound)
 	}

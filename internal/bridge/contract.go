@@ -30,10 +30,24 @@ const NSNonce = "nonce"
 // backstop; the real protection is the guard's StateSeq check (G17).
 const NonceTTL = 24 * time.Hour
 
-// QueueLimit caps per-pane queued prose.
+// DefaultQueueLimit is RETIRED and has no effect.
+//
+// The bridge no longer queues prose: a working agent accepts it and queues it
+// itself (G19/M1), so the per-pane FIFO this capped is gone — see deliver. The
+// constant and Deps.QueueLimit stay because they are contract surface that other
+// packages still wire (cmd passes cfg.UI.QueueLimit through, and internal/config
+// still publishes ui.queue_limit); the value is accepted and ignored. Removing
+// them is a coordinated change across those packages, not this wave.
 const DefaultQueueLimit = 5
 
-// BusyAckCooldown throttles "queued" receipts for one pane.
+// BusyAckCooldown throttles the per-pane delivery acknowledgement.
+//
+// It used to throttle "your message is queued" receipts. There are no receipts
+// now, and the reason for a throttle survived them unchanged: a phone that
+// vibrates for every line typed at one agent gets muted, and a muted phone misses
+// the card that says an agent is waiting for a human. So this is how long one
+// acknowledgement covers a run of messages to the same pane when no settle
+// notification closes it first (bursts).
 const BusyAckCooldown = 30 * time.Second
 
 var (
@@ -41,9 +55,11 @@ var (
 	// must drop silently: replying would confirm the bot exists and leak that
 	// the allowlist is configured.
 	ErrUnauthorized = errors.New("sender not authorized")
-	ErrQueueFull    = errors.New("queue full for this pane")
-	ErrNoAgent      = errors.New("no agent to route to")
-	ErrAmbiguous    = errors.New("several agents; name one")
+	// ErrQueueFull is RETIRED and is never returned: there is no queue to fill
+	// (see DefaultQueueLimit). Kept as contract surface only.
+	ErrQueueFull = errors.New("queue full for this pane")
+	ErrNoAgent   = errors.New("no agent to route to")
+	ErrAmbiguous = errors.New("several agents; name one")
 )
 
 // Deps are everything the bridge needs. All are interfaces so the whole
@@ -62,7 +78,8 @@ type Deps struct {
 	NotifyChatID   string
 	MaxCols        int
 	TailLines      int
-	QueueLimit     int
+	// QueueLimit is accepted and ignored; see DefaultQueueLimit.
+	QueueLimit int
 
 	Now func() time.Time
 }
@@ -107,6 +124,15 @@ type Bridge interface {
 // Prose routing must never reach a blocked agent directly: it goes through
 // Controller.Say, which escapes first (G1). A parsed command that is unknown
 // or malformed must produce an error reply and must NOT fall through to prose.
+//
+// Prose must also never be HELD: a working agent accepts text and queues it
+// itself (G19/M1), so every accepted message is delivered when it arrives, in
+// arrival order. Only the success chatter is deferred — a clean delivery is
+// folded into one acknowledgement per pane per burst, and the substantive reply
+// is the settle notification the notifier pushes on `done` / `blocked`. What may
+// never be deferred: an unproven send (Acked && !Verified, G3), a delivery that
+// escaped or may have answered a dialog (G1), a message routed somewhere other
+// than where the user aimed it, and every error.
 type Factory interface {
 	New(d Deps) (Bridge, error)
 }

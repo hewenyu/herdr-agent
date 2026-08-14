@@ -58,10 +58,11 @@ type bridge struct {
 	// through the helpers in selection.go, which are nil-safe.
 	sel selection.Store
 
-	// queue parks prose for agents that are working, so a message written while
-	// an agent is mid-task is delivered when it settles instead of refused. It
-	// is memory only by design (S2 §3.5.1); the receipt says so.
-	queue *proseQueue
+	// acks remembers which panes have already been told "your typing is getting
+	// through", so a run of messages to one agent costs one line instead of one
+	// per message. It replaced the per-pane prose queue, which existed only
+	// because Say used to refuse a working agent (see deliver and burst.go).
+	acks *bursts
 
 	// pickers remembers which message holds each chat's picker card, so a
 	// selection change re-renders that card instead of posting another one. A
@@ -113,7 +114,7 @@ func newBridge(d Deps, opts ...Option) (*bridge, error) {
 		newNonce:  randomNonce,
 		sleep:     realSleep,
 		newTicker: realTicker,
-		queue:     newProseQueue(),
+		acks:      newBursts(),
 		pickers:   newPickerIndex(),
 	}
 	// Options before the notifier, so that anything they set is in place by the
@@ -181,6 +182,11 @@ func withDefaults(d Deps) Deps {
 		d.Now = time.Now
 	}
 	if d.QueueLimit <= 0 {
+		// Defaulted but unused: nothing in the bridge queues prose any more (see
+		// deliver). The field is still filled in so that a caller reading Deps back
+		// sees the effective value of every knob it set, rather than a zero that
+		// looks like a wiring mistake — cmd passes ui.queue_limit through, and that
+		// config key outlives this wave.
 		d.QueueLimit = DefaultQueueLimit
 	}
 	if d.TailLines < 0 {
@@ -260,17 +266,12 @@ func (b *bridge) Run(ctx context.Context) error {
 		b.pumpMirror(ctx)
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Its own subscription, not a share of the notifier's: the registry
-		// gives every subscriber a separate channel, so the queue drains on the
-		// same transitions the notifier pushes on instead of racing it for
-		// them. Started here because a message can be queued the instant the
-		// WebSocket delivers its backlog.
-		b.watchQueues(ctx)
-	}()
-
+	// There is no third goroutine any more. The bridge used to take its own
+	// registry subscription to drain prose it had parked for a working agent; a
+	// working agent takes prose directly (G19/M1), so nothing is parked and there
+	// is nothing to wake up for. The notifier remains the only subscriber, and
+	// what it pushes on `done` / `blocked` is the reply to whatever the user typed
+	// (see reportDelivery).
 	startErr := b.deps.Bot.Start(ctx)
 	cancel()
 	wg.Wait()

@@ -621,7 +621,16 @@ func TestAnUnverifiedDeliveryIsNotReportedAsSuccess(t *testing.T) {
 	wantContains(t, reply, "2 attempts", "the retry count is what makes a stalled prompt diagnosable")
 }
 
-func TestAVerifiedDeliveryIsReportedAsSuccess(t *testing.T) {
+// TestAVerifiedDeliveryIsAcknowledgedWithoutBeingHedged.
+//
+// This test used to assert the words "Delivered to X" on every clean delivery.
+// That per-message bubble is gone on purpose — three messages produced three of
+// them before the agent had said anything, and the substantive reply belongs at
+// settle time (burst.go) — so what survives is the part that is still a rule: the
+// user hears which agent heard them, and a confirmed send is never hedged.
+// deliveryNote's own "Delivered" wording is still asserted where it is still
+// reachable, in TestWithoutANotifyChatEveryDeliveryIsStillReported.
+func TestAVerifiedDeliveryIsAcknowledgedWithoutBeingHedged(t *testing.T) {
 	h := newHarness(t)
 	h.reg.setAgents(idleAgent(testPane))
 	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, Attempts: 1, FinalStatus: agents.StatusWorking}, nil)
@@ -630,7 +639,7 @@ func TestAVerifiedDeliveryIsReportedAsSuccess(t *testing.T) {
 		t.Fatalf("handleMessage: %v", err)
 	}
 	reply := lastText(t, h)
-	wantContains(t, reply, "Delivered", "a confirmed delivery should say so")
+	wantContains(t, reply, testPane, "the acknowledgement must name the agent that has the message")
 	if strings.Contains(reply, "not confirmed") {
 		t.Errorf("a confirmed delivery was hedged:\n%s", reply)
 	}
