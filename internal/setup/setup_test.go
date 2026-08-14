@@ -656,3 +656,35 @@ func loadConfig(t *testing.T, dir string) config.Config {
 	}
 	return cfg
 }
+
+// The summary block prints Origin.String() as a machine-readable field, right
+// under prose admitting the run cannot tell whether an app was created. A label
+// that reads like a claim about creation would undo that sentence, so pin the
+// invariant rather than the wording: only OriginCreated — the one path that sets
+// CreateOnly, where creation is the only possible outcome — may say so.
+func TestOnlyOriginCreatedMayClaimCreation(t *testing.T) {
+	all := []Origin{
+		OriginUnknown, OriginRegistered, OriginCreated,
+		OriginAdopted, OriginReused, OriginUpdated,
+	}
+	for _, o := range all {
+		label := o.String()
+		if label == "" {
+			t.Fatalf("Origin(%d) has an empty label", int(o))
+		}
+		claims := strings.Contains(strings.ToLower(label), "creat")
+		if claims != (o == OriginCreated) {
+			t.Errorf("Origin(%d).String() = %q: claims creation = %v, want %v",
+				int(o), label, claims, o == OriginCreated)
+		}
+	}
+
+	// And the labels must be distinct, or the field cannot be acted on.
+	seen := map[string]Origin{}
+	for _, o := range all {
+		if prev, dup := seen[o.String()]; dup {
+			t.Errorf("Origin(%d) and Origin(%d) share the label %q", int(prev), int(o), o.String())
+		}
+		seen[o.String()] = o
+	}
+}

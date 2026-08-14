@@ -128,7 +128,11 @@ const (
 func (o Origin) String() string {
 	switch o {
 	case OriginRegistered:
-		return "registered"
+		// Names the PATH, not the outcome. "registered" reads as "a new app was
+		// registered", which is the one thing this origin exists to say cannot
+		// be known — and it would print two lines under prose admitting exactly
+		// that.
+		return "page-confirmed"
 	case OriginCreated:
 		return "created"
 	case OriginAdopted:
