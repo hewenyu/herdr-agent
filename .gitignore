@@ -36,29 +36,60 @@ go.work.sum
 # .vscode/
 
 # --- herdr-agent ---
-# macOS
-.DS_Store
 
-# Build output
+# OS / editor
+.DS_Store
+.AppleDouble
+._*
+.idea/
+*.swp
+*~
+
+# Build output. `go build ./cmd/herdr-agent` drops the binary at the repo root,
+# and the acceptance scripts build it as ./ha.
 /herdr-agent
 /ha
+/bin/
+/dist/
+/build/
+*.test
+*.exe
 
-# Orchestration scaffolding: the workflow scripts used to build this, plus the
-# review findings they consumed. Useful locally, noise in the history, and they
-# embed absolute paths from the machine they ran on.
-.workflows/
+# Coverage and profiles
+*.out
+coverage.*
+*.prof
 
-# Bridge runtime state. Never commit: it holds the chat/agent bindings and the
-# pid file, and .env holds the Feishu app secret.
+# Runtime and session state. None of this is source, and some of it is
+# sensitive: the bridge's own state directory holds the chat-to-agent bindings
+# and .env holds the Feishu app secret, while herdr's session.json describes
+# whatever panes happened to be open on one machine.
 .herdr-agent/
+session.json
+dedup.json
+routes.json
+selection.json
+mirrors.json
 *.pid
+*.sock
+*.log
+log/
 
-# Local herdr-agent config produced from deploy/config.example.toml — it names
-# the operator's Feishu open_id and chat id.
+# Local bridge config produced from deploy/config.example.toml — it names the
+# operator's Feishu open_id and notify chat id.
 config.toml
 
-# Specs and acceptance scripts stay local: they quote absolute paths from the
-# machine they were written on and document this operator's Feishu app setup.
-# The measured facts they record (G1..G17) are what the code comments cite, so
-# keep the local copy — the code alone does not explain itself.
+# Claude Code local settings. Listed here rather than relying on a global
+# ignore, so a fresh clone on another machine is protected too.
+.claude/settings.local.json
+
+# Orchestration scaffolding: the workflow scripts this was built with and the
+# review findings they consumed. They embed absolute paths from the machine they
+# ran on, and they are process, not product.
+.workflows/
+
+# Specs and acceptance scripts stay local: they quote absolute paths and
+# document one operator's Feishu app setup. The measured facts they record
+# (G1..G17) are what the code comments cite, so keep the local copy — the six
+# load-bearing ones are summarised in README.
 specs/
