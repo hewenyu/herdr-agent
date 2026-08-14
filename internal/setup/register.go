@@ -87,13 +87,28 @@ const (
 	failAborted
 )
 
+// registerRequest is which of the three confirmation-page flows to open. Its
+// zero value is the one a first-time user gets: no target app, no restriction —
+// the page then lists the tenant's existing apps as well as offering a new one,
+// which is why the CLI does not have to ask the user to decide first.
+type registerRequest struct {
+	// appID targets ONE existing app: the SDK's documented update flow
+	// (clientID in the QR URL), which re-grants our scopes, events and
+	// callbacks to it instead of creating another app.
+	appID string
+	// createOnly forbids the page from returning an existing app. It is the
+	// only way this code can ever know an app was CREATED, which is the only
+	// condition under which the word may be printed.
+	createOnly bool
+}
+
 // register runs the device-authorization flow until it produces credentials or
 // runs out of attempts.
-func (r *Runner) register(ctx context.Context, rep *reporter) (registered, error) {
+func (r *Runner) register(ctx context.Context, rep *reporter, req registerRequest) (registered, error) {
 	var lastErr error
 
 	for attempt := 1; attempt <= registerAttempts; attempt++ {
-		res, lark, err := registerOnce(ctx, rep)
+		res, lark, err := registerOnce(ctx, rep, req)
 		if err == nil {
 			out := registered{
 				credentials: credentials{AppID: res.ClientID, AppSecret: res.ClientSecret},
@@ -171,7 +186,7 @@ func outOfBudget(ctx context.Context, err error) error {
 }
 
 // registerOnce performs one whole device-authorization flow.
-func registerOnce(ctx context.Context, rep *reporter) (*registration.RegisterAppResult, bool, error) {
+func registerOnce(ctx context.Context, rep *reporter, req registerRequest) (*registration.RegisterAppResult, bool, error) {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -184,8 +199,15 @@ func registerOnce(ctx context.Context, rep *reporter) (*registration.RegisterApp
 	)
 
 	opts := &registration.Options{
-		Source:    sourceTag,
-		AppPreset: &registration.AppPreset{Name: appName, Desc: appDesc},
+		Source: sourceTag,
+		// AppID and CreateOnly are mutually exclusive by the platform's own
+		// rule: with both set the page gives the create flow precedence (SDK
+		// README), so an "update this app" request carrying CreateOnly would
+		// silently create a different app instead. choose() never produces
+		// both, and this is where that has to stay true.
+		AppID:      req.appID,
+		CreateOnly: req.createOnly,
+		AppPreset:  &registration.AppPreset{Name: appName, Desc: appDesc},
 		// Preset is left nil: the platform default template. It is what the
 		// measured run used, and that run produced an app whose bot capability
 		// was already enabled and whose version was already published. The

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -26,20 +27,25 @@ type SetupRunner interface {
 	Run(ctx context.Context, reregister bool) (setup.Result, error)
 }
 
-// cmdSetup registers a Feishu app and proves it works.
+// appIDShape is the shape internal/config enforces on FEISHU_APP_ID, and which
+// internal/setup re-checks before an id can reach a URL.
+//
+// Checked a third time here for two reasons that only apply at the command line:
+// a malformed --app is a CALLER mistake, which is exit 2 rather than exit 1, and
+// this is the earliest point at which a secret pasted into the wrong field can be
+// refused — the console lists App ID directly above App Secret, and the run that
+// motivated this feature was a human copying values between the two.
+var appIDShape = regexp.MustCompile(`^cli_[A-Za-z0-9]+$`)
+
+// cmdSetup registers a Feishu app, or reuses one, and proves it works.
 //
 // The body is thin on purpose: internal/setup owns the flow, and everything
-// this file adds is presentation — the link, the two waits, the checklist, and
-// the exit code that says how far the round trip actually got.
+// this file adds is presentation — the link, the two waits, the questions, the
+// checklist, and the exit code that says how far the round trip actually got.
 func cmdSetup(ctx context.Context, d *deps, args []string) error {
-	fs := newFlags(d, "setup", "[--reregister]")
-	reregister := fs.Bool("reregister", false,
-		"create a SECOND app even though credentials already exist (the first one stays: no API deletes it)")
-	if err := parseFlags(fs, args); err != nil {
+	f, err := parseSetupFlags(d, args)
+	if err != nil {
 		return err
-	}
-	if fs.NArg() > 0 {
-		return usagef("setup takes no arguments, got %q", fs.Arg(0))
 	}
 	if d.StateDir == "" {
 		// Without it setup would have nowhere to put the credentials the bridge
@@ -58,12 +64,19 @@ func cmdSetup(ctx context.Context, d *deps, args []string) error {
 		cfgPath: filepath.Join(d.StateDir, config.ConfigFileName),
 		open:    d.OpenURL,
 	}
-	r, err := d.NewSetup(d.StateDir, p)
+	plan := setupPlanFor(d, f)
+	if plan.why != "" {
+		// Said BEFORE the flow starts. A reader who was not told that nothing will
+		// be asked reads the resulting error as a bug rather than as the flag they
+		// need.
+		fmt.Fprintln(d.Err, plan.why)
+	}
+	r, err := d.NewSetup(d.StateDir, p, plan.options()...)
 	if err != nil {
 		return err
 	}
 
-	res, err := r.Run(ctx, *reregister)
+	res, err := r.Run(ctx, f.reregister)
 	// Written before the error is returned. A run can fail AFTER the app was
 	// created — the one measured way is a .env that could not be written — and
 	// the id of a permanent app the user now owns is the last thing to swallow.
@@ -74,19 +87,208 @@ func cmdSetup(ctx context.Context, d *deps, args []string) error {
 	return writeOutcome(d, res)
 }
 
+// setupFlags is what the command line asked for: the three modes, plus the
+// switch that says nobody is watching.
+type setupFlags struct {
+	// appID pins the app to use. Empty means "work it out", which on a machine
+	// with no credentials means the confirmation page.
+	appID string
+	// reregister asks for a second app on purpose.
+	reregister bool
+	// yes suppresses every question rather than answering it.
+	yes bool
+}
+
+// parseSetupFlags reads the command line and refuses what cannot mean anything.
+//
+// Split out from cmdSetup because this CLI permutes flags after positionals (see
+// permute), which makes "does --app still reach the flow when it comes last" a
+// property worth asserting directly rather than through a whole run.
+func parseSetupFlags(d *deps, args []string) (setupFlags, error) {
+	fs := newFlags(d, "setup", "[--app <app_id> | --reregister] [--yes]")
+	appID := fs.String("app", "",
+		"reuse THIS app (cli_...) instead of registering one.\n"+
+			"When a file the bridge reads already holds its secret, nothing is opened at all.\n"+
+			"When it does not — Feishu shows a secret once, so that is the normal case for an app\n"+
+			"made by hand — the confirmation page is opened FOR THAT APP and re-grants it what the\n"+
+			"bridge needs. Either way no new app is made, which is why this is the preferred mode:\n"+
+			"every registration is permanent clutter in your tenant.")
+	reregister := fs.Bool("reregister", false,
+		"create a SECOND app on purpose, even though credentials already exist.\n"+
+			"The app you already have stays exactly as it is: no API we could find deletes one,\n"+
+			"which is why this is a flag and not a fallback. Prefer --app, or pick the app you\n"+
+			"already have on the confirmation page.")
+	yes := fs.Bool("yes", false,
+		"never prompt; for scripts and launchd.\n"+
+			"It does not answer the two questions this flow can reach, and they do not end the same way.\n"+
+			"Which of two configured apps to use: the run stops with an error naming both files, because a\n"+
+			"wrong guess points the bridge at a bot you never messaged and the symptom is silence — pass\n"+
+			"--app <app_id> to answer it up front.\n"+
+			"Whether to keep waiting for your message or your button press: the wait is not extended, and no\n"+
+			"flag extends it. The numbered checklist prints and the run ends at exit 3 with the app and its\n"+
+			"credentials already on disk, which is the safe default here rather than a refusal.")
+	if err := parseFlags(fs, args); err != nil {
+		return setupFlags{}, err
+	}
+	if fs.NArg() > 0 {
+		return setupFlags{}, usagef("setup takes no arguments, got %q", fs.Arg(0))
+	}
+	f := setupFlags{appID: strings.TrimSpace(*appID), reregister: *reregister, yes: *yes}
+	// Caller mistakes are answered before anything is built, locked or dialled.
+	if err := checkSetupFlags(f); err != nil {
+		return setupFlags{}, err
+	}
+	return f, nil
+}
+
+// checkSetupFlags refuses the two flag combinations that cannot mean anything.
+func checkSetupFlags(f setupFlags) error {
+	if f.appID == "" {
+		return nil
+	}
+	if !appIDShape.MatchString(f.appID) {
+		// The value is NOT echoed. An app id and an app secret sit one above the
+		// other in 凭证与基础信息, so the wrong paste here is plausibly the secret,
+		// and the secret is the one string in this program that must never reach a
+		// terminal, a log or a URL.
+		return usagef("setup: --app does not look like a Feishu app id (expected cli_ followed by letters and " +
+			"digits, as shown in 凭证与基础信息). What you passed is not printed back here, in case it was the " +
+			"app secret — the console lists that directly below the id.")
+	}
+	if f.reregister {
+		return usagef("setup: --app %s means use the app that already exists, and --reregister means make a new "+
+			"one; pick one. Reuse is the cheaper mistake: no API we could find deletes an app.", f.appID)
+	}
+	return nil
+}
+
+// setupPlan is what the flags and this terminal add up to, as data rather than
+// as a list of opaque options: which app to pin, who can be asked a question,
+// and the sentence that has to be printed when the answer is nobody.
+type setupPlan struct {
+	// reuseAppID pins the app. Empty means the flow works it out.
+	reuseAppID string
+	// prompter is nil when there is nobody to ask, which is a decision and not an
+	// omission — see newTermPrompter.
+	prompter setup.Prompter
+	// why explains, before the flow starts, that no question will be asked and
+	// what happens instead. Empty when there is a human at the terminal.
+	why string
+}
+
+// setupPlanFor decides whether the two questions this flow can reach are
+// questions at all.
+//
+// They are "which of two configured apps did you mean" and "shall I keep
+// waiting". Only the first has no safe default — guessing an app points the
+// bridge at a bot the user never messaged, and the symptom is silence — so only
+// the first becomes an error. Not waiting again IS the safe answer to the second,
+// and the run takes it.
+func setupPlanFor(d *deps, f setupFlags) setupPlan {
+	p := setupPlan{reuseAppID: f.appID}
+	if !f.yes {
+		p.prompter = newTermPrompter(d)
+	}
+	switch {
+	case f.yes:
+		p.why = noQuestionsWhy("--yes: nothing will be asked.")
+	case p.prompter == nil:
+		p.why = noQuestionsWhy("stdin is not a terminal, so nothing will be asked.")
+	}
+	return p
+}
+
+// noQuestionsWhy states what becomes of each unaskable question, one clause each,
+// because their consequences are NOT the same.
+//
+// One sentence used to cover both — "each stops the run naming the flag to pass" —
+// and it was measured false for the wait. Sequence: `setup` on a pipe, credentials
+// fine, one app, the human does not message within InboundTimeout; offerAnotherWait
+// returns false without asking, the checklist is appended, Outcome is
+// OutcomeCredentials with a nil error, and the run exits 3. No error is produced,
+// and no flag exists that would have made it wait longer — stopping is the safe
+// default and the code takes it. Sending a script author looking for that flag is
+// the same defect as telling a human an app was "created": prose asserting
+// something the code does not do.
+func noQuestionsWhy(cause string) string {
+	return strings.Join([]string{
+		"  " + cause,
+		"  Two questions can come up, and they do not end the same way:",
+		"    - Which of two configured apps to use: the run STOPS with an error naming both files and the app",
+		"      each one holds, and telling you to re-run in a terminal or to pass --reregister. Pass",
+		"      --app <app_id> to answer it up front and the question never comes up at all.",
+		"    - Whether to keep waiting for your message or your button press: the wait is NOT extended, and no",
+		"      flag extends it. The numbered checklist prints and the run ends at exit 3 with the app and its",
+		"      credentials already on disk — the safe default here, not a refusal. Re-running `herdr-agent",
+		"      setup` skips registration and re-runs the verification only.",
+	}, "\n")
+}
+
+// options is the plan as internal/setup takes it.
+func (p setupPlan) options() []setup.Option {
+	// WithAssumeYes is not "yes to everything": there is nothing here to say yes
+	// to. It means "never ask", which is the only honest reading when nobody is
+	// there.
+	//
+	// It is passed UNCONDITIONALLY, and that is load-bearing rather than tidy.
+	// setup.Run falls back to its own os.Stdin prompter when it is given neither a
+	// Prompter nor assume-yes, and that fallback's terminal test accepts any
+	// character device — /dev/null included, which is what launchd and `go test`
+	// hand a process. Passing this option on every path is what keeps that
+	// fallback unreachable, so a run with nobody watching stops with the flag to
+	// pass instead of reading EOF off /dev/null and calling it an answer.
+	// TestSetupHandsThePlanToTheFactory's option counts are the guard.
+	opts := []setup.Option{setup.WithAssumeYes(p.prompter == nil)}
+	if p.prompter != nil {
+		opts = append(opts, setup.WithPrompter(p.prompter))
+	}
+	if p.reuseAppID != "" {
+		opts = append(opts, setup.WithReuseAppID(p.reuseAppID))
+	}
+	return opts
+}
+
 // writeIdentities puts what the run produced on stdout, one `key<TAB>value` per
 // line, and nothing else. The narration is on stderr, so `herdr-agent setup >
 // ids.txt` still shows the human the link they have to open.
 func writeIdentities(d *deps, res setup.Result) {
 	for _, kv := range []struct{ key, value string }{
 		{"app_id", res.AppID},
+		{"app_name", res.AppName},
+		// How the run arrived at that app, because it decides what a script may
+		// conclude: "created" means the tenant has one more app than it did.
+		{"origin", originValue(res.Origin)},
 		{"open_id", res.OpenID},
 		{"chat_id", res.ChatID},
 	} {
 		if kv.value != "" {
-			fmt.Fprintf(d.Out, "%s\t%s\n", kv.key, kv.value)
+			fmt.Fprintf(d.Out, "%s\t%s\n", kv.key, oneField(kv.value))
 		}
 	}
+}
+
+// oneField keeps a value inside its `key<TAB>value` line.
+//
+// An app name is whatever a human typed on the confirmation page, so it can hold
+// a tab or a newline, and either would split one record into two in the output a
+// script parses — silently, and only for the person whose app has an odd name.
+func oneField(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r':
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// originValue is the machine-readable origin, empty when the run established no
+// app: a line saying `origin unknown` invites a script to treat it as a value.
+func originValue(o setup.Origin) string {
+	if o == setup.OriginUnknown {
+		return ""
+	}
+	return o.String()
 }
 
 // writeOutcome reports how far the round trip got and returns the error that
@@ -125,23 +327,14 @@ func writeOutcome(d *deps, res setup.Result) error {
 	case setup.OutcomeCredentials:
 		fmt.Fprintln(d.Err)
 		fmt.Fprintf(d.Err, "  ! App %s exists and its credentials are on disk, but the round trip is not proven.\n",
-			orDash(res.AppID))
+			appLabel(res.AppID, res.AppName))
 		switch {
 		case !res.InboundOK:
 			fmt.Fprintln(d.Err, "    No message from you arrived, so nothing downstream of it is proven either.")
 		case !res.CardOK:
-			// A3 is ambiguous by measurement and must stay ambiguous here: the
-			// probe could not tell an un-pressed button from a 交互卡片
-			// capability that needs a manual toggle, and picking one would send
-			// half of all readers to fix something that is not broken.
 			fmt.Fprintln(d.Err, "    Your message arrived — credentials, bot, event subscription, delivery mode,")
 			fmt.Fprintln(d.Err, "    publication, scopes and the allowlist are all confirmed by that one message.")
-			fmt.Fprintln(d.Err, "    The card button did not come back. An un-pressed button and a disabled 交互卡片")
-			if len(res.Steps) > 0 {
-				fmt.Fprintln(d.Err, "    capability look identical from here, so the step below covers both.")
-			} else {
-				fmt.Fprintln(d.Err, "    capability look identical from here.")
-			}
+			writeCardHedge(d.Err, res)
 		}
 		// A run can end here with nothing to do: a Ctrl-C during either wait
 		// cancels the context, which produces no step at all. Promising a list
@@ -161,6 +354,28 @@ func writeOutcome(d *deps, res setup.Result) error {
 		writeSteps(d.Err, res.Steps)
 		return errors.New("setup: nothing usable was produced")
 	}
+}
+
+// writeCardHedge says what an un-pressed button means, and hedges only as far as
+// this app's history justifies.
+//
+// It used to hedge unconditionally: "an un-pressed button and a disabled 交互卡片
+// capability look identical from here". That has since been measured false for an
+// app the confirmation page configured — the E1 probe saw no callback in 120s and
+// a later run on THAT SAME APP completed the round trip — so the page produces a
+// working card path and the hedge belongs on an app somebody built by hand. The
+// 200340 fact survives on both branches, in the checklist step: an unsubscribed
+// card.action.trigger produces it too, and a hand-made app can have the toggle off.
+func writeCardHedge(w io.Writer, res setup.Result) {
+	fmt.Fprintln(w, "    The card button did not come back.")
+	if res.Origin.PageConfigured() {
+		fmt.Fprintln(w, "    This app was configured through the confirmation page, and such an app was measured to")
+		fmt.Fprintln(w, "    arrive with the card path working — the same app that once showed no callback later")
+		fmt.Fprintln(w, "    completed the round trip. A button nobody pressed in time is by far the likeliest cause.")
+		return
+	}
+	fmt.Fprintln(w, "    This app's capabilities were not granted by a confirmation page during this run, so an")
+	fmt.Fprintln(w, "    un-pressed button and a 交互卡片 capability that is switched off look identical from here.")
 }
 
 // writeSteps prints the remaining manual actions as a numbered checklist.
@@ -183,7 +398,7 @@ func writeSteps(w io.Writer, steps []setup.Step) {
 	}
 }
 
-// termProgress renders setup.Progress for a person at a terminal.
+// termProgress renders setup.Narrator for a person at a terminal.
 //
 // Everything it writes goes to stderr: the payload of this command is the app
 // it produced, and a user who redirects stdout must still see the link they
@@ -195,8 +410,9 @@ type termProgress struct {
 	out io.Writer
 	err io.Writer
 
-	// envPath is where the secret was written. The path and the mode are
-	// printed; the contents never are, not even a prefix or a length.
+	// envPath is where the secret was written, used when the run does not say.
+	// The path and the mode are printed; the contents never are, not even a
+	// prefix or a length.
 	envPath string
 
 	// cfgPath is the file whose allowed_open_ids decides who may drive the
@@ -210,13 +426,21 @@ type termProgress struct {
 	open func(url string) error
 }
 
-var _ setup.Progress = (*termProgress)(nil)
+// Narrator, not merely Progress: the two sentences this command used to get
+// wrong — which app is in use and what the bot is called — are only knowable at
+// run time, and Narrator is how the run hands them over instead of leaving the
+// CLI to write prose in advance and hope.
+var _ setup.Narrator = (*termProgress)(nil)
 
 // Verification hands over the confirmation link.
 //
-// It also states, BEFORE the irreversible click rather than after it, that this
-// creates a real app: no API was found that deletes one, so a user who did not
-// want a second app needs to know that here.
+// It also states, BEFORE the irreversible click rather than after it, that
+// creating an app is permanent — and that creating one is not the only thing
+// that page offers. A user who already had an app was told exactly twice what
+// this page does, both times wrongly: "it asks to create an app" (the page also
+// lists the apps the tenant already has, and picking one is the right answer far
+// more often), and afterwards "App cli_… created" for an app that had existed
+// since that morning.
 func (p *termProgress) Verification(url string, expiresIn int) {
 	fmt.Fprintln(p.err)
 	fmt.Fprintln(p.err, "  Open this link and press 确认:")
@@ -233,48 +457,171 @@ func (p *termProgress) Verification(url string, expiresIn int) {
 	if expiresIn > 0 {
 		fmt.Fprintf(p.err, "  The link expires in %ds.\n", expiresIn)
 	}
-	// One line, because it is read while a stranger's URL is on screen: what the
-	// page asks for, and why there is nothing to do afterwards.
-	fmt.Fprintf(p.err, "  It asks to create an app named herdr-agent and to grant %s, the event %s and the "+
-		"callback %s — pressing 确认 GRANTS them and publishes a version, which is why no console visit follows.\n",
+	// Read while a stranger's URL is on screen: what the page asks for, why
+	// there is nothing to do afterwards, and what it will cost if you take the
+	// wrong option on it.
+	fmt.Fprintf(p.err, "  It asks to grant %s, the event %s and the callback %s — pressing 确认 GRANTS them and "+
+		"publishes a version, which is why no console visit follows.\n",
 		strings.Join(setup.Scopes, ", "), strings.Join(setup.Events, ", "), strings.Join(setup.Callbacks, ", "))
-	fmt.Fprintln(p.err, "  This creates a real app in your tenant. No API we could find deletes one, so treat it as permanent.")
+	// The preset name is interpolated from the package that sends it, not spelled
+	// out here. It is the one string on this screen describing what the page will
+	// pre-fill, and a hand-copied copy of it is precisely the shape of claim this
+	// wave exists to remove: a sentence that keeps its wording after the value it
+	// describes has changed.
+	fmt.Fprintf(p.err, "  Which app it grants them to is the plan named above: a new one (pre-filled with the name\n"+
+		"  %s, which you may change there), an app your tenant already has — the page lists\n"+
+		"  them, and picking one is fine — or the one specific app this run opened the page for.\n",
+		setup.AppPresetName)
+	fmt.Fprintln(p.err, "  A NEW app is permanent: no API we could find deletes one. If you already have an app you")
+	fmt.Fprintln(p.err, "  would rather use, pick it on that page, or stop and re-run with --app <app_id>.")
 }
 
-// Registered fires once the credentials are on disk.
+// Configured reports the app the run settled on, on every path, once.
 //
-// It names the authorization boundary without claiming a state it cannot
-// observe. This callback carries no signal about the allowlist write, which
-// happened a moment earlier and can fail (an unwritable config.toml, or a
-// multi-line allowed_open_ids that is refused rather than guessed at) — and on
-// the --reregister path the write APPENDS, so the id it reports is not
-// necessarily the only one listed. Both outcomes reach the user through the
-// numbered checklist and the note above; this line only says where to look.
-func (p *termProgress) Registered(appID, openID string) {
+// One sentence per Origin, and the word "created" appears in exactly one of them
+// — the path where the platform could not have done anything else. The rest of
+// this file's honesty depends on that: the same run that announced the creation
+// of a months-old app also told its user the bot was called herdr-agent while
+// bot/v3/info had already said herdr-agent-e1.
+func (p *termProgress) Configured(app setup.App) {
 	fmt.Fprintln(p.err)
-	fmt.Fprintf(p.err, "  ✓ App %s created.\n", appID)
-	fmt.Fprintf(p.err, "    Its secret was written to %s, mode 0600, and is printed nowhere:\n", p.envPath)
-	fmt.Fprintln(p.err, "    not here, not in a log, not as a prefix and not as a length.")
-	if openID != "" {
+	fmt.Fprintf(p.err, "  ✓ %s\n", p.appSentence(app))
+	if app.Origin.PageConfigured() {
+		fmt.Fprintf(p.err, "    Its secret was written to %s, mode 0600, and is printed nowhere:\n", p.envFile(app))
+		fmt.Fprintln(p.err, "    not here, not in a log, not as a prefix and not as a length.")
+	}
+	if app.OpenID != "" {
 		fmt.Fprintf(p.err, "    Your open_id is %s. Only ids listed in feishu.allowed_open_ids in %s may drive your\n"+
 			"    agents; if a line above says that file could not be written, the numbered checklist at the\n"+
-			"    end has the exact edit.\n", openID, p.cfgPath)
+			"    end has the exact edit.\n", app.OpenID, p.cfgPath)
 	}
 }
 
-// AwaitInbound asks for the message that proves the whole chain at once.
+// envFile is where this run says the credentials live, falling back to where
+// this command would have put them. The run is the authority: it is the thing
+// that wrote the file.
+func (p *termProgress) envFile(app setup.App) string {
+	if app.EnvPath != "" {
+		return app.EnvPath
+	}
+	return p.envPath
+}
+
+// appSentence states what is known about the app and nothing more.
 //
-// "herdr-agent" is only the DEFAULT name: the confirmation page lets the human
-// rename the app before pressing 确认, and on the repair path the app is
-// whatever it was called when it was created. Someone searching Feishu for a
-// bot that does not exist, against a countdown, has no way to recover.
-func (p *termProgress) AwaitInbound(d time.Duration) {
+// Each branch is written to survive being read next to the truth, and the word
+// "create" appears in exactly one of them — not even as a negation, so that
+// "does this run claim a creation?" stays a question a reader (or a test) can
+// answer by looking. Nor does anything say "you just confirmed" on the two paths
+// that open no confirmation page at all; that sentence was measured on the reuse
+// path, where nothing was confirmed by anybody.
+func (p *termProgress) appSentence(a setup.App) string {
+	switch a.Origin {
+	case setup.OriginCreated:
+		// The only branch licensed to say it: the page was opened create-only, so
+		// it could not have handed back an app the tenant already had.
+		return fmt.Sprintf("App %s was created. It is permanent: no API we could find deletes one.",
+			appLabel(a.ID, a.Name))
+	case setup.OriginUpdated:
+		return fmt.Sprintf("App %s already existed, and the confirmation page has now granted THAT app the "+
+			"scopes, events and callbacks the bridge needs. No new app was made.", appLabel(a.ID, a.Name))
+	case setup.OriginRegistered:
+		return fmt.Sprintf("App %s is now configured. That page can make a new app or hand back one your tenant "+
+			"already had, and what it returns is identical either way — so this run cannot tell you which "+
+			"happened, and does not guess.", appLabel(a.ID, a.Name))
+	case setup.OriginAdopted:
+		return fmt.Sprintf("App %s was already set up on this machine%s, so this run made no new app and opened "+
+			"no confirmation page.", appLabel(a.ID, a.Name), foundIn(a))
+	case setup.OriginReused:
+		return fmt.Sprintf("App %s is already configured in %s, so this run made no new app, opened no "+
+			"confirmation page and wrote nothing.", appLabel(a.ID, a.Name), p.envFile(a))
+	default:
+		// OriginUnknown, and anything a later origin forgets to render here: an
+		// app exists and how the run reached it was not recorded, which is
+		// exactly what this says rather than picking the likeliest story.
+		return fmt.Sprintf("App %s is configured. This run did not record how it got there, so nothing here "+
+			"claims an app was made.", appLabel(a.ID, a.Name))
+	}
+}
+
+// foundIn says where an adopted app's credentials were, naming BOTH files when
+// they were in two.
+//
+// A split pair is not exotic: a repository .env and a state-directory .env are
+// merged key by key by the bridge, so an id in one and a secret in the other are
+// one working pair — and the sentence this replaced named the file that held the
+// id as the file that held both.
+func foundIn(a setup.App) string {
+	switch {
+	case a.From == "":
+		return ""
+	case a.FromSecret == "" || a.FromSecret == a.From:
+		return " — its credentials were in " + a.From
+	default:
+		return fmt.Sprintf(" — %s named it and %s held its secret", a.From, a.FromSecret)
+	}
+}
+
+// appLabel names an app the way a human recognises one, and never with a name
+// this run did not observe.
+//
+// The id alone cannot be searched for in Feishu, which is what made the original
+// failure expensive: the user was told to look for a bot called herdr-agent, the
+// bot was called herdr-agent-e1, and they were doing it against a countdown.
+func appLabel(id, name string) string {
+	switch {
+	case name != "" && id != "":
+		return fmt.Sprintf("%q (%s)", name, id)
+	case name != "":
+		return fmt.Sprintf("%q", name)
+	case id != "":
+		return id
+	default:
+		return "-"
+	}
+}
+
+// AwaitMessage asks for the message that proves the whole chain at once, naming
+// the bot from what Feishu said it is called.
+func (p *termProgress) AwaitMessage(app setup.App, d time.Duration) {
 	fmt.Fprintln(p.err)
-	fmt.Fprintf(p.err, "  → Message the bot in Feishu now: open a DIRECT chat with the app you just confirmed\n"+
-		"    (named herdr-agent unless you changed the name on that page) and send it any text.\n"+
-		"    Waiting %ds. That one message proves the credentials, the bot, the event subscription,\n"+
-		"    the delivery mode, the published version, the scopes and the allowlist.\n",
-		seconds(d))
+	fmt.Fprintf(p.err, "  → Message the bot in Feishu now. Waiting %ds.\n", seconds(d))
+	fmt.Fprintf(p.err, "    %s\n", whichBot(app))
+	fmt.Fprintln(p.err, "    Send it a DIRECT message from your own account: a group chat cannot finish this,")
+	fmt.Fprintln(p.err, "    because the chat it arrives in becomes notify_chat_id and agent screens get pushed there.")
+	fmt.Fprintln(p.err, "    That one message proves the credentials, the bot, the event subscription, the delivery")
+	fmt.Fprintln(p.err, "    mode, the published version, the scopes and the allowlist.")
+}
+
+// whichBot names the bot to look for, or admits Feishu would not say.
+//
+// It never falls back to the name setup asks the confirmation page to pre-fill:
+// the human may rename the app on that page and did, and an id that has to be
+// searched for is still better than a name that finds the wrong bot or none.
+func whichBot(a setup.App) string {
+	switch {
+	case a.Name != "":
+		return fmt.Sprintf("The bot is called %q (app %s) — search Feishu for that name.", a.Name, a.ID)
+	case a.ID != "":
+		return fmt.Sprintf("Feishu would not say what this bot is called, so look for the app with id %s.", a.ID)
+	default:
+		return "Look for the bot belonging to the app named above; this wait was reported without one."
+	}
+}
+
+// Registered is what a plain setup.Progress gets when an app was demonstrably
+// created. This type is a Narrator, so the package routes Configured instead and
+// this is never called — it is retained so termProgress still satisfies
+// Progress, and it renders the one thing its argument list can support.
+func (p *termProgress) Registered(appID, openID string) {
+	p.Configured(setup.App{ID: appID, Origin: setup.OriginCreated, EnvPath: p.envPath, OpenID: openID})
+}
+
+// AwaitInbound is retained for the same reason, and this rendering is why the
+// package stopped calling it: its arguments carry no app, so a renderer here can
+// only name the bot from something it made up. This one names no bot at all.
+func (p *termProgress) AwaitInbound(d time.Duration) {
+	p.AwaitMessage(setup.App{}, d)
 }
 
 // AwaitCard asks for the button press.

@@ -24,6 +24,11 @@ const (
 	testSecret = "SeCrEtVaLuE-must-never-be-printed-0123456789"
 	testOpenID = "ou_1111111111111111111111111111abcd"
 	testChatID = "oc_2222222222222222222222222222ef01"
+	// testAppName is deliberately NOT appName: the confirmation page lets the
+	// human rename the app, and the measured run that motivated the identity
+	// lookup ended up with herdr-agent-e1. A test whose fixture agrees with the
+	// pre-filled name could not tell the two apart.
+	testAppName = "herdr-agent-e1"
 )
 
 // call is one Progress callback, flattened so a test can search every argument
@@ -94,6 +99,29 @@ func (p *fakeProgress) called(method string) bool {
 	return false
 }
 
+// waitRequests counts the times the run asked for the message that proves the
+// whole chain.
+//
+// It matches the request the human reads rather than a callback name, because
+// Progress.AwaitInbound is not called any more: its argument list carries no app,
+// so its only possible rendering names the bot from the name we asked the
+// confirmation page to pre-fill, and that guess was printed one line above the
+// real name. Counting the sentence is also what these tests always meant to
+// count.
+func waitRequests(p *fakeProgress) int {
+	n := 0
+	for _, c := range p.snapshot() {
+		if c.Method != "Note" || len(c.Args) == 0 {
+			continue
+		}
+		msg, ok := c.Args[0].(string)
+		if ok && strings.Contains(msg, "Message the bot") && strings.Contains(msg, "Waiting ") {
+			n++
+		}
+	}
+	return n
+}
+
 func sprint(a any) string {
 	switch v := a.(type) {
 	case string:
@@ -116,6 +144,11 @@ type fakeBot struct {
 	sends   []lark.Out
 	updates []string
 	stopped bool
+	// builtFor and builtSecret are the credentials verification was handed.
+	// Which app the run ended up verifying is the whole question in the tests
+	// where two apps are on disk, and it is not visible from the Result alone.
+	builtFor    string
+	builtSecret string
 
 	// Behaviour, set by the test before Run.
 	startErr  error         // Start returns this immediately instead of blocking
@@ -227,6 +260,14 @@ func (b *fakeBot) Stream(context.Context, lark.Out) (lark.Stream, error) {
 
 func (b *fakeBot) BotOpenID(context.Context) string { return "ob_bot" }
 
+// verifiedApp is the app id the run built its client for, empty if it never got
+// that far.
+func (b *fakeBot) verifiedApp() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builtFor
+}
+
 func (b *fakeBot) sent() []lark.Out {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -332,6 +373,9 @@ func stubBot(t *testing.T, b *fakeBot) *fakeBot {
 		if appID == "" || appSecret == "" {
 			t.Errorf("bot built with empty credentials: appID=%q secret set=%v", appID, appSecret != "")
 		}
+		b.mu.Lock()
+		b.builtFor, b.builtSecret = appID, appSecret
+		b.mu.Unlock()
 		return b, nil
 	}
 	t.Cleanup(func() { newBot = prev })
@@ -382,20 +426,94 @@ func clearCredEnv(t *testing.T) {
 	}
 }
 
+// stubAppName replaces the bot/v3/info lookup for one test.
+//
+// Every Run test needs it. Without it the lookup is a real HTTPS request to
+// Feishu with the fake credentials in this file, which is both a network call
+// from a unit test and a ten-second wait per test on a machine that is offline.
+func stubAppName(t *testing.T, f func(ctx context.Context, appID, appSecret string) (string, error)) {
+	t.Helper()
+	prev := fetchAppName
+	fetchAppName = f
+	t.Cleanup(func() { fetchAppName = prev })
+}
+
+// namesApps answers the identity lookup from a table, and fails the test if a
+// secret it was never given is used to ask.
+func namesApps(t *testing.T, byAppID map[string]string) {
+	t.Helper()
+	stubAppName(t, func(_ context.Context, appID, appSecret string) (string, error) {
+		if appSecret == "" {
+			t.Errorf("bot/v3/info was called for %s with no secret", appID)
+		}
+		name, ok := byAppID[appID]
+		if !ok {
+			return "", errors.New("app not found")
+		}
+		return name, nil
+	})
+}
+
+// noTTY is the default for every test: stdin is not a terminal, so the run must
+// never prompt. A test that wants a question stubs a fakePrompter instead, which
+// is the only way a question can be answered in this suite.
+func noTTY(t *testing.T) {
+	t.Helper()
+	prev := stdinIsTTY
+	stdinIsTTY = func() bool { return false }
+	t.Cleanup(func() { stdinIsTTY = prev })
+}
+
+// fakePrompter answers the questions the run asks, in order, and records them.
+type fakePrompter struct {
+	mu      sync.Mutex
+	answers []string
+	asked   []string
+	err     error
+}
+
+func (p *fakePrompter) Ask(_ context.Context, question string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.asked = append(p.asked, question)
+	if p.err != nil {
+		return "", p.err
+	}
+	if len(p.answers) == 0 {
+		// Not a fatal condition for the run — Ask is allowed to fail — but
+		// always a bug in the test that set this up.
+		return "", errors.New("fakePrompter ran out of answers")
+	}
+	answer := p.answers[0]
+	p.answers = p.answers[1:]
+	return answer, nil
+}
+
+func (p *fakePrompter) questions() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.asked...)
+}
+
+func (p *fakePrompter) text() string { return strings.Join(p.questions(), "\n") }
+
 // newRun assembles a Runner over a temp state directory with every seam stubbed.
-func newRun(t *testing.T, bot *fakeBot) (*Runner, *fakeProgress, string) {
+func newRun(t *testing.T, bot *fakeBot, opts ...Option) (*Runner, *fakeProgress, string) {
 	t.Helper()
 	clearCredEnv(t)
 	noCapture(t)
+	noTTY(t)
 	stubRepoEnv(t, credentials{}, "")
+	namesApps(t, map[string]string{testAppID: testAppName})
 	dir := t.TempDir()
 	p := &fakeProgress{}
 	if bot != nil {
 		stubBot(t, bot)
 	}
-	r, err := New(dir, p, WithClock(func() time.Time {
+	opts = append([]Option{WithClock(func() time.Time {
 		return time.Date(2026, 8, 14, 10, 30, 0, 0, time.UTC)
-	}))
+	})}, opts...)
+	r, err := New(dir, p, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

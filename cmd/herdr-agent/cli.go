@@ -101,12 +101,25 @@ type deps struct {
 	// direct call because the real implementation creates a Feishu app that no
 	// API we could find can delete: a deps that nobody wired must refuse to
 	// register, not register by default.
-	NewSetup func(stateDir string, p setup.Progress) (SetupRunner, error)
+	//
+	// The options carry the three things only the command line knows: which app
+	// to reuse, whether a human may be asked anything, and where the answers come
+	// from.
+	NewSetup func(stateDir string, p setup.Progress, opts ...setup.Option) (SetupRunner, error)
 
 	// OpenURL hands the confirmation link to the desktop browser. A nil one
 	// means this machine has no launcher, and setup then only prints the link —
 	// which is also what every test gets, so no test can pop a browser open.
 	OpenURL func(url string) error
+
+	// In is where an answer to a setup question is read from, and it is read
+	// only when IsTTY agrees there is a human at the other end.
+	In io.Reader
+
+	// IsTTY reports whether In is a terminal, and so whether setup's two
+	// questions are questions at all. A nil one means "no", which is what every
+	// test gets: nothing in a suite is there to answer them.
+	IsTTY func() bool
 
 	// Home is the directory the agent integrations install into, and
 	// HerdrConfigDir is where herdr keeps config.toml. Both are fields rather
@@ -166,7 +179,11 @@ func commandTable() []command {
 		{"transcript", "<pane>", "print the agent's native transcript file path", cmdTranscript},
 		{"watch", "", "stream status transitions, one timestamped line each", cmdWatch},
 		{"serve", "", "run the Feishu bridge until SIGINT or SIGTERM", cmdServe},
-		{"setup", "[--reregister]", "register a Feishu app and prove it works", cmdSetup},
+		// "or reuse one" is in the summary because the run that motivated these
+		// flags had an app already and was offered only two ways forward: move a
+		// file, or make a second permanent app. Reuse is the third, and it is the
+		// one most people want.
+		{"setup", "[--app <id>|--reregister]", "register a Feishu app, or reuse one you have, and prove it works", cmdSetup},
 		{"help", "", "show this help", cmdHelp},
 	}
 }
@@ -204,7 +221,20 @@ commands:
 		if c.args != "" {
 			name += " " + c.args
 		}
-		fmt.Fprintf(w, "  %-24s %s\n", name, c.summary)
+		fmt.Fprintf(w, "  %-32s %s\n", name, c.summary)
+	}
+	// setup is the only command with modes rather than options, and it is the
+	// first one anybody runs. Listing them here costs four lines and is the
+	// difference between "reuse the app I already have" being discoverable and
+	// being a flag nobody finds.
+	fmt.Fprint(w, "\nsetup modes (all optional, and the first run needs none of them):\n")
+	for _, m := range []struct{ flag, when string }{
+		{"(no flags)", "confirm one page: create a new app there, or pick an app you already have"},
+		{"--app <app_id>", "use THAT app — preferred, because every registration is permanent clutter"},
+		{"--reregister", "create a SECOND app on purpose; the first one stays, no API deletes it"},
+		{"--yes", "never prompt (scripts, launchd): two apps is an error, an expired wait is exit 3"},
+	} {
+		fmt.Fprintf(w, "  %-32s %s\n", m.flag, m.when)
 	}
 	fmt.Fprint(w, `
 global flags (before the command):

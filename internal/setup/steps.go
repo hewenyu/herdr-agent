@@ -100,22 +100,59 @@ func stepEmptyBody(c console) Step {
 	}
 }
 
-// stepCardTimeout is the ambiguous one, and it stays ambiguous on purpose.
+// pageConfigured reports whether this app's scopes, events and callbacks were
+// granted by the confirmation page — during this run, on this app.
 //
-// The measured E1 probe sent a card successfully and saw no card.action.trigger
-// within 120s. That single observation cannot distinguish a 交互卡片 capability
-// that needs a manual toggle from a human who did not press the button in time,
-// and resolving it in either direction — in code or in prose — would send half
-// the readers to fix something that is not broken.
-func stepCardTimeout(c console, waited time.Duration) Step {
+// It decides how the card checklist hedges, and the answer was measured. The E1
+// probe saw no card.action.trigger in 120s and could not tell a missing 交互卡片
+// toggle from a human who did not press in time; a later run on THAT SAME APP
+// completed the round trip. So an app that came through the confirmation page
+// has a working card path, and the remaining hedge belongs on an app somebody
+// built by hand in the console.
+func (o Origin) pageConfigured() bool {
+	switch o {
+	case OriginRegistered, OriginCreated, OriginUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+// stepCardTimeout says what an un-pressed button means, and how much of the
+// ambiguity survives.
+//
+// Not much, for an app the confirmation page configured: that page was measured
+// to produce a working card path, on the same app whose earlier probe saw
+// nothing. For an app configured by hand the two causes really are
+// indistinguishable from here, and both are listed. Neither branch drops the
+// 200340 fact: an unsubscribed card.action.trigger produces it, and that is what
+// the bridge will report later if this is left broken.
+func stepCardTimeout(c console, o Origin, waited time.Duration) Step {
+	if o.pageConfigured() {
+		return Step{
+			What: fmt.Sprintf("Press the button on the card the bot sent you, while setup is waiting. If it is "+
+				"already pressed and nothing happened, re-run `herdr-agent setup` and press it again — and if "+
+				"THAT fails too, open %s and check 应用能力 → 机器人 → 交互卡片 and the card.action.trigger "+
+				"subscription.", c.bot()),
+			URL: c.bot(),
+			Why: fmt.Sprintf("The card was delivered but no card.action.trigger arrived within %s. This app was "+
+				"configured through the confirmation page, which was measured to arrive with the card path "+
+				"working — the same app that once showed no callback later completed the round trip — so a "+
+				"button nobody pressed in time is by far the likeliest cause. A card path that is genuinely "+
+				"off shows up later as Feishu error 200340: either the 交互卡片 capability or the "+
+				"card.action.trigger subscription.", waited),
+		}
+	}
 	return Step{
 		What: fmt.Sprintf("Either press the button on the card the bot just sent you, or open %s and turn on "+
-			"应用能力 → 机器人 → 交互卡片. Do the first one first: it costs one tap and rules the second one out.",
-			c.bot()),
+			"应用能力 → 机器人 → 交互卡片 (and subscribe card.action.trigger, then publish a version). Do the "+
+			"first one first: it costs one tap and rules the second one out.", c.bot()),
 		URL: c.bot(),
-		Why: fmt.Sprintf("The card was delivered but no card.action.trigger arrived within %s. That is what "+
-			"an un-pressed button looks like AND what a disabled 交互卡片 capability looks like; the two are "+
-			"indistinguishable from here, so both are listed.", waited),
+		Why: fmt.Sprintf("The card was delivered but no card.action.trigger arrived within %s. That is what an "+
+			"un-pressed button looks like AND what a disabled 交互卡片 capability looks like; this app's "+
+			"capabilities were not granted by a confirmation page during this run, so the two really are "+
+			"indistinguishable from here and both are listed. The second cause shows up as Feishu error "+
+			"200340 once the bridge tries to answer a press.", waited),
 	}
 }
 

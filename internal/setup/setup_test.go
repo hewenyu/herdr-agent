@@ -110,6 +110,15 @@ func TestHappyPathVerifiesTheRoundTrip(t *testing.T) {
 	if res.Reused {
 		t.Error("Reused is true after a fresh registration")
 	}
+	// The page ran without CreateOnly, so it may have created this app or handed
+	// back one the tenant already had. The Result says exactly that, and the name
+	// comes from Feishu rather than from the name we asked the page to pre-fill.
+	if res.Origin != OriginRegistered {
+		t.Errorf("Origin = %v, want registered", res.Origin)
+	}
+	if res.AppName != testAppName {
+		t.Errorf("AppName = %q, want the name bot/v3/info reported", res.AppName)
+	}
 	if len(res.Steps) != 0 {
 		t.Errorf("a fully verified run still produced steps: %+v", res.Steps)
 	}
@@ -135,11 +144,17 @@ func TestHappyPathVerifiesTheRoundTrip(t *testing.T) {
 		t.Errorf("the configuration setup just wrote does not validate: %v", err)
 	}
 
-	// The human was told what to do, in order.
-	for _, want := range []string{"Verification", "Registered", "AwaitInbound", "AwaitCard"} {
+	// The human was told what to do, in order. Registered is deliberately absent:
+	// see TestRegisteredFiresOnlyWhenSomethingWasCreated — a page opened without
+	// CreateOnly cannot establish that anything was created. So is AwaitInbound:
+	// see TestTheWaitRequestNeverGuessesTheBotName.
+	for _, want := range []string{"Verification", "AwaitCard"} {
 		if !p.called(want) {
 			t.Errorf("Progress.%s was never called; methods: %v", want, p.methods())
 		}
+	}
+	if waitRequests(p) != 1 {
+		t.Errorf("the human was not asked, exactly once, for the message that proves the chain:\n%s", p.text())
 	}
 
 	// The card was disarmed even though it was pressed (G17).
@@ -186,54 +201,23 @@ func TestReusePathSkipsRegistration(t *testing.T) {
 	}
 }
 
-// TestPartialCredentialsRefuseWithoutReregister. An app id with no secret
-// cannot be verified and cannot be recovered — Feishu shows a secret once — so
-// registering over it silently would strand a permanent app in the tenant.
-func TestPartialCredentialsRefuseWithoutReregister(t *testing.T) {
-	r, _, dir := newRun(t, &fakeBot{})
-	noRegister(t)
-	writeEnvFixture(t, dir, config.EnvAppID+"="+testAppID+"\n")
-
-	_, err := r.Run(context.Background(), false)
-	if !errors.Is(err, ErrCredentialsExist) {
-		t.Fatalf("Run err = %v, want ErrCredentialsExist", err)
-	}
-	if !strings.Contains(err.Error(), testAppID) {
-		t.Error("the error does not name the app already on disk")
-	}
-}
-
-// TestARepositoryEnvAlsoCountsAsExistingCredentials.
+// Two refusals used to live here, and both were wrong.
 //
-// internal/config merges the repository-root .env into every load, so a
-// checkout whose only .env is that one runs a perfectly good bridge. Looking at
-// <stateDir>/.env alone would see nothing, register a second app Feishu offers
-// no way to delete, and then shadow the working one — the state directory wins.
-// The user who hits this is the one following the documented repair path.
-func TestARepositoryEnvAlsoCountsAsExistingCredentials(t *testing.T) {
-	r, _, dir := newRun(t, &fakeBot{})
-	noRegister(t)
-	repoPath := filepath.Join(t.TempDir(), config.DotEnvFileName)
-	stubRepoEnv(t, credentials{AppID: "cli_from_the_repo", AppSecret: testSecret}, repoPath)
-
-	_, err := r.Run(context.Background(), false)
-	if !errors.Is(err, ErrCredentialsExist) {
-		t.Fatalf("Run err = %v, want ErrCredentialsExist", err)
-	}
-	if !strings.Contains(err.Error(), repoPath) {
-		t.Errorf("the error does not name the file that already holds credentials: %v", err)
-	}
-	if !strings.Contains(err.Error(), "cli_from_the_repo") {
-		t.Errorf("the error does not name the app that already exists: %v", err)
-	}
-	// Both ways out, because either one may be what the user meant.
-	if !strings.Contains(err.Error(), filepath.Join(dir, config.DotEnvFileName)) {
-		t.Errorf("the error does not say where to move the file: %v", err)
-	}
-	if !strings.Contains(err.Error(), "--reregister") {
-		t.Errorf("the error does not offer the deliberate second app: %v", err)
-	}
-}
+// "An app id with no secret" ended the run; it now re-confirms that same app
+// through the update flow, which recovers a usable secret without leaving a
+// second app in the tenant — see TestHalfACredentialReconfirmsTheSameApp.
+//
+// "A repository .env names an app" ended the run with an instruction to move the
+// file; those credentials are now adopted and verified — see
+// TestCredentialsOutsideTheStateDirAreAdoptedNotRefused. That refusal cost the
+// user who hit it their working app: they deleted the file, registered again, and
+// ended up pointed at a different app.
+//
+// The state-directory-wins rule those tests also covered is now decided by the
+// human when the two files name different apps (TestTwoAppsAskTheHuman, where the
+// state directory is the one labelled "the bridge uses this one") and by the
+// bridge's own key-by-key merge otherwise
+// (TestDiscoveryResolvesCredentialsTheWayTheBridgeDoes).
 
 // TestReregisterIgnoresARepositoryEnv: the flag exists to say "yes, another
 // app, on purpose", and it must not be blocked by the file it overrides.
@@ -252,15 +236,19 @@ func TestReregisterIgnoresARepositoryEnv(t *testing.T) {
 	}
 }
 
-// TestStateDirectoryCredentialsWinOverTheRepositoryOnes, exactly as
-// config.loadDotEnv resolves them: a state directory that already has the pair
-// is the answer, and the repository file is irrelevant.
-func TestStateDirectoryCredentialsWinOverTheRepositoryOnes(t *testing.T) {
+// TestStateDirectoryCredentialsAreOfferedAsTheLiveOnes.
+//
+// config.loadDotEnv resolves <stateDir>/.env over the repository one, so when the
+// two name different apps the state directory's is what the bridge is using right
+// now. That fact is what makes the question answerable, so it has to be IN the
+// question rather than acted on silently.
+func TestStateDirectoryCredentialsAreOfferedAsTheLiveOnes(t *testing.T) {
 	b := &fakeBot{deliver: msgs(p2p("hello")), pressCard: true}
-	r, _, dir := newRun(t, b)
+	prompt := &fakePrompter{answers: []string{"2"}}
+	r, _, dir := newRun(t, b, WithPrompter(prompt))
 	noRegister(t)
 	writeEnvFixture(t, dir, config.EnvAppID+"="+testAppID+"\n"+config.EnvAppSecret+"="+testSecret+"\n")
-	stubRepoEnv(t, credentials{AppID: "cli_from_the_repo", AppSecret: "other"}, "/tmp/elsewhere/.env")
+	stubRepoEnv(t, credentials{AppID: otherAppID, AppSecret: otherSecret}, "/tmp/elsewhere/.env")
 
 	res, err := r.Run(context.Background(), false)
 	if err != nil {
@@ -268,6 +256,14 @@ func TestStateDirectoryCredentialsWinOverTheRepositoryOnes(t *testing.T) {
 	}
 	if res.AppID != testAppID {
 		t.Errorf("AppID = %q, want the state directory's app", res.AppID)
+	}
+	q := prompt.text()
+	live := strings.Index(q, "the bridge uses this one")
+	if live < 0 {
+		t.Fatalf("the question does not say which app is live:\n%s", q)
+	}
+	if idx := strings.Index(q, testAppID); idx < 0 || idx > live {
+		t.Errorf("the live marker is not on the state directory's app:\n%s", q)
 	}
 }
 
@@ -371,8 +367,8 @@ func TestInboundTimeoutStillLeavesAWorkingConfiguration(t *testing.T) {
 	if !strings.Contains(env, testSecret) {
 		t.Error(".env lost the secret when verification failed")
 	}
-	if !p.called("AwaitInbound") {
-		t.Error("the user was never asked to send a message")
+	if waitRequests(p) == 0 {
+		t.Errorf("the user was never asked to send a message:\n%s", p.text())
 	}
 }
 

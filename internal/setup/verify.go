@@ -19,8 +19,20 @@ import (
 const stopGrace = 2 * time.Second
 
 // eventBuffer keeps an inbound event from being dropped while the run is
-// between waits — the card press can land before we have started waiting for it.
+// between waits — the card press can land before we have started waiting for it,
+// and so can a message sent while the retry question is on screen.
 const eventBuffer = 8
+
+// inboundTimeout and cardTimeout are the contract's InboundTimeout and
+// CardTimeout, behind variables for one reason: the retry loop cannot be tested
+// through the context deadline, because the first wait always consumes whatever
+// is left of it (see effectiveWait). A test that shortens these drives the same
+// code the real waits do; a test that shortened them through the context would
+// only ever get one wait.
+var (
+	inboundTimeout = InboundTimeout
+	cardTimeout    = CardTimeout
+)
 
 // newBot builds the Feishu client used for verification. It is a variable so
 // the whole flow can be exercised without a network.
@@ -44,6 +56,10 @@ type verification struct {
 // verifyInput is what the round trip needs to know.
 type verifyInput struct {
 	creds credentials
+	// app is the identity to put in front of the human: which bot to message,
+	// and whether its capabilities were granted by a confirmation page during
+	// this run (which decides how the card checklist hedges).
+	app App
 	// allowed is who may complete the verification. Empty means "the first
 	// person to write" — only reachable on the repair path, where an existing
 	// config.toml has no allowlist yet, and reported as a note when it happens.
@@ -138,6 +154,12 @@ type connection struct {
 
 // waitInbound blocks until an acceptable message arrives, the wait elapses, or
 // the connection dies. It reports whether the card half is worth attempting.
+//
+// A timeout offers one more wait rather than ending the run (see
+// offerAnotherWait): by this point everything that could be automated has been,
+// and the only thing that failed is that a human was not looking at their
+// phone. Making them re-run the whole command for that is how a working setup
+// gets abandoned half way.
 func (r *Runner) waitInbound(
 	ctx context.Context,
 	rep *reporter,
@@ -151,21 +173,27 @@ func (r *Runner) waitInbound(
 			"recorded as its owner. Do this now, from your own phone.")
 	}
 
-	wait := effectiveWait(ctx, InboundTimeout)
-	rep.awaitInbound(wait)
+	sawEmpty := false
+	wait := effectiveWait(ctx, inboundTimeout)
+	rep.awaitMessage(in.app, wait)
 
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 
-	sawEmpty := false
 	for {
 		select {
 		case <-timer.C:
+			what := "Nothing arrived"
 			if sawEmpty {
-				rep.note("No message with a readable body arrived in %s.", wait)
-			} else {
-				rep.note("No message arrived in %s.", wait)
+				what = "No message with a readable body arrived"
 			}
+			if r.offerAnotherWait(ctx, rep, what, wait) {
+				wait = effectiveWait(ctx, inboundTimeout)
+				rep.awaitMessage(in.app, wait)
+				timer.Reset(wait)
+				continue
+			}
+			rep.note("%s in %s.", what, wait)
 			out.Steps = append(out.Steps, inboundFailureSteps(in.console, wait, sawEmpty)...)
 			return false
 
@@ -256,7 +284,7 @@ func (r *Runner) waitCard(
 		return
 	}
 
-	wait := effectiveWait(ctx, CardTimeout)
+	wait := effectiveWait(ctx, cardTimeout)
 	rep.awaitCard(wait)
 
 	timer := time.NewTimer(wait)
@@ -266,13 +294,22 @@ waiting:
 	for {
 		select {
 		case <-timer.C:
+			// Same offer as the inbound wait, and cheaper: the card is already
+			// sitting in the chat and is still live, so another wait costs
+			// nothing but the wait itself.
+			if r.offerAnotherWait(ctx, rep, "No button press arrived", wait) {
+				wait = effectiveWait(ctx, cardTimeout)
+				rep.awaitCard(wait)
+				timer.Reset(wait)
+				continue
+			}
 			rep.note("No button press arrived in %s.", wait)
-			out.Steps = append(out.Steps, stepCardTimeout(in.console, wait))
+			out.Steps = append(out.Steps, stepCardTimeout(in.console, in.app.Origin, wait))
 			break waiting
 
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				out.Steps = append(out.Steps, stepCardTimeout(in.console, wait))
+				out.Steps = append(out.Steps, stepCardTimeout(in.console, in.app.Origin, wait))
 			}
 			break waiting
 

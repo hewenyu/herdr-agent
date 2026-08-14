@@ -56,6 +56,43 @@ func WithClock(f func() time.Time) Option {
 	}
 }
 
+// WithPrompter replaces the terminal question-asker.
+//
+// Without it, Run uses stdin when stdin is a terminal and asks nothing at all
+// when it is not. Supply one to own the presentation of the two questions this
+// package asks, or to drive them in a test.
+func WithPrompter(p Prompter) Option {
+	return func(r *Runner) {
+		if p != nil {
+			r.prompt = p
+		}
+	}
+}
+
+// WithAssumeYes stops the run from ever asking a question.
+//
+// It does NOT answer them affirmatively, and the name is the CLI's convention
+// rather than a promise: the two questions here are "which of these two apps
+// did you mean" and "shall I keep waiting", and both have consequences a script
+// cannot consent to on a human's behalf. Choosing the wrong app points the
+// bridge at a bot the user has never messaged, and the symptom is silence. So
+// this makes the run fail with the explicit error instead.
+func WithAssumeYes(yes bool) Option {
+	return func(r *Runner) { r.assumeYes = yes }
+}
+
+// WithReuseAppID pins the app to use.
+//
+// If a file the bridge loads already holds that app's secret, the run touches
+// no confirmation page at all. If it does not — Feishu shows a secret once, so
+// this is the normal case for an app created by hand in the console — the run
+// opens the page for THAT app (Options.AppID, CreateOnly unset: the SDK's
+// documented update flow), which re-grants our scopes, events and callbacks to
+// it rather than leaving a second app behind.
+func WithReuseAppID(appID string) Option {
+	return func(r *Runner) { r.reuseAppID = strings.TrimSpace(appID) }
+}
+
 // acquireLock takes the bridge's single-instance lock. Behind a variable only
 // so tests can prove the refusal path without racing a real bridge.
 var acquireLock = func(dir string) (io.Closer, error) {
@@ -95,7 +132,11 @@ var newCapture = func() (*stdoutCapture, error) { return newStdoutCapture(os.Std
 //
 // Ordering is the load-bearing part:
 //
-//	preflight (no network) → register → PERSIST → verify
+//	preflight (no network) → discover → decide and SAY SO → register → PERSIST → verify
+//
+// Discovery and the decision come before any output, so the run can state its
+// plan in one sentence. The shape this replaced discovered a problem halfway
+// through and abandoned the user at it, having already promised a link.
 //
 // Credentials go to disk the instant registration returns, before the WebSocket
 // is dialled and before anything is verified. Feishu shows an app secret once
@@ -103,6 +144,18 @@ var newCapture = func() (*stdoutCapture, error) { return newStdoutCapture(os.Std
 // first and crashed would have burned a permanent app and lost its only secret.
 func (r *Runner) Run(ctx context.Context, reregister bool) (Result, error) {
 	if err := checkEnvOverride(); err != nil {
+		return Result{}, err
+	}
+	if r.prompt == nil && !r.assumeYes {
+		// Resolved here rather than in New, which promises to touch nothing
+		// until Run. A terminal makes the difference between a question and a
+		// refusal, so it is part of the preflight, not of construction.
+		r.prompt = newTerminalPrompter()
+	}
+	// Before the lock, because the lock's own failure message is about locking:
+	// a state directory nobody can write must be reported as what it is, in the
+	// one command whose whole job is to put a secret in it.
+	if err := ensureStateDir(r.stateDir); err != nil {
 		return Result{}, err
 	}
 
@@ -130,14 +183,58 @@ func (r *Runner) Run(ctx context.Context, reregister bool) (Result, error) {
 	defer func() { _ = capture.Close() }()
 	rep := &reporter{progress: r.progress, capture: capture}
 
-	res, creds, con, err := r.credentials(ctx, rep, reregister)
+	// PHASE 1 — discover every location the bridge would load credentials from,
+	// then decide, then say what was decided. Nothing above this line printed
+	// anything, and nothing here touches the network except the identity lookup
+	// the two-app question cannot be asked without.
+	d, err := r.discover()
+	if err != nil {
+		return Result{}, err
+	}
+	p, err := r.choose(ctx, rep, d, reregister)
+	if err != nil {
+		return Result{}, err
+	}
+	rep.note("%s", p.says)
+
+	res, creds, con, err := r.establish(ctx, rep, p)
 	if err != nil {
 		return res, err
 	}
 
-	// PHASE 3 — verify. Success is a round trip and nothing less.
+	// PHASE 3 — ask Feishu what this app is CALLED, then narrate.
+	//
+	// Asking is the whole point: the alternative is repeating the name we asked
+	// the confirmation page to pre-fill, which the human is free to change on
+	// that page and did — the run that motivated this told its user to look for
+	// "herdr-agent" while bot/v3/info had already answered "herdr-agent-e1".
+	app := App{
+		ID:      res.AppID,
+		Origin:  res.Origin,
+		EnvPath: envPath(r.stateDir),
+		OpenID:  res.OpenID,
+	}
+	if res.Origin == OriginAdopted {
+		app.From = p.app.Path
+		if p.app.SecretPath != p.app.Path {
+			// The two halves came from two files. Reporting only the id's file
+			// attributes the secret to a file that never held it, which is the
+			// one thing every sentence about credentials must get right.
+			app.FromSecret = p.app.SecretPath
+		}
+	}
+	name, problem := r.appName(ctx, rep, candidate{AppID: creds.AppID, Secret: creds.AppSecret})
+	if name == "" {
+		rep.note("Feishu would not say what app %s is called (%s), so nothing below guesses at its name.",
+			creds.AppID, problem)
+	}
+	app.Name, res.AppName = name, name
+	rep.configured(app)
+
+	// PHASE 4 — verify. Success is a round trip and nothing less.
 	v := r.verify(ctx, rep, verifyInput{
 		creds:     creds,
+		app:       app,
 		allowed:   r.allowlist(rep, res.OpenID),
 		console:   con,
 		onInbound: func(openID, chatID string) { r.recordChat(rep, &res, openID, chatID) },
@@ -183,78 +280,68 @@ func dedupeSteps(steps []Step) []Step {
 	return out
 }
 
-// credentials produces a usable app: either the one already on disk, or a new
-// one, persisted before this function returns.
-func (r *Runner) credentials(ctx context.Context, rep *reporter, reregister bool) (Result, credentials, console, error) {
-	var res Result
-
-	path := envPath(r.stateDir)
-	existing, err := readCredentials(path)
-	if err != nil {
-		return res, credentials{}, console{}, err
-	}
-
-	if existing.complete() && !reregister {
-		// This is what makes setup the repair path as well as the install
-		// path: the credentials are fine, so re-run it to find out which of the
-		// six invisible things is broken.
-		rep.useSecret(existing.AppSecret)
-		rep.note("Credentials for app %s are already in %s; skipping registration and going "+
-			"straight to verification. Pass --reregister to create a second app instead.",
-			existing.AppID, path)
+// establish produces the usable app the plan named, persisted before this
+// function returns.
+//
+// PHASE 2 of the run. Every branch ends with credentials in <stateDir>/.env and
+// a Result whose Origin is what actually happened, not what was intended: the
+// two are allowed to differ, and when they do it is the Origin that gets
+// corrected, never the narration.
+func (r *Runner) establish(ctx context.Context, rep *reporter, p plan) (Result, credentials, console, error) {
+	switch p.kind {
+	case planReuse, planAdopt:
+		// The credentials are already good, which is what makes setup the
+		// repair path as well as the install path: re-run it to find out which
+		// of the six invisible things is broken.
+		rep.useSecret(p.app.Secret)
+		if p.kind == planAdopt {
+			if err := r.adopt(rep, p); err != nil {
+				return Result{Outcome: OutcomeFailed, AppID: p.app.AppID}, credentials{}, console{}, err
+			}
+		}
 		// The tenant brand is only ever learned from the registration flow
-		// (StatusDomainSwitched) and is not persisted, so on this path every URL
-		// below is a guess. Saying so costs one line; a Lark operator following
-		// a checklist of links that 404 has no way back from it.
+		// (StatusDomainSwitched) and is not persisted, so on these paths every
+		// console URL is a guess. Saying so costs one line; a Lark operator
+		// following a checklist of links that 404 has no way back from it.
 		rep.note("Console links below assume a Feishu tenant. On Lark, replace open.feishu.cn " +
 			"with open.larksuite.com.")
-		res.Reused = true
-		res.AppID = existing.AppID
-		return res, existing, console{appID: existing.AppID}, nil
+		// Outcome is deliberately left at its zero value: Run sets it from what
+		// verification observed, and this function has observed nothing yet.
+		return Result{
+			AppID:  p.app.AppID,
+			Origin: p.origin(),
+			Reused: true,
+		}, p.app.creds(), console{appID: p.app.AppID}, nil
 	}
 
-	if existing.AppID != "" && !reregister {
-		// Half a credential. Registering would create a permanent second app
-		// and overwrite the id of one that already exists somewhere in the
-		// tenant, so it is the caller's decision, not ours.
-		return res, credentials{}, console{}, fmt.Errorf(
-			"%w: %s names app %s but has no usable %s, and Feishu shows an app secret only once",
-			ErrCredentialsExist, path, existing.AppID, config.EnvAppSecret)
-	}
+	req := requestFor(p)
 
-	if existing.AppID == "" && !reregister {
-		// Nothing in the state directory, but the bridge ALSO reads the
-		// repository-root .env, so "nothing here" is not "no app". The user
-		// running setup as the documented repair path from inside a checkout is
-		// exactly the one who hits this, and registering would leave them with a
-		// permanent second app plus a state-directory file that silently shadows
-		// the working one.
-		if repo, repoPath := repoEnvCredentials(); repo.AppID != "" {
-			return res, credentials{}, console{}, fmt.Errorf(
-				"%w: %s already names app %s and the bridge loads that file too, so registering now "+
-					"would create a second app that Feishu offers no way to delete — move it to %s, "+
-					"or pass --reregister to create a second app on purpose",
-				ErrCredentialsExist, repoPath, repo.AppID, path)
-		}
-	}
-
-	// PHASE 1 — register.
 	regCtx, cancel := context.WithTimeout(ctx, RegisterTimeout)
 	defer cancel()
-	out, err := r.register(regCtx, rep)
+	out, err := r.register(regCtx, rep, req)
 	if err != nil {
 		return Result{Outcome: OutcomeFailed}, credentials{}, console{}, err
 	}
 	// Armed before the first Progress call that could carry it.
 	rep.useSecret(out.AppSecret)
 
-	res.AppID, res.OpenID = out.AppID, out.OpenID
+	res := Result{AppID: out.AppID, OpenID: out.OpenID, Origin: p.origin()}
+	if req.appID != "" && out.AppID != req.appID {
+		// The page was opened for one app and came back with another. Whatever
+		// the human did on it, "updated <that app>" is no longer true, and the
+		// only honest thing left to say is what a page with no CreateOnly always
+		// leaves us: it either created this one or handed back an existing one.
+		rep.note("The confirmation page returned app %s, not the %s this run opened it for. Using %s.",
+			out.AppID, req.appID, out.AppID)
+		res.Origin = OriginRegistered
+	}
 	con := console{appID: out.AppID, lark: out.Lark}
 
-	// PHASE 2 — persist IMMEDIATELY, before anything that can fail.
-	if err := writeCredentials(path, out.credentials, r.now(), reregister); err != nil {
-		return Result{Outcome: OutcomeFailed, AppID: out.AppID, OpenID: out.OpenID}, credentials{}, con,
-			fmt.Errorf("setup: app %s was created but its credentials could not be stored, and the "+
+	// Persist IMMEDIATELY, before anything that can fail.
+	if err := writeCredentials(envPath(r.stateDir), out.credentials, r.now(), p.replace); err != nil {
+		return Result{Outcome: OutcomeFailed, AppID: out.AppID, OpenID: out.OpenID, Origin: res.Origin},
+			credentials{}, con,
+			fmt.Errorf("setup: app %s is configured but its credentials could not be stored, and the "+
 				"secret is not recoverable: %w", out.AppID, err)
 	}
 	if out.OpenID != "" {
@@ -263,9 +350,23 @@ func (r *Runner) credentials(ctx context.Context, rep *reporter, reregister bool
 		rep.note("Feishu did not return the confirming user's open_id; the allowlist will be taken " +
 			"from the first message instead.")
 	}
-
-	rep.registered(out.AppID, out.OpenID)
 	return res, out.credentials, con, nil
+}
+
+// requestFor maps a plan to the confirmation-page flow it needs.
+//
+// The three are mutually exclusive on the platform side: with both CreateOnly
+// and AppID set the page gives the create flow precedence, so a request to
+// update one specific app would quietly become a new one.
+func requestFor(p plan) registerRequest {
+	switch p.kind {
+	case planCreate:
+		return registerRequest{createOnly: true}
+	case planUpdate:
+		return registerRequest{appID: p.app.AppID}
+	default:
+		return registerRequest{}
+	}
 }
 
 // writeAllowlist adds openID to feishu.allowed_open_ids, creating config.toml

@@ -90,7 +90,7 @@ func TestTransportErrorRetriesWithAFreshLink(t *testing.T) {
 		}, nil
 	})
 
-	out, err := r.register(context.Background(), rep)
+	out, err := r.register(context.Background(), rep, registerRequest{})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestDenialAndExpiryAreDistinguished(t *testing.T) {
 				}, nil
 			})
 
-			if _, err := r.register(context.Background(), rep); err != nil {
+			if _, err := r.register(context.Background(), rep, registerRequest{}); err != nil {
 				t.Fatalf("register: %v", err)
 			}
 			if !strings.Contains(strings.ToLower(p.text()), tc.want) {
@@ -165,7 +165,7 @@ func TestPersistentFailureGivesUpAndSaysWhy(t *testing.T) {
 			RegisterAppError: &registration.RegisterAppError{Code: "expired_token", Description: "registration expired"}}
 	})
 
-	_, err := r.register(context.Background(), rep)
+	_, err := r.register(context.Background(), rep, registerRequest{})
 	if err == nil {
 		t.Fatal("register succeeded with an always-expiring link")
 	}
@@ -196,7 +196,7 @@ func TestAFreshLinkIsNotOfferedWithoutTimeToUseIt(t *testing.T) {
 			RegisterAppError: &registration.RegisterAppError{Code: "expired_token"}}
 	})
 
-	_, err := r.register(ctx, rep)
+	_, err := r.register(ctx, rep, registerRequest{})
 	if err == nil {
 		t.Fatal("register reported success")
 	}
@@ -232,7 +232,7 @@ func TestRetriesStillHappenWithBudgetLeft(t *testing.T) {
 		}, nil
 	})
 
-	if _, err := r.register(ctx, rep); err != nil {
+	if _, err := r.register(ctx, rep, registerRequest{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if attempts != 2 {
@@ -251,7 +251,7 @@ func TestAFatalRefusalIsNotRetried(t *testing.T) {
 		return nil, &registration.RegisterAppError{Code: "unsupported_archetype", Description: "no"}
 	})
 
-	if _, err := r.register(context.Background(), rep); err == nil {
+	if _, err := r.register(context.Background(), rep, registerRequest{}); err == nil {
 		t.Fatal("a fatal refusal was reported as success")
 	}
 	if attempts != 1 {
@@ -279,7 +279,7 @@ func TestBeginWatchdogCancelsAHangingRequest(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := r.register(context.Background(), rep)
+		_, err := r.register(context.Background(), rep, registerRequest{})
 		done <- err
 	}()
 
@@ -309,7 +309,7 @@ func TestCallerCancellationIsNotReportedAsExpiry(t *testing.T) {
 		return nil, ctx.Err()
 	})
 
-	_, err := r.register(ctx, rep)
+	_, err := r.register(ctx, rep, registerRequest{})
 	if err == nil {
 		t.Fatal("a cancelled registration reported success")
 	}
@@ -339,7 +339,7 @@ func TestTheConfirmationPageIsAskedForExactlyWhatTheBridgeUses(t *testing.T) {
 		}, nil
 	})
 
-	if _, err := r.register(context.Background(), rep); err != nil {
+	if _, err := r.register(context.Background(), rep, registerRequest{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if got == nil || got.Addons == nil {
@@ -383,7 +383,7 @@ func TestALarkTenantGetsLarkConsoleURLs(t *testing.T) {
 		}, nil
 	})
 
-	out, err := r.register(context.Background(), rep)
+	out, err := r.register(context.Background(), rep, registerRequest{})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestPollingStatusIsNotReported(t *testing.T) {
 		}, nil
 	})
 
-	if _, err := r.register(context.Background(), rep); err != nil {
+	if _, err := r.register(context.Background(), rep, registerRequest{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	notes := 0
