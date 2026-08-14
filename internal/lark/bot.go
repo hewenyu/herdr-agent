@@ -320,8 +320,11 @@ func (b *bot) Start(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		// Best effort: close the socket so Feishu frees the single connection
-		// this app_id is allowed (G15) before the process exits or retries.
+		// Best effort: close the socket so this process leaves the app's
+		// connection pool before it exits or retries. Feishu deals each event to
+		// a randomly chosen open connection (G15), so a socket nobody reads any
+		// more is not merely idle — it keeps being handed a share of the user's
+		// events, and that share is lost.
 		_ = b.Stop(context.WithoutCancel(ctx))
 		return ctx.Err()
 	case err := <-errCh:

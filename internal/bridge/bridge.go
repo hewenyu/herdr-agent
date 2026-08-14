@@ -339,9 +339,15 @@ func silenceUnauthorized(err error) error {
 	return err
 }
 
-// lifecycle logs the connection's own story. G15 makes this worth reading: when
-// two instances share an app_id they take the single allowed WebSocket slot
-// from each other, and the only local evidence is a reconnect loop here.
+// lifecycle logs the connection's own story: dial failures, reconnect churn, and
+// the one line that means events are actually arriving.
+//
+// What it cannot report is whether this process is alone on its app_id. Long
+// connections are a cluster — up to 50 per app, each event dealt to a randomly
+// chosen one (G15) — so a second instance produces no error, no disconnect and
+// no reconnect here: both bridges log a perfectly healthy connection while each
+// sees about half the events. No amount of lifecycle logging can surface that,
+// which is why AcquireInstanceLock runs before any of it.
 func (b *bridge) lifecycle() lark.Lifecycle {
 	return lark.Lifecycle{
 		// Deliberately NOT "connected", full stop. A socket that comes up proves

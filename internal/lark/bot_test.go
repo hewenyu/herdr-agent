@@ -154,7 +154,9 @@ func TestStopIsIdempotentAndRestartRefused(t *testing.T) {
 	}
 	// ws.Client.Start never returns (it ends in `select {}`), so a stopped Bot
 	// cannot be restarted without leaking a parked goroutine and a second
-	// connection — and G15 says this app_id only gets one.
+	// connection in this app's pool — and Feishu deals events at random across
+	// every open connection (G15), so the abandoned one would swallow a share of
+	// them without anybody seeing an error.
 	if err := b.Start(ctx); err == nil {
 		t.Fatal("Start after Stop succeeded; want refusal")
 	}

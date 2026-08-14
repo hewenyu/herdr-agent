@@ -905,9 +905,14 @@ func TestSetupRetainedCallbacksDoNotLie(t *testing.T) {
 	}
 }
 
-// TestSetupProgressSurvivesAMachineWithNoLauncher: on anything that is not
-// darwin there is no open(1), and claiming a browser opened would be a lie the
-// user acts on by waiting for a window.
+// TestSetupProgressSurvivesAMachineWithNoLauncher covers Verification's two
+// degenerate inputs at the renderer level: no launcher wired at all, and one
+// that returned a plain error. Claiming a browser opened in either case would be
+// a lie the user acts on by waiting for a window.
+//
+// The platform decision behind those inputs — which GOOS gets which launcher,
+// and which absence is silent — is pinned by
+// TestVerificationClaimsAnOpenBrowserOnlyWhenOneOpened.
 func TestSetupProgressSurvivesAMachineWithNoLauncher(t *testing.T) {
 	tests := map[string]func(string) error{
 		"no launcher wired": nil,
@@ -979,11 +984,11 @@ func TestSetupFlagsParseInEitherOrder(t *testing.T) {
 		want setupFlags
 	}{
 		{"nothing", nil, setupFlags{}},
-		{"app then yes", []string{"--app", "cli_aaf76546b438dbfc", "--yes"},
-			setupFlags{appID: "cli_aaf76546b438dbfc", yes: true}},
-		{"yes then app", []string{"--yes", "--app", "cli_aaf76546b438dbfc"},
-			setupFlags{appID: "cli_aaf76546b438dbfc", yes: true}},
-		{"inline value", []string{"--app=cli_aaf76546b438dbfc"}, setupFlags{appID: "cli_aaf76546b438dbfc"}},
+		{"app then yes", []string{"--app", "cli_0123456789abcdef", "--yes"},
+			setupFlags{appID: "cli_0123456789abcdef", yes: true}},
+		{"yes then app", []string{"--yes", "--app", "cli_0123456789abcdef"},
+			setupFlags{appID: "cli_0123456789abcdef", yes: true}},
+		{"inline value", []string{"--app=cli_0123456789abcdef"}, setupFlags{appID: "cli_0123456789abcdef"}},
 		{"single dash", []string{"-app", "cli_x1", "-yes"}, setupFlags{appID: "cli_x1", yes: true}},
 		{"reregister then yes", []string{"--reregister", "--yes"}, setupFlags{reregister: true, yes: true}},
 		{"yes then reregister", []string{"--yes", "--reregister"}, setupFlags{reregister: true, yes: true}},
@@ -1400,5 +1405,193 @@ func TestOpenInBrowserRefusesANonHTTPSLink(t *testing.T) {
 		if err := openInBrowser(url); err == nil {
 			t.Errorf("openInBrowser(%q) opened it", url)
 		}
+	}
+}
+
+// recordingOpener is a browserOpener whose seams are recorded instead of run, so
+// the platform decision can be exercised on every GOOS.
+type recordingOpener struct {
+	looked []string
+	ran    []string
+
+	// onPath are the launchers LookPath finds; anything else is "not installed".
+	onPath map[string]string
+	runErr error
+	out    []byte
+}
+
+func (r *recordingOpener) opener(goos string) browserOpener {
+	return browserOpener{
+		goos: goos,
+		look: func(file string) (string, error) {
+			r.looked = append(r.looked, file)
+			if p, ok := r.onPath[file]; ok {
+				return p, nil
+			}
+			return "", errors.New("exec: \"" + file + "\": executable file not found in $PATH")
+		},
+		run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			r.ran = append(r.ran, append([]string{name}, args...)...)
+			return r.out, r.runErr
+		},
+	}
+}
+
+// TestBrowserLauncherPerPlatform pins which program each GOOS reaches for, and —
+// the part that matters — that a machine without one reports errNoLauncher
+// WITHOUT running anything. The seams make every case run on every GOOS, so this
+// is not a darwin-only or linux-only assertion.
+func TestBrowserLauncherPerPlatform(t *testing.T) {
+	const url = "https://accounts.feishu.cn/oauth/v1/app/registration?code=xyz"
+
+	tests := []struct {
+		name    string
+		goos    string
+		onPath  map[string]string
+		wantRun []string
+		wantErr error
+	}{
+		{
+			// darwin is unchanged: open(1) is part of the OS and is invoked
+			// without a LookPath in front of it.
+			name:    "darwin runs open(1) unresolved",
+			goos:    "darwin",
+			wantRun: []string{"open", url},
+		},
+		{
+			name:    "linux uses xdg-open when it is installed",
+			goos:    "linux",
+			onPath:  map[string]string{"xdg-open": "/usr/bin/xdg-open"},
+			wantRun: []string{"/usr/bin/xdg-open", url},
+		},
+		{
+			// A headless server. Nothing may be launched and nothing may be
+			// claimed; the caller prints the link and says nothing about opening.
+			name:    "linux without xdg-open launches nothing",
+			goos:    "linux",
+			wantErr: errNoLauncher,
+		},
+		{
+			name:    "an unknown GOOS launches nothing",
+			goos:    "windows",
+			wantErr: errNoLauncher,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordingOpener{onPath: tc.onPath}
+			err := r.opener(tc.goos).open(url)
+
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("open on %s = %v, want %v", tc.goos, err, tc.wantErr)
+				}
+				if len(r.ran) != 0 {
+					t.Errorf("nothing should have been launched, ran %v", r.ran)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("open on %s = %v, want nil", tc.goos, err)
+			}
+			if !slices.Equal(r.ran, tc.wantRun) {
+				t.Errorf("launched %v, want %v", r.ran, tc.wantRun)
+			}
+		})
+	}
+
+	// The https guard is the launcher's first act, so it holds even where there
+	// is no launcher to reach — and no PATH lookup happens for a bad URL.
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		r := &recordingOpener{onPath: map[string]string{"xdg-open": "/usr/bin/xdg-open"}}
+		if err := r.opener(goos).open("-h"); err == nil {
+			t.Errorf("open(%q) on %s accepted a non-https link", "-h", goos)
+		}
+		if len(r.ran) != 0 || len(r.looked) != 0 {
+			t.Errorf("a non-https link on %s still touched the system: ran %v, looked %v", goos, r.ran, r.looked)
+		}
+	}
+}
+
+// TestBrowserLauncherReportsAFailedLaunch: a launcher that exists and then fails
+// is news — the user was expecting a window. It must not be confused with
+// errNoLauncher, which is the silent case.
+func TestBrowserLauncherReportsAFailedLaunch(t *testing.T) {
+	r := &recordingOpener{
+		onPath: map[string]string{"xdg-open": "/usr/bin/xdg-open"},
+		runErr: errors.New("exit status 3"),
+		out:    []byte("xdg-open: no method available\n"),
+	}
+
+	err := r.opener("linux").open("https://accounts.feishu.cn/x")
+	if err == nil {
+		t.Fatal("a launcher that exited non-zero was reported as success")
+	}
+	if errors.Is(err, errNoLauncher) {
+		t.Fatalf("a failed launch was classified as an absent launcher: %v", err)
+	}
+	// A launcher that names the program and its exit status is the diagnosis, and
+	// any output the seam did capture reaches the screen on ONE line. (runLauncher
+	// captures none in production — it gives the child no pipes to hold open, see
+	// its comment — so this pins the formatting rule, not a promise that xdg-open's
+	// message will be there.)
+	for _, want := range []string{"xdg-open", "exit status 3", "no method available"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("the launcher's output was not flattened to one line: %q", err.Error())
+	}
+}
+
+// TestVerificationClaimsAnOpenBrowserOnlyWhenOneOpened is the honesty guard, and
+// it runs the real launcher decision behind fake seams so it holds on every
+// GOOS. "(opened in your browser)" may appear only in the one case where a
+// launcher ran and succeeded; an absent launcher prints nothing about opening at
+// all, because the user of a headless server has nothing to fix.
+func TestVerificationClaimsAnOpenBrowserOnlyWhenOneOpened(t *testing.T) {
+	const url = "https://accounts.feishu.cn/oauth/v1/app/registration?code=xyz"
+
+	tests := []struct {
+		name       string
+		goos       string
+		onPath     map[string]string
+		runErr     error
+		wantOpened bool
+		wantFailed bool
+	}{
+		{"darwin desktop", "darwin", nil, nil, true, false},
+		{"linux desktop", "linux", map[string]string{"xdg-open": "/usr/bin/xdg-open"}, nil, true, false},
+		{"headless linux server", "linux", nil, nil, false, false},
+		{"unknown GOOS", "windows", nil, nil, false, false},
+		{"launcher present but failed", "darwin", nil, errors.New("exit status 1"), false, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordingOpener{onPath: tc.onPath, runErr: tc.runErr}
+			o := r.opener(tc.goos)
+			var errb strings.Builder
+			p := &termProgress{out: &strings.Builder{}, err: &errb, open: o.open}
+
+			p.Verification(url, 0)
+			got := errb.String()
+
+			if !strings.Contains(got, url) {
+				t.Fatalf("the link itself was not printed:\n%s", got)
+			}
+			if opened := strings.Contains(got, "opened in your browser"); opened != tc.wantOpened {
+				t.Errorf("claimed opened = %v, want %v (ran %v):\n%s", opened, tc.wantOpened, r.ran, got)
+			}
+			if failed := strings.Contains(got, "could not open a browser"); failed != tc.wantFailed {
+				t.Errorf("reported a failed launch = %v, want %v:\n%s", failed, tc.wantFailed, got)
+			}
+			// A claim of success must correspond to a launch that happened.
+			if tc.wantOpened && len(r.ran) == 0 {
+				t.Error("claimed a browser opened without launching anything")
+			}
+		})
 	}
 }

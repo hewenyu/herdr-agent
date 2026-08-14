@@ -38,10 +38,19 @@
 
   <!-- Restart unconditionally: the phone is the only way to reach a blocked
        agent, and a bridge that is down looks exactly like an agent that has
-       nothing to say. Restarting is safe with respect to Feishu's one
-       WebSocket per app_id (G15) because serve takes an flock'd pid file
-       before any network IO; a second instance exits instead of stealing the
-       connection from the first. -->
+       nothing to say.
+
+       Restarting is safe because serve takes an flock'd pid file before any
+       network IO, and that lock is correctness rather than hygiene. Feishu's
+       long-connection delivery is CLUSTER MODE: one app may hold up to 50
+       connections at once and each event is handed to a RANDOM one of them
+       (G15). So two bridges on the same app_id do not fight and do not
+       disconnect each other — neither one errors, neither drops its socket,
+       and each receives roughly half the events. From the phone that is not a
+       failure anybody can point at, only messages that "sometimes arrive".
+       A copy launchd starts while the previous one is still alive therefore
+       exits at once, instead of quietly splitting the user's real messages
+       with it. -->
   <key>KeepAlive</key>
   <true/>
 

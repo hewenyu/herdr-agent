@@ -65,10 +65,12 @@ func TestAcquireInstanceLockWritesAPrivatePidFile(t *testing.T) {
 
 // TestSecondInstanceIsRefused is the G15 regression guard.
 //
-// Feishu allows exactly one WebSocket connection per app_id. Two bridges do not
-// fail loudly, they take the connection from each other in turn, and the user
-// reports it as "Feishu is flaky". The second one must die here, before any
-// network I/O.
+// Long-connection delivery is cluster mode — up to 50 connections per app, each
+// event dealt to a randomly chosen one — so two bridges on one app_id do not
+// fail loudly and do not disconnect each other. They each receive about half the
+// events, which the user reports as "Feishu is flaky" and cannot falsify from
+// the outside. The second one must therefore die here, before any network I/O,
+// because nothing afterwards would reveal it.
 func TestSecondInstanceIsRefused(t *testing.T) {
 	dir := t.TempDir()
 
@@ -81,7 +83,8 @@ func TestSecondInstanceIsRefused(t *testing.T) {
 	second, err := AcquireInstanceLock(dir, WithLockLogger(discardLogger()))
 	if err == nil {
 		_ = second.Release()
-		t.Fatal("a second instance acquired the lock; it would fight the first one for the Feishu socket")
+		t.Fatal("a second instance acquired the lock; it would join the first one in this app's connection " +
+			"pool and quietly take a random half of the events")
 	}
 	if !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("err = %v, want ErrAlreadyRunning", err)

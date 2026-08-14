@@ -26,10 +26,17 @@ const PidFileName = "herdr-agent.pid"
 const lockAttempts = 5
 
 var (
-	// ErrAlreadyRunning means a live instance holds the lock. Feishu allows one
-	// WebSocket connection per app_id: a second bridge does not fail loudly, it
-	// takes turns stealing the connection from the first, and the user
-	// experiences that as "Feishu is flaky" (G15).
+	// ErrAlreadyRunning means a live instance holds the lock.
+	//
+	// Long-connection delivery is CLUSTER MODE: one app may hold up to 50
+	// WebSocket connections at once, and Feishu deals each event to a randomly
+	// chosen one of them (G15). So a second bridge on the same app_id does not
+	// fail loudly and does not disconnect the first — neither side sees an error
+	// or a reconnect. They simply split the user's events, roughly half each,
+	// and the half that lands on the process nobody is watching is gone. From
+	// outside there is nothing to falsify: messages "sometimes arrive and
+	// sometimes do not". That is what makes this lock correctness rather than
+	// hygiene.
 	ErrAlreadyRunning = errors.New("bridge: another herdr-agent instance is already running")
 
 	// ErrNoStateDir rejects an empty state directory rather than locking
@@ -64,10 +71,13 @@ func WithLockLogger(l *slog.Logger) LockOption {
 // AcquireInstanceLock takes the process-wide lock for dir, creating dir if
 // needed.
 //
-// It must be called BEFORE any network I/O (S2 §3.1). One app_id may hold
-// exactly one Feishu WebSocket connection, so two bridges fight over it and
-// each disconnects the other (G15); the second one has to die before it
-// connects, not after it has already knocked the first one off.
+// It must be called BEFORE any network I/O (S2 §3.1). Feishu's long connection
+// is a cluster: up to 50 connections per app, with every event handed to a
+// randomly chosen one of them (G15). Two bridges on one app_id therefore never
+// collide — no error, no disconnect, not even reconnect churn to notice — they
+// just take about half the user's events each. There is no later moment at which
+// that becomes visible, so the second instance has to die before it opens a
+// connection rather than be detected after it has one.
 //
 // The lock is an flock on the pid file, and the flock — not the recorded pid —
 // is the authority. A kernel lock is released when its holder dies however it
@@ -110,7 +120,9 @@ func AcquireInstanceLock(dir string, opts ...LockOption) (*InstanceLock, error) 
 			_ = f.Close()
 			if errors.Is(err, syscall.EWOULDBLOCK) {
 				return nil, fmt.Errorf("%w: %s is locked by pid %s; stop it first "+
-					"(a second connection would knock the first one off the Feishu socket)",
+					"(two connections do not conflict — that is the problem: Feishu deals each event to a "+
+					"random one of this app's open connections, so you would each silently receive about "+
+					"half the messages)",
 					ErrAlreadyRunning, path, pidText(holder))
 			}
 			return nil, fmt.Errorf("bridge: lock %s: %w", path, err)
@@ -163,8 +175,9 @@ func (l *InstanceLock) Path() string { return l.path }
 // The unlink happens FIRST, on purpose. Unlocking first opens a window in which
 // another instance can flock the inode we are about to delete: it would then
 // hold a lock on a file that no longer has a name, and a third instance would
-// create a fresh pid file and lock that — two bridges, two WebSocket
-// connections, the G15 failure this whole file exists to prevent.
+// create a fresh pid file and lock that — two bridges, two connections in the
+// same app's pool, each dealt a random half of the events and neither reporting
+// anything wrong. That is the G15 failure this whole file exists to prevent.
 func (l *InstanceLock) Release() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

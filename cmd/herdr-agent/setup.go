@@ -422,7 +422,8 @@ type termProgress struct {
 
 	// open hands the confirmation link to the desktop browser. A field so no
 	// test spawns a process, and nil-safe: a machine with no launcher simply
-	// prints the link.
+	// prints the link. An errNoLauncher result is silence, not a complaint —
+	// see Verification.
 	open func(url string) error
 }
 
@@ -447,10 +448,21 @@ func (p *termProgress) Verification(url string, expiresIn int) {
 	fmt.Fprintln(p.err)
 	fmt.Fprintln(p.err, "      "+url)
 	fmt.Fprintln(p.err)
+	// Three outcomes, three different things to say, and only the first one may
+	// claim a browser opened:
+	//
+	//   - a launcher ran and succeeded → say so;
+	//   - there is no launcher on this machine (a headless server, an unsupported
+	//     GOOS) → say NOTHING about opening. Nothing was attempted, so there is
+	//     nothing to report, and the link is already printed above;
+	//   - a launcher ran and failed → that IS news, because the user is entitled
+	//     to know why the window they expected did not appear.
 	if p.open != nil {
-		if err := p.open(url); err == nil {
+		switch err := p.open(url); {
+		case err == nil:
 			fmt.Fprintln(p.err, "  (opened in your browser)")
-		} else {
+		case errors.Is(err, errNoLauncher):
+		default:
 			fmt.Fprintf(p.err, "  (could not open a browser here: %v — copy the link above)\n", err)
 		}
 	}
@@ -647,33 +659,128 @@ func seconds(d time.Duration) int {
 
 // openTimeout bounds the launcher. open(1) returns immediately in practice; a
 // hang here would freeze a command whose next act is to wait on a human.
+//
+// It bounds the LAUNCHER, not the browser — which is only true because
+// runLauncher gives the child no pipes to hold open. See the trade-off there.
 const openTimeout = 5 * time.Second
 
-// openInBrowser hands the confirmation link to the desktop browser.
-//
-// darwin only: open(1) is the launcher this product's supported platform has,
-// and guessing at xdg-open elsewhere would print "(opened in your browser)" on
-// a machine where nothing opened.
-//
-// The URL is checked rather than trusted. It arrives from the network, it is
-// passed to a program as an argument, and a value starting with '-' would be
-// read by open(1) as a flag; anything that is not plain https is refused and
-// printed instead.
-func openInBrowser(url string) error {
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("no launcher for %s", runtime.GOOS)
+// errNoLauncher means this machine has nothing that opens a URL, which is not a
+// failure: a headless Linux server is a normal place to run `setup`, and so is
+// any GOOS this launcher does not know. Callers must say NOTHING about opening
+// in that case — the link is already on screen — rather than report an error the
+// user cannot act on. See termProgress.Verification.
+var errNoLauncher = errors.New("no browser launcher on this machine")
+
+// browserOpener is the platform seam. It exists so the one claim this code is
+// allowed to make — "(opened in your browser)" — can be tested on every GOOS
+// without spawning anything: that line may only be printed when run actually ran
+// a launcher and it actually succeeded.
+type browserOpener struct {
+	goos string
+	// look resolves a launcher on PATH; exec.LookPath in production.
+	look func(file string) (string, error)
+	// run executes it and reports whether IT exited 0, plus whatever it printed
+	// where that could be captured without waiting on it (see runLauncher).
+	run func(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+func defaultOpener() browserOpener {
+	return browserOpener{
+		goos: runtime.GOOS,
+		look: exec.LookPath,
+		run:  runLauncher,
 	}
+}
+
+// runLauncher runs the launcher and waits for IT to exit — not for whatever it
+// spawns.
+//
+// This used to be CombinedOutput(), which waits for the child's output pipes to
+// reach EOF as well as for the child to exit. That is the wrong fact: xdg-open's
+// generic fallback runs the browser in the FOREGROUND, and a browser started
+// that way inherits these descriptors and holds them for as long as the window
+// lives. So on a Linux desktop with no browser already running, a successful
+// launch read as a 5s stall followed by "(could not open a browser here: signal:
+// killed)" — a failure reported for a window that was in fact opening. Worse,
+// killing the process at openTimeout does not end that wait: with no WaitDelay
+// set, os/exec keeps draining the pipe until every write end closes, so a
+// descendant outliving the launcher would block here indefinitely, which is
+// exactly what openTimeout is supposed to prevent.
+//
+// Leaving Stdout and Stderr nil hands the child /dev/null instead of a pipe, so
+// there is nothing to drain and Wait returns when the launcher does. The
+// measured fact behind "(opened in your browser)" becomes precisely "the
+// launcher exited 0". The price is the launcher's own words: an xdg-open that
+// fails now reports its exit status without its message. The invariant is
+// unchanged — a launcher that never returns is still killed at openTimeout and
+// still reported as a failure, never as success. darwin is unaffected either
+// way: open(1) detaches and returns at once.
+func runLauncher(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Stdout and Stderr stay nil deliberately. Do not "improve" this by handing
+	// them a buffer; read the comment above first.
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return nil, cmd.Wait()
+}
+
+// openInBrowser hands the confirmation link to the desktop browser.
+func openInBrowser(url string) error { return defaultOpener().open(url) }
+
+// open launches url, or reports why it did not.
+//
+// The URL is checked FIRST, on every platform, and rather than trusted. It
+// arrives from the network, it is passed to a program as an argument, and a
+// value starting with '-' would be read by open(1) or xdg-open as a flag;
+// anything that is not plain https is refused and printed instead. Checking it
+// before the launcher is resolved also keeps that refusal identical everywhere,
+// including on a machine that has no launcher at all.
+func (o browserOpener) open(url string) error {
 	if !strings.HasPrefix(url, "https://") {
 		return errors.New("refusing to open a link that is not https")
 	}
+	name, err := o.launcher()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "open", url).CombinedOutput()
+	out, err := o.run(ctx, name, url)
 	if err != nil {
+		// Output is optional by contract: runLauncher gives the child no pipes, so
+		// in production this is the bare exit status. Kept because a seam that can
+		// capture output must not be able to smuggle a multi-line blob to screen.
 		if msg := strings.TrimSpace(string(out)); msg != "" {
-			return fmt.Errorf("open: %w: %s", err, oneLine(msg))
+			return fmt.Errorf("%s: %w: %s", name, err, oneLine(msg))
 		}
-		return fmt.Errorf("open: %w", err)
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
+}
+
+// launcher names the program to run, or wraps errNoLauncher.
+//
+// darwin runs open(1) unresolved, exactly as it always has: it is part of the
+// OS, and a LookPath in front of it would only invent a new way for a working
+// Mac to stop opening links.
+//
+// linux runs xdg-open ONLY when it is on PATH. This wave ships Linux binaries,
+// so the old flat refusal is no longer honest — but neither is assuming a
+// desktop: a server with no xdg-open is a normal deployment, and running it
+// blind there would print "(opened in your browser)" for a window nobody has.
+// Absence is therefore errNoLauncher, not a failure.
+func (o browserOpener) launcher() (string, error) {
+	switch o.goos {
+	case "darwin":
+		return "open", nil
+	case "linux":
+		path, err := o.look("xdg-open")
+		if err != nil {
+			return "", fmt.Errorf("%w: xdg-open is not on PATH", errNoLauncher)
+		}
+		return path, nil
+	default:
+		return "", fmt.Errorf("%w: none is known for %s", errNoLauncher, o.goos)
+	}
 }
