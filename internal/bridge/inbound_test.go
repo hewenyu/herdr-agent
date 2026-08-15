@@ -578,7 +578,9 @@ func TestTargetReturnsTheDocumentedSentinels(t *testing.T) {
 		{"several", []agents.Agent{idleAgent(testPane), idleAgent(secondPane)}, "", ErrAmbiguous},
 		// A recorded destination that is not there any more is NOT "no agent":
 		// there is an agent, it is just not the one this message was about.
-		{"bound to a dead pane", []agents.Agent{idleAgent(testPane)}, "om_about_dead", ErrTargetReplaced},
+		// Gone rather than Replaced: nothing took that seat, it is simply not
+		// running, and the two get opposite answers (see ErrTargetGone).
+		{"bound to a dead pane", []agents.Agent{idleAgent(testPane)}, "om_about_dead", ErrTargetGone},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

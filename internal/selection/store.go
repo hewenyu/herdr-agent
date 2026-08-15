@@ -18,11 +18,12 @@ var ErrClosed = errors.New("selection: store is closed")
 //
 // Nothing in the product should ever approach it: authorization is a default-
 // deny open_id allowlist (S2 3.4), so the only chat ids that can ever reach Set
-// belong to the handful of chats one allowed human has with the bot, and the
-// 12h TTL retires them anyway. It exists so that a misconfigured allowlist
-// cannot grow the state file without limit, and dropping the least recently
-// selected chat is the safe direction: a missing selection costs one tap on the
-// picker card, while an unbounded file costs an fsync per message forever.
+// belong to the handful of chats one allowed human has with the bot. It matters
+// more than it used to, because nothing expires here any more: this bound is now
+// the ONLY thing that reclaims an entry, so it is the only reason a selection can
+// go away without a human asking. Dropping the chat that picked longest ago is
+// the safe direction — that loss costs one tap on the picker card, while an
+// unbounded file costs an fsync per message forever.
 const DefaultMaxEntries = 256
 
 // FileStore is the disk-backed Store: chat_id -> Target, persisted as a single
@@ -167,23 +168,15 @@ func (s *FileStore) Set(chatID string, t Target) {
 	// the wrong agent is how prose becomes an approval (G1). Refusing to store
 	// it costs the user one tap on the picker card.
 	//
-	// Session is deliberately NOT required: G8 measures a real window in which
-	// an agent is already detected but its session ref is still None (Claude
-	// until SessionStart, Codex until the hook is trusted with `t`), and a
-	// selection made in that window is legitimate.
-	//
-	// Accepting an empty Session is only safe under one comparison rule, which
-	// the caller owns and must not soften: a recorded empty Session matches
-	// ONLY a live agent that also reports none. Once herdr reports a session
-	// ref for that pane, an empty recorded Session is a MISMATCH — the bridge
-	// clears the selection and re-posts the picker rather than delivering.
-	// Reading the empty value as "matches anything" would turn G8's narrow
-	// detection window into a permanent wildcard: select claude at w1:p1 before
-	// SessionStart, that claude exits hours later, a different claude starts in
-	// the same seat in another project, Kind still matches, and the next thing
-	// typed lands in the wrong agent's context — which is how prose becomes an
-	// approval (G1). The rule costs one extra tap, once, inside the detection
-	// window, and closes the seat-vs-identity hole (G8, G17).
+	// Session and Cwd are neither required nor compared. G8 measures a real
+	// window in which an agent is detected but its session ref is still None
+	// (Claude until SessionStart, Codex until the hook is trusted with `t`), and
+	// claude mints a new session on every /clear and compaction; herdr reports
+	// no cwd at all for a pane whose foreground process it cannot resolve, and
+	// reports a moving one for a pane running a Bash tool call. Requiring either
+	// would make an agent unselectable for a reason the user cannot see or fix,
+	// and comparing either ended conversations that had not ended. They are
+	// stored so the bridge can say what changed (see bridge.identity.matches).
 	if chatID == "" || t.Pane == "" || t.Kind == "" {
 		return
 	}
@@ -208,6 +201,13 @@ func (s *FileStore) Set(chatID string, t Target) {
 }
 
 // Get returns the chat's target.
+//
+// A read has no clock in it any more. There used to be an expiry evaluated
+// here, and it is gone on purpose (see StaleAfter): a selection is a
+// conversation the user opened, and the only things that may end it are the
+// user ending it and the agent provably not being there — neither of which a
+// read of this map can observe. Age is still visible to the caller through
+// SelectedAt, which is what the bridge uses to remind rather than to forget.
 func (s *FileStore) Get(chatID string) (Target, bool) {
 	if chatID == "" {
 		return Target{}, false
@@ -218,32 +218,6 @@ func (s *FileStore) Get(chatID string) (Target, bool) {
 
 	t, ok := s.targets[chatID]
 	if !ok {
-		return Target{}, false
-	}
-	if !live(t, s.now()) {
-		// Expired, evaluated HERE at read time, and deliberately NOT refreshed
-		// by this read: the TTL bounds time since a human last confirmed the
-		// selection, not time since it was last used. A chat that keeps typing
-		// would otherwise hold a selection forever, which is exactly the
-		// "tomorrow's first message goes somewhere forgotten" the TTL exists
-		// to prevent.
-		//
-		// Drop it while we hold the lock, and make the drop durable. load()
-		// ignoring dead entries is not enough on its own: the retired entry
-		// would stay in the file, and a backwards clock correction (the same
-		// wrong-clock-at-boot case live() fails closed on) plus a restart — S2
-		// 3.1 says the bridge is killed and restarted routinely — would read it
-		// back inside its old window, so the 12h bound would hold in memory
-		// only. This is one fsync per stale selection, not one per read: the
-		// entry is gone from the map afterwards, so the next Get on this chat
-		// is a plain miss.
-		//
-		// Not afterMutateLocked: that records a lost-mutation error on a closed
-		// store, which would be a false alarm raised by a read.
-		delete(s.targets, chatID)
-		if !s.closed && s.autoFlush {
-			_ = s.persistLocked()
-		}
 		return Target{}, false
 	}
 	return t, true
@@ -300,56 +274,24 @@ func (s *FileStore) LastError() error {
 	return s.persistErr
 }
 
-// Len is the number of live selections currently held.
-//
-// Entries past their TTL are excluded even when they are still in the map:
-// nothing purges a dead selection until it is read again, the store overflows,
-// or it is written out, so the raw size can stay high long after the selections
-// it counts stopped resolving.
+// Len is the number of selections currently held. Nothing expires, so this is
+// simply the size of the map.
 func (s *FileStore) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := s.now()
-	n := 0
-	for _, t := range s.targets {
-		if live(t, now) {
-			n++
-		}
-	}
-	return n
-}
-
-// live reports whether a target is still inside its TTL window.
-func live(t Target, now time.Time) bool {
-	d := now.Sub(t.SelectedAt)
-	// Fail closed on a selection dated in the future. A Mac whose clock is
-	// wrong at boot (VM snapshot restore, dead RTC, the window before NTP
-	// lands) writes exactly those, and a plain `d < TTL` would call them live
-	// until the clock caught up — a 2099 timestamp stays selected for 73 years,
-	// which is precisely the unbounded staleness G17 says must not exist.
-	// Losing a selection costs one tap on the picker card; keeping a stale one
-	// aims plain typing at a pane that may now hold a different agent.
-	return d >= 0 && d < TTL
+	return len(s.targets)
 }
 
 // evictLocked bounds the store, never dropping keep — the chat whose selection
 // was just written, or "" when no entry is privileged.
 //
-// keep exists because ordering is purely by SelectedAt and Set deliberately
-// honours a caller-supplied timestamp: at capacity a fresh selection carrying an
-// older stamp (the issuing card's IssuedAt, say) sorts oldest and would be
-// deleted the instant it was stored — the user is told the selection was made
-// and the store never holds it. Protection is against eviction only, not the
-// purge below: an entry stored already outside its TTL routes nothing anyway.
-func (s *FileStore) evictLocked(now time.Time, keep string) {
-	if len(s.targets) <= s.maxEntries {
-		return
-	}
-	// At capacity: drop everything already dead before evicting anything still
-	// inside its window. An expired selection routes nothing; a live one is
-	// somebody's current conversation.
-	s.purgeExpiredLocked(now)
+// This is now the only path that removes a selection nobody asked to remove, so
+// it runs at capacity and nowhere else. keep exists because ordering is purely
+// by SelectedAt and Set deliberately honours a caller-supplied timestamp: at
+// capacity a fresh selection carrying an older stamp (the issuing card's
+// IssuedAt, say) sorts oldest and would be deleted the instant it was stored —
+// the user is told the selection was made and the store never holds it.
+func (s *FileStore) evictLocked(_ time.Time, keep string) {
 	if len(s.targets) <= s.maxEntries {
 		return
 	}
@@ -374,18 +316,6 @@ func (s *FileStore) evictLocked(now time.Time, keep string) {
 			continue
 		}
 		delete(s.targets, c)
-	}
-}
-
-// purgeExpiredLocked drops every selection past its TTL. It is deliberately NOT
-// called on every Set: the scan is O(n) and Get already ignores a dead
-// selection when it reads one. It runs where the cost is already paid — at
-// capacity, and just before a write-through.
-func (s *FileStore) purgeExpiredLocked(now time.Time) {
-	for c, t := range s.targets {
-		if !live(t, now) {
-			delete(s.targets, c)
-		}
 	}
 }
 

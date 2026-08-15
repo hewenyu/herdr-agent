@@ -51,7 +51,7 @@ func (b *bridge) pressSelect(ctx context.Context, a lark.Action, d cards.Decisio
 	if err != nil {
 		b.log.Warn("bridge: refusing a Select press whose agent is not the one in that pane any more",
 			"pane", d.Pane, "kind", d.Kind, "err", err)
-		return b.refuseSelection(ctx, a, d, err)
+		return b.refuseSelection(ctx, a, err)
 	}
 
 	// Read BEFORE the selection is overwritten, and note what it is NOT: the
@@ -105,19 +105,18 @@ func selectedLine(a agents.Agent) string {
 
 // refuseSelection answers a Select press aimed at an agent that is not there.
 //
-// Nothing is selected and the list is re-rendered, because the list is the
-// answer to what the user was trying to do: aim at something.
-func (b *bridge) refuseSelection(ctx context.Context, a lark.Action, d cards.Decision, cause error) error {
-	// A selection already aimed at that same seat is stale for exactly the same
-	// reason, so it goes too: the next thing typed must not land in whoever
-	// moved in (G8, G17).
-	if t, ok := b.currentSelection(a.ChatID); ok && t.Pane == d.Pane {
-		if _, err := b.checkIdentity(t.Pane, selectionIdentity(t)); err != nil {
-			// forgetSelection: refuseInert repaints the picker card next, and the
-			// id of that card is stored in the target being cleared.
-			b.forgetSelection(a.ChatID)
-		}
-	}
+// Nothing is aimed and the list is re-rendered, because the list is the answer
+// to what the user was trying to do: aim at something.
+//
+// Any selection the chat already had is left ALONE, including one pointing at
+// this same seat. This used to clear it, on the reasoning that a target which
+// fails the same check is stale for the same reason — but a refused press is
+// not a request to un-aim anything, and the delivery path re-checks that target
+// before every message anyway, so nothing can reach a stranger by leaving it.
+// What clearing actually cost was the conversation: tap Select on a card that
+// has gone stale, and the chat you were in the middle of ended as a side effect
+// of a button that reported doing nothing. /close is the way out (G8, G17).
+func (b *bridge) refuseSelection(ctx context.Context, a lark.Action, cause error) error {
 	return b.refuseInert(ctx, a, fmt.Sprintf("🔄 %v.\n\nNothing was aimed there.", cause))
 }
 
@@ -151,9 +150,19 @@ func (b *bridge) pressScreen(ctx context.Context, a lark.Action, d cards.Decisio
 	}
 
 	body := []string{fmt.Sprintf("**📺 %s** · %s", agentLabel(live), live.Status)}
-	if replaced(d, live, b.now()) {
+	// Two different facts, and only the first is "a different agent". A pane id
+	// is never reused (see identity.matches), so an old button still names the
+	// window it was drawn for; what may have changed underneath is the program
+	// in it, or merely the conversation that program is on. Saying "this is not
+	// the agent" for a /clear would be false.
+	switch {
+	case d.Kind != live.Kind:
 		body = append(body, fmt.Sprintf(
 			"_This is not the agent that button was made for: %s runs %s now._", d.Pane, orUnknown(live.Kind)))
+	case replaced(d, live, b.now()):
+		body = append(body, fmt.Sprintf(
+			"_Same window, new conversation: the %s in %s has been restarted or cleared since that button "+
+				"was drawn._", orUnknown(live.Kind), d.Pane))
 	}
 	body = append(body, dialogOrNote(s))
 	if s.Cropped {
@@ -209,16 +218,38 @@ func (b *bridge) answerable(a lark.Action, act string) bool {
 
 // selectable resolves the agent a Select press names, refusing when the pane no
 // longer holds the agent the card was made for.
+//
+// The two refusals are told apart because they are different facts and the user
+// can act on only one of them. A changed KIND is about the pane: something else
+// is running there, and no card will ever make that press work. An expired
+// window is about the CARD: the agent may well be the right one, but this button
+// was drawn too long ago to prove it, and /ls draws a new one that can.
+//
+// replacedError is not used for the second case, and that is not cosmetic: a
+// cards.Decision carries no cwd, so the "I recorded it in X" sentence it writes
+// would name an empty directory for a comparison it never made.
 func (b *bridge) selectable(d cards.Decision) (agents.Agent, error) {
 	a, ok := b.deps.Registry.Get(d.Pane)
 	if !ok {
 		return agents.Agent{}, fmt.Errorf("%w: %s is gone — the pane was closed or the agent exited",
-			ErrTargetReplaced, d.Pane)
+			ErrTargetGone, d.Pane)
+	}
+	if d.Kind != a.Kind {
+		return agents.Agent{}, replacedError(d.Pane, identity{Kind: d.Kind}, a)
 	}
 	if replaced(d, a, b.now()) {
-		return agents.Agent{}, replacedError(d.Pane, identity{Kind: d.Kind, Session: d.Session}, a)
+		return agents.Agent{}, staleCardError(d, a)
 	}
 	return a, nil
+}
+
+// staleCardError explains a Select press refused because the card outlived the
+// window in which what it claims could be trusted (see replaced).
+func staleCardError(d cards.Decision, a agents.Agent) error {
+	return fmt.Errorf("%w: that button was drawn more than %s ago and the %s in %s is not on the session "+
+		"it was drawn against — it works in %s now — so I cannot tell whether it is still the same run. "+
+		"Send /ls for a button that can prove it",
+		ErrTargetReplaced, agents.MaxGuardAge, orUnknown(a.Kind), d.Pane, orNoCwd(a.Cwd))
 }
 
 // replaced reports that the pane does not hold the agent the card was made for.
@@ -245,17 +276,37 @@ func (b *bridge) selectable(d cards.Decision) (agents.Agent, error) {
 // stop working after it — and past it the refusal path re-renders the list
 // instead of retargeting in silence.
 //
-// A card that DOES carry a session is held to it, at any age: a different value
-// means the same program was started again, with a different conversation and
-// possibly a different project, which is not what the user is looking at.
+// AGREEMENT ends the question at any age, and it comes in two forms: the same
+// session id on both sides, which is proof and does not go stale, and NO
+// session on either side, which is the G8 window with nothing yet to disagree
+// about. Only a genuine disagreement falls through to the clock.
+//
+// That last clause is a relaxation of a rule that used to refuse a changed
+// session outright, and it is the same retraction identity.matches makes for
+// deliveries, arriving here for the same reason. claude mints a new session id
+// on every /clear and every compaction, so the old rule refused the Select on
+// the card the user was looking at, seconds after it was posted, for an agent
+// that had not moved an inch — and the advice it printed was to run /ls and tap
+// the identical button on an identical card. What bounds it is the card's own
+// age: inside agents.MaxGuardAge the user is acting on what is in front of them,
+// and past it a card in the chat history (which never expires, G17) is not
+// evidence of anything, so it falls back to the list.
+//
+// The ten-minute window is not new — it already governed every card that
+// carries no session at all, which is every card drawn before claude's trust
+// prompt is accepted — and inside it a seat that changed hands is aimed at
+// rather than refused. What catches that is the sentence the press writes back:
+// selectedLine names the LIVE agent it aimed at, kind, directory and pane, so a
+// user who tapped "project-a" and got "project-b" reads it in the very next
+// message instead of discovering it three messages later.
 func replaced(d cards.Decision, a agents.Agent, now time.Time) bool {
 	if d.Kind != a.Kind {
 		return true
 	}
-	if d.Session != "" {
-		return d.Session != sessionID(a)
+	if d.Session == sessionID(a) {
+		return false
 	}
-	return sessionID(a) != "" && now.Sub(time.Unix(d.IssuedAt, 0)) > agents.MaxGuardAge
+	return now.Sub(time.Unix(d.IssuedAt, 0)) > agents.MaxGuardAge
 }
 
 // narrowNote warns about the pane geometry that breaks detection silently.

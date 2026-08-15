@@ -485,10 +485,10 @@ type harness struct {
 	ex      *fakeExtractor
 	res     *fakeResolver
 	watcher *fakeWatcher
-	// sel is the real selection store on a temp file, not a fake: its rules —
-	// TTL at read time, a target with no identity refused — are half of what the
-	// routing tests are asserting, and a fake would only assert my idea of them.
-	// It is nil for a harness built without one.
+	// sel is the real selection store on a temp file, not a fake: its rules — a
+	// target with no identity refused, nothing ever expiring — are half of what
+	// the routing tests are asserting, and a fake would only assert my idea of
+	// them. It is nil for a harness built without one.
 	sel *selection.FileStore
 
 	mu     sync.Mutex
@@ -546,9 +546,9 @@ func buildHarness(t *testing.T, withSelection bool, mutate ...func(*Deps)) *harn
 	var opts []Option
 	if withSelection {
 		// The store shares the harness clock, so a test can walk past
-		// selection.TTL without sleeping. Auto-flush is off because nothing here
-		// reopens the file and an fsync per Set would slow every test that
-		// selects an agent.
+		// selection.StaleAfter without sleeping. Auto-flush is off because
+		// nothing here reopens the file and an fsync per Set would slow every
+		// test that selects an agent.
 		sel, err := selection.OpenWith(filepath.Join(t.TempDir(), "selection.json"),
 			selection.WithClock(func() time.Time { return d.Now() }),
 			selection.WithAutoFlush(false))
@@ -577,7 +577,8 @@ func buildHarness(t *testing.T, withSelection bool, mutate ...func(*Deps)) *harn
 }
 
 // selectAgent aims a chat at an agent the way a Select press will: by what the
-// agent IS (kind and native session id), not only by the seat it occupies.
+// agent IS (kind, working directory and native session id), not only by the
+// seat it occupies.
 func (h *harness) selectAgent(chatID string, a agents.Agent) {
 	h.t.Helper()
 	if h.sel == nil {
@@ -587,6 +588,7 @@ func (h *harness) selectAgent(chatID string, a agents.Agent) {
 		Pane:       a.PaneID,
 		Kind:       a.Kind,
 		Session:    sessionID(a),
+		Cwd:        a.Cwd,
 		SelectedAt: h.b.now(),
 	})
 	if _, ok := h.sel.Get(chatID); !ok {

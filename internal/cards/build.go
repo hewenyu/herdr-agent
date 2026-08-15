@@ -380,7 +380,8 @@ func BuildAgentList(list []agents.Agent, current string, now time.Time) (string,
 // submits prose, because prose typed at a menu is discarded and the Enter
 // behind it approves the highlighted default (G1, G2).
 const listHint = "Tap **Select** to aim your typing at an agent: after that, plain text goes " +
-	"there — no reply, no pane id. If that agent is waiting at a question, the first thing you " +
+	"there — no reply, no pane id — and it keeps going there until you send `/close`. " +
+	"If that agent is waiting at a question, the first thing you " +
 	"type backs out of the question first (esc), so nothing gets approved. " +
 	"**Screen** shows what it is looking at right now. " +
 	"Replying to a message still wins for that one message."
@@ -496,9 +497,10 @@ func agentRow(a agents.Agent, current bool) string {
 // selectButton is the whole point of the card.
 //
 // On the current row it states a fact instead of inviting a tap that would do
-// nothing visible — but it stays pressable, and deliberately so: a selection
-// expires (selection.TTL), and re-confirming the row that already looks
-// selected must be the thing that renews it, not a no-op.
+// nothing visible — but it stays pressable, and deliberately so. It is what
+// re-confirms an aim the user cannot otherwise see the state of: the row may be
+// marked current for an agent that has since been restarted, and pressing it
+// re-reads the live identity and records that instead.
 func selectButton(a agents.Agent, current bool, now time.Time) buttonElement {
 	text, style := selectText, btnNeutral
 	if current {
@@ -539,9 +541,12 @@ func aimLine(rows []agents.Agent, current string) string {
 			return "your typing goes to " + headline(a)
 		}
 	}
-	// The selection outlives the agent: selection.TTL is 12 hours and an agent
-	// can exit in a minute. Saying so beats a card that quietly marks no row.
-	return fmt.Sprintf("%s is gone — nothing is selected", current)
+	// The selection outlives the agent, on purpose: it ends when the user sends
+	// /close and not before, while an agent can exit in a minute and be started
+	// again in the next one. So this must NOT read as "nothing is selected" —
+	// the aim is exactly where the user left it, and the card saying otherwise
+	// is what would send them looking for a button to press.
+	return fmt.Sprintf("still aimed at %s — nothing is running there right now", current)
 }
 
 // listSummary is the notification-bar preview, where the card itself is not

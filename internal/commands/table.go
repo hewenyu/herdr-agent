@@ -62,6 +62,16 @@ var table = []spec{
 		parse:   parseMirror,
 	},
 	{
+		name: "close",
+		kind: KindClose,
+		// Phrased as what it costs, not as what it does. A user reading the
+		// table has to be able to tell that this is the ONLY command that
+		// un-aims a chat — everything else leaves the conversation where it is,
+		// which is the property the picker now guarantees.
+		summary: "stop talking to the selected agent; nothing is aimed until you pick one again",
+		parse:   parseNoArgs,
+	},
+	{
 		name:    "doctor",
 		kind:    KindDoctor,
 		summary: "check the herdr environment and report what is wrong",

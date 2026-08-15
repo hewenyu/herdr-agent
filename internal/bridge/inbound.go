@@ -48,6 +48,9 @@ func (b *bridge) handleMessage(ctx context.Context, m lark.Msg) error {
 	case commands.KindMirror:
 		return b.commandMirror(ctx, m, cmd.Pane, cmd.On)
 
+	case commands.KindClose:
+		return b.commandClose(ctx, m)
+
 	case commands.KindDoctor:
 		return b.reply(ctx, m, "", b.doctor())
 
@@ -91,18 +94,16 @@ func (b *bridge) routeProse(ctx context.Context, m lark.Msg, text string) error 
 	case err == nil:
 		return b.deliver(ctx, m.ChatID, m.MessageID, t, text)
 
-	case errors.Is(err, ErrTargetReplaced):
-		// A destination we had recorded, that is not that destination any more.
-		// Nothing is delivered and the selection has already been cleared: a
-		// pane id is a seat, not an identity (G8, G17).
-		//
-		// The picker card already in the chat still marks that agent as the
-		// current target, so it is repainted where it stands before a fresh one
-		// is posted below. Scrolling back to a card that offers a selection this
-		// bridge has just refused is how a user ends up tapping it again.
-		b.repaintPicker(ctx, m.ChatID, b.pickerCard(m.ChatID))
-		return b.postPicker(ctx, m.ChatID, m.MessageID, fmt.Sprintf(
-			"🔄 %v.\n\nNothing was sent. Tap **Select** below and send it again.", err))
+	case fromStanding(err):
+		// The conversation this chat is in the middle of could not be delivered
+		// to. Checked FIRST because it wraps the sentinels below.
+		return b.standingUnavailable(ctx, m, err)
+
+	case errors.Is(err, ErrTargetReplaced), errors.Is(err, ErrTargetGone):
+		// A reply aimed at a destination that is not that destination any more.
+		// One message, one gesture, nothing delivered — and, unlike the case
+		// above, nothing about the chat's own conversation has changed.
+		return b.replyUnroutable(ctx, m, err)
 
 	case errors.Is(err, ErrAmbiguous):
 		// Deliberately not "the most recent one". Guessing costs a message
@@ -118,6 +119,54 @@ func (b *bridge) routeProse(ctx context.Context, m lark.Msg, text string) error 
 	default:
 		return err
 	}
+}
+
+// standingUnavailable answers a message the chat's own agent could not take.
+//
+// It says three things, in this order: what happened, that nothing was sent,
+// and that the chat is STILL aimed there. The third is the one that matters. An
+// agent exiting is the ordinary rhythm of working — you finish a task, you quit
+// claude, you start it again — and a bridge that treated each of those as the
+// end of the conversation is a bridge that asks you to pick your agent several
+// times a day.
+//
+// No fresh picker card is posted while one can be repainted. A new card under
+// every message reads as "choose again", and there is nothing to choose: the
+// chat already knows who it is talking to, and the one command that changes
+// that is named in the reply.
+func (b *bridge) standingUnavailable(ctx context.Context, m lark.Msg, cause error) error {
+	label := "the agent you picked"
+	if t, ok := b.currentSelection(m.ChatID); ok {
+		label = targetLabel(t)
+	}
+	line := fmt.Sprintf("🚫 %v.\n\nNothing was sent. This chat is still aimed at %s and picks up again "+
+		"the moment it is back — send /close to aim somewhere else, or tap Select on the list.", cause, label)
+
+	if b.repaintPicker(ctx, m.ChatID, b.pickerCard(m.ChatID)) {
+		return b.reply(ctx, m, "", line)
+	}
+	return b.postPicker(ctx, m.ChatID, m.MessageID, line)
+}
+
+// replyUnroutable answers a REPLY whose recorded destination is not there any
+// more. The message is lost; the conversation is not.
+//
+// With a selection in place the picker is deliberately not posted: the user has
+// somewhere to type, they are told where, and one refused gesture is no reason
+// to put the chooser back in front of them.
+func (b *bridge) replyUnroutable(ctx context.Context, m lark.Msg, cause error) error {
+	line := fmt.Sprintf("🔄 %v.\n\nNothing was sent.", cause)
+	if t, ok := b.currentSelection(m.ChatID); ok {
+		return b.reply(ctx, m, "", line+fmt.Sprintf(
+			" This chat is still aimed at %s: send it again without replying and it goes there.",
+			targetLabel(t)))
+	}
+	// The picker card already in the chat may still mark that agent as the
+	// current target, so it is repainted where it stands before a fresh one is
+	// posted below. Scrolling back to a card that offers a selection this bridge
+	// has just refused is how a user ends up tapping it again.
+	b.repaintPicker(ctx, m.ChatID, b.pickerCard(m.ChatID))
+	return b.postPicker(ctx, m.ChatID, m.MessageID, line+" Tap **Select** below and send it again.")
 }
 
 // unboundReplyNote explains an ambiguity the user thought they had resolved.
@@ -178,16 +227,36 @@ func (b *bridge) target(m lark.Msg) (aim, error) {
 	if t, ok := b.currentSelection(m.ChatID); ok {
 		a, err := b.checkIdentity(t.Pane, selectionIdentity(t))
 		if err != nil {
-			// Cleared HERE, where the fact is known. Leaving it in place would
-			// aim tomorrow's first message at the same seat, and the whole
-			// hazard is that the seat now holds somebody else (G8, G17).
-			// forgetSelection rather than clearSelection: the caller repaints the
-			// picker card next, and the id of that card is stored in the target
-			// this line destroys.
-			b.forgetSelection(m.ChatID)
-			return aim{}, err
+			// THE SELECTION IS KEPT, and this line is the whole point of the
+			// wave. It used to be cleared here, "where the fact is known" — and
+			// the fact known here is only that we cannot deliver RIGHT NOW, which
+			// is not the same fact as "this person is done talking to that
+			// agent". Every transient cause (the agent exited and is about to be
+			// restarted, herdr has not listed it back yet) ended the conversation
+			// permanently, and the user had to re-pick from a card.
+			//
+			// Clearing was also the more dangerous of the two. With the selection
+			// gone, the fall-through below reads "exactly one agent is running,
+			// send it there" — so the message AFTER a replaced target would be
+			// delivered, with no note at all, into the agent that replaced it.
+			// Refusing while keeping the aim cannot do that: a chat with a
+			// selection never reaches the fall-through.
+			//
+			// It is wrapped so the caller can tell a refused conversation from a
+			// refused reply and answer them differently (see standingFailure).
+			return aim{}, standingFailure{err}
 		}
-		return aim{agent: a, note: unroutedReplyNote(m, b.deps.Registry.Snapshot())}, nil
+		notes := make([]string, 0, 3)
+		if n := unroutedReplyNote(m, b.deps.Registry.Snapshot()); n != "" {
+			notes = append(notes, n)
+		}
+		if n := b.reconcileSelection(m.ChatID, t, a); n != "" {
+			notes = append(notes, n)
+		}
+		if n := b.staleNote(m.ChatID, t, a); n != "" {
+			notes = append(notes, n)
+		}
+		return aim{agent: a, note: strings.Join(notes, "\n")}, nil
 	}
 
 	switch list := b.deps.Registry.Snapshot(); len(list) {
@@ -549,6 +618,47 @@ func (b *bridge) commandMirror(ctx context.Context, m lark.Msg, paneID string, o
 			"— for claude that happens after you accept its trust-this-directory prompt."
 	}
 	return b.reply(ctx, m, paneID, note)
+}
+
+// commandClose is /close: the one way a user ends the conversation.
+//
+// It is the other half of Select, and the pair is what makes a selection safe
+// to keep for as long as the user wants it. One deliberate act opens the
+// channel; one deliberate act closes it. Nothing in between — not the clock,
+// not a /clear inside the agent, not the agent exiting and coming back, not
+// this bridge restarting — takes the aim away, so there is exactly one answer
+// to "why am I being asked to pick again?": because you asked to be.
+//
+// The card the chat already has is repainted first, so the message that used to
+// say "your typing goes to claude · w1:p1" stops saying it where it stands, and
+// a fresh one is posted at the bottom where the user is typing. Two messages,
+// deliberately: the old card is history that must not lie, the new one is the
+// thing they need under their thumb.
+func (b *bridge) commandClose(ctx context.Context, m lark.Msg) error {
+	if b.sel == nil {
+		// Nothing was ever aimed, because there is nowhere to record an aim. The
+		// picker still lists what is running, which is the useful half.
+		b.log.Warn("bridge: /close arrived but this bridge has no selection store", "chat_id", m.ChatID)
+		return b.postPicker(ctx, m.ChatID, m.MessageID,
+			"ℹ️ This bridge has nowhere to remember a selection, so nothing was aimed to begin with. "+
+				"Use `/say <pane> <text>` to send a single message.")
+	}
+
+	t, had := b.currentSelection(m.ChatID)
+	if !had {
+		return b.postPicker(ctx, m.ChatID, m.MessageID,
+			"ℹ️ This chat was not aimed at anything, so there was nothing to close.")
+	}
+
+	// forgetSelection rather than clearSelection: the id of the picker card
+	// lives inside the target being destroyed, and the repaint below is what
+	// stops that card from going on claiming a target this chat no longer has.
+	b.forgetSelection(m.ChatID)
+	b.repaintPicker(ctx, m.ChatID, b.pickerCard(m.ChatID))
+
+	return b.postPicker(ctx, m.ChatID, m.MessageID, fmt.Sprintf(
+		"👋 Closed. This chat is no longer aimed at %s, and plain text will not reach any agent until "+
+			"you tap **Select** below.", targetLabel(t)))
 }
 
 // ---------- the picker ----------
