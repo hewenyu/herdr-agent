@@ -113,6 +113,69 @@ func TestInputBoxRangeOnNarrowScreen(t *testing.T) {
 	}
 }
 
+// TestInputBoxRangeOnCodexScreen is the regression for the bug that made every
+// prose delivery to codex report itself as "sent but not confirmed".
+//
+// codex 0.147 draws no box around its composer (G21), so the rule-pair scan
+// finds nothing and the old code fell back to "the last 5 non-blank lines" —
+// which on this screen reaches up past the `• Working` line and past the user's
+// own message, the one thing that proves the delivery landed.
+func TestInputBoxRangeOnCodexScreen(t *testing.T) {
+	lines := strings.Split(fixture(t, "codex-settled.txt"), "\n")
+
+	start, end, ok := InputBoxRange(lines)
+	if !ok {
+		t.Fatal("InputBoxRange: not found on a codex screen")
+	}
+	if end != len(lines) {
+		t.Errorf("end = %d, want %d: an unbordered composer runs to the end", end, len(lines))
+	}
+	if got := strings.TrimSpace(lines[start]); !strings.HasPrefix(got, "›") {
+		t.Errorf("range starts at %d (%q), which is not the composer", start, got)
+	}
+
+	// The delivery that has to stay provable: the message was submitted into a
+	// settled agent, so it is echoed in the transcript and must be OUTSIDE.
+	sent := indexOfLineContaining(t, lines, "测试消息E")
+	if sent >= start {
+		t.Errorf("the user's own message at line %d is inside the excluded range [%d,%d)", sent, start, end)
+	}
+	// So must the working indicator directly above the composer, and the
+	// earlier turns above that.
+	for _, keep := range []string{"• Working", "测试C完成", "测试消息D"} {
+		if i := indexOfLineContaining(t, lines, keep); i >= start {
+			t.Errorf("%q (line %d) was swallowed by the range [%d,%d)", keep, i, start, end)
+		}
+	}
+	// And the composer itself, placeholder and all, stays excluded: anything
+	// typed but not submitted lands there and must never count as delivered.
+	hint := indexOfLineContaining(t, lines, "Use /skills")
+	if hint < start || hint >= end {
+		t.Errorf("composer line %d is outside the range [%d,%d)", hint, start, end)
+	}
+}
+
+// A message submitted to a codex that is mid-turn is parked under `• Messages
+// to be submitted after next tool call`, in the transcript rather than in the
+// composer. That is the only evidence such a delivery ever gets, so it too must
+// stay outside the excluded range.
+func TestInputBoxRangeOnCodexQueuedScreen(t *testing.T) {
+	lines := strings.Split(fixture(t, "codex-queued.txt"), "\n")
+
+	start, end, ok := InputBoxRange(lines)
+	if !ok {
+		t.Fatal("InputBoxRange: not found on a codex screen")
+	}
+	queued := indexOfLineContaining(t, lines, "↳")
+	if queued >= start {
+		t.Errorf("the queued message at line %d is inside the excluded range [%d,%d)", queued, start, end)
+	}
+	notice := indexOfLineContaining(t, lines, "Messages to be submitted")
+	if notice >= start {
+		t.Errorf("the queue notice at line %d is inside the excluded range [%d,%d)", notice, start, end)
+	}
+}
+
 func indexOfLineContaining(t *testing.T, lines []string, sub string) int {
 	t.Helper()
 	for i, l := range lines {
@@ -241,6 +304,86 @@ func TestInputBoxRange(t *testing.T) {
 				"one", "two", "three", "four", "five", "six", "seven", "eight",
 			},
 			wantStart: 3, wantEnd: 8, wantOK: true,
+		},
+		{
+			// codex: no box anywhere, so the composer glyph is the only anchor.
+			// The fallback would have started at "› message one" and hidden the
+			// echo that proves the delivery.
+			name: "an unbordered composer beats the tail fallback",
+			lines: []string{
+				"› message one",
+				"",
+				"• answer one",
+				"",
+				"› message two",
+				"",
+				"• Working (0s • esc to interrupt)",
+				"",
+				"› Use /skills to list available skills",
+				"",
+				"  gpt-5.6-sol high · ~/code",
+			},
+			wantStart: 8, wantEnd: 11, wantOK: true,
+		},
+		{
+			// A draft that wrapped, or one with newlines in it: codex puts the
+			// glyph on the first line only, so the range from it to the end
+			// still covers every character typed.
+			name: "a multi-line draft is covered from its glyph line",
+			lines: []string{
+				"• answer",
+				"",
+				"› draft line one",
+				"  draft line two",
+				"",
+				"  gpt-5.6-sol high · ~/code",
+			},
+			wantStart: 2, wantEnd: 6, wantOK: true,
+		},
+		{
+			// The first turns of a codex session: the welcome banner is the only
+			// box on screen. Pairing it up and calling it the composer leaves
+			// everything typed in the unexcluded part of the screen, where an
+			// unsubmitted paste would be read back as proof of delivery.
+			name: "a composer below a boxed banner wins over the banner",
+			lines: []string{
+				boxTop(40),
+				"│ >_ OpenAI Codex (v0.147.0)",
+				boxBottom(40),
+				"",
+				"  Tip: run 'codex app'",
+				"",
+				"› Use /skills to list available skills",
+				"",
+				"  gpt-5.6-sol high · ~/code",
+			},
+			wantStart: 6, wantEnd: 9, wantOK: true,
+		},
+		{
+			// Claude's bordered composer keeps winning: its own glyph sits
+			// behind a `│` and never starts a line, and the `❯` of a permission
+			// dialog is above the box, not below it.
+			name: "a bordered composer wins over glyphs above it",
+			lines: []string{
+				"› an earlier message quoted in the transcript",
+				" ❯ 1. Yes",
+				boxTop(40),
+				"│ > typed",
+				boxBottom(40),
+				"  ⏵⏵ accept edits on",
+			},
+			wantStart: 2, wantEnd: 5, wantOK: true,
+		},
+		{
+			// A glyph far from the bottom is a message in the transcript, not a
+			// composer, and must not drag the whole tail of the screen into the
+			// excluded range.
+			name: "a glyph line nine non-blank lines from the bottom is transcript",
+			lines: []string{
+				"› message",
+				"1", "2", "3", "4", "5", "6", "7", "8", "9",
+			},
+			wantStart: 5, wantEnd: 10, wantOK: true,
 		},
 		{
 			name: "fallback counts non-blank lines but spans to the end",

@@ -1148,11 +1148,17 @@ const distinctiveEchoRunes = 8
 
 // trimEchoMarkers removes the leading glyphs a TUI puts in front of the user's
 // own words when it quotes them back — claude renders a sent message as
-// `> text`, codex as `▌ text` — so that a whole-line comparison is comparing
+// `> text`, codex as `› text` — so that a whole-line comparison is comparing
 // the message and not the decoration. Box drawing and whitespace are already
 // gone by the time this runs.
+//
+// `↳` is here for one specific line: codex parks a message submitted mid-turn
+// under `• Messages to be submitted after next tool call` and renders it as
+// `↳ text` (G21). That line is the only proof a short queued message arrived,
+// and without the trim `↳ok` never equals `ok`, so every "ok" and "好的" sent to
+// a working codex reported itself unconfirmed.
 func trimEchoMarkers(s string) string {
-	return strings.TrimLeft(s, ">❯›»•·▌▏|*-")
+	return strings.TrimLeft(s, ">❯›»•·▌▏↳|*-")
 }
 
 // normalizeEcho reduces a line to the characters that carry the message.
