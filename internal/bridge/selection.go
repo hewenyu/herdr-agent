@@ -138,11 +138,19 @@ func identityOf(a agents.Agent) identity {
 // conversation to it is anchoring it to a window the user can see — which is
 // exactly how a person thinks about it: two agents means two windows.
 //
-// (One narrow exception, documented rather than designed around: workspace ids
-// are re-derived at load as max(existing)+1 rather than from a persisted
-// counter, so deleting the highest-numbered workspace and restarting herdr can
-// hand its id to a new one. It costs a deliberate workspace deletion plus a
-// restart, and the kind check below still catches a different program.)
+// ONE NARROW EXCEPTION, and it is ACCEPTED RISK rather than an oversight — do
+// not add a check to close it. Workspace ids are re-derived at load as
+// max(existing)+1 (workspace.rs reserve_workspace_ids) rather than from a
+// persisted counter, so deleting the highest-numbered workspace and restarting
+// herdr can hand its id to a new one. Reaching it takes a deliberate workspace
+// deletion PLUS a restart of a process the operator restarts by hand anyway
+// (there is no supervisor on herdr or on this bridge), the kind check below
+// still catches a different program, and a restart is what settles it.
+//
+// The trade is the point: every identity field this package has added beyond
+// the pane ended a conversation the user had not ended — see the two
+// retractions below. Effort belongs on the failures that happen while somebody
+// is simply working, not on this one.
 //
 // WHAT A PANE DOES OUTLIVE is the agent inside it. Quit claude in w2:p2, run
 // codex there, and the id is unchanged while the program is not. That is the
