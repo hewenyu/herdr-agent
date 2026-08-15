@@ -9,18 +9,59 @@ one machine, one Feishu app, one `open_id` on the allowlist.
 There is no public URL, no tunnel and no webhook. The bridge dials out over Feishu's WebSocket, so a
 laptop behind NAT works.
 
-## Requirements
+## Before you start: herdr
 
-- [herdr](https://herdr.dev) 0.8.0 or newer. Protocol 19 is the minimum the wire types were measured
-  against.
-- `claude` and/or `codex`, plus `herdr integration install claude` / `herdr integration install
-  codex`. For codex you must also press `t` inside codex once to trust the hook, or herdr never
-  learns the session id and transcript mirroring has nothing to follow (G8).
-- A Feishu account. `herdr-agent setup` prepares the app for you — a new one, or one you already
-  have. The [manual console checklist](#feishu-console-checklist--the-manual-fallback) is the
-  supported fallback.
-- macOS is what all of this was measured on, and the ready-made service units are launchd. The Go
-  code is portable and Linux binaries ship; `serve` is an ordinary foreground process anywhere.
+**[herdr](https://herdr.dev) is the prerequisite.** It is the terminal that runs your agents; this
+bridge only talks to it. Install and start it by its own instructions — that is not this project's
+job and this README does not repeat it:
+
+```sh
+brew install herdr                          # or: curl -fsSL https://herdr.dev/install.sh | sh
+```
+
+Then follow [herdr's quick start](https://herdr.dev/docs/quick-start/) until you have `herdr server`
+running with `claude` or `codex` alive in a pane. Everything below assumes exactly that.
+
+Two more things on the herdr side, because both are load-bearing here:
+
+- `herdr integration install claude` / `herdr integration install codex`. For codex, press `t` inside
+  it once to trust the hook, or herdr never learns the session id and transcript mirroring has
+  nothing to follow (G8).
+- herdr **0.8.0 or newer**. Protocol 19 is the minimum these wire types were measured against.
+
+You also need a Feishu account. `herdr-agent setup` prepares the app for you — a new one, or one you
+already have — and the [manual console checklist](#feishu-console-checklist--the-manual-fallback) is
+the supported fallback.
+
+macOS is what all of this was measured on, and the ready-made service units are launchd. The Go code
+is portable and Linux binaries ship; `serve` is an ordinary foreground process anywhere.
+
+<details>
+<summary><b>Two herdr settings that make this product look broken</b> — worth a minute if you are
+setting herdr up for the first time</summary>
+
+Neither is this bridge's to configure, and both fail silently, so `herdr-agent doctor` checks them.
+
+**Start `herdr server` from a clean environment.** herdr hands its own environment to every pane it
+spawns, so a server started from inside a claude session gives every agent a
+`CLAUDE_CODE_CHILD_SESSION` marker — and claude answers that by switching transcript saving off with
+no error anywhere (G7). Mirroring then has nothing to read.
+
+```sh
+env -i HOME="$HOME" PATH="$PATH" SHELL="$SHELL" TERM="$TERM" LANG="$LANG" herdr server
+```
+
+Keep `claude` / `codex` on that `PATH`: it is the `PATH` every pane inherits. `SHELL` is on the list
+for the same reason — without it every pane falls back to `/bin/sh`. (`deploy/install.sh` does this
+scrub for you.)
+
+**Attach a wide terminal to the pane once.** A pane herdr never attached a client to is 53 columns.
+Claude's dialogs wrap at that width, the English strings herdr matches on stop matching, and herdr
+reports a blocked agent as `idle` rather than `unknown` (G5, G11) — so the cards that say an agent
+needs you simply never arrive. Open the pane once from the herdr desktop UI with a wide window; herdr
+remembers the geometry after the client detaches.
+
+</details>
 
 ## Install
 
@@ -74,59 +115,27 @@ go build -o ~/.local/bin/herdr-agent ./cmd/herdr-agent
 
 ## Quick start
 
-Six steps. The reason under each one is a failure that is silent if you skip it.
-
-**1. Start herdr from a clean environment.**
+herdr is running and an agent is alive in one of its panes. Three commands:
 
 ```sh
-env -i HOME="$HOME" PATH="$PATH" SHELL="$SHELL" TERM="$TERM" LANG="$LANG" nohup herdr server >/tmp/herdr-server.log 2>&1 &
+herdr-agent setup     # prepare the Feishu app: one confirmation page, two taps on your phone
+herdr-agent doctor    # check the machine before you trust it
+herdr-agent serve     # run the bridge
 ```
 
-herdr hands its own environment to every pane it spawns, so a server started from inside a claude
-session gives every agent a `CLAUDE_CODE_CHILD_SESSION` marker, and claude answers that by switching
-transcript saving off with no error anywhere (G7). Make sure that `PATH` contains `claude` / `codex`:
-it is the `PATH` every pane will start with. `SHELL` is on that list for the same reason — without it
-every pane falls back to `/bin/sh`.
+Then message the bot `/ls` from your phone, tap **Select**, and type.
 
-**2. Attach a wide terminal once.** Open the herdr desktop UI with a wide window, open the pane you
-are going to work in from there, and close the window afterwards if you like — herdr remembers the
-last attached geometry even after the client detaches (G5).
+`setup` needs no flags. It grants the scopes, subscribes the events, writes `~/.herdr-agent/.env` at
+mode 0600, fills in the allowlist and `notify_chat_id` — and then makes you send a real message and
+press a real button, because every one of those settings fails the same invisible way when it is
+wrong. [More about setup](#more-about-setup).
 
-Skip it and the pane is 53 columns wide, where herdr silently reports a blocked agent as `idle`
-(G5, G11) — the one setup mistake that makes the whole product look like it does nothing.
-`herdr-agent doctor` FAILs on such a pane; [Troubleshooting](#troubleshooting) has the mechanism.
+`doctor` looks for what breaks this silently, including the two herdr-side settings above. A healthy
+install still has a couple of non-PASS results, so read them rather than counting them;
+[Troubleshooting](#troubleshooting) says which are expected.
 
-**3. Start your agent in that pane** — `claude` or `codex`, in the directory you want it working in.
-The bridge never starts agents; that stays yours.
-
-**4. Prepare the Feishu app.**
-
-```sh
-herdr-agent setup
-```
-
-One confirmation page, then two taps on your phone: it grants the scopes, subscribes the events,
-writes `~/.herdr-agent/.env` at mode 0600, fills in the allowlist and `notify_chat_id`, and then makes
-you send a real message and press a real button, because each of those settings fails the same
-invisible way when it is wrong. [More about setup](#more-about-setup).
-
-**5. Check the machine.**
-
-```sh
-herdr-agent doctor
-```
-
-It looks for the things that break the bridge silently. A healthy install still has a couple of
-non-PASS results, so read them rather than counting them — [Troubleshooting](#troubleshooting) says
-which ones are expected and what to do about the rest.
-
-**6. Run the bridge.**
-
-```sh
-herdr-agent serve
-```
-
-Then message the bot `/ls` from your phone.
+The bridge never starts agents. Which agent runs where, in which directory, stays yours; this only
+carries the conversation.
 
 ### Keep it running
 
@@ -455,7 +464,7 @@ they share the lock. With credentials already in a file the bridge reads, it ope
 no app: it adopts them and proves every invisible setting above with the same two round trips — a
 great deal cheaper than finding out from silence.
 
-## Notes before you start
+## Notes
 
 **Reusing an app beats registering another one.** `setup` creates a real Feishu app in your tenant,
 and no API we could find deletes one (G18), so every registration is permanent clutter. That is why
