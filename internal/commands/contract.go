@@ -20,6 +20,11 @@ const (
 	KindMirror
 	KindDoctor
 	KindHelp
+	// KindClose ends the chat's conversation with the agent it selected. It is
+	// the ONLY thing a user can type that un-aims a chat, which is what makes
+	// the selection safe to keep indefinitely: there is one way in (Select) and
+	// one way out, both of them a deliberate human act.
+	KindClose
 	// KindUnknown is an unrecognised slash command. Callers must reply with an
 	// error and must not route it to an agent.
 	KindUnknown
@@ -45,6 +50,8 @@ func (k Kind) String() string {
 		return "doctor"
 	case KindHelp:
 		return "help"
+	case KindClose:
+		return "close"
 	case KindBadArgs:
 		return "bad-args"
 	default:
@@ -73,7 +80,8 @@ type Command struct {
 // Rules:
 //   - leading/trailing whitespace trimmed; empty input => KindBadArgs
 //   - anything not starting with '/' => KindProse
-//   - "/ls" takes no arguments; extra arguments are tolerated and ignored
+//   - "/ls", "/close", "/doctor" and "/help" take no arguments; extra
+//     arguments are tolerated and ignored
 //   - "/card <pane>", "/stop <pane>" require a pane that looks like w<N>:p<M>
 //     (also accept the legacy forms herdr tolerates: w1-1, bare integers)
 //   - "/say <pane> <text...>" requires both

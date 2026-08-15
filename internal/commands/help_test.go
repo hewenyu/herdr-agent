@@ -14,6 +14,7 @@ var sampleInvocations = map[string]string{
 	"say":    "/say w1:p1 hello",
 	"stop":   "/stop w1:p1",
 	"mirror": "/mirror w1:p1 on",
+	"close":  "/close",
 	"doctor": "/doctor",
 	"help":   "/help",
 }
@@ -57,7 +58,7 @@ func TestEveryContractKindHasATableRow(t *testing.T) {
 	for _, sp := range table {
 		inTable[sp.kind] = true
 	}
-	for _, k := range []Kind{KindLs, KindCard, KindSay, KindStop, KindMirror, KindDoctor, KindHelp} {
+	for _, k := range []Kind{KindLs, KindCard, KindSay, KindStop, KindMirror, KindClose, KindDoctor, KindHelp} {
 		if !inTable[k] {
 			t.Errorf("%v is declared in the contract but no table row produces it", k)
 		}
@@ -70,7 +71,7 @@ func TestEveryContractKindHasATableRow(t *testing.T) {
 func TestSlashNamesOutsideTheTableAreRefused(t *testing.T) {
 	action := map[Kind]bool{
 		KindLs: true, KindCard: true, KindSay: true, KindStop: true,
-		KindMirror: true, KindDoctor: true, KindHelp: true,
+		KindMirror: true, KindClose: true, KindDoctor: true, KindHelp: true,
 	}
 	for _, in := range []string{
 		"/kill w1:p1",

@@ -242,8 +242,25 @@ first, each row showing kind, directory, pane id, status and what the agent says
 
 Tap **Select**, and then just type. Plain text goes to the selected agent — no pane id, no
 long-press, no command. The card is re-rendered in place on every selection, so switching agents is
-one tap on a card you already have rather than another `/ls`. `▶` marks the current row. A selection
-lasts 12 hours; after that the card comes back and you pick again.
+one tap on a card you already have rather than another `/ls`. `▶` marks the current row.
+
+**The selection lasts until you send `/close`.** Not twelve hours, not until the bridge restarts, not
+until the agent does something: one deliberate tap opens the channel and one deliberate command
+closes it, and there is exactly one answer to "why am I being asked to pick again?" — because you
+asked to be. In particular it survives all of these, which used to end it:
+
+- `/clear` or a compaction inside the agent. It is the same agent in the same directory, so your
+  typing still goes there; you are told once that it no longer remembers what you discussed.
+- the agent exiting and being started again in the same pane on the same job. While it is away you
+  get "nothing was sent, this chat is still aimed at claude · herdr-agent · w1:p1" instead of a
+  chooser, and typing resumes the moment it is back.
+- the bridge being killed and restarted, which happens routinely.
+- a night, a weekend, a holiday. After twelve quiet hours the next message is still delivered, with
+  one line saying how long ago you picked — said once, so a chat in daily use never sees it.
+
+What still refuses to deliver is a seat that provably changed hands: a **different kind** of agent in
+that pane, or the same kind working in a **different directory**. Nothing is sent, you are told what
+changed, and the aim stays where you put it until you move it.
 
 **Reply to a message to override the selection for that one message.** That is how you drive several
 agents from one chat while still having a default: the reply routes to the agent that message was
@@ -260,6 +277,7 @@ Slash commands stay available underneath as an escape hatch:
 | `/say <pane> <text>` | send text to that agent through the safe path |
 | `/stop <pane>` | send `esc` — the safe way out of a dialog |
 | `/mirror <pane> on\|off` | follow that agent's transcript in the chat (default off) |
+| `/close` | stop talking to the selected agent; nothing is aimed until you pick one again |
 | `/doctor` | the same checks as `herdr-agent doctor` |
 | `/help` | this table |
 
@@ -333,7 +351,10 @@ message, so nobody who can talk to the bot can redirect your agents' screens to 
 w1:p1. It is now idle." — kind, directory, pane. A pane id is a seat and not an identity: an agent
 can exit and another take the same seat, so a remembered destination — a selection, a reply binding —
 is re-checked against whoever is in that pane now before anything is delivered, and if it changed you
-are told instead of being quietly retargeted.
+are told instead of being quietly retargeted. The check is **kind and working directory**, which is
+what a person means by "the claude in ~/project"; the native session id is recorded and reported but
+not compared, because it changes on every `/clear` and comparing it ended conversations that had not
+ended.
 
 ## Troubleshooting
 

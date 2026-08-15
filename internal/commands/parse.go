@@ -132,6 +132,8 @@ func Help() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(paneHint + ".\n")
+	b.WriteString("Tap Select on the /ls card to aim this chat at one agent: after that every plain " +
+		"message goes there, for as long as it takes, until you send /close.\n")
 	b.WriteString("Reply to one of my messages to aim at that agent without naming a pane.\n")
 	return b.String()
 }

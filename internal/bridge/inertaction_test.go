@@ -290,45 +290,58 @@ func TestAFailedPickerUpdateFallsBackToANewCard(t *testing.T) {
 	}
 }
 
-// TestAClearedSelectionRepaintsThePicker is the same rule on the route that
-// changes a selection without anyone pressing anything: the agent behind it was
-// replaced, so target() cleared it (G8, G17). The card left in the chat still
-// marks that agent as current, and tapping it again is the obvious next thing a
-// user does.
-func TestAClearedSelectionRepaintsThePicker(t *testing.T) {
+// TestAnUnavailableTargetRepaintsThePickerInPlace is the same rule on the route
+// where nobody pressed anything: the agent behind a standing selection is not
+// running, so nothing can be delivered.
+//
+// Two things are asserted and the second is the point. The card is brought up
+// to date where it stands — it marked a row as current and that row is gone —
+// and NO fresh card is posted underneath, because the chat is still aimed and
+// a chooser under every message reads as "pick again", which is exactly what
+// this wave removed.
+func TestAnUnavailableTargetRepaintsThePickerInPlace(t *testing.T) {
 	h := newHarness(t)
 	was := withSession(idleAgent(testPane), "sess-one")
 	h.reg.setAgents(was)
 	h.selectAgent(testChat, was)
 
 	cardID := postPickerCard(t, h)
-	h.reg.setAgents(withSession(idleAgent(testPane), "sess-two")) // same seat, different run
+	before := len(h.bot.cards())
+	h.reg.setAgents() // it exited
 
 	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 
-	assertNothingWasTyped(t, h, "a selection whose agent was replaced")
+	assertNothingWasTyped(t, h, "a selection whose agent is not running")
 	ups := updatesOf(h, cardID)
 	if len(ups) != 1 {
 		t.Fatalf("%d updates of the picker, want the stale one brought up to date", len(ups))
 	}
 	if strings.Contains(ups[0].Card, "✓ Selected") {
-		t.Errorf("the repainted card still marks a row as selected:\n%s", ups[0].Card)
+		t.Errorf("the repainted card marks a row as selected although nothing is running there:\n%s", ups[0].Card)
 	}
-	wantContains(t, ups[0].Card, "nothing selected", "the repainted card must say nothing is aimed at")
+	wantContains(t, ups[0].Card, "still aimed at", "the repainted card must say the aim is unchanged")
+	if strings.Contains(ups[0].Card, "nothing selected") {
+		t.Errorf("the repainted card claims the chat was un-aimed:\n%s", ups[0].Card)
+	}
+	if got := len(h.bot.cards()); got != before {
+		t.Errorf("%d cards posted, want none: the chat already knows who it is talking to", got-before)
+	}
+	if _, ok := h.selected(testChat); !ok {
+		t.Error("the selection was dropped because the agent was briefly not there")
+	}
 }
 
-// TestAClearedSelectionRepaintsThePickerAfterARestart is the same rule with the
-// memory index cold, which is the state every restart starts in.
+// TestAnUnavailableTargetRepaintsThePickerAfterARestart is the same rule with
+// the memory index cold, which is the state every restart starts in.
 //
-// The id of the live picker card is stored INSIDE the target, so clearing the
-// selection destroys it — one line before routeProse tries to repaint that very
-// card. In-process the pickers index hides that; after a restart it is empty,
-// and S2 §3.1 has the bridge killed and restarted routinely while a selection
-// lasts twelve hours. The card left in the chat would go on saying "your typing
-// goes to claude · w1:p1" for an agent that has been replaced.
-func TestAClearedSelectionRepaintsThePickerAfterARestart(t *testing.T) {
+// The id of the live picker card is stored INSIDE the target. In-process the
+// pickers index also holds it, which hides any dependence on the durable copy;
+// after a restart the index is empty and the target is all there is, and S2
+// §3.1 has the bridge killed and restarted routinely while a selection now
+// lasts until the user closes it.
+func TestAnUnavailableTargetRepaintsThePickerAfterARestart(t *testing.T) {
 	h := newHarness(t)
 	was := withSession(idleAgent(testPane), "sess-one")
 	h.reg.setAgents(was)
@@ -340,6 +353,7 @@ func TestAClearedSelectionRepaintsThePickerAfterARestart(t *testing.T) {
 		Pane:          was.PaneID,
 		Kind:          was.Kind,
 		Session:       sessionID(was),
+		Cwd:           was.Cwd,
 		SelectedAt:    h.b.now(),
 		CardMessageID: cardID,
 	})
@@ -347,13 +361,13 @@ func TestAClearedSelectionRepaintsThePickerAfterARestart(t *testing.T) {
 		t.Fatalf("the memory index holds %q; this test is not exercising a cold one", got)
 	}
 
-	h.reg.setAgents(withSession(idleAgent(testPane), "sess-two")) // same seat, different run
+	h.reg.setAgents() // it exited
 
 	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 
-	assertNothingWasTyped(t, h, "a selection whose agent was replaced")
+	assertNothingWasTyped(t, h, "a selection whose agent is not running")
 	ups := updatesOf(h, cardID)
 	if len(ups) != 1 {
 		t.Fatalf("%d updates of the picker card the selection named, want the stale one corrected", len(ups))
@@ -395,6 +409,11 @@ func TestThePickerIndexIsBounded(t *testing.T) {
 // claude exits, codex starts in the same pane. Honouring the old card would aim
 // every later message at a different context, and text typed at an agent that
 // is sitting on a permission dialog answers it (G1, G8).
+//
+// What a refusal must NOT do is take away a selection the chat already had. The
+// press said "aim me here"; it failed; that is the whole of it. Ending the
+// conversation the user was in the middle of, as a side effect of a button that
+// reports doing nothing, is the failure /close exists to be the only cause of.
 func TestSelectIsRefusedWhenTheSeatChanged(t *testing.T) {
 	carded := withSession(idleAgent(testPane), "sess-one")
 
@@ -408,11 +427,6 @@ func TestSelectIsRefusedWhenTheSeatChanged(t *testing.T) {
 			name: "a different kind took the seat",
 			now:  withSession(func() agents.Agent { a := idleAgent(testPane); a.Kind = "codex"; return a }(), "sess-one"),
 			says: "now runs codex",
-		},
-		{
-			name: "the same agent was restarted",
-			now:  withSession(idleAgent(testPane), "sess-two"),
-			says: "different session",
 		},
 		{
 			name: "the pane is gone",
@@ -437,8 +451,8 @@ func TestSelectIsRefusedWhenTheSeatChanged(t *testing.T) {
 			pressed(t, h, inertPress(t, card, "om_list", testPane, cards.ActSelect))
 
 			assertNothingWasTyped(t, h, "a refused Select press")
-			if got, ok := h.selected(testChat); ok {
-				t.Fatalf("selection = %+v, want none: the agent it named is not there", got)
+			if got, ok := h.selected(testChat); !ok || got.Pane != testPane {
+				t.Fatalf("selection = %+v, want the one the chat already had left alone", got)
 			}
 			text := lastText(t, h)
 			wantContains(t, text, tt.says, "the refusal must say what changed")
@@ -447,6 +461,65 @@ func TestSelectIsRefusedWhenTheSeatChanged(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAgreementBeatsTheClock covers the two ways a card and a live agent can
+// agree, because only a genuine DISAGREEMENT may fall through to the card's age.
+//
+// The second form is the one easy to lose: neither side has a session id at
+// all. That is the G8 window — codex whose hook was never trusted with `t` sits
+// in it indefinitely — and there is nothing to disagree about, so an old card
+// for such an agent must not start reporting it as somebody else.
+func TestAgreementBeatsTheClock(t *testing.T) {
+	old := epoch.Add(-agents.MaxGuardAge - time.Hour).Unix()
+
+	sessioned := withSession(idleAgent(testPane), "sess-one")
+	if replaced(cards.Decision{Kind: "claude", Session: "sess-one", IssuedAt: old}, sessioned, epoch) {
+		t.Error("a card whose session still matches was refused for being old; that is proof, and proof does not stale")
+	}
+
+	none := idleAgent(testPane) // no SessionRef, and none coming
+	if replaced(cards.Decision{Kind: "claude", IssuedAt: old}, none, epoch) {
+		t.Error("an old card for an agent that has never published a session was reported as replaced")
+	}
+
+	// And a disagreement still falls through to the clock.
+	if !replaced(cards.Decision{Kind: "claude", Session: "sess-one", IssuedAt: old}, none, epoch) {
+		t.Error("an old card naming a session the agent is not on was trusted")
+	}
+}
+
+// TestSelectSurvivesTheAgentStartingANewSession is the other half, and it is a
+// retraction: a Select press used to be refused outright when the live session
+// id differed from the card's.
+//
+// claude mints a new session on every /clear and every compaction, so the
+// refusal fired on the card the user was looking at, seconds after it was
+// posted, for an agent that had not moved — and the advice it printed was to
+// run /ls and tap the identical button on an identical card. Inside the card's
+// own freshness window the press is honoured, and what it stores is the LIVE
+// identity, so every later delivery is checked against a session that exists.
+func TestSelectSurvivesTheAgentStartingANewSession(t *testing.T) {
+	h := newHarness(t)
+	carded := withSession(idleAgent(testPane), "sess-one")
+	h.reg.setAgents(carded)
+	card := listCard(t, "", carded)
+
+	restarted := withSession(idleAgent(testPane), "sess-two")
+	h.reg.setAgents(restarted)
+
+	pressed(t, h, inertPress(t, card, "om_list", testPane, cards.ActSelect))
+
+	got, ok := h.selected(testChat)
+	if !ok {
+		t.Fatal("a Select press was refused for an agent that only started a new conversation")
+	}
+	if got.Session != "sess-two" {
+		t.Errorf("stored session = %q, want the live %q", got.Session, "sess-two")
+	}
+	// The reply names what it actually aimed at, which is how a user who
+	// tapped one row and got another finds out immediately.
+	wantContains(t, lastText(t, h), "Now aimed at", "the press must say where typing now goes")
 }
 
 // TestSelectRecordsTheLiveIdentityNotTheCards is the G8 window seen from the
@@ -628,7 +701,11 @@ func TestARefusedSelectRepaintsTheListInsteadOfPostingAnother(t *testing.T) {
 
 	cardID := postPickerCard(t, h)
 	card := listCard(t, testPane, was)
-	h.reg.setAgents(withSession(idleAgent(testPane), "sess-two"))
+
+	// A different program in that seat: the one thing no card can make work.
+	took := withSession(idleAgent(testPane), "sess-two")
+	took.Kind = "codex"
+	h.reg.setAgents(took)
 
 	pressed(t, h, inertPress(t, card, cardID, testPane, cards.ActSelect))
 
@@ -638,8 +715,8 @@ func TestARefusedSelectRepaintsTheListInsteadOfPostingAnother(t *testing.T) {
 	if got := len(h.bot.cards()); got != 1 {
 		t.Errorf("%d cards posted, want only the original: the list was edited in place", got)
 	}
-	if _, ok := h.selected(testChat); ok {
-		t.Error("the stale selection aimed at the same seat survived a refusal about that seat")
+	if _, ok := h.selected(testChat); !ok {
+		t.Error("a refused press took away the conversation the chat was already having")
 	}
 	wantContains(t, lastText(t, h), "up to date", "the user must be told where the corrected list is")
 }

@@ -56,7 +56,12 @@ func (s *FileStore) load() error {
 		// Same admission rules as Set, applied again here: the file is state
 		// this process did not write in this run, and a selection with no Kind
 		// could not be identity-checked before delivery (G8, G17).
-		if e == nil || e.ChatID == "" || e.Target.Pane == "" || e.Target.Kind == "" || !live(e.Target, now) {
+		//
+		// Age is NOT one of them. S2 3.1 has this bridge killed and restarted
+		// routinely, so a restart-time expiry would be the TTL back under
+		// another name — the user's conversation would end because the process
+		// bounced, which is the least explicable way for it to end.
+		if e == nil || e.ChatID == "" || e.Target.Pane == "" || e.Target.Kind == "" {
 			continue
 		}
 		// A duplicate chat id can only come from a hand-edited or merged file.
@@ -74,17 +79,15 @@ func (s *FileStore) load() error {
 
 // persistLocked writes the live set out atomically.
 //
-// Dead selections are purged first. Nothing else reclaims them below capacity —
-// Get only drops the one chat it was asked about — so a bridge whose user
-// selected an agent and then went quiet would keep re-encoding and re-fsyncing
-// entries that can no longer route anything.
+// It writes what the map holds and prunes nothing. There is nothing left to
+// prune: a selection is retired by /close, by picking another agent, or by
+// eviction at capacity, and all three have already removed it from the map by
+// the time this runs.
 func (s *FileStore) persistLocked() (err error) {
 	// One exit point for the error: LastError must never disagree with what the
 	// caller was told, and the callers that need it most (Set, Clear) have no
 	// error return of their own.
 	defer func() { s.persistErr = err }()
-
-	s.purgeExpiredLocked(s.now())
 
 	chats := make([]string, 0, len(s.targets))
 	for c := range s.targets {

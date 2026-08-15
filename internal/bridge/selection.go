@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
@@ -23,6 +24,40 @@ import (
 // the next thing typed into a different context, and text typed at an agent
 // that happens to be sitting at a permission dialog answers that dialog (G1).
 var ErrTargetReplaced = errors.New("the agent that was there has been replaced")
+
+// ErrTargetGone reports that herdr has no agent at that pane right now.
+//
+// Separate from ErrTargetReplaced because the two are opposite situations for
+// the person reading them, and only one of them is a reason to stop. "Replaced"
+// means somebody else is sitting in that seat: the thing you picked is
+// provably not what is there. "Gone" means nothing is there — the agent exited,
+// the pane was closed, or it has not been started back up yet — and the honest
+// thing to say is "not right now", not "pick again". A chat aimed at a claude
+// that is currently not running is still aimed at it; start claude back up in
+// that pane and typing resumes, which is what a person expects from a
+// conversation they never closed.
+var ErrTargetGone = errors.New("there is no agent at that pane right now")
+
+// standingFailure marks a refusal that came from the chat's STANDING selection
+// rather than from a reply-to binding.
+//
+// The two need opposite answers and the sentinel inside them cannot tell them
+// apart. A refused reply is one message that could not be aimed where the user
+// pointed it, and the right next step is the picker. A refused STANDING target
+// is the conversation the chat is in the middle of: the right next step is to
+// say what happened and leave the aim exactly where it is, because posting a
+// picker there is indistinguishable from "pick your agent again", which is the
+// complaint this whole wave answers.
+type standingFailure struct{ err error }
+
+func (e standingFailure) Error() string { return e.err.Error() }
+func (e standingFailure) Unwrap() error { return e.err }
+
+// fromStanding reports whether a routing error came from the chat's selection.
+func fromStanding(err error) bool {
+	var sf standingFailure
+	return errors.As(err, &sf)
+}
 
 // maxSessionID bounds a session id the same way the cards package does.
 //
@@ -81,60 +116,71 @@ func identityOf(a agents.Agent) identity {
 // matches reports whether the agent in the pane right now is the one that was
 // recorded.
 //
-// An empty recorded session matches ONLY a live agent that also reports none.
-// Reading it as "matches anything" would turn G8's detection window into a
-// permanent wildcard: aim at claude before it publishes a session, that claude
-// exits hours later, another claude starts in the same seat in another project,
-// the kind still matches, and the next thing typed lands in the wrong agent's
-// context. The selection store documents the same rule and says the caller must
-// not soften it; this is the caller.
+// Identity here is pane + KIND + CWD. The native session id is recorded for
+// diagnosis and deliberately NOT compared, which is a retraction: comparing it
+// made the selection unusable in practice.
 //
-// Two runs that have BOTH still to publish a session are the case that rule
-// cannot separate — start claude, quit before accepting its trust-this-directory
-// prompt, start claude again elsewhere in the same pane — so when the record
-// carries a cwd it must match too. It is a weaker fact than a session id (an
-// agent restarted in the same directory still passes), which is why it is a
-// last resort rather than a fourth thing checked always: a project moved to a
-// new checkout would otherwise refuse a selection that is genuinely live.
+// Two guards exist in this bridge and they are not the same guard. A KEYSTROKE
+// needs a tight one — cards.Decision carries state_change_seq and SendKey
+// refuses anything staler, because a three-day-old card would otherwise answer
+// whatever dialog is up today (G17). A CONVERSATIONAL TARGET needs a STABLE
+// one: "the claude in ~/project" is what a person means by picking an agent,
+// and it stays true across a /clear, across a compaction, and across that agent
+// being restarted in the same directory. Holding the target to keystroke-grade
+// identity is what this function used to do, and the result was that a session
+// id — the most volatile field herdr exposes — silently ended the conversation:
+//
+//   - claude publishes its session id only after SessionStart, which for a new
+//     directory is only after the trust prompt is accepted (G8). Tapping Select
+//     before that records an empty session; minutes later herdr has one, the
+//     comparison fails, and the selection is dropped.
+//   - /clear starts a new session id. The same agent, the same directory, the
+//     same window on screen — and the binding is gone.
+//
+// Each of those printed "I cannot tell whether it is still the same run" and
+// made the user pick their agent again, for an agent that had never moved.
+//
+// What is given up: an agent that exited and was replaced by another of the
+// same kind in the same directory now keeps the binding. That is the right
+// trade. A fresh claude in ~/project is what the user asked for when they
+// picked "claude · ~/project", the messages it receives are prose rather than
+// keystrokes, and prose still cannot answer a dialog — Say escapes first (G1).
+// A different KIND in that pane, or a different directory, is a different
+// target and is still refused.
+//
+// The cwd comparison is what carries the weight the session used to, so it is
+// the half that must not be weakened further: it is the only thing left that
+// separates "my claude restarted" from "somebody else's claude took this seat".
+// selection.Target gained a Cwd field for exactly this reason — before it, a
+// selection could only be compared on kind, and kind alone is one bit.
 func (id identity) matches(a agents.Agent) bool {
-	if id.Kind != a.Kind || id.Session != sessionID(a) {
+	if id.Kind != a.Kind {
 		return false
 	}
-	if id.Session == "" && id.Cwd != "" && id.Cwd != a.Cwd {
+	// Compared only when both are known: herdr reports no cwd for a pane whose
+	// foreground process it cannot resolve, and an unknown cwd is not evidence
+	// of a move.
+	if id.Cwd != "" && a.Cwd != "" && id.Cwd != a.Cwd {
 		return false
 	}
 	return true
 }
 
 // replacedError explains WHICH part of the identity stopped matching, because
-// they mean different things to the person reading it: a changed kind is a
-// different program in that pane, a changed session is the same program started
-// again — with a different conversation, a different cwd, possibly a different
-// project.
+// the two mean different things to the person reading it: a changed KIND is a
+// different program in that pane, a changed CWD is the same program on a
+// different job — a different project, a different conversation, a different
+// set of files it is willing to touch.
 func replacedError(pane string, id identity, a agents.Agent) error {
-	switch {
-	case id.Kind != a.Kind:
+	// Only two things end a binding now, and each means something different to
+	// the person reading it. Session-id changes are not among them: see matches.
+	if id.Kind != a.Kind {
 		return fmt.Errorf("%w: %s was running %s and now runs %s",
 			ErrTargetReplaced, pane, orUnknown(id.Kind), orUnknown(a.Kind))
-
-	case id.Session == "" && sessionID(a) != "":
-		// The G8 window: recorded before herdr had published a session id for
-		// that pane. Same agent or not, we cannot tell — and cannot deliver.
-		return fmt.Errorf("%w: %s had not published a session id when I recorded it, and the %s "+
-			"there now has one, so I cannot tell whether it is still the same run",
-			ErrTargetReplaced, pane, orUnknown(a.Kind))
-
-	case id.Session == "":
-		// Neither run ever published one, so the directory is all there is to go
-		// on — and it changed.
-		return fmt.Errorf("%w: neither run in %s had published a session id, and the %s there now works "+
-			"in %s where I recorded %s, so it is a different run",
-			ErrTargetReplaced, pane, orUnknown(a.Kind), orNoCwd(a.Cwd), id.Cwd)
-
-	default:
-		return fmt.Errorf("%w: the %s in %s is a different session from the one I recorded, so it is a "+
-			"different run of that agent", ErrTargetReplaced, orUnknown(a.Kind), pane)
 	}
+	return fmt.Errorf("%w: the %s in %s now works in %s, and I recorded it in %s — a different directory "+
+		"is a different job, so I am not sending there without you saying so",
+		ErrTargetReplaced, orUnknown(a.Kind), pane, orNoCwd(a.Cwd), orNoCwd(id.Cwd))
 }
 
 func orNoCwd(cwd string) string {
@@ -149,13 +195,38 @@ func orNoCwd(cwd string) string {
 func (b *bridge) checkIdentity(pane string, id identity) (agents.Agent, error) {
 	a, ok := b.deps.Registry.Get(pane)
 	if !ok {
-		return agents.Agent{}, fmt.Errorf("%w: %s is gone — the pane was closed or the agent exited",
-			ErrTargetReplaced, pane)
+		return agents.Agent{}, fmt.Errorf("%w: herdr sees no agent at %s — the pane was closed, "+
+			"the agent exited, or it has not been started again yet", ErrTargetGone, pane)
 	}
 	if !id.matches(a) {
 		return agents.Agent{}, replacedError(pane, id, a)
 	}
 	return a, nil
+}
+
+// restartNote reports that the agent kept its seat, its kind and its directory
+// but is on a NEW native session — a /clear, a compaction, or that agent having
+// been restarted where it stood.
+//
+// The binding survives this, because "the claude in ~/project" is what a person
+// picks and it is still true. But the conversation behind it does not: whatever
+// was discussed before is gone, so "rm -rf the thing we discussed" now reaches
+// something that never discussed it. Refusing would end the binding for an
+// agent that never moved, which is the failure this file just retracted; saying
+// nothing would let the user address a memory the agent does not have. So it is
+// delivered, once, with the fact attached.
+//
+// Empty when nothing changed, when either side has no session id to compare
+// (the G8 window is not a restart), or when the recorded id is already current.
+func restartNote(id identity, a agents.Agent) string {
+	live := sessionID(a)
+	if id.Session == "" || live == "" || id.Session == live {
+		return ""
+	}
+	return fmt.Sprintf("♻️ Note: %s in %s has started a NEW conversation since you selected it "+
+		"(a /clear, a compaction, or a restart). It is the same agent in the same directory, so you are "+
+		"still aimed at it — but it does not remember what you discussed before.",
+		orUnknown(a.Kind), orNoCwd(a.Cwd))
 }
 
 // ---------- what a message is bound to ----------
@@ -232,8 +303,9 @@ func decodeBinding(raw string) (binding, bool) {
 
 // currentSelection reads the chat's target, nil-safe.
 //
-// The store evaluates selection.TTL at read time, so an expired selection is
-// reported as absent here and routing falls through to the picker card.
+// It is absent only when the chat has never picked an agent or has closed the
+// one it picked. Nothing in the store expires, so "no selection" here is always
+// something a human did.
 func (b *bridge) currentSelection(chatID string) (selection.Target, bool) {
 	if b.sel == nil || chatID == "" {
 		return selection.Target{}, false
@@ -243,14 +315,34 @@ func (b *bridge) currentSelection(chatID string) (selection.Target, bool) {
 
 // selectionIdentity is everything a stored Target can prove about its agent.
 //
-// It carries no cwd, and cannot: selection.Target is a frozen contract with no
-// field for one, and a bridge-local memory copy would make the check true in one
-// process and absent in the next — S2 §3.1 has the bridge killed and restarted
-// routinely — which is a worse thing to reason about than the kind+session rule
-// the store documents. The two encodings this package does own, route bindings
-// and parked prose, carry it.
+// It carries the cwd now, and that is not a convenience: the session id is no
+// longer compared (see identity.matches), so without a cwd a selection would be
+// checked on KIND ALONE — one bit — and "a claude is in that seat" would be
+// enough to deliver into a claude the user never picked, in a project they were
+// not talking about. selection.Target gained the field so the two facts that
+// make up "the agent I chose" travel together, in the store that outlives the
+// process (S2 §3.1 has this bridge killed and restarted routinely).
+//
+// An empty Cwd — a selection stored by an older build, or a pane whose
+// foreground process herdr could not resolve — refutes nothing rather than
+// refusing everything. It is repaired in place by refreshSelectionIdentity on
+// the first message that resolves cleanly.
 func selectionIdentity(t selection.Target) identity {
-	return identity{Kind: t.Kind, Session: t.Session}
+	return identity{Kind: t.Kind, Session: t.Session, Cwd: t.Cwd}
+}
+
+// targetLabel names a selection the way agentLabel names a live agent, so that
+// a refusal can say WHAT the chat is still aimed at when there is no live agent
+// left to read it off.
+func targetLabel(t selection.Target) string {
+	label := orUnknown(t.Kind)
+	if base := cwdBase(t.Cwd); base != "" {
+		label += " · " + base
+	}
+	if t.Pane != "" {
+		label += " · " + t.Pane
+	}
+	return label
 }
 
 // currentPane is the selected pane id, or "" — the shape cards.BuildAgentList
@@ -286,9 +378,12 @@ func (b *bridge) setSelection(chatID string, a agents.Agent, cardMessageID strin
 		Pane:    a.PaneID,
 		Kind:    id.Kind,
 		Session: id.Session,
-		// A press is a human confirming this target, so the TTL restarts here.
-		// rememberPicker, which rewrites the same target for another reason,
-		// deliberately does not.
+		Cwd:     id.Cwd,
+		// A press is a human confirming this target, so the age this chat is
+		// reminded about starts here — and RemindedAt goes back to zero, because
+		// a fresh selection has nothing to be reminded of yet. rememberPicker and
+		// refreshSelectionIdentity, which rewrite the same target for reasons the
+		// human did not cause, deliberately preserve both.
 		SelectedAt:    b.now(),
 		CardMessageID: cardMessageID,
 	})
@@ -299,9 +394,20 @@ func (b *bridge) setSelection(chatID string, a agents.Agent, cardMessageID strin
 
 // clearSelection forgets a chat's target, nil-safe.
 //
-// Called when the recorded agent turns out not to be there any more. Clearing
-// rather than keeping is deliberate: the next plain message must land on the
-// picker card, not on whoever now occupies that seat.
+// THIS IS NOW REACHED FROM ONE PLACE ONLY: /close. That is the point of the
+// whole wave. It used to be called whenever a recorded agent could not be
+// resolved — the agent exited, herdr blinked, claude started a new session —
+// and every one of those quietly ended a conversation the user had not
+// finished, which is what "I have to pick my agent again on every message"
+// looked like from the phone.
+//
+// Clearing on a failed lookup is not merely annoying, it is unsafe in the one
+// configuration where it matters most. target() falls through to "exactly one
+// agent is running, send it there" when a chat has no selection: clear the
+// selection because the agent the user picked was replaced, and the very next
+// message is delivered — silently, with no note — to the agent that replaced it.
+// Keeping the selection and refusing is both what the user asked for and the
+// safer of the two.
 func (b *bridge) clearSelection(chatID string) {
 	if b.sel == nil || chatID == "" {
 		return
@@ -315,10 +421,11 @@ func (b *bridge) clearSelection(chatID string) {
 // The durable copy of that id lives INSIDE the target, so clearing destroys it
 // (see pickerIndex). Within one process the memory index usually still has it,
 // but after a restart it is empty — and a restart is routine (S2 §3.1) while a
-// selection lasts twelve hours. The card left in the chat would then keep saying
-// "your typing goes to claude · w1:p1" for an agent that has been replaced, with
-// nothing left to repaint. So the id is copied into the index before the clear,
-// which is exactly what makes the repaint one line later find it.
+// selection now lasts until the user closes it. The card left in the chat would
+// then keep saying "your typing goes to claude · w1:p1" for a chat that is no
+// longer aimed anywhere, with nothing left to repaint. So the id is copied into
+// the index before the clear, which is exactly what makes the repaint one line
+// later find it.
 func (b *bridge) forgetSelection(chatID string) {
 	if t, ok := b.currentSelection(chatID); ok {
 		b.pickers.remember(chatID, t.CardMessageID)
@@ -329,10 +436,9 @@ func (b *bridge) forgetSelection(chatID string) {
 // rememberPicker records which message holds this chat's live picker card, so
 // the selection can be re-rendered in place instead of posting another list.
 //
-// It rewrites the target with the SAME SelectedAt: posting a list is not a human
-// re-confirming a selection, and restarting the 12h TTL on it would let a chat
-// that keeps running /ls hold a selection forever — which is the staleness the
-// TTL exists to bound.
+// It rewrites the target with the SAME SelectedAt: posting a list is not a
+// human re-confirming a selection, and moving that stamp would silence the age
+// reminder for any chat that runs /ls now and then — which is most of them.
 //
 // With no selection there is nothing to hang the id on in the store (it refuses
 // a target with no pane, by design: a target with no identity could only ever be
@@ -354,4 +460,125 @@ func (b *bridge) rememberPicker(chatID, messageID string) {
 	}
 	t.CardMessageID = messageID
 	b.sel.Set(chatID, t)
+}
+
+// refreshSelectionIdentity updates what a chat's target IS without touching
+// when it was chosen.
+//
+// SelectedAt and RemindedAt are deliberately preserved: an agent restarting is
+// not the human re-confirming anything, and moving those stamps would silence
+// the age reminder for a chat whose agent churns — which is the one chat most
+// likely to need it.
+//
+// Cwd is only ever written when the live agent reports one. herdr reports no
+// cwd for a pane whose foreground process it cannot resolve, and blanking a
+// recorded directory on the strength of a reading herdr could not take would
+// throw away the only discriminator a selection has left (see
+// selectionIdentity).
+func (b *bridge) refreshSelectionIdentity(chatID string, a agents.Agent) {
+	if b.sel == nil || chatID == "" {
+		return
+	}
+	t, ok := b.sel.Get(chatID)
+	if !ok {
+		return
+	}
+	t.Kind = a.Kind
+	t.Session = sessionID(a)
+	if cwd := strings.TrimSpace(a.Cwd); cwd != "" {
+		t.Cwd = cwd
+	}
+	b.sel.Set(chatID, t)
+}
+
+// reconcileSelection writes back what this delivery just taught us about a
+// standing target, and returns whatever the user has to be told about it.
+//
+// Two things move under a selection that is otherwise untouched: the agent
+// mints a new session id (a /clear, a compaction, a restart in place), and a
+// cwd appears for a record that had none — either a selection stored by a build
+// before Target carried one, or one made while herdr still could not resolve
+// the pane's foreground process. Recording both is what keeps the identity
+// check sharp: an unrepaired record is compared on kind alone.
+//
+// The write is conditional because Set is a write-through to disk. An
+// unconditional refresh here would be one fsync per message for a selection
+// that has not changed in days.
+func (b *bridge) reconcileSelection(chatID string, t selection.Target, a agents.Agent) string {
+	// Read before anything is rewritten: this is the comparison against what the
+	// user was last told, and refreshSelectionIdentity destroys it.
+	note := restartNote(selectionIdentity(t), a)
+
+	cwd := strings.TrimSpace(a.Cwd)
+	if t.Session != sessionID(a) || (cwd != "" && t.Cwd != cwd) {
+		b.refreshSelectionIdentity(chatID, a)
+	}
+	return note
+}
+
+// ---------- how old the aim is ----------
+
+// staleNote is what replaced the 12h expiry.
+//
+// The expiry existed to stop a forgotten selection from silently receiving
+// tomorrow's first message. The word doing the work in that sentence is
+// SILENTLY — and dropping the selection was a strange way to fix it, because
+// the user then got no message at all, just a picker card and no idea why. What
+// they actually need is the delivery AND the fact: this went where you last
+// aimed it, which was a while ago.
+//
+// It is said once per quiet period, not once per message: RemindedAt is stamped
+// when it fires, so a chat that has been talking all day never sees it and a
+// chat that comes back after a weekend sees it exactly once. Empty when the
+// selection is younger than selection.StaleAfter, and empty for a stamp in the
+// future — a Mac whose clock was wrong at boot (VM snapshot, dead RTC, the
+// window before NTP lands) writes those, and the answer to a bad clock is
+// silence, not a reminder about a negative duration.
+func (b *bridge) staleNote(chatID string, t selection.Target, a agents.Agent) string {
+	since := t.RemindedAt
+	if since.IsZero() {
+		since = t.SelectedAt
+	}
+	if since.IsZero() {
+		return ""
+	}
+	age := b.now().Sub(since)
+	if age < selection.StaleAfter {
+		return ""
+	}
+	b.markReminded(chatID)
+	return fmt.Sprintf("🕰️ Note: you aimed this chat at %s %s ago and it is still aimed there, so "+
+		"that is where this went. Send /close to stop, or tap Select on the list to aim somewhere else.",
+		agentLabel(a), humanAge(age))
+}
+
+// markReminded records that the age has just been said, so it is not said again
+// until the chat has been quiet for another selection.StaleAfter.
+//
+// SelectedAt is untouched: it means "when a human chose this", and a reminder is
+// not a human choosing anything. Conflating the two would make the reminder
+// itself the thing that keeps resetting the clock it reports.
+func (b *bridge) markReminded(chatID string) {
+	if b.sel == nil || chatID == "" {
+		return
+	}
+	t, ok := b.sel.Get(chatID)
+	if !ok {
+		return
+	}
+	t.RemindedAt = b.now()
+	b.sel.Set(chatID, t)
+}
+
+// humanAge renders a duration the way someone glancing at a phone reads one.
+// Deliberately coarse: the point is "this is old", not the exact number.
+func humanAge(d time.Duration) string {
+	switch h := int(d.Hours()); {
+	case h >= 48:
+		return fmt.Sprintf("%d days", h/24)
+	case h >= 24:
+		return "a day"
+	default:
+		return plural(max(h, 1), "hour", "hours")
+	}
 }

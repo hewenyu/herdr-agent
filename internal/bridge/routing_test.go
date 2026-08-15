@@ -185,17 +185,30 @@ func TestAReplyDoesNotDisturbTheSelection(t *testing.T) {
 
 // ---------- identity: a pane id is a seat, not an identity ----------
 
-// TestASelectionIsRefusedWhenTheAgentWasReplaced is the hazard this wave exists
-// to close.
+// TestASelectionIsRefusedWhenAnotherAgentTookTheSeat is the hazard the identity
+// check exists to close.
 //
 // Select claude at w1:p1, walk away, claude exits, codex starts in the same
 // pane. Routing on the seat alone would put the next thing typed into a
 // different context — and text typed at an agent sitting on a permission dialog
-// answers that dialog (G1). Both halves of the identity are checked because
-// either can change alone: the kind when a different program takes the seat,
-// the session id when the same program is started again.
-func TestASelectionIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
+// answers that dialog (G1). Two things are compared and either can change
+// alone: the KIND when a different program takes the seat, the CWD when the
+// same program is started again on a different job.
+//
+// What must NOT happen on either is the selection being dropped. The user did
+// not close anything; refusing the delivery is the whole of the answer, and
+// clearing on top of it is how a chat with one agent running ends up silently
+// delivering the NEXT message to the stranger via the single-agent fallback.
+func TestASelectionIsRefusedWhenAnotherAgentTookTheSeat(t *testing.T) {
 	selected := withSession(idleAgent(testPane), "sess-one")
+	selected.Cwd = "/project-a"
+
+	otherKind := withSession(idleAgent(testPane), "sess-one")
+	otherKind.Kind = "codex"
+	otherKind.Cwd = "/project-a"
+
+	otherJob := withSession(idleAgent(testPane), "sess-two")
+	otherJob.Cwd = "/project-b"
 
 	tests := []struct {
 		name string
@@ -204,18 +217,13 @@ func TestASelectionIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 	}{
 		{
 			name: "a different kind of agent took the seat",
-			now:  withSession(func() agents.Agent { a := idleAgent(testPane); a.Kind = "codex"; return a }(), "sess-one"),
+			now:  otherKind,
 			says: "now runs codex",
 		},
 		{
-			name: "the same agent was restarted",
-			now:  withSession(idleAgent(testPane), "sess-two"),
-			says: "different session",
-		},
-		{
-			name: "the pane is gone entirely",
-			now:  agents.Agent{},
-			says: "is gone",
+			name: "the same kind of agent, working somewhere else",
+			now:  otherJob,
+			says: "/project-b",
 		},
 	}
 
@@ -225,12 +233,7 @@ func TestASelectionIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 			h.reg.setAgents(selected)
 			h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
 			h.selectAgent(testChat, selected)
-
-			if tt.now.PaneID == "" {
-				h.reg.setAgents()
-			} else {
-				h.reg.setAgents(tt.now)
-			}
+			h.reg.setAgents(tt.now)
 
 			if err := h.b.handleMessage(context.Background(), inbound("rm -rf the thing we discussed")); err != nil {
 				t.Fatalf("handleMessage: %v", err)
@@ -238,49 +241,119 @@ func TestASelectionIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 
 			assertNothingWasTyped(t, h, "a selection whose agent was replaced")
 			wantContains(t, lastText(t, h), tt.says, "the refusal must say what changed")
-			if _, ok := h.selected(testChat); ok {
-				t.Error("the selection survived the agent it pointed at; tomorrow's first message would " +
-					"land in the same seat")
+			wantContains(t, lastText(t, h), "/close", "the refusal must name the one way out")
+
+			got, ok := h.selected(testChat)
+			if !ok {
+				t.Fatal("the selection was dropped by a refusal the user did not ask for")
 			}
-			if len(h.bot.cards()) == 0 {
-				t.Error("no picker was posted, so the user has no one-tap way to aim again")
+			if got.Pane != testPane {
+				t.Fatalf("selection = %s, want it left at %s", got.Pane, testPane)
 			}
+
+			// ...and the NEXT message must not be delivered either, even though
+			// exactly one agent is running. A chat that still has a selection
+			// never reaches the single-agent fallback.
+			h.ctrl.reset()
+			if err := h.b.handleMessage(context.Background(), inbound("and this one")); err != nil {
+				t.Fatalf("handleMessage: %v", err)
+			}
+			assertNothingWasTyped(t, h, "the message after a refused selection")
 		})
 	}
 }
 
-// TestASelectionMadeBeforeASessionIdIsRefusedOnceItAppears is the narrow window
-// G8 measures: an agent is detected before herdr can name its session.
+// TestASelectionSurvivesTheAgentGoingAway: the ordinary rhythm of working is
+// that you finish something, quit claude, and start it again. None of that is
+// the user saying they are done talking to it.
+func TestASelectionSurvivesTheAgentGoingAway(t *testing.T) {
+	h := newHarness(t)
+	one := withSession(idleAgent(testPane), "sess-one")
+	h.reg.setAgents(one)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, one)
+
+	h.reg.setAgents() // the pane closed, or the agent exited
+	if err := h.b.handleMessage(context.Background(), inbound("still there?")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	assertNothingWasTyped(t, h, "a selection whose agent is not running")
+	wantContains(t, lastText(t, h), "still aimed", "the refusal must say the aim is unchanged")
+	if _, ok := h.selected(testChat); !ok {
+		t.Fatal("the selection was dropped because the agent was briefly not there")
+	}
+
+	// Started again in the same seat, on the same job, with a brand new session
+	// id — and the conversation simply resumes.
+	h.reg.setAgents(withSession(idleAgent(testPane), "sess-restarted"))
+	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+}
+
+// TestASelectionSurvivesANewSessionAndSaysSo: claude mints a new session id on
+// every /clear and every compaction. Holding a conversational target to that
+// ended the conversation several times a day, for an agent that never moved.
 //
-// A recorded empty session must match ONLY a live agent that also reports none.
-// Reading it as "matches anything" would turn that window into a permanent
-// wildcard: select claude before SessionStart, that claude exits hours later,
-// another claude takes the seat in another project, the kind still matches, and
-// the next thing typed lands in the wrong agent's context.
-func TestASelectionMadeBeforeASessionIdIsRefusedOnceItAppears(t *testing.T) {
+// It is delivered, because "the claude in ~/project" is still true — and the
+// user is told once, because the agent no longer remembers what they discussed.
+func TestASelectionSurvivesANewSessionAndSaysSo(t *testing.T) {
+	h := newHarness(t)
+	one := withSession(idleAgent(testPane), "sess-one")
+	h.reg.setAgents(one)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, one)
+
+	h.reg.setAgents(withSession(idleAgent(testPane), "sess-two")) // a /clear
+	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	wantContains(t, lastText(t, h), "NEW conversation", "the user must be told the agent forgot")
+
+	// Once, not on every message: the fact was recorded when it was said.
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("and again")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	if strings.Contains(lastText(t, h), "NEW conversation") {
+		t.Error("the restart note was repeated on the next message")
+	}
+}
+
+// TestASelectionMadeBeforeASessionIdKeepsWorking is the narrow window G8
+// measures: an agent is detected before herdr can name its session.
+//
+// claude publishes a session id only after SessionStart, which for a new
+// directory is only after the trust prompt is accepted. Tapping Select in that
+// window used to record an empty session, and the moment herdr published one
+// the comparison failed and the selection was dropped — for an agent the user
+// was actively working with, seconds after they picked it.
+func TestASelectionMadeBeforeASessionIdKeepsWorking(t *testing.T) {
 	h := newHarness(t)
 	unpublished := idleAgent(testPane) // no SessionRef yet
 	h.reg.setAgents(unpublished)
 	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
 	h.selectAgent(testChat, unpublished)
 
-	// While it still has none, the selection works: the window is legitimate.
 	if err := h.b.handleMessage(context.Background(), inbound("hello")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 	delivered(t, h, testPane)
 
-	// herdr now reports a session for that pane. We cannot tell whether it is
-	// the same run, so we do not deliver.
+	// herdr now reports a session for that pane. Same seat, same kind, same
+	// directory: same agent.
 	h.ctrl.reset()
 	h.reg.setAgents(withSession(idleAgent(testPane), "sess-appeared"))
 
 	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
-	assertNothingWasTyped(t, h, "a selection recorded before the session id existed")
-	if _, ok := h.selected(testChat); ok {
-		t.Error("the unverifiable selection was kept")
+	delivered(t, h, testPane)
+	if _, ok := h.selected(testChat); !ok {
+		t.Error("the selection was dropped the moment herdr published a session id")
 	}
 }
 
@@ -291,7 +364,9 @@ func TestASelectionMadeBeforeASessionIdIsRefusedOnceItAppears(t *testing.T) {
 func TestAReplyIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 	h := newHarness(t)
 	was := withSession(idleAgent(testPane), "sess-one")
+	was.Cwd = "/project-a"
 	nowThere := withSession(idleAgent(testPane), "sess-two")
+	nowThere.Cwd = "/project-b"
 	other := withSession(idleAgent(secondPane), "sess-other")
 
 	h.reg.setAgents(was, other)
@@ -305,12 +380,18 @@ func TestAReplyIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 	}
 
 	assertNothingWasTyped(t, h, "a reply to a message about an agent that has been replaced")
-	wantContains(t, lastText(t, h), "different session", "the refusal must say what changed")
+	wantContains(t, lastText(t, h), "/project-b", "the refusal must say what changed")
 
 	// A refused reply is about that message, not about the conversation the
 	// chat is having: the selection points somewhere else and is still good.
 	if got, ok := h.selected(testChat); !ok || got.Pane != secondPane {
 		t.Errorf("selection = %+v, want %s left alone", got, secondPane)
+	}
+	// And it must not put the chooser back in front of a user who already has
+	// somewhere to type — the reply says where that is.
+	wantContains(t, lastText(t, h), secondPane, "the refusal must name where typing still goes")
+	if len(h.bot.cards()) != 0 {
+		t.Error("a picker was posted although the chat is still aimed at a live agent")
 	}
 }
 
@@ -358,10 +439,15 @@ func TestAMessageIsBoundToTheAgentNotJustThePane(t *testing.T) {
 	}
 }
 
-// TestSelectionExpiryStopsRouting: selection.TTL bounds how long a selection
-// stays good WITHOUT a human re-confirming it, so that a forgotten selection
-// does not silently receive tomorrow's first message.
-func TestSelectionExpiryStopsRouting(t *testing.T) {
+// TestASelectionDoesNotExpireButItsAgeIsSaid is the retraction of the 12h TTL.
+//
+// The TTL's stated purpose was that a forgotten selection must not silently
+// receive tomorrow's first message. The word doing the work there is SILENTLY,
+// and dropping the selection was a poor answer to it: the user got no delivery,
+// no explanation and a picker card, several times a week, for a conversation
+// they had not finished. Now the message is delivered AND the age is said —
+// once per quiet period, so a chat in daily use never sees it at all.
+func TestASelectionDoesNotExpireButItsAgeIsSaid(t *testing.T) {
 	clock := &movingClock{at: epoch}
 	h := newHarness(t, func(d *Deps) { d.Now = clock.now })
 	one := withSession(idleAgent(testPane), "sess-one")
@@ -370,20 +456,216 @@ func TestSelectionExpiryStopsRouting(t *testing.T) {
 	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
 	h.selectAgent(testChat, one)
 
-	clock.add(selection.TTL - time.Minute)
+	clock.add(selection.StaleAfter - time.Minute)
 	if err := h.b.handleMessage(context.Background(), inbound("still there?")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 	delivered(t, h, testPane)
+	if strings.Contains(lastText(t, h), "still aimed there") {
+		t.Error("a selection inside the quiet window was reported as old")
+	}
 
-	clock.add(2 * time.Minute) // now past the TTL
+	// Days later — and it still routes, because nothing but the user ends it.
+	clock.add(3 * 24 * time.Hour)
 	h.ctrl.reset()
 	if err := h.b.handleMessage(context.Background(), inbound("and now?")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
-	assertNothingWasTyped(t, h, "an expired selection")
+	delivered(t, h, testPane)
+	wantContains(t, lastText(t, h), "still aimed there", "an old selection must say how old it is")
+	wantContains(t, lastText(t, h), "/close", "the reminder must name the way out")
+
+	// And the reminder is not repeated on the next message.
+	clock.add(time.Minute)
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("one more")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	if strings.Contains(lastText(t, h), "still aimed there") {
+		t.Error("the age reminder was repeated on the very next message")
+	}
+}
+
+// TestALegacySelectionLearnsItsDirectory is the upgrade path.
+//
+// selection.Target grew a Cwd field because the session id stopped being
+// compared, and kind alone is one bit. A selection.json written by the previous
+// build carries no cwd, so until it is repaired that chat is checked on kind
+// alone — which is exactly the wildcard the check exists to prevent. The first
+// delivery that resolves cleanly writes it back.
+func TestALegacySelectionLearnsItsDirectory(t *testing.T) {
+	h := newHarness(t)
+	a := withSession(idleAgent(testPane), "sess-one")
+	a.Cwd = "/project-a"
+	h.reg.setAgents(a)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+
+	// Exactly what the previous build stored: pane, kind, session, no cwd.
+	h.sel.Set(testChat, selection.Target{
+		Pane:       a.PaneID,
+		Kind:       a.Kind,
+		Session:    sessionID(a),
+		SelectedAt: h.b.now(),
+	})
+
+	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+
+	got, ok := h.selected(testChat)
+	if !ok {
+		t.Fatal("a selection written by the previous build was refused")
+	}
+	if got.Cwd != "/project-a" {
+		t.Fatalf("stored cwd = %q, want it learned from the live agent", got.Cwd)
+	}
+
+	// And now it discriminates: the same kind, in a different directory, is a
+	// different job and is refused.
+	elsewhere := withSession(idleAgent(testPane), "sess-one")
+	elsewhere.Cwd = "/project-b"
+	h.reg.setAgents(elsewhere)
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("and this")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	assertNothingWasTyped(t, h, "a repaired selection whose agent moved to another job")
+}
+
+// TestNothingButTheUserRetiresASelection is the rule stated once, over every
+// route that used to drop one. Each step is a thing that ended the conversation
+// before this wave; none of them may now.
+func TestNothingButTheUserRetiresASelection(t *testing.T) {
+	clock := &movingClock{at: epoch}
+	h := newHarness(t, func(d *Deps) { d.Now = clock.now })
+	a := withSession(idleAgent(testPane), "sess-one")
+	h.reg.setAgents(a, withSession(idleAgent(secondPane), "sess-two"))
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, a)
+
+	steps := []struct {
+		name string
+		do   func()
+	}{
+		{"a /clear inside the agent", func() {
+			h.reg.setAgents(withSession(idleAgent(testPane), "sess-new"), withSession(idleAgent(secondPane), "sess-two"))
+		}},
+		{"the agent exiting", func() { h.reg.setAgents(withSession(idleAgent(secondPane), "sess-two")) }},
+		{"it coming back", func() {
+			h.reg.setAgents(withSession(idleAgent(testPane), "sess-back"), withSession(idleAgent(secondPane), "sess-two"))
+		}},
+		{"a week passing", func() { clock.add(7 * 24 * time.Hour) }},
+		{"running /ls", func() {
+			if err := h.b.handleMessage(context.Background(), inbound("/ls")); err != nil {
+				t.Fatalf("/ls: %v", err)
+			}
+		}},
+		{"a codex taking the OTHER seat", func() {
+			other := withSession(idleAgent(secondPane), "sess-two")
+			other.Kind = "codex"
+			h.reg.setAgents(withSession(idleAgent(testPane), "sess-back"), other)
+		}},
+	}
+	for _, s := range steps {
+		s.do()
+		if err := h.b.handleMessage(context.Background(), inbound("still here")); err != nil {
+			t.Fatalf("after %s: %v", s.name, err)
+		}
+		if _, ok := h.selected(testChat); !ok {
+			t.Fatalf("%s retired the selection; only /close may do that", s.name)
+		}
+	}
+
+	// And then the one thing that does.
+	if err := h.b.handleMessage(context.Background(), inbound("/close")); err != nil {
+		t.Fatalf("/close: %v", err)
+	}
+	if got, ok := h.selected(testChat); ok {
+		t.Fatalf("selection = %+v, want /close to have retired it", got)
+	}
+}
+
+// ---------- /close ----------
+
+// TestCloseIsTheOnlyWayOut states the contract the picker now rests on: one
+// deliberate act opens the channel, one deliberate act closes it, and there is
+// exactly one answer to "why am I being asked to pick again?"
+func TestCloseIsTheOnlyWayOut(t *testing.T) {
+	h := newHarness(t)
+	one := withSession(idleAgent(testPane), "sess-one")
+	two := withSession(idleAgent(secondPane), "sess-two")
+	h.reg.setAgents(one, two)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, one)
+
+	if err := h.b.handleMessage(context.Background(), inbound("/close")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	if got, ok := h.selected(testChat); ok {
+		t.Fatalf("selection = %+v, want it closed", got)
+	}
 	if len(h.bot.cards()) == 0 {
-		t.Error("an expired selection must come back as the picker, not as silence")
+		t.Error("/close must hand the user the picker; that is the point of closing")
+	}
+
+	// And plain text no longer reaches anyone: two agents are running and the
+	// bridge must not guess which one the user meant.
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("hello?")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	assertNothingWasTyped(t, h, "prose after /close")
+}
+
+// /close on a chat that was not aimed anywhere is not an error: the user asked
+// to be handed the chooser, and that is what they get.
+func TestCloseWithNothingSelected(t *testing.T) {
+	h := newHarness(t)
+	h.reg.setAgents(withSession(idleAgent(testPane), "sess-one"))
+
+	if err := h.b.handleMessage(context.Background(), inbound("/close")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	wantContains(t, lastText(t, h), "nothing to close", "the reply must say there was nothing aimed")
+	if len(h.bot.cards()) == 0 {
+		t.Error("no picker was posted")
+	}
+}
+
+// The card left in the chat says "your typing goes to X". After /close that is
+// a lie, and Feishu messages never expire (G17), so it is repainted where it
+// stands rather than left behind for someone to scroll back to.
+func TestCloseRepaintsTheCardItLeavesBehind(t *testing.T) {
+	h := newHarness(t)
+	one := withSession(idleAgent(testPane), "sess-one")
+	h.reg.setAgents(one)
+	h.selectAgent(testChat, one)
+
+	if err := h.b.handleMessage(context.Background(), inbound("/ls")); err != nil {
+		t.Fatalf("/ls: %v", err)
+	}
+	posted := h.bot.sends()
+	if len(posted) != 1 {
+		t.Fatalf("sends = %+v, want the picker", posted)
+	}
+	card := posted[0].ID
+
+	if err := h.b.handleMessage(context.Background(), inbound("/close")); err != nil {
+		t.Fatalf("/close: %v", err)
+	}
+
+	updates := h.bot.cardUpdates()
+	if len(updates) == 0 {
+		t.Fatal("the picker card was not repainted, so it still claims a target this chat gave up")
+	}
+	last := updates[len(updates)-1]
+	if last.MessageID != card {
+		t.Fatalf("repainted %q, want the picker card %q", last.MessageID, card)
+	}
+	if strings.Contains(last.Card, "your typing goes to") {
+		t.Errorf("the repainted card still claims a target:\n%s", last.Card)
 	}
 }
 
@@ -414,10 +696,10 @@ func TestListPostsThePickerAndRemembersIt(t *testing.T) {
 		t.Errorf("picker card id = %q, want %q; without it the card cannot be re-rendered in place",
 			after.CardMessageID, sends[0].ID)
 	}
-	// Posting a list is not a human re-confirming a selection: restarting the
-	// TTL here would let a chat that keeps running /ls hold one forever.
+	// Posting a list is not a human re-confirming a selection: moving that stamp
+	// would silence the age reminder for every chat that runs /ls now and then.
 	if !after.SelectedAt.Equal(before.SelectedAt) {
-		t.Errorf("/ls restarted the selection TTL: %v -> %v", before.SelectedAt, after.SelectedAt)
+		t.Errorf("/ls restamped the selection: %v -> %v", before.SelectedAt, after.SelectedAt)
 	}
 	// And the card says where typing goes, which is the question it exists to
 	// answer.
@@ -530,23 +812,32 @@ func TestWithSelectionWiresTheStore(t *testing.T) {
 
 // ---------- the identity primitives ----------
 
-func TestIdentityComparesEveryHalfItHas(t *testing.T) {
+// TestIdentityComparesWhatAPersonPicked: a conversational target is "the claude
+// in ~/project", and that is what is compared — kind and directory, never the
+// session id.
+//
+// The session is the most volatile field herdr publishes: absent until claude's
+// trust prompt is accepted (G8), and brand new after every /clear and every
+// compaction. Comparing it held a conversation to keystroke-grade identity and
+// ended it several times a day, for an agent that had not moved.
+func TestIdentityComparesWhatAPersonPicked(t *testing.T) {
 	live := withSession(idleAgent(testPane), "sess-one")
+	live.Cwd = "/project-a"
 
 	tests := []struct {
 		name string
 		id   identity
 		want bool
 	}{
-		{"identical", identity{Kind: "claude", Session: "sess-one"}, true},
-		{"another kind in the seat", identity{Kind: "codex", Session: "sess-one"}, false},
-		{"another run of the same kind", identity{Kind: "claude", Session: "sess-two"}, false},
-		{"no session recorded, one live", identity{Kind: "claude"}, false},
+		{"identical", identity{Kind: "claude", Session: "sess-one", Cwd: "/project-a"}, true},
+		{"another kind in the seat", identity{Kind: "codex", Session: "sess-one", Cwd: "/project-a"}, false},
+		// The /clear, the compaction, the restart in place. Same agent, same
+		// job, new session id — and it is still the target the user picked.
+		{"a new session on the same job", identity{Kind: "claude", Session: "sess-two", Cwd: "/project-a"}, true},
+		{"recorded before a session existed", identity{Kind: "claude", Cwd: "/project-a"}, true},
+		// A different directory is a different job, whatever the session says.
+		{"same session, another job", identity{Kind: "claude", Session: "sess-one", Cwd: "/elsewhere"}, false},
 		{"nothing recorded at all", identity{}, false},
-		// A session id is a strong enough identity on its own: an agent that
-		// somehow reports a different cwd under the same session is still that
-		// same run, and refusing it would cost a delivery for nothing.
-		{"same session, another cwd", identity{Kind: "claude", Session: "sess-one", Cwd: "/elsewhere"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -556,8 +847,13 @@ func TestIdentityComparesEveryHalfItHas(t *testing.T) {
 		})
 	}
 
-	// The mirror image: an agent with no session matches only a record with
-	// none, which is what makes the G8 window usable at all.
+	// An agent herdr reports no cwd for — a pane whose foreground process it
+	// could not resolve — is not evidence of a move, so it refutes nothing.
+	noCwd := withSession(idleAgent(testPane), "sess-one")
+	noCwd.Cwd = ""
+	if !(identity{Kind: "claude", Cwd: "/project-a"}).matches(noCwd) {
+		t.Error("a pane herdr could not resolve a cwd for was treated as a different agent")
+	}
 	if !identityOf(idleAgent(testPane)).matches(idleAgent(testPane)) {
 		t.Error("an agent that has published no session id cannot be selected")
 	}

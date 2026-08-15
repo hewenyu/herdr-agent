@@ -269,73 +269,84 @@ func TestIdentityAndCardIDSurviveRoundTrip(t *testing.T) {
 	}
 }
 
-func TestGetExpiresAtReadTime(t *testing.T) {
-	tests := []struct {
-		name    string
-		advance time.Duration
-		wantOK  bool
-	}{
-		{"fresh", 0, true},
-		{"overnight", 9 * time.Hour, true},
-		{"one second before TTL", TTL - time.Second, true},
-		{"exactly at TTL", TTL, false},
-		{"tomorrow", TTL + 12*time.Hour, false},
-		// A selection dated in the future must fail closed, not stay valid
-		// until the clock catches up: that is how a wrong-clock-at-boot entry
-		// escapes the 12h window entirely (G17).
-		{"clock rewound behind selectedAt", -time.Second, false},
-		{"selectedAt far in the future", -100 * 365 * 24 * time.Hour, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+// TestASelectionNeverExpires is the retraction of the 12h TTL, stated as a
+// test so it cannot creep back in.
+//
+// A selection is a conversation the user opened, and no amount of elapsed time
+// is evidence that they finished it. The clock used to end one silently, which
+// from the phone looked like the bridge forgetting who you were talking to —
+// with nothing to point at, because the thing that ended it was not an event.
+// Clear (i.e. /close, or picking another agent) is the only way out now.
+func TestASelectionNeverExpires(t *testing.T) {
+	for _, advance := range []time.Duration{
+		0,
+		9 * time.Hour,
+		StaleAfter,
+		StaleAfter + 12*time.Hour,
+		30 * 24 * time.Hour,
+		5 * 365 * 24 * time.Hour,
+		// A selection dated in the future — a Mac whose clock was wrong at boot
+		// — is data, not a reason to drop a conversation. Nothing here compares
+		// timestamps any more, so it simply survives like every other entry.
+		-time.Second,
+		-100 * 365 * 24 * time.Hour,
+	} {
+		t.Run(advance.String(), func(t *testing.T) {
 			clk := newClock()
 			s := openTest(t, filepath.Join(t.TempDir(), "selection.json"), WithClock(clk.Now))
 			s.Set("oc_1", claude("w1:p1"))
 
-			clk.Advance(tc.advance)
+			clk.Advance(advance)
 
-			// No reopen, no flush, no overflow: only Get can notice.
-			got, ok := s.Get("oc_1")
-			if ok != tc.wantOK {
-				t.Fatalf("after %v Get = (%+v, %v), want ok=%v", tc.advance, got, ok, tc.wantOK)
-			}
-			if n := s.Len(); (n == 1) != tc.wantOK {
-				t.Fatalf("after %v Len = %d, want live=%v", tc.advance, n, tc.wantOK)
+			mustGet(t, s, "oc_1", claude("w1:p1"))
+			if n := s.Len(); n != 1 {
+				t.Fatalf("after %v Len = %d, want the selection still held", advance, n)
 			}
 		})
 	}
 }
 
-// The TTL bounds time since a human confirmed the selection, not time since it
-// was last used. If reading refreshed it, a chat that keeps typing would hold
-// one selection forever and tomorrow's first message would still go to
-// yesterday's agent — the exact failure the TTL exists to prevent.
-func TestGetDoesNotExtendTTL(t *testing.T) {
+// Reading is not an event either: Get must not rewrite the stamp the bridge
+// reads to decide whether to remind the user how old their aim is. If it did,
+// a chat that keeps typing would never be told, which is the one case where
+// the age is worth saying.
+func TestGetDoesNotTouchTheSelection(t *testing.T) {
 	clk := newClock()
 	s := openTest(t, filepath.Join(t.TempDir(), "selection.json"), WithClock(clk.Now))
 	s.Set("oc_1", claude("w1:p1"))
+	want, ok := s.Get("oc_1")
+	if !ok {
+		t.Fatal("the selection was not stored")
+	}
 
 	for range 20 {
-		clk.Advance(TTL / 10)
+		clk.Advance(StaleAfter / 10)
 		s.Get("oc_1")
 	}
-	mustMiss(t, s, "oc_1")
+	got, ok := s.Get("oc_1")
+	if !ok {
+		t.Fatal("the selection was lost by being read")
+	}
+	if !got.SelectedAt.Equal(want.SelectedAt) {
+		t.Fatalf("SelectedAt = %v, want it untouched at %v", got.SelectedAt, want.SelectedAt)
+	}
 }
 
-// Selecting again is a fresh confirmation, so the window restarts from it.
-func TestSetRestartsTTL(t *testing.T) {
+// Selecting again is a fresh confirmation, and it replaces what was there.
+func TestSetReplacesTheTarget(t *testing.T) {
 	clk := newClock()
 	s := openTest(t, filepath.Join(t.TempDir(), "selection.json"), WithClock(clk.Now))
 
 	s.Set("oc_1", claude("w1:p1"))
-	clk.Advance(TTL - time.Hour)
-	s.Set("oc_1", claude("w1:p1"))
+	clk.Advance(StaleAfter - time.Hour)
+	again := claude("w1:p2")
+	s.Set("oc_1", again)
 
-	clk.Advance(2 * time.Hour) // past the first window, inside the second
-	mustGet(t, s, "oc_1", claude("w1:p1"))
+	clk.Advance(2 * time.Hour)
+	mustGet(t, s, "oc_1", again)
 
-	clk.Advance(TTL)
+	// And Clear — the only retirement path left — is what ends it.
+	s.Clear("oc_1")
 	mustMiss(t, s, "oc_1")
 }
 
@@ -356,9 +367,11 @@ func TestSetTimestampHandling(t *testing.T) {
 
 	t.Run("caller timestamp is kept", func(t *testing.T) {
 		s := openTest(t, filepath.Join(t.TempDir(), "selection.json"), WithClock(clk.Now))
-		// Rewriting a target (a new picker card id for the same selection)
-		// must not silently restart a window only a human tap should restart.
-		earlier := clk.Now().Add(-TTL + time.Minute)
+		// Rewriting a target (a new picker card id for the same selection) must
+		// not restamp it: SelectedAt means "when a human chose this", and the
+		// bridge reads it to decide whether to remind them how long ago that
+		// was. A rewrite that moved it would silence the reminder forever.
+		earlier := clk.Now().Add(-StaleAfter + time.Minute)
 		tgt := claude("w1:p1")
 		tgt.SelectedAt = earlier
 		s.Set("oc_1", tgt)
@@ -367,8 +380,6 @@ func TestSetTimestampHandling(t *testing.T) {
 		if !got.SelectedAt.Equal(earlier) {
 			t.Fatalf("SelectedAt = %v, want %v", got.SelectedAt, earlier)
 		}
-		clk.Advance(2 * time.Minute)
-		mustMiss(t, s, "oc_1")
 	})
 }
 
@@ -405,10 +416,11 @@ func TestPersistAcrossReopen(t *testing.T) {
 	mustGet(t, s2, "oc_1", claude("w1:p1"))
 	mustGet(t, s2, "oc_2", claude("w2:p2"))
 
-	// selectedAt survives the round trip, so the TTL keeps running across a
-	// restart instead of resetting.
-	clk.Advance(TTL - time.Hour)
-	mustMiss(t, s2, "oc_1")
+	// selectedAt survives the round trip, so the age the bridge reports is the
+	// age since the human picked — not since the last time the process bounced.
+	if got := mustGet(t, s2, "oc_1", claude("w1:p1")); !got.SelectedAt.Equal(clk.Now().Add(-time.Hour)) {
+		t.Fatalf("SelectedAt = %v, want it to have survived the restart", got.SelectedAt)
+	}
 }
 
 // The bridge is killed, not shut down, more often than we would like: a Set
@@ -429,10 +441,10 @@ func TestSetIsDurableWithoutExplicitFlush(t *testing.T) {
 	mustGet(t, s2, "oc_1", claude("w1:p1"))
 }
 
-// Clear is the identity-mismatch escape: the selection is dropped precisely
-// because delivering to that seat has become unsafe (G8, G17). If it only ever
-// lived in memory, a restart would resurrect it and the next thing typed would
-// go to whatever now occupies the pane.
+// Clear is /close: the user said they are done talking to that agent. If it
+// only ever lived in memory, a restart would resurrect a conversation they
+// closed and the next thing typed would go to an agent they had walked away
+// from.
 func TestClearIsDurableWithoutExplicitFlush(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "selection.json")
 	clk := newClock()
@@ -445,7 +457,11 @@ func TestClearIsDurableWithoutExplicitFlush(t *testing.T) {
 	mustMiss(t, s2, "oc_1")
 }
 
-func TestExpiredSelectionsAreNotReloaded(t *testing.T) {
+// TestAnOldSelectionSurvivesARestart: S2 3.1 has this bridge killed and
+// restarted routinely, so an age filter on the load path would be the retracted
+// TTL under another name — and "the process bounced" is the least explicable
+// reason a conversation could end.
+func TestAnOldSelectionSurvivesARestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "selection.json")
 	clk := newClock()
 
@@ -455,39 +471,18 @@ func TestExpiredSelectionsAreNotReloaded(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	clk.Advance(TTL + time.Minute)
+	clk.Advance(30 * 24 * time.Hour)
 	s2 := openTest(t, path, WithClock(clk.Now))
-	mustMiss(t, s2, "oc_1")
-	if n := rawLen(s2); n != 0 {
-		t.Fatalf("expired selection was loaded: stored entries = %d", n)
+	mustGet(t, s2, "oc_1", claude("w1:p1"))
+	if n := rawLen(s2); n != 1 {
+		t.Fatalf("stored entries = %d, want the selection reloaded", n)
 	}
-}
 
-// Get drops an expired selection, and the drop has to reach disk. A file that
-// still holds it is one backwards clock correction plus a restart away from
-// putting the selection back inside its window — and both halves are cheap: the
-// clock is exactly the wrong-clock-at-boot case live() fails closed on, and S2
-// 3.1 says the bridge is killed and restarted routinely. Without this the 12h
-// bound holds in memory only.
-func TestExpiryNoticedByGetIsDurable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "selection.json")
-	clk := newClock()
-
-	s1 := openTest(t, path, WithClock(clk.Now))
-	s1.Set("oc_1", claude("w1:p1"))
-
-	clk.Advance(TTL + time.Minute)
-	mustMiss(t, s1, "oc_1") // the ONLY thing that notices the expiry
-
-	// Clock corrected backwards, to a moment the retired selection would still
-	// be inside its original window.
+	// A Mac whose clock came back wrong at boot changes nothing either: no path
+	// in this store compares a timestamp any more.
 	rewound := newClock()
-	rewound.Advance(time.Hour)
-	s2 := openTest(t, path, WithClock(rewound.Now))
-	mustMiss(t, s2, "oc_1")
-	if n := rawLen(s2); n != 0 {
-		t.Fatalf("retired selection came back from disk: stored entries = %d", n)
-	}
+	s3 := openTest(t, path, WithClock(rewound.Now))
+	mustGet(t, s3, "oc_1", claude("w1:p1"))
 }
 
 // Set must never evict the entry it was just asked to store. Eviction orders by
@@ -505,7 +500,7 @@ func TestSetNeverEvictsWhatItJustStored(t *testing.T) {
 		clk.Advance(time.Minute)
 	}
 
-	// Older than every stored selection, but still well inside its own TTL.
+	// Older than every stored selection, and eviction orders by exactly that.
 	late := claude("w9:p9")
 	late.SelectedAt = clk.Now().Add(-time.Hour)
 	s.Set("oc_late", late)
@@ -518,30 +513,29 @@ func TestSetNeverEvictsWhatItJustStored(t *testing.T) {
 	mustMiss(t, s, "oc_0")
 }
 
-// A write must not re-encode selections that can no longer route anything.
-// Nothing else reclaims them below capacity, so without this a chat that
-// selected an agent and then went quiet is re-encoded and re-fsynced forever —
-// and stays on disk for a clock rewind to read back in.
-func TestPersistDropsExpiredEntriesFromTheFile(t *testing.T) {
+// A write encodes every selection the store holds. The purge that used to run
+// here went with the expiry: an entry in this map is somebody's open
+// conversation, and the three things that retire one — /close, picking another
+// agent, eviction at capacity — have all already deleted it by the time a write
+// happens.
+func TestPersistKeepsEverySelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "selection.json")
 	clk := newClock()
 
 	s := openTest(t, path, WithClock(clk.Now))
 	s.Set("oc_stale", claude("w1:p1"))
-	clk.Advance(TTL + time.Minute)
+	clk.Advance(StaleAfter + time.Minute)
 	s.Set("oc_fresh", claude("w2:p2")) // write-through rewrites the whole file
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// The bytes, not Get: the load-side filter already hides a dead entry, so
-	// only the file itself shows whether it was written out again.
-	if strings.Contains(string(data), "oc_stale") {
-		t.Fatalf("expired selection still encoded on disk: %s", data)
-	}
-	if !strings.Contains(string(data), "oc_fresh") {
-		t.Fatalf("live selection missing from disk: %s", data)
+	// The bytes, not Get: only the file itself shows what was written out.
+	for _, chat := range []string{"oc_stale", "oc_fresh"} {
+		if !strings.Contains(string(data), chat) {
+			t.Fatalf("%s missing from disk: %s", chat, data)
+		}
 	}
 }
 
@@ -705,11 +699,14 @@ func TestCorruptFileStartsEmpty(t *testing.T) {
 			return []byte(`{"version":1,"entries":[{"c":"","t":{"pane":"w1:p1","kind":"claude","selected_at":"2026-08-14T01:00:00Z"}}]}`)
 		}, false, 0},
 		{
-			// Written by a Mac whose clock was wrong at boot. It must not
-			// outlive the 12h window once the clock is corrected (G17).
+			// Written by a Mac whose clock was wrong at boot. It is kept: the
+			// stamp is only ever read to decide whether to REMIND the user how
+			// old their aim is, and a nonsense stamp costs at most a reminder
+			// that never fires. Dropping the entry would cost the conversation,
+			// which is the more expensive way to be wrong about a clock.
 			"entry dated in the future", func(*testing.T) []byte {
 				return []byte(`{"version":1,"entries":[{"c":"oc_1","t":{"pane":"w1:p1","kind":"claude","selected_at":"2099-01-01T00:00:00Z"}}]}`)
-			}, false, 0,
+			}, false, 1,
 		},
 		{
 			// Hand-edited or merged file: keep the newest, so the loaded
@@ -1003,26 +1000,27 @@ func TestEvictionDropsOldestSelection(t *testing.T) {
 	}
 }
 
-// An expired selection routes nothing; a live one is somebody's current
-// conversation. At capacity the dead go first even when they are not the
-// oldest, which is what happens when the clock jumps backwards.
-func TestEvictionPrefersExpiredOverLive(t *testing.T) {
+// Eviction at capacity is the only thing left that retires a selection nobody
+// asked to retire, so it must drop the chat that chose longest ago and nothing
+// else. There is no "dead" tier to raid first any more: every entry here is
+// somebody's open conversation.
+func TestEvictionDropsTheOldestChoice(t *testing.T) {
 	clk := newClock()
 	s := openTest(t, filepath.Join(t.TempDir(), "selection.json"),
 		WithClock(clk.Now), WithMaxEntries(2), WithAutoFlush(false))
 
-	dead := claude("w1:p0")
-	dead.SelectedAt = clk.Now().Add(-TTL) // already outside the window
-	s.Set("oc_dead", dead)
-	s.Set("oc_live", claude("w1:p1"))
+	ancient := claude("w1:p0")
+	ancient.SelectedAt = clk.Now().Add(-30 * 24 * time.Hour)
+	s.Set("oc_ancient", ancient)
+	s.Set("oc_older", claude("w1:p1"))
 	clk.Advance(time.Minute)
 	s.Set("oc_new", claude("w1:p2"))
 
 	if n := rawLen(s); n != 2 {
 		t.Fatalf("stored entries = %d, want 2", n)
 	}
-	mustMiss(t, s, "oc_dead")
-	mustGet(t, s, "oc_live", claude("w1:p1"))
+	mustMiss(t, s, "oc_ancient")
+	mustGet(t, s, "oc_older", claude("w1:p1"))
 	mustGet(t, s, "oc_new", claude("w1:p2"))
 }
 
@@ -1071,10 +1069,11 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestDefaultsMatchContract(t *testing.T) {
-	// Long enough to survive a night, short enough that a forgotten selection
-	// does not silently receive tomorrow's first message.
-	if TTL != 12*time.Hour {
-		t.Fatalf("TTL = %v, want 12h", TTL)
+	// Not an expiry: how long a selection may go unconfirmed before the bridge
+	// says so out loud while delivering anyway. Long enough to survive a night,
+	// so a chat that is simply being used never sees it.
+	if StaleAfter != 12*time.Hour {
+		t.Fatalf("StaleAfter = %v, want 12h", StaleAfter)
 	}
 	s := openTest(t, filepath.Join(t.TempDir(), "selection.json"), WithClock(newClock().Now))
 	if s.maxEntries != DefaultMaxEntries {

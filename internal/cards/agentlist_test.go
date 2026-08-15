@@ -279,18 +279,18 @@ func TestAgentListMarksTheCurrentRow(t *testing.T) {
 		t.Fatalf("header does not say where typing goes:\n%s", header)
 	}
 
-	// Still pressable: a selection expires (selection.TTL), so re-confirming the
-	// row that already looks selected is what renews it.
+	// Still pressable: re-confirming the row that already looks selected is
+	// what re-reads the live identity and records it.
 	d := listDecisions(t, card)[0][0]
 	if d.Act != ActSelect || d.Pane != "w1:p1" {
 		t.Fatalf("current row's select button decoded to %+v", d)
 	}
 }
 
-// TestAgentListSaysWhenTheSelectionIsGone: a selection lives 12 hours and an
-// agent can exit in a minute. Marking no row at all would read as "nothing is
-// selected", which is true but does not explain why the last thing the user
-// typed went nowhere.
+// TestAgentListSaysWhenTheSelectionIsGone: a selection lasts until the user
+// sends /close, and an agent can exit in a minute. Marking no row at all would
+// read as "nothing is selected" — which is exactly wrong now, and would send
+// the user hunting for a button to press when the aim never moved.
 func TestAgentListSaysWhenTheSelectionIsGone(t *testing.T) {
 	js, err := BuildAgentList([]agents.Agent{codexAgent()}, "w7:p7", issuedAt)
 	if err != nil {
@@ -298,11 +298,14 @@ func TestAgentListSaysWhenTheSelectionIsGone(t *testing.T) {
 	}
 	card := decodeCard(t, js)
 	text := allText(card)
-	if !strings.Contains(text, "w7:p7 is gone") {
-		t.Fatalf("card does not say the selected agent is gone:\n%s", text)
+	if !strings.Contains(text, "still aimed at w7:p7") {
+		t.Fatalf("card does not say the aim is still standing:\n%s", text)
+	}
+	if strings.Contains(text, "nothing selected") {
+		t.Fatalf("card claims nothing is selected although the chat is still aimed:\n%s", text)
 	}
 	if strings.Contains(text, selectedText) {
-		t.Fatalf("a row is marked as selected although the selection is gone:\n%s", text)
+		t.Fatalf("a row is marked as selected although that agent is not running:\n%s", text)
 	}
 }
 
@@ -517,8 +520,8 @@ func TestAgentListDropsAgentsThatCannotBeTalkedTo(t *testing.T) {
 		t.Fatalf("rows = %v, want only the agent that can still be talked to", got)
 	}
 	text := allText(card)
-	if !strings.Contains(text, "w9:p9 is gone") {
-		t.Fatalf("header does not say the selected agent is gone:\n%s", text)
+	if !strings.Contains(text, "still aimed at w9:p9") {
+		t.Fatalf("header does not say the aim is still standing:\n%s", text)
 	}
 	if strings.Contains(text, "your typing goes to") {
 		t.Fatalf("header claims typing reaches a gone agent:\n%s", text)
