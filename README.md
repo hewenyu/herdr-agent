@@ -258,9 +258,22 @@ asked to be. In particular it survives all of these, which used to end it:
 - a night, a weekend, a holiday. After twelve quiet hours the next message is still delivered, with
   one line saying how long ago you picked — said once, so a chat in daily use never sees it.
 
-What still refuses to deliver is a seat that provably changed hands: a **different kind** of agent in
-that pane, or the same kind working in a **different directory**. Nothing is sent, you are told what
-changed, and the aim stays where you put it until you move it.
+**What you anchor is the window.** herdr never recycles a pane id — the public pane number only goes
+up, is not released when a pane closes, and the counter is persisted across restarts — so `w2:p2`
+names one window for the life of the install. That is why nothing else needs to be checked, and why
+checking anything else was a mistake: on a real machine two agents can share a directory
+(`w2:p1 codex` and `w2:p2 claude`, both in `~/code/yuebanhome`), and two claudes in one project match
+on kind as well. The pane is the only thing that tells them apart, and it always will.
+
+The one thing that still refuses to deliver is a **different program in that window** — you quit
+claude in `w1:p1` and started codex there. The window outlived the agent. Nothing is sent, you are
+told what changed, and the aim stays where you put it until you move it.
+
+If you restart an agent in the same window on a *different* project, the message is delivered — it is
+still your window — and one line tells you it moved: "claude in w1:p1 is now working in ~/other, you
+aimed at it while it was in ~/project". Reported, not refused: the directory herdr reports also
+follows a Bash tool call into a subdirectory, so refusing on it would drop messages in the middle of
+a task.
 
 **Reply to a message to override the selection for that one message.** That is how you drive several
 agents from one chat while still having a default: the reply routes to the agent that message was
@@ -349,12 +362,13 @@ message, so nobody who can talk to the bot can redirect your agents' screens to 
 
 **Every reply names the agent it went to.** Not "sent", but "Delivered to claude · herdr-agent ·
 w1:p1. It is now idle." — kind, directory, pane. A pane id is a seat and not an identity: an agent
-can exit and another take the same seat, so a remembered destination — a selection, a reply binding —
-is re-checked against whoever is in that pane now before anything is delivered, and if it changed you
-are told instead of being quietly retargeted. The check is **kind and working directory**, which is
-what a person means by "the claude in ~/project"; the native session id is recorded and reported but
-not compared, because it changes on every `/clear` and comparing it ended conversations that had not
-ended.
+can exit and another start in the same window, so a remembered destination — a selection, a reply
+binding — is re-checked against whoever is in that pane now before anything is delivered, and if it
+changed you are told instead of being quietly retargeted. The check is the **pane and the kind**: the
+pane because herdr never reuses one, the kind because a window outlives the agent in it. The session
+id and the working directory are recorded and reported but never compared — the first changes on
+every `/clear`, the second is equal across two different agents and moves with a Bash tool call, and
+comparing either ended conversations that had not ended.
 
 ## Troubleshooting
 

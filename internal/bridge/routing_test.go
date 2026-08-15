@@ -185,81 +185,131 @@ func TestAReplyDoesNotDisturbTheSelection(t *testing.T) {
 
 // ---------- identity: a pane id is a seat, not an identity ----------
 
-// TestASelectionIsRefusedWhenAnotherAgentTookTheSeat is the hazard the identity
-// check exists to close.
+// TestASelectionIsRefusedWhenAnotherProgramTookTheWindow is the one hazard the
+// identity check still exists to close.
 //
-// Select claude at w1:p1, walk away, claude exits, codex starts in the same
-// pane. Routing on the seat alone would put the next thing typed into a
-// different context — and text typed at an agent sitting on a permission dialog
-// answers that dialog (G1). Two things are compared and either can change
-// alone: the KIND when a different program takes the seat, the CWD when the
-// same program is started again on a different job.
+// A herdr pane id is never reused (see identity.matches for the source), so a
+// window the user anchored stays that window. What a window DOES outlive is the
+// agent inside it: quit claude in w1:p1, run codex there, and the id is
+// unchanged while the program is not. Routing on the id alone would put the next
+// thing typed into a different context, and text typed at an agent sitting on a
+// permission dialog answers that dialog (G1).
 //
-// What must NOT happen on either is the selection being dropped. The user did
-// not close anything; refusing the delivery is the whole of the answer, and
-// clearing on top of it is how a chat with one agent running ends up silently
-// delivering the NEXT message to the stranger via the single-agent fallback.
-func TestASelectionIsRefusedWhenAnotherAgentTookTheSeat(t *testing.T) {
+// What must NOT happen is the selection being dropped. The user did not close
+// anything; refusing the delivery is the whole of the answer, and clearing on
+// top of it is how a chat with one agent running ends up silently delivering the
+// NEXT message to the stranger via the single-agent fallback.
+func TestASelectionIsRefusedWhenAnotherProgramTookTheWindow(t *testing.T) {
+	h := newHarness(t)
 	selected := withSession(idleAgent(testPane), "sess-one")
 	selected.Cwd = "/project-a"
+	h.reg.setAgents(selected)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, selected)
 
-	otherKind := withSession(idleAgent(testPane), "sess-one")
-	otherKind.Kind = "codex"
-	otherKind.Cwd = "/project-a"
+	tookOver := withSession(idleAgent(testPane), "sess-one")
+	tookOver.Kind = "codex"
+	tookOver.Cwd = "/project-a"
+	h.reg.setAgents(tookOver)
 
-	otherJob := withSession(idleAgent(testPane), "sess-two")
-	otherJob.Cwd = "/project-b"
-
-	tests := []struct {
-		name string
-		now  agents.Agent
-		says string
-	}{
-		{
-			name: "a different kind of agent took the seat",
-			now:  otherKind,
-			says: "now runs codex",
-		},
-		{
-			name: "the same kind of agent, working somewhere else",
-			now:  otherJob,
-			says: "/project-b",
-		},
+	if err := h.b.handleMessage(context.Background(), inbound("rm -rf the thing we discussed")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.reg.setAgents(selected)
-			h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
-			h.selectAgent(testChat, selected)
-			h.reg.setAgents(tt.now)
+	assertNothingWasTyped(t, h, "a selection whose window now runs something else")
+	wantContains(t, lastText(t, h), "now runs codex", "the refusal must say what changed")
+	wantContains(t, lastText(t, h), "/close", "the refusal must name the one way out")
 
-			if err := h.b.handleMessage(context.Background(), inbound("rm -rf the thing we discussed")); err != nil {
-				t.Fatalf("handleMessage: %v", err)
-			}
+	got, ok := h.selected(testChat)
+	if !ok {
+		t.Fatal("the selection was dropped by a refusal the user did not ask for")
+	}
+	if got.Pane != testPane {
+		t.Fatalf("selection = %s, want it left at %s", got.Pane, testPane)
+	}
 
-			assertNothingWasTyped(t, h, "a selection whose agent was replaced")
-			wantContains(t, lastText(t, h), tt.says, "the refusal must say what changed")
-			wantContains(t, lastText(t, h), "/close", "the refusal must name the one way out")
+	// ...and the NEXT message must not be delivered either, even though exactly
+	// one agent is running. A chat that still has a selection never reaches the
+	// single-agent fallback.
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("and this one")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	assertNothingWasTyped(t, h, "the message after a refused selection")
+}
 
-			got, ok := h.selected(testChat)
-			if !ok {
-				t.Fatal("the selection was dropped by a refusal the user did not ask for")
-			}
-			if got.Pane != testPane {
-				t.Fatalf("selection = %s, want it left at %s", got.Pane, testPane)
-			}
+// TestAWindowRestartedOnAnotherJobIsReportedNotRefused is the deliberate half of
+// anchoring a window.
+//
+// Quit claude in w1:p1, cd to another project, start claude again there. The
+// window is the thing the user anchored and it has not moved, so the message is
+// delivered — but a new session id together with a new directory is the one
+// shape that means "this window was restarted on a different job", and that is
+// worth a sentence before someone types into it.
+//
+// The pairing is what makes it quiet enough to be worth having: AgentInfo.cwd
+// can fall back to foreground_cwd, which follows a Bash tool call into a
+// subdirectory, and a tool call does not mint a session id.
+func TestAWindowRestartedOnAnotherJobIsReportedNotRefused(t *testing.T) {
+	h := newHarness(t)
+	was := withSession(idleAgent(testPane), "sess-one")
+	was.Cwd = "/project-a"
+	h.reg.setAgents(was)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, was)
 
-			// ...and the NEXT message must not be delivered either, even though
-			// exactly one agent is running. A chat that still has a selection
-			// never reaches the single-agent fallback.
-			h.ctrl.reset()
-			if err := h.b.handleMessage(context.Background(), inbound("and this one")); err != nil {
-				t.Fatalf("handleMessage: %v", err)
-			}
-			assertNothingWasTyped(t, h, "the message after a refused selection")
-		})
+	moved := withSession(idleAgent(testPane), "sess-two")
+	moved.Cwd = "/project-b"
+	h.reg.setAgents(moved)
+
+	if err := h.b.handleMessage(context.Background(), inbound("carry on")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	for _, want := range []string{"/project-a", "/project-b", "/close"} {
+		wantContains(t, lastText(t, h), want, "the note must say where it moved and how to get out")
+	}
+
+	// Once, not on every message: the new directory was recorded when it was
+	// said.
+	h.ctrl.reset()
+	if err := h.b.handleMessage(context.Background(), inbound("and again")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	if strings.Contains(lastText(t, h), "/project-a") {
+		t.Error("the moved note was repeated on the next message")
+	}
+}
+
+// TestABashToolCallDoesNotDisturbTheAim is the measurement that took the cwd out
+// of the comparison.
+//
+// herdr's AgentInfo.cwd falls back to foreground_cwd, and foreground_cwd
+// deliberately looks for a foreground process-group member whose cwd DIFFERS
+// from the shell's (src/pane.rs:278-295) — exactly what claude produces while it
+// runs a Bash tool call in a subdirectory. Comparing it refused messages in the
+// middle of a task, for a directory the user never chose.
+func TestABashToolCallDoesNotDisturbTheAim(t *testing.T) {
+	h := newHarness(t)
+	a := withSession(idleAgent(testPane), "sess-one")
+	a.Cwd = "/project-a"
+	h.reg.setAgents(a)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusWorking}, nil)
+	h.selectAgent(testChat, a)
+
+	// Same agent, same session — herdr is simply reporting the cwd of the
+	// subprocess it is running right now.
+	working := withSession(idleAgent(testPane), "sess-one")
+	working.Cwd = "/project-a/vendor/somewhere"
+	h.reg.setAgents(working)
+
+	if err := h.b.handleMessage(context.Background(), inbound("stop, use the other file")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, testPane)
+	if strings.Contains(lastText(t, h), "vendor") {
+		t.Error("a tool call's working directory was reported as the agent moving jobs")
 	}
 }
 
@@ -366,7 +416,8 @@ func TestAReplyIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 	was := withSession(idleAgent(testPane), "sess-one")
 	was.Cwd = "/project-a"
 	nowThere := withSession(idleAgent(testPane), "sess-two")
-	nowThere.Cwd = "/project-b"
+	nowThere.Kind = "codex" // the window outlived the agent that was in it
+	nowThere.Cwd = "/project-a"
 	other := withSession(idleAgent(secondPane), "sess-other")
 
 	h.reg.setAgents(was, other)
@@ -380,7 +431,7 @@ func TestAReplyIsRefusedWhenTheAgentWasReplaced(t *testing.T) {
 	}
 
 	assertNothingWasTyped(t, h, "a reply to a message about an agent that has been replaced")
-	wantContains(t, lastText(t, h), "/project-b", "the refusal must say what changed")
+	wantContains(t, lastText(t, h), "now runs codex", "the refusal must say what changed")
 
 	// A refused reply is about that message, not about the conversation the
 	// chat is having: the selection points somewhere else and is still good.
@@ -489,11 +540,11 @@ func TestASelectionDoesNotExpireButItsAgeIsSaid(t *testing.T) {
 
 // TestALegacySelectionLearnsItsDirectory is the upgrade path.
 //
-// selection.Target grew a Cwd field because the session id stopped being
-// compared, and kind alone is one bit. A selection.json written by the previous
-// build carries no cwd, so until it is repaired that chat is checked on kind
-// alone — which is exactly the wildcard the check exists to prevent. The first
-// delivery that resolves cleanly writes it back.
+// selection.Target grew a Cwd field so a refusal can NAME what the chat is
+// aimed at when no live agent is there to read one off, and so a restart in
+// another directory can be reported. It is never compared. A selection.json
+// written by the previous build carries none; the first delivery that resolves
+// cleanly writes it back.
 func TestALegacySelectionLearnsItsDirectory(t *testing.T) {
 	h := newHarness(t)
 	a := withSession(idleAgent(testPane), "sess-one")
@@ -522,16 +573,15 @@ func TestALegacySelectionLearnsItsDirectory(t *testing.T) {
 		t.Fatalf("stored cwd = %q, want it learned from the live agent", got.Cwd)
 	}
 
-	// And now it discriminates: the same kind, in a different directory, is a
-	// different job and is refused.
-	elsewhere := withSession(idleAgent(testPane), "sess-one")
-	elsewhere.Cwd = "/project-b"
-	h.reg.setAgents(elsewhere)
+	// And now the label a refusal prints can name it, which is what the field is
+	// for: with the agent gone there is nothing live left to read.
+	h.reg.setAgents()
 	h.ctrl.reset()
 	if err := h.b.handleMessage(context.Background(), inbound("and this")); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
-	assertNothingWasTyped(t, h, "a repaired selection whose agent moved to another job")
+	assertNothingWasTyped(t, h, "a selection whose agent is not running")
+	wantContains(t, lastText(t, h), "project-a", "the refusal must name what the chat is still aimed at")
 }
 
 // TestNothingButTheUserRetiresASelection is the rule stated once, over every
@@ -812,15 +862,17 @@ func TestWithSelectionWiresTheStore(t *testing.T) {
 
 // ---------- the identity primitives ----------
 
-// TestIdentityComparesWhatAPersonPicked: a conversational target is "the claude
-// in ~/project", and that is what is compared — kind and directory, never the
-// session id.
+// TestIdentityIsTheWindowPlusTheProgram: what a person picks is a window, and
+// herdr pane ids are not recycled, so the id IS the identity. The only thing
+// left to check is that the same PROGRAM is still in it.
 //
-// The session is the most volatile field herdr publishes: absent until claude's
-// trust prompt is accepted (G8), and brand new after every /clear and every
-// compaction. Comparing it held a conversation to keystroke-grade identity and
-// ended it several times a day, for an agent that had not moved.
-func TestIdentityComparesWhatAPersonPicked(t *testing.T) {
+// Neither of the other two fields survives contact with how herdr reports them.
+// The session id is absent until claude's trust prompt is accepted (G8) and
+// brand new after every /clear and compaction. The cwd is equal across two
+// different agents on a live machine — w2:p1 codex and w2:p2 claude both report
+// /Users/yueban/code/yuebanhome — and it follows a Bash tool call into a
+// subdirectory. Both are carried for reporting; neither is a test.
+func TestIdentityIsTheWindowPlusTheProgram(t *testing.T) {
 	live := withSession(idleAgent(testPane), "sess-one")
 	live.Cwd = "/project-a"
 
@@ -830,13 +882,13 @@ func TestIdentityComparesWhatAPersonPicked(t *testing.T) {
 		want bool
 	}{
 		{"identical", identity{Kind: "claude", Session: "sess-one", Cwd: "/project-a"}, true},
-		{"another kind in the seat", identity{Kind: "codex", Session: "sess-one", Cwd: "/project-a"}, false},
-		// The /clear, the compaction, the restart in place. Same agent, same
-		// job, new session id — and it is still the target the user picked.
-		{"a new session on the same job", identity{Kind: "claude", Session: "sess-two", Cwd: "/project-a"}, true},
+		{"another program in the window", identity{Kind: "codex", Session: "sess-one", Cwd: "/project-a"}, false},
+		// The /clear, the compaction, the restart in place.
+		{"a new session in the same window", identity{Kind: "claude", Session: "sess-two", Cwd: "/project-a"}, true},
 		{"recorded before a session existed", identity{Kind: "claude", Cwd: "/project-a"}, true},
-		// A different directory is a different job, whatever the session says.
-		{"same session, another job", identity{Kind: "claude", Session: "sess-one", Cwd: "/elsewhere"}, false},
+		// A Bash tool call running in a subdirectory, or a restart on another
+		// job: delivered either way, and the second is reported (restartNote).
+		{"another directory", identity{Kind: "claude", Session: "sess-one", Cwd: "/elsewhere"}, true},
 		{"nothing recorded at all", identity{}, false},
 	}
 	for _, tt := range tests {
@@ -847,13 +899,6 @@ func TestIdentityComparesWhatAPersonPicked(t *testing.T) {
 		})
 	}
 
-	// An agent herdr reports no cwd for — a pane whose foreground process it
-	// could not resolve — is not evidence of a move, so it refutes nothing.
-	noCwd := withSession(idleAgent(testPane), "sess-one")
-	noCwd.Cwd = ""
-	if !(identity{Kind: "claude", Cwd: "/project-a"}).matches(noCwd) {
-		t.Error("a pane herdr could not resolve a cwd for was treated as a different agent")
-	}
 	if !identityOf(idleAgent(testPane)).matches(idleAgent(testPane)) {
 		t.Error("an agent that has published no session id cannot be selected")
 	}
@@ -868,35 +913,48 @@ func TestIdentityComparesWhatAPersonPicked(t *testing.T) {
 // the same kind and no session, so the record matches a run the user never
 // aimed at. Cwd is the one further thing agents.Agent carries, and comparing it
 // costs at worst one tap on the picker.
-func TestTwoPreSessionRunsAreToldApartByTheirDirectory(t *testing.T) {
-	recorded := idleAgent(testPane) // no session yet: the trust prompt is open
-	recorded.Cwd = "/project-a"
+func TestTwoAgentsAreToldApartByTheirWindow(t *testing.T) {
+	// The live machine this was measured on: two agents, two windows, ONE
+	// directory. Neither the cwd nor (for codex, whose hook is untrusted) the
+	// session id separates them; the pane does, and herdr does not recycle pane
+	// ids, so it always will.
+	one := idleAgent(testPane)
+	one.Cwd = "/Users/yueban/code/yuebanhome"
+	two := idleAgent(secondPane)
+	two.Cwd = "/Users/yueban/code/yuebanhome"
 
-	other := idleAgent(testPane)
-	other.Cwd = "/project-b" // a second run, same seat, also pre-session
-
-	id := identityOf(recorded)
-	if !id.matches(recorded) {
-		t.Fatal("an agent does not match itself")
+	if one.Cwd != two.Cwd {
+		t.Fatal("this test is meaningless unless both agents share a directory")
 	}
-	if id.matches(other) {
-		t.Fatal("a message aimed at the /project-a run would be typed into the /project-b run")
+	if identityOf(one).Cwd != identityOf(two).Cwd {
+		t.Fatal("the recorded identities differ on a field that cannot separate them")
 	}
 
-	err := replacedError(testPane, id, other)
+	// Two claudes in one project is an ordinary way to work — planning in one
+	// window, implementing in the other — and for those the kind matches too.
+	// Routing is keyed on the pane, so they never collide.
+	h := newHarness(t)
+	h.reg.setAgents(one, two)
+	h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true, FinalStatus: agents.StatusIdle}, nil)
+	h.selectAgent(testChat, two)
+
+	if err := h.b.handleMessage(context.Background(), inbound("you, the second one")); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+	delivered(t, h, secondPane)
+
+	// And the one thing that does end it: a different program in that window.
+	took := idleAgent(secondPane)
+	took.Kind = "codex"
+	took.Cwd = two.Cwd
+	err := replacedError(secondPane, identityOf(two), took)
 	if !errors.Is(err, ErrTargetReplaced) {
 		t.Fatalf("err = %v, want ErrTargetReplaced", err)
 	}
-	for _, want := range []string{"/project-a", "/project-b"} {
+	for _, want := range []string{"claude", "codex", secondPane} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not name %s:\n%s", want, err)
 		}
-	}
-
-	// And a record with no cwd at all — a selection, whose store has no field
-	// for one — refutes nothing rather than refusing everything.
-	if !(identity{Kind: "claude"}).matches(other) {
-		t.Error("a record that never held a cwd was treated as a mismatch")
 	}
 }
 

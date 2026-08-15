@@ -168,20 +168,15 @@ func (s *FileStore) Set(chatID string, t Target) {
 	// the wrong agent is how prose becomes an approval (G1). Refusing to store
 	// it costs the user one tap on the picker card.
 	//
-	// Session is deliberately NOT required, and is deliberately not part of the
-	// identity the caller compares either: G8 measures a real window in which an
-	// agent is already detected but its session ref is still None (Claude until
-	// SessionStart, Codex until the hook is trusted with `t`), and claude mints a
-	// new one on every /clear and every compaction. A selection held to it was a
-	// selection that ended several times a day, for an agent that never moved.
-	//
-	// Cwd is what carries the weight the session used to, and the caller must
-	// compare it: "the claude in ~/project" is the thing a person picked. It is
-	// not required here because herdr reports no cwd for a pane whose foreground
-	// process it cannot resolve, and refusing to store those would make an agent
-	// unselectable for a reason the user cannot see or fix. An absent cwd refutes
-	// nothing; a present one that changed is a different job (see
-	// bridge.identity.matches).
+	// Session and Cwd are neither required nor compared. G8 measures a real
+	// window in which an agent is detected but its session ref is still None
+	// (Claude until SessionStart, Codex until the hook is trusted with `t`), and
+	// claude mints a new session on every /clear and compaction; herdr reports
+	// no cwd at all for a pane whose foreground process it cannot resolve, and
+	// reports a moving one for a pane running a Bash tool call. Requiring either
+	// would make an agent unselectable for a reason the user cannot see or fix,
+	// and comparing either ended conversations that had not ended. They are
+	// stored so the bridge can say what changed (see bridge.identity.matches).
 	if chatID == "" || t.Pane == "" || t.Kind == "" {
 		return
 	}

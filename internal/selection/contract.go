@@ -33,29 +33,32 @@ import "time"
 // the user — as information rather than as a dropped conversation.
 const StaleAfter = 12 * time.Hour
 
-// Target is a chat's current agent.
+// Target is a chat's current agent — which in practice means a WINDOW, because
+// that is what a person picks when they pick an agent.
 //
-// Pane is where it lives; Kind, Cwd and Session describe what it IS. A pane id
-// is a seat, not an identity — an agent can exit and another take the same
-// seat, and routing on the seat alone would deliver a later message into a
-// different context entirely (G8, G17).
+// Pane is the window and it is the identity. herdr never recycles a pane id:
+// the public pane number only ever goes up, is not released when a pane closes,
+// and the counter is persisted across restarts, so w2:p2 names one pane for the
+// life of the install. Only KIND is checked alongside it, and only because a
+// window outlives the agent inside it — quit claude in that pane, run codex
+// there, and the id is unchanged while the program is not.
 //
-// Kind and Cwd are what the bridge COMPARES before every delivery: "the claude
-// in ~/project" is what a person means when they pick an agent, and it stays
-// true across a /clear, across a compaction, and across that agent being
-// restarted where it stood. Session is recorded for diagnosis and for telling
-// the user their agent started a new conversation; it is deliberately not part
-// of the comparison, because it is the most volatile field herdr publishes and
-// holding a conversational target to it ended the conversation several times a
-// day. See bridge.identity.matches for the whole argument.
+// Session and Cwd are recorded to be REPORTED, never compared. Both were
+// compared, and both cost conversations that had not ended: a session id is
+// absent until claude's trust prompt is accepted and brand new after every
+// /clear, and a cwd is equal across two agents in one project while also
+// following a Bash tool call into a subdirectory. See bridge.identity.matches
+// for the measurements.
 type Target struct {
 	Pane    string `json:"pane"`
 	Kind    string `json:"kind"`
 	Session string `json:"session,omitempty"`
-	// Cwd is the directory the agent was working in when it was picked. Empty
-	// means "this record has no cwd" — it was written by an older build, or
-	// herdr could not resolve the pane's foreground process — and an absent cwd
-	// refutes nothing rather than refusing everything.
+	// Cwd is the directory the agent was working in when it was picked. It names
+	// the target in a refusal when no live agent is left to read one off, and a
+	// change in it — paired with a new session id — is how the bridge says a
+	// window was restarted on a different job. Empty means the record has none:
+	// written by an older build, or herdr could not resolve the pane's
+	// foreground process.
 	Cwd        string    `json:"cwd,omitempty"`
 	SelectedAt time.Time `json:"selected_at"`
 	// RemindedAt is when the user was last told how old this selection is. Zero

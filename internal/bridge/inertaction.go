@@ -150,9 +150,19 @@ func (b *bridge) pressScreen(ctx context.Context, a lark.Action, d cards.Decisio
 	}
 
 	body := []string{fmt.Sprintf("**📺 %s** · %s", agentLabel(live), live.Status)}
-	if replaced(d, live, b.now()) {
+	// Two different facts, and only the first is "a different agent". A pane id
+	// is never reused (see identity.matches), so an old button still names the
+	// window it was drawn for; what may have changed underneath is the program
+	// in it, or merely the conversation that program is on. Saying "this is not
+	// the agent" for a /clear would be false.
+	switch {
+	case d.Kind != live.Kind:
 		body = append(body, fmt.Sprintf(
 			"_This is not the agent that button was made for: %s runs %s now._", d.Pane, orUnknown(live.Kind)))
+	case replaced(d, live, b.now()):
+		body = append(body, fmt.Sprintf(
+			"_Same window, new conversation: the %s in %s has been restarted or cleared since that button "+
+				"was drawn._", orUnknown(live.Kind), d.Pane))
 	}
 	body = append(body, dialogOrNote(s))
 	if s.Cropped {

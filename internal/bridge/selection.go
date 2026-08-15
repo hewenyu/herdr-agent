@@ -95,11 +95,11 @@ func sessionID(a agents.Agent) string {
 // remembers can be CHECKED before it is delivered to rather than merely aimed
 // at.
 //
-// Kind and Session are what the agent IS. Cwd is the one further discriminator
-// agents.Agent carries, and it is consulted only in the window where the
-// session cannot discriminate at all (see matches). Empty Cwd means "this
-// record has no cwd", not "the agent had none" — selection.Target is a frozen
-// contract with no field for one — so it refutes nothing.
+// Only Kind is checked (see matches). Session and Cwd are carried so the bridge
+// can REPORT what changed — a new conversation, a restart in another directory
+// — and so a refusal can name the target when no live agent is there to read
+// one off. The distinction between a fact worth carrying and a fact worth
+// testing on is the one this package kept getting wrong.
 type identity struct {
 	Kind    string
 	Session string
@@ -116,9 +116,38 @@ func identityOf(a agents.Agent) identity {
 // matches reports whether the agent in the pane right now is the one that was
 // recorded.
 //
-// Identity here is pane + KIND + CWD. The native session id is recorded for
-// diagnosis and deliberately NOT compared, which is a retraction: comparing it
-// made the selection unusable in practice.
+// IDENTITY IS THE PANE, PLUS KIND. Neither the native session id nor the cwd is
+// compared. Both were, and both are retracted; the measurements that settle it
+// are below, taken against herdr 0.8.0's own source and a live server.
+//
+// THE PANE IS NOT A SEAT. This package was built on "a pane id is a SEAT, not an
+// identity (G8, G17)" — reason on the seat alone and an agent that exits lets
+// the next one inherit your typing. That is true of tmux, where window and pane
+// indices are recycled the moment you close one. It is NOT true of herdr:
+//
+//   - public pane numbers come from workspace.next_public_pane_number, which is
+//     only ever raised — register_new_pane_with_number does max(number+1) — and
+//     unregister_pane drops the mapping without ever lowering it
+//     (src/workspace.rs:1257-1264).
+//   - the counter itself is persisted and restored as
+//     max(snapshot max, snap.next_public_pane_number) (src/persist/restore.rs),
+//     so it does not rewind across a herdr restart either.
+//
+// Close w2:p2 and open another pane and you get w2:p3. w2:p2 does not come back.
+// So a pane id names one pane for the life of the install, and anchoring a
+// conversation to it is anchoring it to a window the user can see — which is
+// exactly how a person thinks about it: two agents means two windows.
+//
+// (One narrow exception, documented rather than designed around: workspace ids
+// are re-derived at load as max(existing)+1 rather than from a persisted
+// counter, so deleting the highest-numbered workspace and restarting herdr can
+// hand its id to a new one. It costs a deliberate workspace deletion plus a
+// restart, and the kind check below still catches a different program.)
+//
+// WHAT A PANE DOES OUTLIVE is the agent inside it. Quit claude in w2:p2, run
+// codex there, and the id is unchanged while the program is not. That is the
+// real "somebody else took the seat", it is the only one, and KIND catches it
+// for one bit.
 //
 // Two guards exist in this bridge and they are not the same guard. A KEYSTROKE
 // needs a tight one — cards.Decision carries state_change_seq and SendKey
@@ -140,47 +169,47 @@ func identityOf(a agents.Agent) identity {
 // Each of those printed "I cannot tell whether it is still the same run" and
 // made the user pick their agent again, for an agent that had never moved.
 //
-// What is given up: an agent that exited and was replaced by another of the
-// same kind in the same directory now keeps the binding. That is the right
-// trade. A fresh claude in ~/project is what the user asked for when they
-// picked "claude · ~/project", the messages it receives are prose rather than
-// keystrokes, and prose still cannot answer a dialog — Say escapes first (G1).
-// A different KIND in that pane, or a different directory, is a different
-// target and is still refused.
+// WHY NOT THE CWD, which this function briefly did compare. Two reasons, and
+// the first is fatal on its own:
 //
-// The cwd comparison is what carries the weight the session used to, so it is
-// the half that must not be weakened further: it is the only thing left that
-// separates "my claude restarted" from "somebody else's claude took this seat".
-// selection.Target gained a Cwd field for exactly this reason — before it, a
-// selection could only be compared on kind, and kind alone is one bit.
+//   - it does not discriminate. A live herdr with two agents reports
+//     w2:p1 codex /Users/yueban/code/yuebanhome and
+//     w2:p2 claude /Users/yueban/code/yuebanhome — the same directory. Two
+//     claudes in one project (one planning, one implementing) is an ordinary
+//     way to work, and for those the kind matches too: the pane is the ONLY
+//     thing that tells them apart. A discriminator that is equal across the
+//     agents it is meant to separate buys nothing.
+//   - it moves under a running agent. AgentInfo.cwd falls back to
+//     foreground_cwd, and foreground_cwd deliberately hunts for a foreground
+//     process-group member whose cwd DIFFERS from the shell's
+//     (src/pane.rs:278-295, 2859-2881) — which is precisely what a claude Bash
+//     tool call in a subdirectory produces. Comparing it would refuse a message
+//     in the middle of a task, for a directory the user never chose.
+//
+// The cwd is still recorded and still reported: a restart in a different
+// directory is worth saying out loud (see restartNote), and it names the target
+// in a refusal when there is no live agent to read one off. It is a fact about
+// the agent, not a test of whether it is the same one.
+//
+// WHAT IS GIVEN UP: quit claude in w2:p2, cd elsewhere, start claude again
+// there, and the chat keeps talking to it. The user anchored a window and the
+// window is still theirs; they are told the directory changed, and the messages
+// it receives are prose rather than keystrokes — prose cannot answer a dialog,
+// because Say presses esc first (G1).
 func (id identity) matches(a agents.Agent) bool {
-	if id.Kind != a.Kind {
-		return false
-	}
-	// Compared only when both are known: herdr reports no cwd for a pane whose
-	// foreground process it cannot resolve, and an unknown cwd is not evidence
-	// of a move.
-	if id.Cwd != "" && a.Cwd != "" && id.Cwd != a.Cwd {
-		return false
-	}
-	return true
+	return id.Kind == a.Kind
 }
 
-// replacedError explains WHICH part of the identity stopped matching, because
-// the two mean different things to the person reading it: a changed KIND is a
-// different program in that pane, a changed CWD is the same program on a
-// different job — a different project, a different conversation, a different
-// set of files it is willing to touch.
+// replacedError says the one thing that can now end a binding: a different
+// PROGRAM is running in the pane the user anchored.
+//
+// It is a single sentence because there is a single cause. Session ids and
+// working directories are not among them — see matches for what each was
+// measured to be worth — so this is reached only when the pane outlived the
+// agent that was in it and something else took over.
 func replacedError(pane string, id identity, a agents.Agent) error {
-	// Only two things end a binding now, and each means something different to
-	// the person reading it. Session-id changes are not among them: see matches.
-	if id.Kind != a.Kind {
-		return fmt.Errorf("%w: %s was running %s and now runs %s",
-			ErrTargetReplaced, pane, orUnknown(id.Kind), orUnknown(a.Kind))
-	}
-	return fmt.Errorf("%w: the %s in %s now works in %s, and I recorded it in %s — a different directory "+
-		"is a different job, so I am not sending there without you saying so",
-		ErrTargetReplaced, orUnknown(a.Kind), pane, orNoCwd(a.Cwd), orNoCwd(id.Cwd))
+	return fmt.Errorf("%w: %s was running %s and now runs %s",
+		ErrTargetReplaced, pane, orUnknown(id.Kind), orUnknown(a.Kind))
 }
 
 func orNoCwd(cwd string) string {
@@ -204,17 +233,25 @@ func (b *bridge) checkIdentity(pane string, id identity) (agents.Agent, error) {
 	return a, nil
 }
 
-// restartNote reports that the agent kept its seat, its kind and its directory
-// but is on a NEW native session — a /clear, a compaction, or that agent having
-// been restarted where it stood.
+// restartNote reports that the agent in the anchored pane is on a NEW native
+// session — a /clear, a compaction, or that agent having been restarted where it
+// stood.
 //
-// The binding survives this, because "the claude in ~/project" is what a person
-// picks and it is still true. But the conversation behind it does not: whatever
-// was discussed before is gone, so "rm -rf the thing we discussed" now reaches
-// something that never discussed it. Refusing would end the binding for an
-// agent that never moved, which is the failure this file just retracted; saying
-// nothing would let the user address a memory the agent does not have. So it is
-// delivered, once, with the fact attached.
+// The binding survives all of those, because the window is what the user
+// anchored and the window has not moved. But the conversation behind it has not
+// survived: whatever was discussed before is gone, so "rm -rf the thing we
+// discussed" now reaches something that never discussed it. Refusing would end a
+// conversation for an agent that never left; saying nothing would let the user
+// address a memory the agent does not have. So it is delivered, once, with the
+// fact attached.
+//
+// A CHANGED DIRECTORY RIDES ALONG, and this pairing is deliberate. The cwd is
+// not compared, because on its own it is noisy — AgentInfo.cwd can fall back to
+// foreground_cwd, which moves to wherever a Bash tool call is running (see
+// matches). Paired with a new session id it is not noisy at all: a tool call
+// does not mint a session. New session AND new directory is the one shape that
+// means "this window was restarted on a different job", which is the fact a
+// person most wants to hear before they type into it.
 //
 // Empty when nothing changed, when either side has no session id to compare
 // (the G8 window is not a restart), or when the recorded id is already current.
@@ -223,8 +260,15 @@ func restartNote(id identity, a agents.Agent) string {
 	if id.Session == "" || live == "" || id.Session == live {
 		return ""
 	}
+
+	if moved := strings.TrimSpace(a.Cwd); moved != "" && id.Cwd != "" && moved != id.Cwd {
+		return fmt.Sprintf("🧭 Note: %s in %s is now working in %s — you aimed at it while it was in %s. "+
+			"It is the same window, so you are still aimed at it, and it does not remember what you "+
+			"discussed before. Send /close if that is not where you meant to be typing.",
+			orUnknown(a.Kind), a.PaneID, moved, id.Cwd)
+	}
 	return fmt.Sprintf("♻️ Note: %s in %s has started a NEW conversation since you selected it "+
-		"(a /clear, a compaction, or a restart). It is the same agent in the same directory, so you are "+
+		"(a /clear, a compaction, or a restart). It is the same agent in the same window, so you are "+
 		"still aimed at it — but it does not remember what you discussed before.",
 		orUnknown(a.Kind), orNoCwd(a.Cwd))
 }
@@ -245,8 +289,7 @@ type binding struct {
 	Kind    string `json:"k"`
 	Session string `json:"s,omitempty"`
 	// Cwd is carried because this encoding is the bridge's own and has room for
-	// it; it is what separates two runs that have both still to publish a
-	// session id (see identity.matches).
+	// it. Like Session it is reported, never compared (see identity.matches).
 	Cwd string `json:"c,omitempty"`
 
 	// verified is false for a value that carries no identity at all: a
@@ -313,20 +356,13 @@ func (b *bridge) currentSelection(chatID string) (selection.Target, bool) {
 	return b.sel.Get(chatID)
 }
 
-// selectionIdentity is everything a stored Target can prove about its agent.
+// selectionIdentity is everything a stored Target knows about its agent.
 //
-// It carries the cwd now, and that is not a convenience: the session id is no
-// longer compared (see identity.matches), so without a cwd a selection would be
-// checked on KIND ALONE — one bit — and "a claude is in that seat" would be
-// enough to deliver into a claude the user never picked, in a project they were
-// not talking about. selection.Target gained the field so the two facts that
-// make up "the agent I chose" travel together, in the store that outlives the
-// process (S2 §3.1 has this bridge killed and restarted routinely).
-//
-// An empty Cwd — a selection stored by an older build, or a pane whose
-// foreground process herdr could not resolve — refutes nothing rather than
-// refusing everything. It is repaired in place by refreshSelectionIdentity on
-// the first message that resolves cleanly.
+// Only Kind is compared (see identity.matches). Session and Cwd travel with it
+// so the bridge can SAY what changed — a new conversation, a restart in another
+// directory — and so a refusal can name the target when there is no live agent
+// to read one off. Carrying a fact and testing on it are different things, and
+// this package has been wrong about both of these in the testing direction.
 func selectionIdentity(t selection.Target) identity {
 	return identity{Kind: t.Kind, Session: t.Session, Cwd: t.Cwd}
 }
@@ -494,23 +530,27 @@ func (b *bridge) refreshSelectionIdentity(chatID string, a agents.Agent) {
 // reconcileSelection writes back what this delivery just taught us about a
 // standing target, and returns whatever the user has to be told about it.
 //
-// Two things move under a selection that is otherwise untouched: the agent
-// mints a new session id (a /clear, a compaction, a restart in place), and a
-// cwd appears for a record that had none — either a selection stored by a build
-// before Target carried one, or one made while herdr still could not resolve
-// the pane's foreground process. Recording both is what keeps the identity
-// check sharp: an unrepaired record is compared on kind alone.
+// Exactly two things are worth writing: a NEW SESSION ID, which is a real
+// restart and the moment the recorded directory should be refreshed with it,
+// and a FIRST CWD for a record that has none — a selection stored by a build
+// before Target carried one, or made while herdr could not yet resolve the
+// pane's foreground process.
 //
-// The write is conditional because Set is a write-through to disk. An
-// unconditional refresh here would be one fsync per message for a selection
-// that has not changed in days.
+// A cwd that merely differs is deliberately NOT written, and that is the whole
+// reason this is a function rather than an unconditional refresh. Set is a
+// write-through to disk, and AgentInfo.cwd follows a Bash tool call into a
+// subdirectory (see identity.matches) — so chasing it would be an fsync per
+// message during any agent that is actually working, and it would smear the
+// recorded directory across whatever the agent happened to be doing rather than
+// the job the user aimed at.
 func (b *bridge) reconcileSelection(chatID string, t selection.Target, a agents.Agent) string {
 	// Read before anything is rewritten: this is the comparison against what the
 	// user was last told, and refreshSelectionIdentity destroys it.
 	note := restartNote(selectionIdentity(t), a)
 
-	cwd := strings.TrimSpace(a.Cwd)
-	if t.Session != sessionID(a) || (cwd != "" && t.Cwd != cwd) {
+	restarted := t.Session != sessionID(a)
+	learnedCwd := t.Cwd == "" && strings.TrimSpace(a.Cwd) != ""
+	if restarted || learnedCwd {
 		b.refreshSelectionIdentity(chatID, a)
 	}
 	return note
