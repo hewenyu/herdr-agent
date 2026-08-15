@@ -1,5 +1,7 @@
 # herdr-agent
 
+**English** · [简体中文](README.zh-CN.md)
+
 Your coding agent stops mid-task and asks for permission, and you are not at the keyboard.
 herdr-agent pushes that question to Feishu (飞书) — the real dialog text, with its real options as
 buttons — and your tap, or a line you type, goes back into the terminal so the agent carries on.
@@ -36,82 +38,31 @@ the supported fallback.
 macOS is what all of this was measured on, and the ready-made service units are launchd. The Go code
 is portable and Linux binaries ship; `serve` is an ordinary foreground process anywhere.
 
-<details>
-<summary><b>Two herdr settings that make this product look broken</b> — worth a minute if you are
-setting herdr up for the first time</summary>
-
-Neither is this bridge's to configure, and both fail silently, so `herdr-agent doctor` checks them.
-
-**Start `herdr server` from a clean environment.** herdr hands its own environment to every pane it
-spawns, so a server started from inside a claude session gives every agent a
-`CLAUDE_CODE_CHILD_SESSION` marker — and claude answers that by switching transcript saving off with
-no error anywhere (G7). Mirroring then has nothing to read.
-
-```sh
-env -i HOME="$HOME" PATH="$PATH" SHELL="$SHELL" TERM="$TERM" LANG="$LANG" herdr server
-```
-
-Keep `claude` / `codex` on that `PATH`: it is the `PATH` every pane inherits. `SHELL` is on the list
-for the same reason — without it every pane falls back to `/bin/sh`. (`deploy/install.sh` does this
-scrub for you.)
-
-**Attach a wide terminal to the pane once.** A pane herdr never attached a client to is 53 columns.
-Claude's dialogs wrap at that width, the English strings herdr matches on stop matching, and herdr
-reports a blocked agent as `idle` rather than `unknown` (G5, G11) — so the cards that say an agent
-needs you simply never arrive. Open the pane once from the herdr desktop UI with a wide window; herdr
-remembers the geometry after the client detaches.
-
-</details>
+A couple of things on the herdr side fail silently rather than loudly — they are herdr's to
+configure, not this bridge's, so `herdr-agent doctor` names each one and prints the fix instead of
+this README teaching you how to run herdr. [Troubleshooting](#troubleshooting) has the mechanisms.
 
 ## Install
 
-Download from the [Releases page](https://github.com/hewenyu/herdr-agent/releases/latest). Three
-assets, plus one `SHA256SUMS` covering all of them:
+Two ways, both supported.
 
-| asset | for |
-|---|---|
-| `herdr-agent_<version>_darwin_arm64.tar.gz` | macOS, Apple Silicon |
-| `herdr-agent_<version>_linux_arm64.tar.gz` | Linux, arm64 |
-| `herdr-agent_<version>_linux_amd64.tar.gz` | Linux, x86_64 |
+**Download a release.** Grab the asset for your machine from the
+[Releases page](https://github.com/hewenyu/herdr-agent/releases/latest) — `darwin_arm64` for Apple
+Silicon, `linux_arm64` or `linux_amd64` for Linux — unpack it, and put `herdr-agent` anywhere on your
+`PATH`. Each release also carries `SHA256SUMS` if you want to verify, and the release notes have the
+exact commands.
 
-Copy the release tag and the exact asset name off that page, then:
+On macOS these binaries are unsigned, so Gatekeeper refuses a downloaded one and says the developer
+cannot be verified. That looks like a broken project and is not:
+`xattr -d com.apple.quarantine ~/.local/bin/herdr-agent`.
 
-```sh
-TAG=…                     # the release tag, e.g. the one at the top of the page
-ASSET=…                   # the asset file name you copied
-BASE=https://github.com/hewenyu/herdr-agent/releases/download/$TAG
-
-curl -fLO "$BASE/$ASSET"
-curl -fLO "$BASE/SHA256SUMS"
-
-shasum -a 256 --ignore-missing -c SHA256SUMS   # Linux: sha256sum --ignore-missing -c SHA256SUMS
-tar xzf "$ASSET"                               # binary, plus README.md and LICENSE
-mkdir -p ~/.local/bin && mv herdr-agent ~/.local/bin/   # anywhere on PATH
-
-herdr-agent version                            # which build this actually is
-```
-
-`--ignore-missing` is what lets one `SHA256SUMS` verify the one archive you downloaded instead of
-failing on the two you did not. Verify before you run it, not after.
-
-**On macOS, clear the quarantine flag.** These binaries are not signed and not notarised, so
-Gatekeeper refuses to run a downloaded one and says the developer cannot be verified. That looks
-exactly like a broken project, and it is not:
-
-```sh
-xattr -d com.apple.quarantine ~/.local/bin/herdr-agent
-```
-
-(`No such xattr` means it was never quarantined. Fine.) The same applies to a `herdr` binary you
-downloaded rather than installed with a package manager.
-
-Building it yourself is equally supported and needs Go 1.24 or newer:
+**Or build it**, with Go 1.24 or newer:
 
 ```sh
 go install github.com/hewenyu/herdr-agent/cmd/herdr-agent@latest
-# or, from a clone:
-go build -o ~/.local/bin/herdr-agent ./cmd/herdr-agent
 ```
+
+Either way, `herdr-agent version` tells you which build you actually have.
 
 ## Quick start
 
@@ -130,9 +81,9 @@ mode 0600, fills in the allowlist and `notify_chat_id` — and then makes you se
 press a real button, because every one of those settings fails the same invisible way when it is
 wrong. [More about setup](#more-about-setup).
 
-`doctor` looks for what breaks this silently, including the two herdr-side settings above. A healthy
-install still has a couple of non-PASS results, so read them rather than counting them;
-[Troubleshooting](#troubleshooting) says which are expected.
+`doctor` looks for what breaks this silently, on both sides. A healthy install still has a couple of
+non-PASS results, so read them rather than counting them; [Troubleshooting](#troubleshooting) says
+which are expected.
 
 The bridge never starts agents. Which agent runs where, in which directory, stays yours; this only
 carries the conversation.
@@ -141,7 +92,7 @@ carries the conversation.
 
 `serve` is a foreground process; put it under whatever supervisor you already use, or use the units
 in `deploy/`. Those live in the git repository and not in the release archive, which holds the binary,
-`README.md` and `LICENSE` and nothing else — so clone it:
+the two READMEs and `LICENSE` and nothing else — so clone it:
 
 ```sh
 git clone https://github.com/hewenyu/herdr-agent && cd herdr-agent
@@ -320,9 +271,9 @@ what, when, and what happened. When an agent finishes, you get a green card show
 said** — from its own transcript, not a screenshot of the terminal — with the full screen one tap
 behind `Screen`.
 
-If you type to an agent that is busy, your line is queued (five deep) and delivered when it goes
-idle. If it comes back *blocked* instead, the queued line is **not** sent: it was written for a
-situation that no longer exists. You get a card and decide again.
+If you type to an agent that is busy, it goes straight through. A working agent has an input queue of
+its own — the words land in its composer and are submitted when the turn ends — so the bridge holds
+nothing back, and a run of sentences arrives in the order you sent them rather than one at a time.
 
 ### On the machine
 
@@ -487,7 +438,8 @@ pending-permission record so the screen and the transcript are two different sou
 socket is an unauthenticated shell, G14 Feishu redelivers events whose handler failed (~5 minutes
 later, byte-identical, which here means re-injecting a command into a live agent), G15 two
 connections silently split your events, G17 messages never expire so an old card is loaded, G18 the
-one-click app arrives already published. The full record — the specs, the design decisions and the
+one-click app arrives already published, G20 herdr never recycles a pane id so the window is the
+identity. The full record — the specs, the design decisions and the
 manual acceptance scripts — is kept alongside the checkout rather than published, because it quotes
 absolute paths and one operator's Feishu app setup.
 

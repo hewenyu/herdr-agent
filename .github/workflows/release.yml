@@ -97,9 +97,11 @@ jobs:
               exit 1
             fi
 
-            cp README.md LICENSE "$stage/"
+            # Both READMEs: they link to each other, so shipping one would put a
+            # dead relative link in every archive.
+            cp README.md README.zh-CN.md LICENSE "$stage/"
             tar -czf "dist/herdr-agent_${VERSION}_${os}_${arch}.tar.gz" \
-              -C "$stage" herdr-agent README.md LICENSE
+              -C "$stage" herdr-agent README.md README.zh-CN.md LICENSE
           done
 
           # End to end on the one target this runner can execute: the binary is
