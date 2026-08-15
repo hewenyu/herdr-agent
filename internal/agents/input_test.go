@@ -2298,6 +2298,153 @@ func TestSayVerifiesInTheRegionTheStatusMakesMeaningful(t *testing.T) {
 	}
 }
 
+// realCodexScreen renders the bottom of a screen captured from a live codex
+// 0.147 — internal/screen/testdata/codex-settled.txt, verbatim — with only the
+// newest transcript entry and the composer substituted.
+//
+// Measured 2026-08-15 against the live herdr 0.8.0 / protocol 19. What matters
+// about it, and what no synthesised screen was saying (G21):
+//
+//   - there is no box. codex draws `› ` at the left margin and nothing else, so
+//     the rule pair InputBoxRange looks for does not exist on this screen.
+//   - codex quotes the user's own messages back with the SAME `› ` glyph the
+//     composer uses, three blank-separated lines above it.
+//   - an empty composer is not an empty line, it is `› Use /skills to list
+//     available skills`.
+func realCodexScreen(transcript, composer string) string {
+	return strings.Join([]string{
+		"• 测试D完成。",
+		"",
+		"",
+		transcript,
+		"",
+		"",
+		"• Working (0s • esc to interrupt)",
+		"",
+		"",
+		"› " + composer,
+		"",
+		"  gpt-5.6-sol high · ~/code/yuebanhome",
+		"",
+	}, "\n")
+}
+
+// realCodexQueuedScreen is internal/screen/testdata/codex-queued.txt: what codex
+// does with a message submitted while it is mid-turn. It does NOT hold it in the
+// composer the way claude does — it parks it in the transcript under a notice,
+// prefixed with `↳`.
+func realCodexQueuedScreen(queued string) string {
+	return strings.Join([]string{
+		"• 测试D完成。",
+		"",
+		"",
+		"› 这是一条自动化测试消息E。",
+		"",
+		"",
+		"• Working (2s • esc to interrupt)",
+		"",
+		"• Messages to be submitted after next tool call (press esc to interrupt and send immediately)",
+		"  ↳ " + queued,
+		"",
+		"› Use /skills to list available skills",
+		"",
+		"  gpt-5.6-sol high · ~/code/yuebanhome",
+		"",
+	}, "\n")
+}
+
+// TestSayVerifiesADeliveryToCodex is the regression for the bug that put
+// "⚠️ Sent to codex … but not confirmed" on the phone after EVERY message,
+// including the ones codex had visibly received and already answered.
+//
+// codex has no bordered composer (G21), so InputBoxRange found no rule pair and
+// fell back to "the last 5 non-blank lines" — a region that on a codex screen
+// reaches up past `• Working` and over the user's own echoed message, which for
+// a delivery into a settled agent is the only proof there is. The delivery
+// landed, the warning went out anyway, and the user was told to go and look at
+// a Mac that had nothing wrong with it.
+//
+// The two halves are tested together on purpose: making the transcript half
+// pass is easy if the composer stops being excluded, and that trade would be
+// far worse — an unsubmitted paste read back as proof (G3) loses the message
+// silently.
+func TestSayVerifiesADeliveryToCodex(t *testing.T) {
+	const text = "把测试结果发给我"
+	tests := []struct {
+		name   string
+		text   string // defaults to text
+		status Status
+		before string
+		after  string
+		want   bool
+	}{
+		{
+			// The bug, from the screen it was measured on.
+			name:   "settled: echoed into the transcript",
+			status: StatusIdle,
+			before: realCodexScreen("› 上一条消息", "Use /skills to list available skills"),
+			after:  realCodexScreen("› "+text, "Use /skills to list available skills"),
+			want:   true,
+		},
+		{
+			// The guard that must survive the fix: herdr acked the paste but the
+			// TUI never submitted it, so it is sitting in the composer. That is
+			// exactly the case the warning exists for.
+			name:   "settled: sitting unsubmitted in the composer",
+			status: StatusIdle,
+			before: realCodexScreen("› 上一条消息", "Use /skills to list available skills"),
+			after:  realCodexScreen("› 上一条消息", text),
+			want:   false,
+		},
+		{
+			// Mid-turn: codex parks the text in the transcript under `↳`, not in
+			// the composer, so the box half finds nothing and the transcript half
+			// has to carry it.
+			name:   "working: parked in the queue notice",
+			status: StatusWorking,
+			before: realCodexScreen("› 这是一条自动化测试消息E。", "Use /skills to list available skills"),
+			after:  realCodexQueuedScreen(text),
+			want:   true,
+		},
+		{
+			// The same, short enough to hit the whole-line rule. `↳ 好的` is not
+			// `好的` until the marker is trimmed, and "ok"/"好的" is most of what
+			// a phone ever sends.
+			name:   "working: a short message parked in the queue notice",
+			text:   "好的",
+			status: StatusWorking,
+			before: realCodexScreen("› 这是一条自动化测试消息E。", "Use /skills to list available skills"),
+			after:  realCodexQueuedScreen("好的"),
+			want:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.text
+			if body == "" {
+				body = text
+			}
+			p := &fakePane{status: tc.status, seq: 2, screen: tc.before, screenAfterPrompt: tc.after}
+			if tc.status == StatusIdle {
+				p.promptStatus = string(StatusIdle)
+			}
+			h := newInputHarness(t, p)
+
+			d, err := h.ctrl.Say(context.Background(), h.guard(), body)
+			if err != nil {
+				t.Fatalf("Say: %v", err)
+			}
+			if !d.Acked {
+				t.Fatalf("Delivery = %+v, want acked", d)
+			}
+			if d.Verified != tc.want {
+				t.Fatalf("Verified = %v, want %v for screen:\n%s", d.Verified, tc.want, tc.after)
+			}
+		})
+	}
+}
+
 func TestSayReadsOnlyTheVisibleBuffer(t *testing.T) {
 	p := &fakePane{status: StatusIdle, seq: 2, screen: claudeScreen("> hi", "")}
 	h := newInputHarness(t, p)

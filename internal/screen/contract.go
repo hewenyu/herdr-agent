@@ -56,8 +56,19 @@ type Extractor interface {
 // prompt was delivered: Claude renders ghost completion suggestions there, so
 // text can appear in the input box that the user never sent (G4).
 //
-// Rule: scanning upward from the bottom, find the first pair of consecutive
-// horizontal rules (a line of >=10 repeated box-drawing dashes); the content
-// between them is the input box. If no such pair exists (not a Claude-style
-// TUI), fall back to the last 5 non-blank lines. ok is false when neither
-// applies.
+// Rule, in order:
+//
+//  1. Scanning upward from the bottom, find the first pair of consecutive
+//     horizontal rules (a line of >=10 repeated box-drawing dashes); the
+//     content between them is the input box. That is Claude's bordered
+//     composer.
+//  2. If there is no such pair, or a composer glyph line sits below the pair
+//     it found, the composer is unbordered (codex draws `› ` and no box at
+//     all, G21) and the box runs from that glyph line to the end of the input.
+//  3. Otherwise fall back to the last 5 non-blank lines.
+//
+// ok is false when none applies. Step 2 is not an optimisation: the fallback in
+// step 3 swallows the tail of the transcript along with the composer, and for a
+// prompt delivered to a SETTLED agent the transcript is the only place the
+// delivery can be proven — so on codex it turned every delivery into "sent but
+// not confirmed".
