@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hewenyu/herdr-agent/internal/lark"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 // Assistant handles task management in the entry chat and bound task groups.
@@ -51,6 +52,9 @@ func (b *bridge) assistantMessage(ctx context.Context, m lark.Msg) (bool, error)
 		return false, nil
 	}
 	text := strings.TrimSpace(m.Text)
+	if _, command := tasks.GroupCloseCommand(text); command {
+		return false, nil
+	}
 	if strings.HasPrefix(text, "/") {
 		return false, nil
 	}

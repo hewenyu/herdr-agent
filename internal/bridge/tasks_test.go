@@ -102,7 +102,7 @@ func TestTaskCreationAuthorizesBeforePersisting(t *testing.T) {
 }
 
 func TestTaskGroupRequiresItsOwnerEvenForAllowlistedUsers(t *testing.T) {
-	for _, text := range []string{"继续测试", "/screen", "/tasks", "/task destroy"} {
+	for _, text := range []string{"继续测试", "/screen", "/tasks", "/task destroy", "/关闭项目", "确认关闭"} {
 		t.Run(text, func(t *testing.T) {
 			h := newHarness(t, func(d *Deps) { d.AllowedOpenIDs = []string{testOwner, testStranger} })
 			r := taskBinding("owned", "oc_task", testPane)
@@ -116,6 +116,79 @@ func TestTaskGroupRequiresItsOwnerEvenForAllowlistedUsers(t *testing.T) {
 				t.Fatal("a different allowlisted user acted on or read another owner's task")
 			}
 		})
+	}
+}
+
+func TestTaskGroupCloseCommandConfirmsBeforeRequestingCleanup(t *testing.T) {
+	for _, status := range []tasks.Status{tasks.Running, tasks.Completed, tasks.Attention} {
+		t.Run(string(status), func(t *testing.T) {
+			h := newHarness(t)
+			r := taskBinding("current", "oc_current", "")
+			r.Status, r.Started = status, false
+			other := taskBinding("other", "oc_other", secondPane)
+			_, store := attachTaskManager(t, h, r, other)
+			WithAssistant(assistantFunc(func(context.Context, AssistantMessage) (string, error) {
+				t.Fatal("explicit group close command reached AI")
+				return "", nil
+			}))(h.b)
+			m := taskInbound(r, "/关闭项目")
+			sendTaskMessage(t, h, m)
+			current, _ := store.Get(r.ID)
+			if current.CloseRequested || current.CompletionRequest != "" || len(h.ctrl.said()) != 0 {
+				t.Fatal("asking to close performed an operation before confirmation")
+			}
+			for _, want := range []string{"确认关闭", "自动解散本群", "项目配置", r.Title} {
+				if !strings.Contains(lastText(t, h), want) {
+					t.Errorf("missing confirmation detail %q", want)
+				}
+			}
+			m = taskInbound(r, "确认关闭")
+			m.EventID, m.MessageID = "close-confirmation-event", "close-confirmation-message"
+			sendTaskMessage(t, h, m)
+			current, _ = store.Get(r.ID)
+			untouched, _ := store.Get(other.ID)
+			if !current.CloseRequested || current.CompletionRequest != "complete" || untouched.CloseRequested || len(h.ctrl.said()) != 0 {
+				t.Fatalf("confirmation did not target just this task: %+v / %+v", current, untouched)
+			}
+			if !strings.Contains(lastText(t, h), "自动解散任务群") {
+				t.Fatal("confirmation did not explain automatic group closure")
+			}
+		})
+	}
+}
+
+func TestTaskGroupHelpWorksAfterAgentIsGone(t *testing.T) {
+	h := newHarness(t)
+	r := taskBinding("gone", "oc_gone", "")
+	r.Status = tasks.Completed
+	attachTaskManager(t, h, r)
+	sendTaskMessage(t, h, taskInbound(r, "/help"))
+	if !strings.Contains(lastText(t, h), "/关闭项目") || !strings.Contains(lastText(t, h), "确认关闭") {
+		t.Fatal("completed task with no agent cannot discover the close command")
+	}
+}
+
+func TestGroupCloseCommandsCannotSelectATaskOutsideItsGroup(t *testing.T) {
+	for _, chatType := range []string{lark.ChatP2P, lark.ChatGroup} {
+		for _, input := range []string{"/关闭项目", "确认关闭"} {
+			t.Run(chatType+input, func(t *testing.T) {
+				h := newHarness(t)
+				r := taskBinding("owned", "oc_task", testPane)
+				_, store := attachTaskManager(t, h, r)
+				h.reg.setAgents(taskAgent(r))
+				WithAssistant(assistantFunc(func(context.Context, AssistantMessage) (string, error) {
+					t.Fatal("group-only command asked AI to select another task")
+					return "", nil
+				}))(h.b)
+				m := inbound(input)
+				m.ChatType, m.MentionedBot = chatType, true
+				sendTaskMessage(t, h, m)
+				current, _ := store.Get(r.ID)
+				if current.CloseRequested || len(h.ctrl.said()) != 0 || !strings.Contains(lastText(t, h), "请进入对应任务群") {
+					t.Fatal("group-only closure escaped its binding")
+				}
+			})
+		}
 	}
 }
 

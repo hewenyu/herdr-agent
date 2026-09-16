@@ -71,3 +71,23 @@ func TestSummaryLetsUserIdentifyCurrentTasksAndSyncFailures(t *testing.T) {
 		t.Errorf("empty state = %s", text)
 	}
 }
+
+func TestGroupCloseRequiresExplicitWholeMessage(t *testing.T) {
+	for _, text := range []string{"/关闭项目", "关闭本项目", "已完成，关闭本项目", "已经完成了本项目，关闭本项目", " ／关闭项目 "} {
+		cmd, ok := GroupCloseCommand(text)
+		if !ok || cmd.Kind != "close_prompt" {
+			t.Errorf("close request %q = %+v, %v", text, cmd, ok)
+		}
+	}
+	for _, text := range []string{"确认关闭", "确认关闭本项目。", "/确认关闭"} {
+		cmd, ok := GroupCloseCommand(text)
+		if !ok || cmd.Kind != "action" || cmd.Action != "close" || cmd.ID != "" {
+			t.Errorf("confirmation %q = %+v, %v", text, cmd, ok)
+		}
+	}
+	for _, text := range []string{"不要确认关闭", "确认关闭？", "等完成后确认关闭", "他说“确认关闭”", "确认关闭 other-task", "已完成，关闭本项目，但保留群", "尚未完成，关闭本项目", "确认关闭\n还有一个问题"} {
+		if cmd, ok := GroupCloseCommand(text); ok {
+			t.Errorf("non-command %q matched %+v", text, cmd)
+		}
+	}
+}

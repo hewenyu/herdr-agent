@@ -309,7 +309,7 @@ A typical task goes through these steps:
    the existing screen cards. Subsequent messages, agent replies and progress stay in the task group.
 4. With AI enabled, ask for progress or send implementation feedback directly in the group, without
    an @ mention. Startup, execution, blockers and review notices are also sent there.
-5. Say “验收通过，可以结单” or use `/task close` after reviewing the result. The bridge confirms
+5. In the task group, send `/关闭项目`, then reply `确认关闭` after reading the notice. The bridge confirms
    Feishu completion, saves the result, announces closure, then closes the owned pane and group.
    **Feishu does not retain that group's chat history.** Repository files and the task are retained.
    To retain the group, say so explicitly or use `/task complete`; reopen before further work.
@@ -328,6 +328,7 @@ agent in the entry chat and does not destroy a task session.
 | `/tasks` or `现在有哪些任务在进行？` | list your tracked active tasks, progress and links |
 | `/tasks all` | include completed and destroyed task records |
 | `/task complete [id]` / `/task reopen [id]` | synchronize completion or reopening with Feishu |
+| Task group `/关闭项目` → `确认关闭` | show a notice, then complete the task, close its agent and automatically dissolve its group |
 | `/task close [id]` | accept the result, confirm task completion and close its session/group |
 | `/task destroy [id]` | close the task pane and dissolve its group |
 | `/task retry [id]` | retry a recoverable failure after fixing its cause |

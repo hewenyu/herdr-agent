@@ -72,6 +72,27 @@ const Help = `/projects — 查看配置的项目和默认 agent
 /task close|complete|reopen|destroy|retry [任务编号] — 验收结单、仅标记完成、重开、销毁会话或重试
 在任务群内可省略任务编号。销毁会话会关闭执行窗口并解散群，群聊天记录不保留；代码和飞书任务保留。`
 
+const GroupCloseHint = "关闭当前任务：发送 /关闭项目，查看说明后回复“确认关闭”，系统会自动解散本群。"
+
+// GroupCloseCommand recognizes explicit group controls, not substrings in
+// feedback, quotes, negations, or conditional acceptance. Confirmation itself
+// is an explicit instruction for this group's one trusted task binding.
+func GroupCloseCommand(text string) (Command, bool) {
+	text = strings.TrimSpace(text)
+	text = strings.TrimRight(text, "。！!")
+	text = strings.ReplaceAll(text, "，", ",")
+	text = strings.TrimPrefix(text, "／")
+	text = strings.TrimPrefix(text, "/")
+	switch text {
+	case "关闭项目", "关闭本项目", "已完成,关闭本项目", "已完成本项目,关闭本项目", "已经完成了本项目,关闭本项目":
+		return Command{Kind: "close_prompt"}, true
+	case "确认关闭", "确认关闭本项目":
+		return Command{Kind: "action", Action: "close"}, true
+	default:
+		return Command{}, false
+	}
+}
+
 type Command struct {
 	Kind, Project, Agent, Text, ID, Action string
 	All                                    bool
@@ -187,7 +208,7 @@ func Notice(r Record) string {
 	case Queued:
 		detail = "已收到任务，正在准备飞书任务和专属任务群。"
 	case Review:
-		detail += "\n请直接在本群继续反馈，或说“验收通过，可以结单”完成任务并关闭会话。"
+		detail += "\n请直接在本群继续反馈。" + GroupCloseHint
 	case Blocked:
 		if !r.PromptSent {
 			detail += "\n请查看本群的启动确认卡片；若没有可选按钮，在本机 herdr 对应窗口完成首次目录信任。确认后会自动发送任务。"

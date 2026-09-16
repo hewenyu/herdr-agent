@@ -423,7 +423,7 @@ func announceTaskGroup(ctx context.Context, bot lark.Bot, log *slog.Logger, r ta
 }
 
 func taskWelcomeMessage(r tasks.Record) string {
-	return fmt.Sprintf("本群对应任务：%s\n项目：%s · %s\n飞书任务：%s\n\n请直接在本群补充要求、反馈问题或问“现在进度如何”，无需 @ 机器人。执行进展会发到本群。\n验收通过后说“验收通过，可以结单”，会同步任务完成、保存结果，再关闭执行会话并解散本群；代码和飞书任务保留。若只想标记完成，请说明“保留群”。", r.Title, r.Project, r.Agent, r.URL)
+	return fmt.Sprintf("本群对应任务：%s\n项目：%s · %s\n飞书任务：%s\n\n请直接在本群补充要求、反馈问题或问“现在进度如何”，无需 @ 机器人。执行进展会发到本群。\n\n%s\n验收通过并确认关闭后，会同步任务完成、保存结果，再关闭执行会话并解散本群；代码和飞书任务保留。若只想标记完成，请说明“保留群”。", r.Title, r.Project, r.Agent, r.URL, tasks.GroupCloseHint)
 }
 
 func taskClosingMessage(r tasks.Record) string {
