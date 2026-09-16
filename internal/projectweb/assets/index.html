@@ -38,12 +38,12 @@
             <div class="field"><label for="project-name">项目名称</label><input id="project-name" name="name" autocomplete="off" placeholder="例如：my-product" required maxlength="80"><p class="hint">在飞书中说“用这个项目开发”时使用的名称。</p></div>
             <div class="field" id="directories-section">
               <div class="field-heading"><label>项目文件夹</label><button type="button" class="text-button" id="add-directory">＋ 添加文件夹</button></div>
-              <p class="hint directory-hint">第一项是主目录。其他文件夹也会传给 Codex 或 Claude Code，可在同一任务中读取和修改。</p>
+              <p class="hint directory-hint">第一项是主目录，保存时自动初始化 Git，已有仓库保留。其他文件夹也会传给 Codex 或 Claude Code。</p>
               <div id="directory-list" class="directory-list"></div>
               <p class="hint">填写本机已有目录的绝对路径或 ~/ 路径。使用箭头调整主目录与顺序。</p>
             </div>
             <div id="new-directory-section" class="new-directory-box" hidden>
-              <span class="folder-symbol" aria-hidden="true">＋</span><div><strong>为新项目创建一个目录</strong><p id="new-directory-preview" class="path-preview"></p><p class="hint">只有选择“创建新项目”才会新建目录。创建后可继续关联其他文件夹。</p></div>
+              <span class="folder-symbol" aria-hidden="true">＋</span><div><strong>为新项目创建一个目录</strong><p id="new-directory-preview" class="path-preview"></p><p class="hint">创建目录并初始化 Git。创建后可继续关联其他文件夹。</p></div>
             </div>
             <div class="field"><label for="project-agent">开发 Agent</label><select id="project-agent" name="agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select><p class="hint">新任务默认使用这个 Agent。</p></div>
             <label class="checkbox-row"><input id="make-default" type="checkbox"><span>设为默认项目<small>没有指定项目时，使用这个项目开始任务。</small></span></label>

@@ -66,10 +66,13 @@ type Record struct {
 	URL               string    `json:"task_url,omitempty"`
 	ChatID            string    `json:"chat_id,omitempty"`
 	WorkspaceID       string    `json:"workspace_id,omitempty"`
+	WorkspaceCwd      string    `json:"workspace_cwd,omitempty"`
+	AgentCwd          string    `json:"agent_cwd,omitempty"`
 	PaneID            string    `json:"pane_id,omitempty"`
 	SessionID         string    `json:"session_id,omitempty"`
 	Started           bool      `json:"started"`
 	PromptSent        bool      `json:"prompt_sent"`
+	PromptReceipt     string    `json:"prompt_receipt,omitempty"`
 	Pending           string    `json:"pending,omitempty"`
 	Status            Status    `json:"status"`
 	Detail            string    `json:"detail,omitempty"`
@@ -77,6 +80,8 @@ type Record struct {
 	Error             string    `json:"error,omitempty"`
 	SyncError         string    `json:"sync_error,omitempty"`
 	CompletionRequest string    `json:"completion_request,omitempty"`
+	CloseRequested    bool      `json:"close_requested,omitempty"`
+	CloseNotifiedAt   time.Time `json:"close_notified_at,omitempty"`
 	CompletedAt       string    `json:"completed_at,omitempty"`
 	PaneClosed        bool      `json:"pane_closed,omitempty"`
 	ChatDeleted       bool      `json:"chat_deleted,omitempty"`
@@ -85,6 +90,7 @@ type Record struct {
 	CreatedAt         time.Time `json:"created_at"`
 	RemoteCheckedAt   time.Time `json:"remote_checked_at"`
 	ReportedNotice    string    `json:"reported_notice,omitempty"`
+	ReportedAt        time.Time `json:"reported_at,omitempty"`
 	SyncedDescription string    `json:"synced_description,omitempty"`
 }
 

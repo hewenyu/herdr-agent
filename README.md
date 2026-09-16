@@ -207,7 +207,9 @@ allowlist. Enable `[tasks]` in `~/.herdr-agent/config.toml`, grant the permissio
 
 The page lets you add or edit projects, choose a default project and agent, and add multiple folders
 in order. The first folder is the working directory; the remaining folders are passed to Codex or
-Claude with `--add-dir`. Existing directories do not need to be Git repositories. Saving project
+Claude with `--add-dir`. The primary directory is initialized as a Git repository when saved or
+started; existing repositories and worktrees are preserved. Additional directories need no Git
+repository. Git must be installed locally. Saving project
 settings takes effect for new tasks immediately; running tasks retain their original directories
 and agent mode.
 
@@ -264,8 +266,8 @@ page after startup; starting a new task requires all its configured folders to e
 Creating a task normally reuses a configured project and creates no directory. Only an explicit
 **new project** request, from the page or the AI entry point, creates
 `~/herder-agent-code/<project-name>/` and registers it. This is the home of the OS account running
-the bridge, not a separate home for each Feishu user. New projects are plain directories; no Git
-repository or worktree is created automatically. Existing directories are never silently adopted
+the bridge, not a separate home for each Feishu user. New projects automatically run `git init` in
+the primary directory; no commit or worktree is created automatically. Existing directories are never silently adopted
 by the new-project operation. Deleting project configuration preserves its files and running tasks.
 
 Each task gets its own **herdr workspace and pane**, but uses the configured directories directly.
@@ -305,13 +307,15 @@ A typical task goes through these steps:
    Follow the group link to continue the conversation; each group stays bound to its own task.
 3. The initial request is sent once the agent is ready. Answer startup or permission prompts using
    the existing screen cards. Subsequent messages, agent replies and progress stay in the task group.
-4. Review the result, then check the task complete in Feishu or send `/task complete` in its group.
-   Reopen it in the panel or with `/task reopen` before sending more task instructions.
-5. When you no longer need the session, send `/task destroy`. It closes the task's execution pane
-   and dissolves the private group. **Feishu does not retain that group's chat history.** The bridge
-   writes its latest task summary before deletion; repository files and the Feishu task are retained.
+4. With AI enabled, ask for progress or send implementation feedback directly in the group, without
+   an @ mention. Startup, execution, blockers and review notices are also sent there.
+5. Say “验收通过，可以结单” or use `/task close` after reviewing the result. The bridge confirms
+   Feishu completion, saves the result, announces closure, then closes the owned pane and group.
+   **Feishu does not retain that group's chat history.** Repository files and the task are retained.
+   To retain the group, say so explicitly or use `/task complete`; reopen before further work.
 
-Completion and destruction are separate. Completing a task does not stop the process or delete the
+`/task close` combines accepted completion and session cleanup. Completion and destruction also
+remain available separately. Completing a task does not stop the process or delete the
 group, and destroying a session does not mark unfinished work complete. A destroyed session cannot
 be reopened; create another task to continue. The ordinary `/close` command only clears the selected
 agent in the entry chat and does not destroy a task session.
@@ -324,6 +328,7 @@ agent in the entry chat and does not destroy a task session.
 | `/tasks` or `现在有哪些任务在进行？` | list your tracked active tasks, progress and links |
 | `/tasks all` | include completed and destroyed task records |
 | `/task complete [id]` / `/task reopen [id]` | synchronize completion or reopening with Feishu |
+| `/task close [id]` | accept the result, confirm task completion and close its session/group |
 | `/task destroy [id]` | close the task pane and dissolve its group |
 | `/task retry [id]` | retry a recoverable failure after fixing its cause |
 | `/screen` / `/stop` in a task group | inspect that task's screen or interrupt its agent |
@@ -387,9 +392,9 @@ In the bot's **entry private chat**, ask naturally:
 - “List the available projects and tell me which tasks are in progress.”
 - “Create a task in herdr-agent to investigate login failures and verify the fix.”
 - “Create a new project named demo-api and build a health-check endpoint.”
-- “How is that task going? Add this requirement: preserve the existing compatibility behavior.”
-- “I have reviewed the result; mark this task complete.”
-- “Destroy this task's session.”
+- “How are my tasks going?”
+
+Continue implementation feedback, progress queries and acceptance in the corresponding task group.
 
 The bridge checks the actual message sender against the allowlist and verifies task ownership.
 The model can use controlled tools to select configured projects, query tasks, create sessions, add
@@ -400,12 +405,15 @@ operator or an arbitrary local path. Conversation content, required task summari
 are sent to the configured model service; the entry point does not upload the whole code repository
 to interpret a request.
 
-Each new task has a Feishu task record and a private task group. Messages in that group still go
-directly to its Codex/Claude agent; startup confirmations and permission dialogs stay there too.
-The entry private chat manages tasks through natural language. Execution state, latest replies and
-update times are written back to the task so the bot can summarize ongoing work and blockers.
-An agent turn ending does not mean the task has been accepted; completion and session destruction
-remain separate operations.
+Each new task has a Feishu task record and a private task group. The group assistant is restricted
+to that task: progress reads its current record, feedback goes to its Codex/Claude agent, and explicit
+acceptance with closure completes the task and closes its session. Negations and future conditions
+are not acceptance. Startup confirmations and permission cards also stay in the group.
+
+Progress and operation acknowledgments are rendered from actual records and tool receipts. Old AI
+replies are not evidence of execution. Replies distinguish agent claims from verified facts and show
+the configured output directory and its current top-level entries. An agent turn ending does not
+mean user acceptance; an empty directory or unsent initial prompt cannot prove generated output.
 
 First ask the bot to list projects and ongoing tasks to check model tool calls. Then create a test
 task that changes no files and replies only `FEISHU_AI_OK`. Check the real task, task group, local

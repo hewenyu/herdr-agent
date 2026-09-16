@@ -46,8 +46,14 @@ func (b *bridge) taskMessage(ctx context.Context, m lark.Msg) (bool, error) {
 		}
 		switch cmd.Kind {
 		case "projects":
+			if bound {
+				return true, b.reply(ctx, m, "", "本群只处理当前任务。\n"+tasks.Summary([]tasks.Record{r}))
+			}
 			return true, b.reply(ctx, m, "", b.tasks.Projects())
 		case "list":
+			if bound {
+				return true, b.reply(ctx, m, "", tasks.Summary([]tasks.Record{r}))
+			}
 			return true, b.reply(ctx, m, "", tasks.Summary(b.tasks.List(m.UserID, cmd.All)))
 		case "new":
 			if bound {

@@ -313,6 +313,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		}
 		manager, err := tasks.New(store, tasks.Options{
 			Config: cfg.Tasks, Projects: catalog, Platform: platform, Client: d.Client, Lifecycle: lifecycle,
+			PrepareProject: projects.EnsureRepository,
 			AllowedOwner: func(owner string) bool {
 				for _, allowed := range cfg.Feishu.AllowedOpenIDs {
 					if strings.TrimSpace(allowed) == owner {
@@ -329,6 +330,13 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: tasks.Notice(r)})
 				return err
 			},
+			BeforeClose: func(ctx context.Context, r tasks.Record) error {
+				if r.ChatID == "" || r.ChatDeleted {
+					return nil
+				}
+				_, err := s.bot.Send(ctx, lark.Out{ChatID: r.ChatID, Text: taskClosingMessage(r)})
+				return err
+			},
 			Controller: d.Controller, Registry: s.registry,
 			Follow: func(pane string) error {
 				if s.watcher.Enabled(pane) {
@@ -337,12 +345,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 				return s.watcher.Enable(pane)
 			},
 			Announce: func(ctx context.Context, r tasks.Record) error {
-				chat := taskNotificationChat(r)
-				if chat == "" {
-					return nil
-				}
-				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: fmt.Sprintf("任务：%s\n项目：%s · %s\n飞书任务：%s\n进入任务会话：%s\n可在任务面板验收完成；销毁会话用 /task destroy %s。", r.Title, r.Project, r.Agent, r.URL, tasks.ChatURL(r.ChatID), r.ID)})
-				return err
+				return announceTaskGroup(ctx, s.bot, log, r)
 			},
 		})
 		if err != nil {
@@ -396,16 +399,42 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	return s, nil
 }
 
-// A cloud assistant's chat is not an address the application bot can use.
-// Tasks created by a tool therefore announce in their own private task group.
+// Keep task activity in its group. The entry chat receives pre-group failures
+// and the final cleanup receipt after the group has been deleted.
 func taskNotificationChat(r tasks.Record) string {
-	if r.EntryChatID != "" {
-		return r.EntryChatID
-	}
-	if !r.ChatDeleted {
+	if r.ChatID != "" && !r.ChatDeleted {
 		return r.ChatID
 	}
-	return ""
+	return r.EntryChatID
+}
+
+func announceTaskGroup(ctx context.Context, bot lark.Bot, log *slog.Logger, r tasks.Record) error {
+	if r.ChatID != "" && !r.ChatDeleted {
+		if _, err := bot.Send(ctx, lark.Out{ChatID: r.ChatID, Text: taskWelcomeMessage(r)}); err != nil {
+			return err
+		}
+	}
+	if r.EntryChatID != "" && r.EntryChatID != r.ChatID {
+		_, err := bot.Send(ctx, lark.Out{ChatID: r.EntryChatID, Text: fmt.Sprintf("任务群已建立：%s\n进入任务群：%s\n后续需求、进度和验收请直接在群内沟通。", r.Project, tasks.ChatURL(r.ChatID))})
+		if err != nil {
+			// The group already received its welcome. An entry-chat receipt
+			// must not stall launch or repeat the welcome on every poll.
+			log.Warn("tasks: entry chat announcement failed; continuing in task group", "task", r.ID)
+		}
+	}
+	return nil
+}
+
+func taskWelcomeMessage(r tasks.Record) string {
+	return fmt.Sprintf("本群对应任务：%s\n项目：%s · %s\n飞书任务：%s\n\n请直接在本群补充要求、反馈问题或问“现在进度如何”，无需 @ 机器人。执行进展会发到本群。\n验收通过后说“验收通过，可以结单”，会同步任务完成、保存结果，再关闭执行会话并解散本群；代码和飞书任务保留。若只想标记完成，请说明“保留群”。", r.Title, r.Project, r.Agent, r.URL)
+}
+
+func taskClosingMessage(r tasks.Record) string {
+	status := "已保存当前结果，正在关闭执行会话。"
+	if r.CloseRequested {
+		status = "已确认飞书任务完成并保存结果，正在结单。"
+	}
+	return fmt.Sprintf("%s\n任务：%s\n飞书任务及结果：%s\n代码保留在项目目录。本群将在数秒后解散，群聊天记录不会保留。", status, r.Title, r.URL)
 }
 
 // checkStartup runs the doctor checks and refuses to continue for exactly two

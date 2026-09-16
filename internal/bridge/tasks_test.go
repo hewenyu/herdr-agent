@@ -119,6 +119,24 @@ func TestTaskGroupRequiresItsOwnerEvenForAllowlistedUsers(t *testing.T) {
 	}
 }
 
+func TestTaskGroupListsOnlyItsBoundTask(t *testing.T) {
+	for _, input := range []string{"/tasks", "/tasks all", "/projects"} {
+		t.Run(input, func(t *testing.T) {
+			h := newHarness(t)
+			r := taskBinding("current", "oc_current", testPane)
+			r.Status = tasks.Completed
+			other := taskBinding("other", "oc_other", secondPane)
+			attachTaskManager(t, h, r, other)
+			sendTaskMessage(t, h, taskInbound(r, input))
+			text := lastText(t, h)
+			if !strings.Contains(text, r.ID) || strings.Contains(text, other.ID) || strings.Contains(text, other.ChatID) {
+				t.Fatalf("group summary escaped task scope: %s", text)
+			}
+		})
+	}
+
+}
+
 func TestUnboundUnmentionedGroupCannotForwardOrCreateTasks(t *testing.T) {
 	for _, text := range []string{"继续执行", "/say " + testPane + " 执行", "新建任务：不应创建"} {
 		t.Run(text, func(t *testing.T) {

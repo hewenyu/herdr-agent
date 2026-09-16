@@ -109,6 +109,7 @@ func TestCreateExplicitDirectoryAndRejectExisting(t *testing.T) {
 	if project.Path != wantPath || !reflect.DeepEqual(project.Directories, []string{wantPath}) || project.Agent != "claude" || c.Snapshot().DefaultProject != "新项目" {
 		t.Fatalf("created project = %+v", project)
 	}
+	assertRepositoryRoot(t, project.Path)
 	if _, err := c.Create(context.Background(), "新项目", "codex", false); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate project = %v", err)
 	}
@@ -198,9 +199,9 @@ func TestMutationFailuresKeepPreviousSnapshot(t *testing.T) {
 	if got := c.Snapshot(); !reflect.DeepEqual(got, before) {
 		t.Fatalf("failed mutation changed snapshot: %+v", got)
 	}
-	if _, err := os.Stat(filepath.Join(c.Root(), "uncommitted")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("uncommitted new directory was not removed: %v", err)
-	}
+	// Preserve the initialized repository after catalog failure. Removing it
+	// recursively could delete files written concurrently by the user.
+	assertRepositoryRoot(t, filepath.Join(c.Root(), "uncommitted"))
 }
 
 func TestCancelledCreateHasNoSideEffects(t *testing.T) {
@@ -259,7 +260,7 @@ func TestUnavailableDirectoryCanBeRepairedAfterRestart(t *testing.T) {
 	if err := c.Put("app", config.Project{Path: directory}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(directory); err != nil {
+	if err := os.RemoveAll(directory); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Open(stateDir, config.Default().Tasks)

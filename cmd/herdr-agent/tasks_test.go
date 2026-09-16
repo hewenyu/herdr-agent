@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -174,5 +175,72 @@ func TestTaskServeDisabledDoesNotRequireNewInterfaces(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(h.d.StateDir, "tasks.json")); !os.IsNotExist(err) {
 		t.Fatalf("disabled task management created state: %v", err)
+	}
+}
+
+func TestTaskNotificationRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record tasks.Record
+		want   string
+	}{
+		{"active group", tasks.Record{ChatID: "group", EntryChatID: "entry"}, "group"},
+		{"before group creation", tasks.Record{EntryChatID: "entry"}, "entry"},
+		{"deleted group", tasks.Record{ChatID: "group", EntryChatID: "entry", ChatDeleted: true}, "entry"},
+		{"group without entry", tasks.Record{ChatID: "group"}, "group"},
+		{"no surviving destination", tasks.Record{ChatID: "group", ChatDeleted: true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := taskNotificationChat(tc.record); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTaskGroupWelcomeAndClosingMessages(t *testing.T) {
+	r := tasks.Record{Title: "修复动画", Project: "demo", Agent: "codex", URL: "https://example.test/task"}
+	for _, part := range []string{r.Title, r.Project, r.URL, "无需 @", "验收通过", "保留群"} {
+		if !strings.Contains(taskWelcomeMessage(r), part) {
+			t.Errorf("welcome missing %q", part)
+		}
+	}
+	if strings.Contains(taskClosingMessage(r), "已确认飞书任务完成") {
+		t.Fatal("destroy without acceptance claimed task completion")
+	}
+	r.CloseRequested = true
+	for _, part := range []string{"已确认飞书任务完成", "代码保留", "群聊天记录不会保留", r.URL} {
+		if !strings.Contains(taskClosingMessage(r), part) {
+			t.Errorf("close notice missing %q", part)
+		}
+	}
+}
+
+type announcementBot struct {
+	lark.Bot
+	failChat string
+	chats    []string
+}
+
+func (b *announcementBot) Send(_ context.Context, out lark.Out) (string, error) {
+	b.chats = append(b.chats, out.ChatID)
+	if out.ChatID == b.failChat {
+		return "", errors.New("chat unavailable")
+	}
+	return "message", nil
+}
+
+func TestTaskGroupAnnouncementDoesNotStallOnEntryFailure(t *testing.T) {
+	r := tasks.Record{ChatID: "group", EntryChatID: "entry", Project: "demo"}
+	bot := &announcementBot{failChat: r.EntryChatID}
+	if err := announceTaskGroup(context.Background(), bot, slog.Default(), r); err != nil {
+		t.Fatalf("entry receipt blocked an already announced task: %v", err)
+	}
+	if strings.Join(bot.chats, ",") != "group,entry" {
+		t.Fatalf("announcement destinations = %v", bot.chats)
+	}
+	bot = &announcementBot{failChat: r.ChatID}
+	if err := announceTaskGroup(context.Background(), bot, slog.Default(), r); err == nil || len(bot.chats) != 1 {
+		t.Fatal("failed group welcome was not reported")
 	}
 }

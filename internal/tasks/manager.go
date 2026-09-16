@@ -22,14 +22,20 @@ type Options struct {
 	Report       func(context.Context, Record) error
 	Config       config.Tasks
 	// Projects supplies the current local configuration for each new task.
-	Projects   interface{ Snapshot() config.Tasks }
-	Platform   Platform
-	Client     herdrapi.Client
-	Lifecycle  herdrapi.LifecycleClient
-	Controller agents.Controller
-	Registry   agents.Registry
+	Projects interface{ Snapshot() config.Tasks }
+	// PrepareProject initializes/checks the configured primary repository before
+	// creating a workspace. It must be safe to retry after a local failure.
+	PrepareProject func(context.Context, string) error
+	Platform       Platform
+	Client         herdrapi.Client
+	Lifecycle      herdrapi.LifecycleClient
+	Controller     agents.Controller
+	Registry       agents.Registry
 	// Announce links the entry chat to the newly provisioned task group.
 	Announce func(context.Context, Record) error
+	// BeforeClose sends the final result and closing notice before deleting a
+	// task group. A failed notice leaves the group and agent available for retry.
+	BeforeClose func(context.Context, Record) error
 	// Follow enables transcript mirroring for the owned pane.
 	Follow func(string) error
 }
@@ -59,7 +65,7 @@ func (m *Manager) Wake() {
 func (m *Manager) List(owner string, all bool) []Record {
 	var out []Record
 	for _, r := range m.store.List() {
-		if r.OwnerID == owner && (all || (r.Status != Completed && (r.Status != Destroyed || r.Pending != ""))) {
+		if r.OwnerID == owner && (all || ((r.Status != Completed || (r.CloseRequested && !r.ChatDeleted)) && (r.Status != Destroyed || r.Pending != ""))) {
 			out = append(out, r)
 		}
 	}
@@ -181,22 +187,34 @@ func (m *Manager) Request(owner, id, action string) (Record, error) {
 		if r.Status == Destroying && action != "destroy" {
 			return errors.New("会话正在销毁")
 		}
-		if (action == "complete" || action == "reopen") && r.GUID == "" {
+		if (action == "complete" || action == "close" || action == "reopen") && r.GUID == "" {
 			return errors.New("飞书任务尚在创建，请稍后再完成或重开")
 		}
 		switch action {
 		case "complete":
 			r.CompletionRequest = "complete"
+		case "close":
+			if !r.CloseRequested {
+				r.CloseRequested = true
+				r.CloseNotifiedAt = time.Time{}
+				r.CompletionRequest = "complete"
+			}
 		case "reopen":
 			r.CompletionRequest = "reopen"
+			r.CloseRequested = false
+			r.CloseNotifiedAt = time.Time{}
 		case "destroy":
 			r.Status = Destroying
 			r.Detail = "关闭任务窗口并解散临时群；保留代码、任务和结果"
 		case "retry":
+			if r.CloseRequested {
+				return errors.New("任务正在结单，系统会重试同步；如需继续开发，请先重开任务")
+			}
 			if r.Pending != "" {
 				return fmt.Errorf("%s 操作结果未确认，为避免重复创建或重复执行，不能自动重试；请检查资源后销毁已绑定会话或重新发出指令", r.Pending)
 			}
 			r.Error = ""
+			r.ReportedNotice = ""
 			r.Status = Starting
 		default:
 			return errors.New("未知任务操作")
@@ -216,7 +234,7 @@ func (m *Manager) Observe(pane string, status Status, detail, result string) err
 	}
 	changed := false
 	_, err := m.store.Update(r.ID, func(r *Record) error {
-		if r.Status == Completed || r.Status == Destroying || r.Status == Destroyed {
+		if r.Status == Completed || r.Status == Destroying || r.Status == Destroyed || r.CloseRequested {
 			return nil
 		}
 		if !r.PromptSent && status == Review {
@@ -296,17 +314,6 @@ func (m *Manager) Run(ctx context.Context) error {
 				if err := m.reconcile(opCtx, id); err != nil {
 					slog.Warn("tasks: reconcile failed", "task", id, "err", err)
 				}
-				if m.opts.Report != nil {
-					r, _ := m.Get(id)
-					notice := Notice(r)
-					if notice != "" && notice != r.ReportedNotice {
-						if err := m.opts.Report(opCtx, r); err == nil {
-							_, _ = m.change(id, func(r *Record) { r.ReportedNotice = notice })
-						} else {
-							slog.Warn("tasks: report failed", "task", id, "err", err)
-						}
-					}
-				}
 			}(r.ID)
 		}
 		select {
@@ -327,7 +334,42 @@ func (m *Manager) change(id string, fn func(*Record)) (Record, error) {
 		return nil
 	})
 }
+
+const runningReportInterval = 30 * time.Second
+const closeNoticeGrace = 5 * time.Second
+
+func (m *Manager) report(ctx context.Context, id string) {
+	if m.opts.Report == nil {
+		return
+	}
+	r, ok := m.store.Get(id)
+	if !ok {
+		return
+	}
+	notice := Notice(r)
+	if notice == "" || notice == r.ReportedNotice {
+		return
+	}
+	// Only incremental running progress is throttled. State changes, blockers,
+	// acceptance, reopened tasks and errors must always reach the owner promptly.
+	if r.Status == Running && r.Error == "" && r.SyncError == "" &&
+		strings.HasPrefix(r.ReportedNotice, noticePrefix(Running)) && time.Since(r.ReportedAt) < runningReportInterval {
+		return
+	}
+	if err := m.opts.Report(ctx, r); err != nil {
+		slog.Warn("tasks: report failed", "task", id, "err", err)
+		return
+	}
+	if _, err := m.change(id, func(r *Record) { r.ReportedNotice = notice; r.ReportedAt = time.Now() }); err != nil {
+		slog.Warn("tasks: report checkpoint failed", "task", id, "err", err)
+	}
+}
+
 func (m *Manager) reconcile(ctx context.Context, id string) error {
+	// Publishing before provisioning and on every exit makes startup and failure
+	// visible even when the next external operation takes a long time.
+	m.report(ctx, id)
+	defer m.report(ctx, id)
 	r, _ := m.store.Get(id)
 	if r.Status == Destroying {
 		if err := m.destroy(ctx, r); err != nil {
@@ -340,6 +382,12 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 			return err
 		}
 		r, _ = m.store.Get(id)
+		if !r.CloseRequested || r.Status != Completed {
+			m.report(ctx, id)
+		}
+	}
+	if r.CloseRequested && r.Status == Completed && r.CompletionRequest == "" {
+		return m.closeAccepted(ctx, r)
 	}
 	if r.Status == Completed || r.Status == Destroyed || r.Status == Destroying {
 		return nil
@@ -404,12 +452,22 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 	}
 	if r.PaneID == "" {
 		if err := m.step(ctx, id, "workspace", func(r Record) (func(*Record), error) {
+			if m.opts.PrepareProject != nil {
+				if err := m.opts.PrepareProject(ctx, r.Path); err != nil {
+					return nil, preparationFailure{fmt.Errorf("准备项目目录：%w", err)}
+				}
+			}
 			w, err := m.opts.Lifecycle.WorkspaceCreate(ctx, r.Path, r.ID)
-			return func(r *Record) { r.WorkspaceID = w.ID; r.PaneID = w.PaneID }, err
+			return func(r *Record) { r.WorkspaceID = w.ID; r.PaneID = w.PaneID; r.WorkspaceCwd = w.Cwd }, err
 		}); err != nil {
 			return err
 		}
 		r, _ = m.store.Get(id)
+	}
+	if !r.Started && r.WorkspaceCwd != "" {
+		if err := verifyWorkspaceDirectory(r.Path, r.WorkspaceCwd); err != nil {
+			return m.fail(id, err.Error(), false)
+		}
 	}
 	if m.opts.Follow != nil {
 		if err := m.opts.Follow(r.PaneID); err != nil {
@@ -465,8 +523,37 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 		if !a.InteractiveReady || a.LaunchPending || (a.AgentStatus != "idle" && a.AgentStatus != "done") {
 			return nil
 		}
+		// The shell may have changed directory since workspace creation (for
+		// example, in its startup script or while awaiting a trust decision).
+		// Validate the running agent immediately before the first task input.
+		if actual := initialAgentDirectory(a); actual != "" {
+			if actual != r.AgentCwd {
+				if _, err := m.change(id, func(r *Record) { r.AgentCwd = actual }); err != nil {
+					return err
+				}
+			}
+			if err := verifyWorkspaceDirectory(r.Path, actual); err != nil {
+				return m.fail(id, err.Error(), false)
+			}
+		}
+		if r.PromptReceipt == "" {
+			marker, markerErr := newReceiptMarker()
+			if markerErr != nil {
+				return m.fail(id, "无法生成任务投递标识", false)
+			}
+			if _, err := m.change(id, func(r *Record) { r.PromptReceipt = marker }); err != nil {
+				return err
+			}
+		}
 		err = m.step(ctx, id, "prompt", func(r Record) (func(*Record), error) {
-			d, err := m.opts.Controller.Say(ctx, agents.Guard{PaneID: r.PaneID, Kind: r.Agent, StateSeq: a.StateChangeSeq, IssuedAt: time.Now()}, initialPrompt(r))
+			d, err := m.opts.Controller.Say(ctx, agents.Guard{PaneID: r.PaneID, Kind: r.Agent, StateSeq: a.StateChangeSeq, IssuedAt: time.Now(), RequireUnblocked: true, ReceiptMarker: r.PromptReceipt}, promptWithReceipt(r))
+			if initialPromptDeferred(d, err) {
+				return func(r *Record) {
+					r.Status = Blocked
+					r.Detail = "等待 agent 启动确认或输入就绪；任务内容尚未发送，处理后将自动继续"
+					r.Error = ""
+				}, nil
+			}
 			if err == nil && (!d.Acked || !d.Verified) {
 				err = errors.New("初始任务已尝试发送，但尚未确认；请检查会话，不会自动重复发送")
 			}
@@ -494,16 +581,47 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 }
 func (m *Manager) step(ctx context.Context, id, step string, fn func(Record) (func(*Record), error)) error {
 	r, err := m.store.Update(id, func(r *Record) error {
-		if r.Status == Destroying || r.Status == Destroyed || r.Status == Completed || r.CompletionRequest != "" {
+		if r.Status == Destroying || r.Status == Destroyed || r.Status == Completed || r.CompletionRequest != "" || r.CloseRequested {
 			return errors.New("task lifecycle changed; provisioning paused")
 		}
 		r.Pending = step
-		r.Status = Starting
+		// A held prompt can be refused repeatedly by the screen preflight while
+		// agent.get still says idle. Keep its waiting state stable until delivery.
+		waitingPrompt := step == "prompt" && r.Status == Blocked
+		if !waitingPrompt {
+			r.Status = Starting
+		}
+		switch step {
+		case "task":
+			r.Detail = "正在创建飞书任务"
+		case "chat":
+			r.Detail = "正在创建任务群，后续沟通与验收都在群内进行"
+		case "workspace":
+			r.Detail = "正在准备项目执行会话"
+		case "agent":
+			r.Detail = "正在启动 " + r.Agent
+		case "prompt":
+			if !waitingPrompt {
+				r.Detail = "正在发送任务要求"
+			}
+		}
 		r.UpdatedAt = time.Now()
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	m.report(ctx, id)
+	// A lifecycle request can arrive while the progress notification is in
+	// flight. No external side effect has started yet, so abandon its intent.
+	current, _ := m.store.Get(id)
+	if current.Status == Destroying || current.Status == Destroyed || current.Status == Completed || current.CompletionRequest != "" || current.CloseRequested {
+		_, err := m.change(id, func(r *Record) {
+			if r.Pending == step {
+				r.Pending = ""
+			}
+		})
+		return errors.Join(errors.New("task lifecycle changed; provisioning paused"), err)
 	}
 	apply, callErr := fn(r)
 	if callErr != nil {
@@ -527,6 +645,9 @@ func (m *Manager) step(ctx context.Context, id, step string, fn func(Record) (fu
 		return m.fail(id, step+": "+callErr.Error(), ambiguous)
 	}
 	_, err = m.change(id, func(r *Record) { apply(r); r.Pending = ""; r.UpdatedAt = time.Now() })
+	if err == nil {
+		m.report(ctx, id)
+	}
 	return err
 }
 func (m *Manager) fail(id, msg string, ambiguous bool) error {
@@ -565,6 +686,8 @@ func (m *Manager) syncRemote(ctx context.Context, r Record) error {
 			if !completed && r.Status == Completed {
 				r.Status = Review
 				r.CompletedAt = ""
+				r.CloseRequested = false
+				r.CloseNotifiedAt = time.Time{}
 				r.Detail = "任务已重新打开，可以继续对话"
 				r.UpdatedAt = time.Now()
 			}
@@ -621,7 +744,92 @@ func (m *Manager) syncFailure(id string, err error) error {
 	_, saveErr := m.change(id, func(r *Record) { r.SyncError = clip(err.Error(), 1000) })
 	return errors.Join(err, saveErr)
 }
+
+// closeAccepted never erases a live session based solely on an intent to mark
+// the task complete. Confirm Feishu's accepted state and durable result first.
+func (m *Manager) closeAccepted(ctx context.Context, r Record) error {
+	remote, err := m.opts.Platform.GetTask(ctx, r.GUID)
+	if err != nil {
+		return m.syncFailure(r.ID, err)
+	}
+	if remote.CompletedAt == "" || remote.CompletedAt == "0" {
+		return m.syncFailure(r.ID, errors.New("飞书尚未确认任务完成，已保留执行会话和任务群"))
+	}
+	desc := Description(r)
+	if remote.Description != desc {
+		if err := m.opts.Platform.UpdateTask(ctx, r.GUID, desc, nil); err != nil {
+			return m.syncFailure(r.ID, err)
+		}
+	}
+	r, err = m.change(r.ID, func(current *Record) {
+		current.SyncedDescription = desc
+		current.SyncError = ""
+	})
+	if err != nil {
+		return err
+	}
+	if !r.CloseRequested || r.Status != Completed || r.CompletionRequest != "" || Description(r) != desc {
+		return nil
+	}
+	ready, err := m.closingNotice(ctx, r)
+	if err != nil {
+		return m.syncFailure(r.ID, err)
+	}
+	if !ready {
+		return nil
+	}
+	r, err = m.change(r.ID, func(r *Record) {
+		if r.CloseRequested && r.Status == Completed && r.CompletionRequest == "" {
+			r.Status = Destroying
+			r.Detail = "验收已完成，正在关闭执行会话和临时群；代码与任务记录保留"
+			r.UpdatedAt = time.Now()
+		}
+	})
+	if err != nil || r.Status != Destroying {
+		return err
+	}
+	if err := m.destroy(ctx, r); err != nil {
+		return m.syncFailure(r.ID, err)
+	}
+	return nil
+}
+
+func (m *Manager) closingNotice(ctx context.Context, r Record) (bool, error) {
+	if m.opts.BeforeClose == nil || r.ChatID == "" || r.ChatDeleted {
+		return true, nil
+	}
+	if !r.CloseNotifiedAt.IsZero() {
+		return time.Since(r.CloseNotifiedAt) >= closeNoticeGrace, nil
+	}
+	if err := m.opts.BeforeClose(ctx, r); err != nil {
+		return false, err
+	}
+	_, err := m.change(r.ID, func(r *Record) {
+		if r.Status == Destroying || (r.CloseRequested && r.Status == Completed && r.CompletionRequest == "") {
+			r.CloseNotifiedAt = time.Now()
+		}
+	})
+	return false, err
+}
+
 func (m *Manager) destroy(ctx context.Context, r Record) error {
+	// Save the final summary before closing either resource. If Feishu cannot
+	// store the result, keep both the coding session and task group available.
+	if r.GUID != "" {
+		desc := Description(r)
+		if err := m.opts.Platform.UpdateTask(ctx, r.GUID, desc, nil); err != nil {
+			return m.syncFailure(r.ID, err)
+		}
+		var err error
+		r, err = m.change(r.ID, func(r *Record) { r.SyncedDescription = desc; r.SyncError = "" })
+		if err != nil {
+			return err
+		}
+	}
+	ready, err := m.closingNotice(ctx, r)
+	if err != nil || !ready {
+		return err
+	}
 	if r.PaneID != "" && !r.PaneClosed {
 		p, err := m.opts.Client.PaneGet(ctx, r.PaneID)
 		var apiErr *herdrapi.APIError
@@ -641,12 +849,6 @@ func (m *Manager) destroy(ctx context.Context, r Record) error {
 			return err
 		}
 	}
-	// Save the final summary to the durable Feishu task before erasing the chat.
-	if r.GUID != "" {
-		if err := m.opts.Platform.UpdateTask(ctx, r.GUID, Description(r), nil); err != nil {
-			return m.syncFailure(r.ID, err)
-		}
-	}
 	if r.ChatID != "" && !r.ChatDeleted {
 		if err := m.opts.Platform.DeleteTaskChat(ctx, r.ChatID); err != nil {
 			return m.syncFailure(r.ID, err)
@@ -657,7 +859,7 @@ func (m *Manager) destroy(ctx context.Context, r Record) error {
 			return err
 		}
 	}
-	r, err := m.change(r.ID, func(r *Record) {
+	r, err = m.change(r.ID, func(r *Record) {
 		r.Status = Destroyed
 		r.Detail = "执行窗口和临时群已关闭；代码与任务记录保留"
 		r.CompletionRequest = ""
@@ -702,7 +904,7 @@ func (m *Manager) AcceptInput(pane string, verified bool) error {
 		return nil
 	}
 	_, err := m.change(r.ID, func(r *Record) {
-		if r.Status == Completed || r.Status == Destroying || r.Status == Destroyed {
+		if r.Status == Completed || r.Status == Destroying || r.Status == Destroyed || r.CloseRequested {
 			return
 		}
 		r.PromptSent = true

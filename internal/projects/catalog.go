@@ -133,6 +133,8 @@ func (c *Catalog) SetBypass(enabled bool) error {
 
 // Put registers existing directories, or replaces an existing project's settings.
 // It never creates project directories and never changes a running task's snapshot.
+// The primary directory is initialized as Git if necessary; additional directories
+// are left untouched.
 func (c *Catalog) Put(name string, project config.Project, makeDefault bool) error {
 	if err := config.ValidateProjectName(name); err != nil {
 		return err
@@ -143,6 +145,9 @@ func (c *Catalog) Put(name string, project config.Project, makeDefault bool) err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := EnsureRepository(context.Background(), project.Path); err != nil {
+		return err
+	}
 	next := cloneTasks(c.tasks)
 	next.Projects[name] = project
 	if makeDefault || next.DefaultProject == "" {
@@ -172,7 +177,8 @@ func (c *Catalog) Delete(name string) error {
 // Create is the explicit new-project operation. It creates exactly one directory
 // under the local user's ~/herder-agent-code and registers it. Existing paths are
 // rejected rather than adopted, and registration failure removes only the new,
-// still-empty directory. Root and project symlinks cannot escape the user's home.
+// still-empty directory. A Git-initialized directory is preserved on failure so
+// concurrent writes cannot be lost. Root and project symlinks cannot escape home.
 func (c *Catalog) Create(ctx context.Context, name, agent string, makeDefault bool) (config.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return config.Project{}, err
@@ -235,6 +241,9 @@ func (c *Catalog) Create(ctx context.Context, name, agent string, makeDefault bo
 	if err := ctx.Err(); err != nil {
 		return config.Project{}, err
 	}
+	if err := EnsureRepository(ctx, project.Path); err != nil {
+		return config.Project{}, err
+	}
 	next := cloneTasks(c.tasks)
 	next.Projects[name] = project
 	if makeDefault || next.DefaultProject == "" {
@@ -242,7 +251,10 @@ func (c *Catalog) Create(ctx context.Context, name, agent string, makeDefault bo
 	}
 	committed, err = c.save(next)
 	if err != nil {
-		return config.Project{}, err
+		if committed {
+			return config.Project{}, err
+		}
+		return config.Project{}, fmt.Errorf("projects: save new project: %w; Git project directory preserved at %s and can be registered as an existing project", err, project.Path)
 	}
 	return cloneProject(project), nil
 }

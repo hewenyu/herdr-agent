@@ -39,6 +39,7 @@ func TestTaskCommandsPreserveTaskTextAndRecognizeProgressQueries(t *testing.T) {
 		{"/tasks all", Command{Kind: "list", All: true}},
 		{"/task destroy t_42", Command{Kind: "action", Action: "destroy", ID: "t_42"}},
 		{"/task complete", Command{Kind: "action", Action: "complete"}},
+		{"/task close", Command{Kind: "action", Action: "close"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

@@ -704,6 +704,9 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 	// it on screen, which the caller must show as "sent but not confirmed".
 	post, postRead := c.readLines(ctx, paneID)
 	d.Verified = verifyEcho(post, postRead, text, d.Queued, preImage)
+	if !d.Verified && d.Acked && d.Attempts > 0 {
+		d.Verified = verifyReceiptEcho(post, postRead, text, g.ReceiptMarker, d.Queued, preImage)
+	}
 
 	if d.Queued && postRead && screenShowsDialog(post) {
 		// The same disclosure from the screen instead of the status, because
@@ -769,8 +772,6 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 			}
 		}
 
-		d.Attempts = attempt
-
 		// The last look before the write, per attempt, as late as possible: one
 		// screen read and one status read, with nothing between them and the paste.
 		// Both are re-done per attempt because a retry runs seconds later and
@@ -798,6 +799,9 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 		if box.holdsText {
 			body = promptSeparator + text
 		}
+		// Count writes, not preflight refusals. Task startup can safely wait
+		// for an approval only when no prompt has been attempted at all.
+		d.Attempts = attempt
 		info, err := c.client.AgentPrompt(ctx, paneID, body, promptWaitFor(from))
 		if err == nil {
 			d.Acked = true

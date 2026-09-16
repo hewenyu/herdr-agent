@@ -575,17 +575,17 @@ func TestBlockedCardWarnsBesideItsSelectButton(t *testing.T) {
 	}
 }
 
-// TestBuildBlockedWithoutOptionsAsksForProse: when nothing parses the card must
+// TestBuildBlockedWithoutOptionsExplainsLocalConfirmation: when nothing parses the card must
 // not invent buttons. It says so and points at the safe path, because prose to
 // a blocked agent is only safe when it goes through Say's esc-first route (G1).
-func TestBuildBlockedWithoutOptionsAsksForProse(t *testing.T) {
+func TestBuildBlockedWithoutOptionsExplainsLocalConfirmation(t *testing.T) {
 	js, err := BuildBlocked(blockedAgent(), dialogScreen(), nil, "n", issuedAt)
 	if err != nil {
 		t.Fatalf("BuildBlocked: %v", err)
 	}
 	card := decodeCard(t, js)
 	text := allText(card)
-	for _, want := range []string{"No numbered options", "reply to this message", "esc first"} {
+	for _, want := range []string{"No numbered options", "local herdr window", "continue automatically after confirmation", "Typing an approval in chat does not select"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("card does not mention %q:\n%s", want, text)
 		}

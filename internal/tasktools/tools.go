@@ -56,6 +56,8 @@ type Service struct {
 	opts    Options
 	journal *journal
 	mu      *sync.Mutex
+	taskID  string
+	chatID  string
 }
 
 // Tool describes the controlled operations exposed to the conversational agent.
@@ -90,6 +92,9 @@ func (s *Service) ForOwner(owner string) (*Service, error) {
 	if owner == "" || !s.opts.Manager.OwnerAllowed(owner) {
 		return nil, errors.New("当前用户不在本项目允许名单内")
 	}
+	if s.taskID != "" && owner != s.opts.OwnerID {
+		return nil, errors.New("任务群不能切换用户或任务")
+	}
 	o := s.opts
 	if o.OwnerID != owner {
 		// An entry chat belongs to its authenticated sender. Rebinding only an
@@ -97,7 +102,7 @@ func (s *Service) ForOwner(owner string) (*Service, error) {
 		o.EntryChatID = ""
 	}
 	o.OwnerID = owner
-	return &Service{opts: o, journal: s.journal, mu: s.mu}, nil
+	return &Service{opts: o, journal: s.journal, mu: s.mu, taskID: s.taskID, chatID: s.chatID}, nil
 }
 
 // ForChat binds notification routing from the authenticated inbound event.
@@ -109,39 +114,68 @@ func (s *Service) ForChat(owner, chat string) (*Service, error) {
 	if chat == "" {
 		return nil, errors.New("assistant: missing entry chat")
 	}
+	if s.taskID != "" && chat != s.chatID {
+		return nil, errors.New("任务群不能切换用户或任务")
+	}
 	bound.opts.EntryChatID = chat
 	return bound, nil
 }
 
+// ForTask limits the assistant to the task associated with this verified group.
+// A claimed task ID is not sufficient: ownership and the persisted group binding
+// are checked now and on every call, including replayed operation receipts.
+func (s *Service) ForTask(owner, chat, taskID string) (*Service, error) {
+	bound, err := s.ForChat(owner, chat)
+	if err != nil {
+		return nil, err
+	}
+	if taskID == "" || (s.taskID != "" && s.taskID != taskID) {
+		return nil, errors.New("任务群缺少有效的任务绑定")
+	}
+	bound.taskID, bound.chatID = taskID, chat
+	if _, err := bound.owned(taskID); err != nil {
+		return nil, err
+	}
+	return bound, nil
+}
+
 type Task struct {
-	ID                string       `json:"id"`
-	Title             string       `json:"title"`
-	Project           string       `json:"project"`
-	Agent             string       `json:"agent"`
-	DirectoryCount    int          `json:"directory_count"`
-	Bypass            bool         `json:"bypass"`
-	Status            tasks.Status `json:"status"`
-	StatusLabel       string       `json:"status_label"`
-	Progress          string       `json:"progress,omitempty"`
-	LatestReply       string       `json:"latest_reply,omitempty"`
-	Error             string       `json:"error,omitempty"`
-	SyncError         string       `json:"sync_error,omitempty"`
-	PendingOperation  string       `json:"pending_operation,omitempty"`
-	CompletionRequest string       `json:"completion_request,omitempty"`
-	CompletedAt       string       `json:"completed_at,omitempty"`
-	TaskURL           string       `json:"task_url,omitempty"`
-	ChatURL           string       `json:"chat_url,omitempty"`
-	UpdatedAt         time.Time    `json:"updated_at"`
-	RemoteCheckedAt   time.Time    `json:"remote_checked_at"`
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Project            string       `json:"project"`
+	Agent              string       `json:"agent"`
+	DirectoryCount     int          `json:"directory_count"`
+	WorkingDirectory   string       `json:"working_directory,omitempty"`
+	WorkingDirectories []Directory  `json:"working_directories,omitempty"`
+	Bypass             bool         `json:"bypass"`
+	Started            bool         `json:"started"`
+	PromptSent         bool         `json:"prompt_sent"`
+	Status             tasks.Status `json:"status"`
+	StatusLabel        string       `json:"status_label"`
+	Progress           string       `json:"progress,omitempty"`
+	LatestReply        string       `json:"latest_reply,omitempty"`
+	Error              string       `json:"error,omitempty"`
+	SyncError          string       `json:"sync_error,omitempty"`
+	PendingOperation   string       `json:"pending_operation,omitempty"`
+	CompletionRequest  string       `json:"completion_request,omitempty"`
+	CloseRequested     bool         `json:"close_requested,omitempty"`
+	CloseNotifiedAt    time.Time    `json:"close_notified_at,omitempty"`
+	CompletedAt        string       `json:"completed_at,omitempty"`
+	TaskURL            string       `json:"task_url,omitempty"`
+	ChatURL            string       `json:"chat_url,omitempty"`
+	UpdatedAt          time.Time    `json:"updated_at"`
+	RemoteCheckedAt    time.Time    `json:"remote_checked_at"`
 }
 
 func view(r tasks.Record) Task {
-	v := Task{ID: r.ID, Title: r.Title, Project: r.Project, Agent: r.Agent, Status: r.Status, StatusLabel: r.Status.Label(), Progress: r.Detail, LatestReply: r.Result, Error: r.Error, SyncError: r.SyncError, PendingOperation: r.Pending, CompletionRequest: r.CompletionRequest, CompletedAt: r.CompletedAt, TaskURL: r.URL, UpdatedAt: r.UpdatedAt, RemoteCheckedAt: r.RemoteCheckedAt}
+	v := Task{ID: r.ID, Title: r.Title, Project: r.Project, Agent: r.Agent, Started: r.Started, PromptSent: r.PromptSent, Status: r.Status, StatusLabel: r.Status.Label(), Progress: r.Detail, LatestReply: r.Result, Error: r.Error, SyncError: r.SyncError, PendingOperation: r.Pending, CompletionRequest: r.CompletionRequest, CloseRequested: r.CloseRequested, CloseNotifiedAt: r.CloseNotifiedAt, CompletedAt: r.CompletedAt, TaskURL: r.URL, UpdatedAt: r.UpdatedAt, RemoteCheckedAt: r.RemoteCheckedAt}
 	v.DirectoryCount = len(r.Directories)
 	if v.DirectoryCount == 0 && r.Path != "" {
 		v.DirectoryCount = 1
 	}
 	v.Bypass = r.Bypass
+	v.WorkingDirectory = r.Path
+	v.WorkingDirectories = inspectDirectories(r.Path, r.Directories)
 	if r.ChatID != "" && !r.ChatDeleted {
 		v.ChatURL = tasks.ChatURL(r.ChatID)
 	}
@@ -179,6 +213,11 @@ var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	if !s.opts.Manager.OwnerAllowed(s.opts.OwnerID) {
 		return nil, errors.New("当前用户不在本项目允许名单内")
+	}
+	if s.taskID != "" {
+		if _, err := s.owned(s.taskID); err != nil {
+			return nil, err
+		}
 	}
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{}`)
@@ -236,6 +275,12 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 		if _, ok := fields[field]; !ok {
 			return nil, fmt.Errorf("缺少参数 %s", field)
 		}
+	}
+	if s.taskID != "" {
+		if a.TaskID != "" && a.TaskID != s.taskID {
+			return nil, errors.New("任务群只能查询或操作当前任务")
+		}
+		a.TaskID = s.taskID
 	}
 	switch name {
 	case "herdr_projects":
@@ -332,8 +377,11 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 
 func (s *Service) owned(id string) (tasks.Record, error) {
 	r, ok := s.opts.Manager.Get(id)
-	if id == "" || !ok || r.OwnerID != s.opts.OwnerID {
+	if id == "" || !ok || r.ID != id || r.OwnerID != s.opts.OwnerID {
 		return tasks.Record{}, errors.New("找不到你拥有的任务")
+	}
+	if s.taskID != "" && (id != s.taskID || r.ChatID != s.chatID || r.ChatDeleted) {
+		return tasks.Record{}, errors.New("任务群绑定已失效，不能查询或操作其他任务")
 	}
 	return r, nil
 }
@@ -390,7 +438,7 @@ func (s *Service) mutate(ctx context.Context, name string, a arguments) (receipt
 			return out, err
 		}
 		if name == "herdr_send" {
-			if r.Status == tasks.Completed || r.Status == tasks.Destroying || r.Status == tasks.Destroyed || !r.Started || r.PaneID == "" {
+			if r.CloseRequested || r.Status == tasks.Completed || r.Status == tasks.Destroying || r.Status == tasks.Destroyed || !r.Started || r.PaneID == "" {
 				return out, errors.New("任务当前不能接收指令，请先查询状态；已完成任务须先重新打开")
 			}
 			agent, ok := s.opts.Registry.Get(r.PaneID)
@@ -429,7 +477,7 @@ func (s *Service) mutate(ctx context.Context, name string, a arguments) (receipt
 	return out, err
 }
 
-func (*Service) Tools() []Tool {
+func (s *Service) Tools() []Tool {
 	str := func(description string) any { return map[string]any{"type": "string", "description": description} }
 	req := str("此操作的唯一 ID（8–128 位字母、数字、_、-）。首次调用生成；网络重试必须复用相同 ID 和参数，不要为未知结果生成新 ID。")
 	id := str("herdr_list 或 herdr_create 返回的任务 id")
@@ -456,6 +504,25 @@ func (*Service) Tools() []Tool {
 		{"retry", "重试明确失败且没有未确认副作用的任务创建步骤。未知操作结果不会自动重试。", false},
 	} {
 		tools = append(tools, makeTool("herdr_"+a.name, a.description, false, a.destructive, map[string]any{"request_id": req, "task_id": id}, "request_id", "task_id"))
+	}
+	if s.taskID != "" {
+		groupTools := make([]Tool, 0, 7)
+		for _, tool := range tools {
+			if tool.Name == "herdr_projects" || tool.Name == "herdr_list" || tool.Name == "herdr_create" {
+				continue
+			}
+			required := []string{}
+			for _, field := range tool.InputSchema["required"].([]string) {
+				if field != "task_id" {
+					required = append(required, field)
+				}
+			}
+			tool.InputSchema["required"] = required
+			tool.InputSchema["properties"].(map[string]any)["task_id"] = str("当前任务 id；可省略，始终绑定本群对应任务，不能指定其他任务")
+			groupTools = append(groupTools, tool)
+		}
+		groupTools = append(groupTools, makeTool("herdr_close", "用户明确验收通过、结单或关闭这个问题时调用。先确认飞书任务完成，再通知并关闭执行会话、解散任务群；保留代码、飞书任务和结果摘要。accepted 仅表示登记，close_requested 表示正在收尾，必须如实说明尚待同步或关闭。不能把未通过验收、不要关闭、仅询问进度或条件性的将来操作视为结单。", false, true, map[string]any{"request_id": req, "task_id": str("当前任务 id；省略时使用本群任务，不能指定其他任务")}, "request_id"))
+		return groupTools
 	}
 	return tools
 }

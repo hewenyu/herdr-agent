@@ -38,16 +38,18 @@ type taskTestUpdate struct {
 }
 
 type taskTestPlatform struct {
-	mu        sync.Mutex
-	log       *taskTestLog
-	tasks     map[string]RemoteTask
-	created   []TaskSpec
-	chats     []ChatSpec
-	deleted   []string
-	updates   []taskTestUpdate
-	reads     []string
-	updateErr error
-	createErr error
+	mu               sync.Mutex
+	log              *taskTestLog
+	tasks            map[string]RemoteTask
+	created          []TaskSpec
+	chats            []ChatSpec
+	deleted          []string
+	updates          []taskTestUpdate
+	reads            []string
+	updateErr        error
+	createErr        error
+	getErr           error
+	ignoreCompletion bool
 }
 
 func (p *taskTestPlatform) CreateTask(_ context.Context, spec TaskSpec) (RemoteTask, error) {
@@ -67,6 +69,9 @@ func (p *taskTestPlatform) GetTask(_ context.Context, id string) (RemoteTask, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reads = append(p.reads, id)
+	if p.getErr != nil {
+		return RemoteTask{}, p.getErr
+	}
 	r, ok := p.tasks[id]
 	if !ok {
 		return RemoteTask{}, fmt.Errorf("task %s missing", id)
@@ -88,7 +93,9 @@ func (p *taskTestPlatform) UpdateTask(_ context.Context, guid, desc string, comp
 	if completedAt != nil {
 		copy := *completedAt
 		value = &copy
-		r.CompletedAt = copy
+		if !p.ignoreCompletion {
+			r.CompletedAt = copy
+		}
 	}
 	r.Description = desc
 	p.tasks[guid] = r
@@ -203,6 +210,7 @@ type taskTestController struct {
 	log      *taskTestLog
 	says     []taskTestSay
 	delivery agents.Delivery
+	sayErr   error
 }
 
 func (c *taskTestController) Say(_ context.Context, guard agents.Guard, text string) (agents.Delivery, error) {
@@ -210,7 +218,7 @@ func (c *taskTestController) Say(_ context.Context, guard agents.Guard, text str
 	defer c.mu.Unlock()
 	c.log.add("say")
 	c.says = append(c.says, taskTestSay{guard, text})
-	return c.delivery, nil
+	return c.delivery, c.sayErr
 }
 func (*taskTestController) SendKey(context.Context, agents.Guard, string) (agents.Agent, error) {
 	return agents.Agent{}, errors.New("task startup must not answer approval prompts")
@@ -356,7 +364,7 @@ func TestManagerCreatesTaskChatWorkspaceAndEitherAgentOnce(t *testing.T) {
 			if h.lifecycle.workspaces[0].Cwd != "/configured/repo" || h.lifecycle.workspaces[0].Label != r.ID {
 				t.Fatalf("workspace not bound to configured project: %+v", h.lifecycle.workspaces)
 			}
-			if say := h.controller.says[0]; say.text != r.Title || say.guard.PaneID != r.PaneID || say.guard.Kind != kind || say.guard.StateSeq != 1 {
+			if say := h.controller.says[0]; !strings.Contains(say.text, r.Title) || !strings.Contains(say.text, r.Path) || say.guard.PaneID != r.PaneID || say.guard.Kind != kind || say.guard.StateSeq != 1 || !say.guard.RequireUnblocked {
 				t.Fatalf("initial task bypassed guarded delivery: %+v", say)
 			}
 			h.reconcile(t, r.ID, 2)
@@ -377,7 +385,7 @@ func TestManagerOwnerIsolation(t *testing.T) {
 	if got := h.manager.List("ou_owner", true); len(got) != 1 || got[0].ID != one.ID {
 		t.Fatalf("owner list leaked another owner's task: %+v", got)
 	}
-	for _, action := range []string{"complete", "reopen", "retry", "destroy"} {
+	for _, action := range []string{"close", "complete", "reopen", "retry", "destroy"} {
 		if _, err := h.manager.Request("ou_other", one.ID, action); err == nil {
 			t.Errorf("foreign owner could %s task", action)
 		}
@@ -502,7 +510,7 @@ func TestManagerFailedCompletionRemainsActiveUntilFeishuAcknowledges(t *testing.
 }
 
 func TestManagerRefusesCompletionActionsBeforeRemoteTaskExists(t *testing.T) {
-	for _, action := range []string{"complete", "reopen"} {
+	for _, action := range []string{"close", "complete", "reopen"} {
 		t.Run(action, func(t *testing.T) {
 			h := newTaskTestHarness(t, "codex")
 			r := h.create(t, "before-guid-"+action)
@@ -542,9 +550,13 @@ func TestManagerDestroyPreservesTaskAndPublishesResultBeforeDeletingChat(t *test
 		t.Fatal("destroy silently marked an unaccepted task complete")
 	}
 	log := h.log.snapshot()
-	for i, call := range log {
-		if call == "delete-chat" && (i == 0 || log[i-1] != "update-task") {
-			t.Fatalf("chat erased before durable task summary was saved: %v", log)
+	resultSaved := false
+	for _, call := range log {
+		if call == "update-task" {
+			resultSaved = true
+		}
+		if (call == "delete-chat" || call == "close-pane") && !resultSaved {
+			t.Fatalf("session erased before durable task summary was saved: %v", log)
 		}
 	}
 	h.reconcile(t, r.ID, 1)
@@ -600,7 +612,7 @@ func TestManagerDestroyKeepsChatUntilFinalSummaryCanBeSaved(t *testing.T) {
 		t.Fatal("failure to persist final summary was hidden")
 	}
 	r, _ = h.store.Get(r.ID)
-	if r.Status != Destroying || !r.PaneClosed || r.SyncError == "" || r.ChatDeleted || len(h.platform.deleted) != 0 {
+	if r.Status != Destroying || r.PaneClosed || r.SyncError == "" || r.ChatDeleted || len(h.platform.deleted) != 0 || len(h.lifecycle.closed) != 0 {
 		t.Fatalf("chat/result lost before summary was saved: %+v", r)
 	}
 	h.platform.updateErr = nil

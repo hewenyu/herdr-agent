@@ -22,7 +22,10 @@ func Description(r Record) string {
 		fmt.Fprintf(&b, "需要处理：%s\n", clip(r.Error, 400))
 	}
 	if r.Status == Review {
-		b.WriteString("\n本轮回复结束不代表任务已经完成。请验收后在飞书任务中勾选完成。\n")
+		b.WriteString("\n本轮回复结束不代表任务已经完成。请在任务群内继续反馈或确认验收；也可在飞书任务中勾选完成。\n")
+	}
+	if r.CloseRequested && r.Status != Destroyed {
+		b.WriteString("结单请求：用户已确认验收，确认飞书完成状态并保存结果后关闭执行会话与临时群。\n")
 	}
 	if r.Result != "" {
 		b.WriteString("\n最近交付 / 回复：\n")
@@ -66,7 +69,7 @@ const Help = `/projects — 查看配置的项目和默认 agent
 /new <项目> [codex|claude] <任务内容> — 新建任务
 新建任务：<任务内容> — 使用默认项目和 agent
 /tasks [all] — 查看进行中的任务（all 包括已完成）
-/task complete|reopen|destroy|retry [任务编号] — 完成、重开、销毁会话或重试
+/task close|complete|reopen|destroy|retry [任务编号] — 验收结单、仅标记完成、重开、销毁会话或重试
 在任务群内可省略任务编号。销毁会话会关闭执行窗口并解散群，群聊天记录不保留；代码和飞书任务保留。`
 
 type Command struct {
@@ -134,12 +137,12 @@ func Parse(text string) (Command, bool) {
 	case "/task":
 		c := Command{Kind: "action"}
 		if len(fields) < 2 || len(fields) > 3 {
-			c.Error = "用法：/task complete|reopen|destroy|retry [任务编号]"
+			c.Error = "用法：/task close|complete|reopen|destroy|retry [任务编号]"
 			return c, true
 		}
 		c.Action = fields[1]
 		switch c.Action {
-		case "complete", "reopen", "destroy", "retry":
+		case "close", "complete", "reopen", "destroy", "retry":
 		default:
 			c.Error = "未知任务操作；" + Help
 		}
@@ -153,8 +156,10 @@ func Parse(text string) (Command, bool) {
 	return Command{}, false
 }
 
-// Notice reports only failures and the final destruction result. Ordinary
-// conversation progress already travels through the bridge's notifier.
+func noticePrefix(status Status) string { return "任务进展：" + status.Label() + "\n" }
+
+// Notice is a compact lifecycle/progress summary. The notifier separately
+// mirrors full agent replies, so this message never repeats the transcript.
 func Notice(r Record) string {
 	if r.Status == Destroyed {
 		return "会话清理结果：" + r.Title + "\n" + r.Detail + "\n" + r.Error + "\n代码和飞书任务记录保留。\n" + r.URL
@@ -165,5 +170,27 @@ func Notice(r Record) string {
 	if r.SyncError != "" {
 		return "任务同步失败：" + r.Title + "\n" + r.SyncError + "\n编号：" + r.ID + "\n系统将重试同步，可用 /tasks 查看状态。"
 	}
-	return ""
+	if r.ID == "" {
+		return ""
+	}
+	detail := clip(r.Detail, 500)
+	switch r.Status {
+	case Queued:
+		detail = "已收到任务，正在准备飞书任务和专属任务群。"
+	case Review:
+		detail += "\n请直接在本群继续反馈，或说“验收通过，可以结单”完成任务并关闭会话。"
+	case Blocked:
+		if !r.PromptSent {
+			detail += "\n请查看本群的启动确认卡片；若没有可选按钮，在本机 herdr 对应窗口完成首次目录信任。确认后会自动发送任务。"
+		} else {
+			detail += "\n请在本群查看 agent 的问题或审批卡片并处理。"
+		}
+	case Completed:
+		if r.CloseRequested {
+			detail = "已确认验收，正在保存结果并准备关闭任务会话。"
+		} else {
+			detail = "任务已完成。当前会话保留；可在本群要求重开，或明确结单关闭会话。"
+		}
+	}
+	return noticePrefix(r.Status) + r.Title + "\n" + detail
 }

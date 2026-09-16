@@ -1454,7 +1454,7 @@ func TestSayWillNotPasteAtADialogOnTheScreen(t *testing.T) {
 			// is sent either — another esc can answer a second dialog behind the
 			// first, and herdr may be showing a menu we did not open.
 			h.assertNoInput()
-			if d.Acked {
+			if d.Acked || d.Attempts != 0 {
 				t.Fatalf("Delivery = %+v, want nothing claimed", d)
 			}
 		})

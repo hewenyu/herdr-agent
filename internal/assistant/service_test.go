@@ -42,11 +42,13 @@ func (e *serviceTestEngine) calls() [][]Message {
 }
 
 type serviceCreate struct{ Owner, Chat, Key, Text string }
+type serviceRequest struct{ Owner, ID, Action string }
 
 type serviceTestManager struct {
-	mu      sync.Mutex
-	records map[string]tasks.Record
-	creates []serviceCreate
+	mu       sync.Mutex
+	records  map[string]tasks.Record
+	creates  []serviceCreate
+	requests []serviceRequest
 }
 
 func (*serviceTestManager) OwnerAllowed(owner string) bool { return owner == "alice" || owner == "bob" }
@@ -84,6 +86,7 @@ func (m *serviceTestManager) Request(owner, id, action string) (tasks.Record, er
 		return tasks.Record{}, errors.New("task is not owned")
 	}
 	r.CompletionRequest = action
+	m.requests = append(m.requests, serviceRequest{owner, id, action})
 	m.records[id] = r
 	return r, nil
 }
@@ -263,9 +266,13 @@ func TestServiceConcurrentDuplicateAndRestartUseSavedReply(t *testing.T) {
 		t.Fatal("first model call did not start")
 	}
 	close(release)
+	var savedAnswer string
 	for range cap(results) {
 		r := <-results
-		if r.err != nil || r.answer != "任务已登记" {
+		if savedAnswer == "" {
+			savedAnswer = r.answer
+		}
+		if r.err != nil || r.answer != savedAnswer || !strings.Contains(r.answer, "任务已登记") || !strings.Contains(r.answer, "single task") {
 			t.Fatalf("duplicate returned a different result: %+v", r)
 		}
 	}
@@ -274,7 +281,7 @@ func TestServiceConcurrentDuplicateAndRestartUseSavedReply(t *testing.T) {
 	}
 	afterRestart := &serviceTestEngine{}
 	restarted := h.service(t, afterRestart)
-	if answer := serviceReply(t, restarted, in); answer != "任务已登记" || len(afterRestart.calls()) != 0 || len(h.manager.created()) != 1 {
+	if answer := serviceReply(t, restarted, in); answer != savedAnswer || len(afterRestart.calls()) != 0 || len(h.manager.created()) != 1 {
 		t.Fatal("restart did not reuse the durable reply")
 	}
 }
@@ -400,7 +407,7 @@ func TestServiceHistoryRestoresAndBoundsOldConversation(t *testing.T) {
 	// A trimmed conversation must retain receipts, or an old redelivery creates
 	// a second task even though its text no longer appears in model history.
 	answer := serviceReply(t, restarted, serviceMessage("alice", "chat", "message-0", "request-00"))
-	if answer != "答复：request-00" || len(afterRestart.calls()) != 1 {
+	if !strings.HasPrefix(answer, "本轮未执行新的任务操作") || len(afterRestart.calls()) != 1 {
 		t.Fatal("history trimming discarded old message deduplication")
 	}
 }
@@ -495,7 +502,7 @@ func TestServiceSerializesSameChatAndHonorsWaitingContext(t *testing.T) {
 	}
 	serviceReply(t, s, serviceMessage("alice", "chat-a", "waiting", "should not run yet"))
 	history := e.calls()[2]
-	if len(history) != 4 || history[1].Content != "blocked first turn" || history[2].Content != "saved reply" {
+	if len(history) != 4 || history[1].Content != "blocked first turn" || history[2].Role != "assistant" || !strings.Contains(history[2].Content, "历史助手回复已省略") || history[3].Content != "should not run yet" {
 		t.Fatalf("queued or cancelled turn damaged serialized history: %+v", history)
 	}
 }

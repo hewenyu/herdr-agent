@@ -10,6 +10,7 @@ import (
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
 	"github.com/hewenyu/herdr-agent/internal/lark"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 type assistantFunc func(context.Context, AssistantMessage) (string, error)
@@ -120,7 +121,7 @@ func TestAssistantFailureDoesNotLeakOrFallThrough(t *testing.T) {
 	}
 }
 
-func TestAssistantLeavesTaskChatsBoundToTheirOwnerAndAgent(t *testing.T) {
+func TestAssistantReceivesTrustedTaskBindingForOwnerOnly(t *testing.T) {
 	for _, chatType := range []string{lark.ChatGroup, lark.ChatP2P} {
 		for _, owner := range []string{testOwner, testStranger} {
 			t.Run(chatType+"/"+owner, func(t *testing.T) {
@@ -129,23 +130,69 @@ func TestAssistantLeavesTaskChatsBoundToTheirOwnerAndAgent(t *testing.T) {
 				attachTaskManager(t, h, r)
 				h.reg.setAgents(taskAgent(r))
 				h.ctrl.setSay(agents.Delivery{Acked: true, Verified: true}, nil)
-				WithAssistant(assistantFunc(func(context.Context, AssistantMessage) (string, error) {
-					t.Fatal("bound task chat reached the assistant")
-					return "", nil
+				var got []AssistantMessage
+				WithAssistant(assistantFunc(func(_ context.Context, msg AssistantMessage) (string, error) {
+					got = append(got, msg)
+					return "当前任务要求已登记。", nil
 				}))(h.b)
 				m := taskInbound(r, "继续执行当前任务")
 				m.ChatType, m.UserID = chatType, owner
 				sendTaskMessage(t, h, m)
 				said := h.ctrl.said()
 				if owner == testOwner {
-					if len(said) != 1 || said[0].Guard.PaneID != r.PaneID || said[0].Text != m.Text {
-						t.Fatalf("task input lost its agent binding: %+v", said)
+					if len(got) != 1 || got[0].TaskID != r.ID || got[0].ChatID != r.ChatID || got[0].OwnerID != r.OwnerID || got[0].Text != m.Text || len(said) != 0 {
+						t.Fatalf("task input lost its trusted binding: assistant=%+v terminal=%+v", got, said)
 					}
-				} else if len(said) != 0 || len(h.bot.sends()) != 0 {
+				} else if len(got) != 0 || len(said) != 0 || len(h.bot.sends()) != 0 {
 					t.Fatal("a different allowed sender reached another owner's task")
 				}
 			})
 		}
+	}
+}
+
+func TestTaskGroupAssistantWorksWithoutAgentAndIgnoresForeignReply(t *testing.T) {
+	for _, status := range []tasks.Status{tasks.Starting, tasks.Attention, tasks.Blocked, tasks.Review, tasks.Completed} {
+		for _, input := range []string{"现在项目进度如何", "还有问题，请修复动画", "验收通过，可以关闭这个问题"} {
+			t.Run(string(status)+"/"+input, func(t *testing.T) {
+				h := newHarness(t)
+				r := taskBinding("bound", "oc_task", testPane)
+				r.Status, r.Started = status, false
+				attachTaskManager(t, h, r)
+				other := idleAgent("w_other:p1")
+				h.reg.setAgents(other)
+				h.routes.bindAbout("om_other_task", other)
+				h.selectAgent(r.ChatID, other)
+				var got AssistantMessage
+				WithAssistant(assistantFunc(func(_ context.Context, msg AssistantMessage) (string, error) {
+					got = msg
+					return "来自实际任务记录的回复", nil
+				}))(h.b)
+				m := taskInbound(r, input)
+				m.MentionedBot, m.ReplyToMessageID = false, "om_other_task"
+				sendTaskMessage(t, h, m)
+				if got.TaskID != r.ID || got.Text != input || len(h.ctrl.said()) != 0 {
+					t.Fatalf("group input escaped binding: %+v", got)
+				}
+				if out := h.bot.sends(); len(out) != 1 || out[0].Out.ChatID != r.ChatID {
+					t.Fatalf("reply must stay in bound group: %+v", out)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskGroupAssistantFailureDoesNotSendTerminalInput(t *testing.T) {
+	h := newHarness(t)
+	r := taskBinding("bound", "oc_task", testPane)
+	attachTaskManager(t, h, r)
+	h.reg.setAgents(taskAgent(r))
+	WithAssistant(assistantFunc(func(context.Context, AssistantMessage) (string, error) {
+		return "", errors.New("provider unavailable")
+	}))(h.b)
+	sendTaskMessage(t, h, taskInbound(r, "验收通过，可以结单"))
+	if len(h.ctrl.said()) != 0 || !strings.Contains(lastText(t, h), "/tasks") {
+		t.Fatal("failed group operation fell through or omitted status recovery")
 	}
 }
 

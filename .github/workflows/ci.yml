@@ -85,9 +85,10 @@ jobs:
       # there. The two places that could have had one do not: doctor's reader of
       # another process's environment shells out to `pgrep` and `ps eww` (G7),
       # but the tests exercise the parser against a captured sample string and
-      # never exec anything — `grep -rn exec.Command *_test.go` finds nothing in
-      # the whole module — and the darwin-only browser launcher is injected as a
-      # function on deps, so no test can reach the real one.
+      # do not inspect real process environments. Project tests use the runner's
+      # Git to verify initialization and existing-worktree preservation; they
+      # write only temporary repositories. The browser launcher is injected,
+      # so tests never open the real one.
       - name: go test -race
         run: go test -race ./...
 

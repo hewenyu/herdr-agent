@@ -100,6 +100,10 @@ type Guard struct {
 	// appeared after the registry snapshot. Ordinary human prose keeps the
 	// existing escape-before-input behavior when this is false.
 	RequireUnblocked bool
+	// ReceiptMarker is an optional fresh, random marker appended to the end of
+	// a managed initial prompt. It verifies receipt when a long prompt's start
+	// has scrolled out of view; it never proves task execution or completion.
+	ReceiptMarker string
 }
 
 // MaxGuardAge rejects decisions made against a stale view.
