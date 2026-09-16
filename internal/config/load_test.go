@@ -29,7 +29,7 @@ func isolate(t *testing.T) (dir string, repoRoot string) {
 	// findRepoRoot stops at the first marker above the working directory.
 	writeFile(t, filepath.Join(repoRoot, "go.mod"), "module fake\n")
 	t.Chdir(work)
-	unsetEnv(t, EnvAppID, EnvAppSecret)
+	unsetEnv(t, EnvAppID, EnvAppSecret, EnvAIAPIKey)
 	return dir, repoRoot
 }
 

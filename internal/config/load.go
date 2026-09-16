@@ -24,16 +24,22 @@ const (
 
 	EnvAppID     = "FEISHU_APP_ID"
 	EnvAppSecret = "FEISHU_APP_SECRET"
+	EnvAIAPIKey  = "HERDR_AGENT_AI_API_KEY"
 )
 
-// Defaults for every field documented as "0 => ..." in contract.go.
+// Defaults for unset fields. Legacy Herdr and UI settings also use these for
+// explicit zero values; task polling requires a positive configured value.
 const (
-	DefaultPollInterval   = 1 * time.Second
-	DefaultCallTimeout    = 10 * time.Second
-	DefaultMaxCols        = screen.DefaultMaxCols
-	DefaultTailLines      = 18
-	DefaultNotifyCooldown = 30 * time.Second
-	DefaultQueueLimit     = 5
+	DefaultPollInterval     = 1 * time.Second
+	DefaultCallTimeout      = 10 * time.Second
+	DefaultMaxCols          = screen.DefaultMaxCols
+	DefaultTailLines        = 18
+	DefaultNotifyCooldown   = 30 * time.Second
+	DefaultQueueLimit       = 5
+	DefaultTaskPollInterval = 30 * time.Second
+	DefaultTaskAgent        = "codex"
+	DefaultAIProvider       = "openai-responses"
+	DefaultAITimeout        = 2 * time.Minute
 )
 
 // Validation failures, exported so callers can react to a specific one
@@ -70,10 +76,12 @@ func Default() Config {
 			QueueLimit:     DefaultQueueLimit,
 		},
 		Mirror: Mirror{DefaultOn: false},
+		Tasks:  Tasks{PollInterval: DefaultTaskPollInterval, Bypass: true},
+		AI:     AI{Provider: DefaultAIProvider, Timeout: DefaultAITimeout},
 	}
 }
 
-// Load reads <dir>/config.toml over Default() and takes the two credentials
+// Load reads <dir>/config.toml over Default() and takes credentials
 // from the environment, falling back to .env files (see DotEnvFileName).
 //
 // A missing config.toml is not an error. The returned Config is not validated;
@@ -87,11 +95,11 @@ func Load(dir string) (Config, error) {
 
 	cfg := Default()
 
-	if err := applyFile(&cfg, filepath.Join(dir, ConfigFileName)); err != nil {
-		return Config{}, err
-	}
 	if err := applyCredentials(&cfg, dir); err != nil {
 		return Config{}, err
+	}
+	if err := applyFile(&cfg, filepath.Join(dir, ConfigFileName)); err != nil {
+		return Config{}, &redactedError{cause: err, text: cfg.scrub(err.Error())}
 	}
 	return cfg, nil
 }
@@ -152,7 +160,7 @@ func (c Config) Validate() error {
 	// who pasted the secret into the wrong field must not see it echoed back.
 	if strings.HasPrefix(c.Herdr.SocketPath, "~") {
 		errs = append(errs, fmt.Errorf("%w: herdr.socket_path = %q; %s does not expand it, write the absolute path",
-			ErrUnexpandedTilde, scrub(c.Herdr.SocketPath, c.Feishu.AppSecret), ConfigFileName))
+			ErrUnexpandedTilde, c.scrub(c.Herdr.SocketPath), ConfigFileName))
 	}
 
 	errs = append(errs,
@@ -162,6 +170,8 @@ func (c Config) Validate() error {
 		nonNegativeInt("ui.max_cols", c.UI.MaxCols),
 		nonNegativeInt("ui.tail_lines", c.UI.TailLines),
 		nonNegativeInt("ui.queue_limit", c.UI.QueueLimit),
+		c.validateTasks(),
+		c.validateAI(),
 	)
 
 	return errors.Join(errs...)

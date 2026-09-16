@@ -3,7 +3,7 @@
 # Two jobs, and both of them have to keep working for the release workflow to be
 # worth anything:
 #
-#   test   build, vet, gofmt and the race detector on ubuntu-latest
+#   test   build, embedded UI smoke check, vet, gofmt and race detector
 #   cross  every target release.yml ships, compiled and proved to be that target
 #
 # Every action is pinned to a full commit SHA. A tag is a mutable pointer: the
@@ -50,6 +50,13 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+      # Copy only the executable into an empty directory: a checkout must not
+      # accidentally supply the HTML, CSS or JavaScript that releases need.
+      - name: verify the embedded configuration page
+        run: |
+          go build -o "$RUNNER_TEMP/herdr-agent-ui" ./cmd/herdr-agent
+          python3 .github/scripts/check-embedded-ui.py --binary "$RUNNER_TEMP/herdr-agent-ui"
 
       - name: go vet
         run: go vet ./...

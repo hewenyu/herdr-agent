@@ -168,20 +168,11 @@ const (
 	// CodeScopeNotInEffect (99991672) is Feishu's "this app does not hold the
 	// scope this call needs".
 	//
-	// Which fix applies depends on where the app came from, and stating it
-	// unconditionally is how this advice was wrong before (G12):
-	//
-	//   - hand-made in the console: granting the scope there is not enough. It
-	//     takes effect only once a version is published, and until then the token
-	//     works, the WebSocket connects, and the call still fails. This is the
-	//     hour-long trap.
-	//   - registered by `herdr-agent setup`: its confirmation page grants the
-	//     scopes AND publishes a version itself (G18), so there is no publish
-	//     step to go looking for. Telling that user to publish sends them after
-	//     something already done, and when they cannot find it they conclude they
-	//     configured something wrong.
-	//
-	// adviseCode therefore names both cases rather than picking one.
+	// Successful setup proves only the scopes requested at that time. Optional
+	// features such as task management can require additional scopes even when
+	// credentials, messaging and the published application already work. This
+	// code alone cannot distinguish a missing grant from a pending approval or
+	// publication, so advice must point to the scopes named in the API error.
 	CodeScopeNotInEffect = 99991672
 
 	// CodeCardCallbackFailed (200340) is Feishu refusing an interactive-card
@@ -241,11 +232,13 @@ func adviseCode(code int, appID string) string {
 	switch code {
 	case CodeScopeNotInEffect:
 		return "a required scope is not in effect (99991672). " +
-			"On an app registered from code by `herdr-agent setup` — its confirmation page grants the scopes and " +
-			"publishes a version — this should not happen. On a hand-made app it means the version was never published: " +
-			"granting a scope in the console does nothing until you publish, and the symptom is exactly this. " +
-			"Check the scopes at https://open.feishu.cn/app/" + appID + "/auth, then publish under 版本管理与发布 " +
-			"(创建版本 → 申请发布) and retry."
+			"`herdr-agent setup` grants the scopes requested during setup; optional features such as task management " +
+			"may need additional scopes on the same application. For task permissions, stop the bridge and run " +
+			"`herdr-agent setup --update-permissions` to open a new confirmation URL for the existing app. " +
+			"Check the required scopes listed in the API error " +
+			"at https://open.feishu.cn/app/" + appID + "/auth and enable the appropriate application permissions. " +
+			"Complete approval and publish the updated version under 版本管理与发布 (创建版本 → 申请发布) " +
+			"if required for the changes to take effect, then retry."
 	case CodeCardCallbackFailed:
 		// E1 sent a card successfully and saw no callback within 120s. That
 		// observation cannot separate a 交互卡片 capability that is off from a
@@ -318,4 +311,20 @@ func kindOfCode(c types.FeishuChannelErrorCode) FailKind {
 	default:
 		return FailUnknown
 	}
+}
+
+// DefinitiveFailure distinguishes an explicit validation/permission/rate refusal
+// from a lost response. Task provisioning may be retried only in the former case.
+func (f *Failure) DefinitiveFailure() bool {
+	// The SDK currently classifies this explicit permission refusal as unknown.
+	// Preserve its public Kind while allowing task creation to retry after the
+	// missing scope is granted. Other unknown API errors remain ambiguous.
+	if code, ok := APICode(f.cause); ok && code == CodeScopeNotInEffect {
+		return true
+	}
+	switch f.Kind {
+	case FailPermissionDenied, FailFormat, FailRateLimited, FailSSRFBlocked:
+		return true
+	}
+	return false
 }

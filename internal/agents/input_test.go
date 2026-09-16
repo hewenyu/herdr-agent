@@ -941,6 +941,23 @@ func TestWaitSettleStopsOnContextCancel(t *testing.T) {
 
 // ---------- Say: the safety-critical path ----------
 
+func TestSayRequiresUnblockedEvenWhenRegistrySnapshotWasIdle(t *testing.T) {
+	p := &fakePane{status: StatusIdle, seq: 1}
+	h := newInputHarness(t, p)
+	g := h.guard()
+	g.RequireUnblocked = true
+	// Approval appeared after the cached state used to build this guard.
+	p.status = StatusBlocked
+	p.seq = 2
+	d, err := h.ctrl.Say(context.Background(), g, "continue the task")
+	if !errors.Is(err, ErrCannotUnblock) || d.FinalStatus != StatusBlocked {
+		t.Fatalf("Say = %+v, %v; want a human-approval refusal", d, err)
+	}
+	if d.Escaped || d.Acked || d.Verified || len(p.sentKeys()) != 0 || h.client.Count("agent.prompt") != 0 {
+		t.Fatalf("AI delivery touched a pending approval: %+v, methods=%v", d, h.methods())
+	}
+}
+
 func TestSayEscapesABlockedAgentBeforePrompting(t *testing.T) {
 	// G1, measured: prose sent to a blocked claude APPROVES the dialog, because
 	// agent.prompt pastes text the menu discards and then presses Enter on the

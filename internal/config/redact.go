@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -23,7 +24,7 @@ const (
 )
 
 // Redacted is the one-line form of the configuration that is safe to log at
-// startup. It never contains the app secret.
+// startup. It never contains the app secret or AI API key.
 func (c Config) Redacted() string {
 	var b strings.Builder
 	b.WriteString(c.Feishu.String())
@@ -43,8 +44,41 @@ func (c Config) Redacted() string {
 	b.WriteString(strconv.Itoa(c.UI.QueueLimit))
 	b.WriteString(" mirror.default_on=")
 	b.WriteString(strconv.FormatBool(c.Mirror.DefaultOn))
+	b.WriteString(" tasks.enabled=")
+	b.WriteString(strconv.FormatBool(c.Tasks.Enabled))
+	b.WriteString(" tasks.bypass=")
+	b.WriteString(strconv.FormatBool(c.Tasks.Bypass))
+	b.WriteString(" tasks.default_project=")
+	b.WriteString(orDefault(c.Tasks.DefaultProject, unsetValue))
+	b.WriteString(" tasks.poll_interval=")
+	b.WriteString(c.Tasks.PollInterval.String())
+	b.WriteByte(' ')
+	b.WriteString(c.AI.String())
+	names := make([]string, 0, len(c.Tasks.Projects))
+	for name := range c.Tasks.Projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		project := c.Tasks.Projects[name]
+		b.WriteString(" tasks.projects.")
+		b.WriteString(strconv.Quote(c.scrub(name)))
+		b.WriteString("={path:")
+		b.WriteString(strconv.Quote(c.scrub(project.Path)))
+		b.WriteString(",directories:[")
+		for i, directory := range project.Directories {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.Quote(c.scrub(directory)))
+		}
+		b.WriteByte(']')
+		b.WriteString(",agent:")
+		b.WriteString(strconv.Quote(c.scrub(project.Agent)))
+		b.WriteString("}")
+	}
 
-	return scrub(b.String(), c.Feishu.AppSecret)
+	return c.scrub(b.String())
 }
 
 // String makes the redacted form the default rendering, so that an ordinary
@@ -69,6 +103,31 @@ func (f Feishu) String() string {
 	b.WriteString(orDefault(f.NotifyChatID, unsetValue))
 
 	return scrub(b.String(), f.AppSecret)
+}
+
+// String and MarshalJSON protect standalone AI configuration logging.
+func (a AI) String() string {
+	key := unsetValue
+	if a.APIKey != "" {
+		key = RedactedSecret
+	}
+	return scrub(fmt.Sprintf("ai.enabled=%t ai.provider=%s ai.model=%s ai.base_url=%s ai.timeout=%s ai.api_key=%s",
+		a.Enabled, orDefault(a.Provider, unsetValue), orDefault(a.Model, unsetValue), orDefault(a.BaseURL, unsetValue), a.Timeout, key), a.APIKey)
+}
+
+func (a AI) MarshalJSON() ([]byte, error) {
+	key := ""
+	if a.APIKey != "" {
+		key = RedactedSecret
+	}
+	return json.Marshal(struct {
+		Enabled  bool   `json:"enabled"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		BaseURL  string `json:"base_url"`
+		Timeout  string `json:"timeout"`
+		APIKey   string `json:"api_key"`
+	}{a.Enabled, scrub(a.Provider, a.APIKey), scrub(a.Model, a.APIKey), scrub(a.BaseURL, a.APIKey), a.Timeout.String(), key})
 }
 
 // MarshalJSON redacts the secret as well, because a structured logger reaches
@@ -119,7 +178,33 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	// would recurse. Feishu keeps its own MarshalJSON, which is what we want.
 	type alias Config
 	redacted := alias(c)
-	redacted.Herdr.SocketPath = scrub(c.Herdr.SocketPath, c.Feishu.AppSecret)
+	redacted.Feishu.AppID = c.scrub(c.Feishu.AppID)
+	redacted.Feishu.NotifyChatID = c.scrub(c.Feishu.NotifyChatID)
+	if c.Feishu.AllowedOpenIDs != nil {
+		redacted.Feishu.AllowedOpenIDs = make([]string, len(c.Feishu.AllowedOpenIDs))
+		for i, id := range c.Feishu.AllowedOpenIDs {
+			redacted.Feishu.AllowedOpenIDs[i] = c.scrub(id)
+		}
+	}
+	redacted.Herdr.SocketPath = c.scrub(c.Herdr.SocketPath)
+	redacted.Tasks.DefaultProject = c.scrub(c.Tasks.DefaultProject)
+	redacted.AI.Provider = c.scrub(c.AI.Provider)
+	redacted.AI.Model = c.scrub(c.AI.Model)
+	redacted.AI.BaseURL = c.scrub(c.AI.BaseURL)
+	if c.Tasks.Projects != nil {
+		redacted.Tasks.Projects = make(map[string]Project, len(c.Tasks.Projects))
+		for name, project := range c.Tasks.Projects {
+			project.Path = c.scrub(project.Path)
+			project.Agent = c.scrub(project.Agent)
+			if project.Directories != nil {
+				project.Directories = append([]string(nil), project.Directories...)
+				for i, directory := range project.Directories {
+					project.Directories[i] = c.scrub(directory)
+				}
+			}
+			redacted.Tasks.Projects[c.scrub(name)] = project
+		}
+	}
 
 	b, err := json.Marshal(redacted)
 	if err != nil {
@@ -127,6 +212,25 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	}
 	return b, nil
 }
+
+// scrub applies both credentials, including to fields where either was pasted
+// accidentally. Replace the longer credential first when their contents overlap.
+func (c Config) scrub(s string) string {
+	first, second := c.Feishu.AppSecret, c.AI.APIKey
+	if len(second) > len(first) {
+		first, second = second, first
+	}
+	return scrub(scrub(s, first), second)
+}
+
+// Preserve errors.Is/As while keeping parser errors from echoing credentials.
+type redactedError struct {
+	cause error
+	text  string
+}
+
+func (e *redactedError) Error() string { return e.text }
+func (e *redactedError) Unwrap() error { return e.cause }
 
 // scrub is the backstop for an operator who pasted the secret into the wrong
 // field: notify_chat_id and the allowlist are printed verbatim, and a

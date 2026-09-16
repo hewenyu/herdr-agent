@@ -8,8 +8,14 @@ buttons — and your tap, or a line you type, goes back into the terminal so the
 It drives `claude` and `codex` through [herdr](https://herdr.dev), and it is single-user by design:
 one machine, one Feishu app, one `open_id` on the allowlist.
 
-There is no public URL, no tunnel and no webhook. The bridge dials out over Feishu's WebSocket, so a
-laptop behind NAT works.
+With optional task management enabled, a message to the bot can create a Feishu task, start a new
+agent in a dedicated herdr workspace, and open a private group for that task. Local configuration
+connects each project to one or more local directories and selects `codex` or `claude`.
+Enable the [AI task entry point](#control-tasks-with-natural-language) to create tasks, check progress
+and add instructions by talking naturally to this project's bot.
+
+The bridge dials out over Feishu's WebSocket, so a laptop behind NAT works without a public callback
+or tunnel. The AI entry point calls the model API address you configure, using your own API key.
 
 ## Before you start: herdr
 
@@ -22,7 +28,9 @@ brew install herdr                          # or: curl -fsSL https://herdr.dev/i
 ```
 
 Then follow [herdr's quick start](https://herdr.dev/docs/quick-start/) until you have `herdr server`
-running with `claude` or `codex` alive in a pane. Everything below assumes exactly that.
+running. To control an existing agent, also start `claude` or `codex` in a pane. The optional task
+workflow below starts its own agents, but still requires a running herdr server and the relevant
+agent CLI installed and authenticated on this machine.
 
 Two more things on the herdr side, because both are load-bearing here:
 
@@ -35,7 +43,7 @@ You also need a Feishu account. `herdr-agent setup` prepares the app for you —
 already have — and the [manual console checklist](#feishu-console-checklist--the-manual-fallback) is
 the supported fallback.
 
-macOS is what all of this was measured on, and the ready-made service units are launchd. The Go code
+The existing chat bridge was measured on macOS, and the ready-made service units are launchd. The Go code
 is portable and Linux binaries ship; `serve` is an ordinary foreground process anywhere.
 
 A couple of things on the herdr side fail silently rather than loudly — they are herdr's to
@@ -85,8 +93,9 @@ wrong. [More about setup](#more-about-setup).
 non-PASS results, so read them rather than counting them; [Troubleshooting](#troubleshooting) says
 which are expected.
 
-The bridge never starts agents. Which agent runs where, in which directory, stays yours; this only
-carries the conversation.
+With task management disabled, the bridge only carries conversations with agents you started.
+Enable the [task workflow](#feishu-tasks-and-project-repositories) to create an agent from a message;
+select a configured project, or explicitly ask to create a new project.
 
 ### Keep it running
 
@@ -125,9 +134,9 @@ server will use two different sockets. Both are commented, with fixes, at the to
 
 Every knob lives in `~/.herdr-agent/config.toml`, and `deploy/config.example.toml` documents each one
 with its default and the trade-off it makes. Credentials are not among them: that file has no field
-for a secret, so one cannot end up there by accident. The two settings you will actually want are
-`feishu.allowed_open_ids` (mandatory) and `feishu.notify_chat_id` (empty means no proactive pushes —
-you can still drive agents, you just will not be told when one needs you).
+for a secret, so one cannot end up there by accident. The two basic chat settings are
+`feishu.allowed_open_ids` (mandatory) and `feishu.notify_chat_id` (empty means no proactive pushes
+for agents outside the task workflow). Managed tasks send their notifications to their own groups.
 
 ### More about setup
 
@@ -149,9 +158,10 @@ separately — both are measured outcomes rather than steps anybody performed (G
   [manual checklist](#feishu-console-checklist--the-manual-fallback) still names 订阅方式 → 长连接 as
   a setting you confirm by hand.
 - **A published version.** The app's `online_version_id` was already non-empty before any publish
-  step of ours. **So there is nothing for you to publish after `setup` runs** — which is the opposite
+  step of ours. **So basic setup needs no additional publish step** — which is the opposite
   of what the console flow teaches, and worth stating plainly, because sending you to look for a
-  publish button you will not need ends with you concluding you configured something wrong.
+  publish button you will not need ends with you concluding you configured something wrong. Later
+  additions such as task permissions still require their own approval and publication.
 
 Nothing less than both round trips is treated as success:
 
@@ -169,6 +179,7 @@ and none is needed on a first run:
 | flag | when |
 |---|---|
 | `--app cli_…` | use **that** app. If a file the bridge reads already holds its secret, no page is opened at all. If not — Feishu shows an app secret once, so that is the normal case for an app you made by hand — the confirmation page opens *for that app*, re-grants what the bridge needs, and hands back a usable secret. No new app is made either way |
+| `--update-permissions` | open a fresh confirmation URL to add task and task-chat permissions to the existing app, including when its credentials are already saved; optionally pin it with `--app cli_…` |
 | `--reregister` | create a **second** app on purpose. The one you have stays exactly as it is, and afterwards `~/.herdr-agent/.env` points at the new one |
 | `--yes` | never prompt: for scripts and launchd. Two configured apps and no `--app` is an error naming both files, because a wrong guess points the bridge at a bot you never messaged and the symptom is silence. Waiting for your message or your button press is not extended by any flag; the checklist prints and the run ends at exit 3 with the app and its credentials on disk |
 
@@ -188,7 +199,223 @@ One caveat on the mechanism: the device-authorization endpoint `setup` uses is *
 appears nowhere on open.feishu.cn. It can change or vanish without notice, which is why the manual
 checklist below is a supported path and not a footnote.
 
+## Feishu tasks and project repositories
+
+Task management is optional and defaults to off. Keep your existing Feishu app, credentials and
+allowlist. Enable `[tasks]` in `~/.herdr-agent/config.toml`, grant the permissions below, then start
+`herdr-agent serve`. Its local configuration page is available at **http://127.0.0.1:18790/**.
+
+The page lets you add or edit projects, choose a default project and agent, and add multiple folders
+in order. The first folder is the working directory; the remaining folders are passed to Codex or
+Claude with `--add-dir`. Existing directories do not need to be Git repositories. Saving project
+settings takes effect for new tasks immediately; running tasks retain their original directories
+and agent mode.
+
+Before starting the bridge, you can open the same page with:
+
+```sh
+herdr-agent configure --open
+```
+
+This standalone command holds the same instance lock as `serve`. If the bridge is already running,
+open its configuration URL instead. `serve --config-listen 127.0.0.1:18791` changes the local address;
+`serve --no-config-ui` disables the page. The frontend and its API are served by the Go binary.
+Go's `embed` packages the HTML, CSS and JavaScript into the executable at build time, so the
+downloaded binary provides the page without Node.js or a separate assets directory. CI checks
+the page, styles, scripts and project API with only the binary in an empty directory; the release
+workflow repeats this check using the packaged Linux amd64 binary before publishing.
+
+The global **Bypass** checkbox defaults to on. It starts new Codex agents with
+`--dangerously-bypass-approvals-and-sandbox` and new Claude agents with
+`--dangerously-skip-permissions`, skipping their normal execution approvals. Unchecking it starts
+new agents with normal permission handling. `tasks.bypass = false` selects the initial off setting
+before the local catalog is saved; subsequent checkbox changes persist in the catalog.
+
+You can also seed projects in TOML:
+
+```toml
+[tasks]
+enabled = true
+bypass = true
+default_project = "herdr-agent"
+poll_interval = "30s"
+
+[tasks.projects.herdr-agent]
+directories = ["~/code/github/herdr-agent", "~/code/github/herdr"]
+agent = "codex"
+
+[tasks.projects.website]
+path = "~/code/website" # legacy single-folder form remains supported
+agent = "claude"
+```
+
+The first local save writes `~/.herdr-agent/projects.json` (mode 0600), containing the complete
+project catalog, default project and Bypass setting. This file then takes precedence over the TOML
+project seed; `[tasks].enabled` and `poll_interval` still come from TOML. Use the local page for later
+project changes. An empty catalog is allowed during setup. With projects configured,
+`default_project` must name one of them; the page selects the first project automatically.
+
+Project names accept letters, including Chinese, digits, `_` and `-`, with no spaces or slashes.
+`~/` expands to the local OS account's home. An omitted `agent` defaults to `codex`; only `codex` and
+`claude` are supported. `directories`, when set, is the full ordered list and supersedes legacy
+`path`. Polling defaults to `30s` and must be positive. A missing folder can be repaired through the
+page after startup; starting a new task requires all its configured folders to exist.
+
+Creating a task normally reuses a configured project and creates no directory. Only an explicit
+**new project** request, from the page or the AI entry point, creates
+`~/herder-agent-code/<project-name>/` and registers it. This is the home of the OS account running
+the bridge, not a separate home for each Feishu user. New projects are plain directories; no Git
+repository or worktree is created automatically. Existing directories are never silently adopted
+by the new-project operation. Deleting project configuration preserves its files and running tasks.
+
+Each task gets its own **herdr workspace and pane**, but uses the configured directories directly.
+Two tasks using the same folder share its working files. Configure separate existing Git worktrees
+when concurrent edits need isolation. Chat messages choose project names and cannot supply arbitrary
+local paths. Model API credentials are still configured through TOML/environment as described below;
+the local page manages projects and Bypass.
+
+In the app console, grant the following **in addition to** the basic chat permissions from setup:
+
+| permission | purpose |
+|---|---|
+| `task:task:write` | create, read and update tasks as the application |
+| `task:task:read` | subscribe to real-time task updates; the subscription API requires read separately from write |
+| `im:chat:create` | create a private group containing you and the bot |
+| `im:chat:delete` | dissolve that group when you destroy the session |
+| `im:message.group_msg` | receive your task-group messages without an @ mention |
+
+For an existing app, stop the bridge and run `herdr-agent setup --update-permissions`. It opens a
+fresh confirmation URL with the task permissions, even when credentials already exist. Use
+`--app cli_…` to pin the app if needed. After confirmation, credentials are saved immediately and
+the usual message/button verification follows; a different returned app ID is rejected. Restart
+`herdr-agent serve` afterwards. You can also apply the changes through your tenant's approval and
+app publication process. Editing `config.toml` does not grant scopes, and the basic `setup`
+message/button checks do not verify this task workflow.
+The bot owns the groups it creates. Each task assigns both you and the application, with completion
+mode `2` (any assignee can complete), so it appears in your task panel and falls within the app's
+subscription scope. The bridge requests Task v2 subscriptions and receives
+`task.task.update_user_access_v2` through its existing WebSocket. Polling reconciles task status
+when events are unavailable, a subscription fails, or the connection was interrupted.
+
+A typical task goes through these steps:
+
+1. In the bot's entry chat, send `新建任务：修复登录问题` for the default project, or
+   `/new herdr-agent claude Fix the login failure` to select a project and override its default agent.
+2. The bot creates the Feishu task and private group, creates a herdr workspace, and starts the agent.
+   Follow the group link to continue the conversation; each group stays bound to its own task.
+3. The initial request is sent once the agent is ready. Answer startup or permission prompts using
+   the existing screen cards. Subsequent messages, agent replies and progress stay in the task group.
+4. Review the result, then check the task complete in Feishu or send `/task complete` in its group.
+   Reopen it in the panel or with `/task reopen` before sending more task instructions.
+5. When you no longer need the session, send `/task destroy`. It closes the task's execution pane
+   and dissolves the private group. **Feishu does not retain that group's chat history.** The bridge
+   writes its latest task summary before deletion; repository files and the Feishu task are retained.
+
+Completion and destruction are separate. Completing a task does not stop the process or delete the
+group, and destroying a session does not mark unfinished work complete. A destroyed session cannot
+be reopened; create another task to continue. The ordinary `/close` command only clears the selected
+agent in the entry chat and does not destroy a task session.
+
+| message | result |
+|---|---|
+| `/projects` | list configured project names, directories and default agents |
+| `/new <project> [codex\|claude] <request>` | create a task, optionally overriding the project's agent |
+| `新建任务：<request>` | create a task using the default project and agent |
+| `/tasks` or `现在有哪些任务在进行？` | list your tracked active tasks, progress and links |
+| `/tasks all` | include completed and destroyed task records |
+| `/task complete [id]` / `/task reopen [id]` | synchronize completion or reopening with Feishu |
+| `/task destroy [id]` | close the task pane and dissolve its group |
+| `/task retry [id]` | retry a recoverable failure after fixing its cause |
+| `/screen` / `/stop` in a task group | inspect that task's screen or interrupt its agent |
+
+The task ID is shown in `/tasks`; omit it inside that task's group. An interrupted operation whose
+outcome is unknown is reported for inspection, rather than automatically creating another resource
+or sending the initial request again. `/task retry` does not replay such an ambiguous operation.
+
+Feishu's task completion state is `todo` or `done`. Execution states such as running, waiting for
+input and awaiting review are written into the **ordinary task description**, together with the
+project, agent, progress, latest reply, update time and group link. An agent's `idle` or `done`
+status only means its current turn ended; it does not automatically complete the Feishu task.
+The description is a field of the Task API resource, accessible under normal task permissions.
+A Feishu AI assistant with access to that resource can use it for summaries, but this does not
+ensure that every Feishu client or AI tool exposes task access. With the AI entry point below, this
+project's bot can query task state directly without waiting for task descriptions to be indexed. The bot's `/tasks` query works independently of client AI integration.
+
+The new task workflow still needs end-to-end verification with your real app and agent setup.
+In particular, a pane created entirely in the background may need a terminal attached once to give
+it sufficient width for herdr to recognize startup/trust dialogs. Inspect `/screen` and handle the
+actual prompt before relying on unattended starts. The Bypass setting controls agent execution
+approvals; it does not replace initial agent setup or start the herdr server for you.
+
+## Control tasks with natural language
+
+The Go AI entry point uses [Eino](docs/ai-framework.md) to interpret messages to your existing Feishu bot and call controlled task
+management tools. Configure your own model API, model name and key. It uses the existing Feishu app,
+project-to-directory mappings, and Codex/Claude environment described above.
+
+Enable `[tasks]` and configure your projects, then add to `~/.herdr-agent/config.toml`:
+
+```toml
+[ai]
+enabled = true
+provider = "openai-responses"
+model = "your-provider-model-id"
+base_url = "https://your-model-service.example/v1"
+timeout = "2m"
+```
+
+`provider` supports only `openai-responses` (default) or `anthropic-messages`. Supply
+your service's model ID and version-root base URL: `https://api.openai.com/v1` for Responses requests
+to `/responses`, or `https://api.anthropic.com/v1` for Anthropic requests to `/messages`. The model
+must support tool calling. The base URL must not contain credentials, query parameters or fragments.
+Use HTTPS; HTTP is accepted only for loopback hosts such as `http://127.0.0.1:8080/v1`.
+The timeout must be positive and no longer than `10m`; its default is `2m`.
+
+Put your model API key in `~/.herdr-agent/.env`, then restart `herdr-agent serve`:
+
+```dotenv
+HERDR_AGENT_AI_API_KEY=your-model-service-api-key
+```
+
+The key is read only from the environment or `.env`, never from `config.toml`. The process environment
+takes precedence, including when explicitly empty. This key belongs to your chosen model service;
+the Feishu app still uses its existing `FEISHU_APP_ID` and `FEISHU_APP_SECRET`. The entry point runs
+inside the Go service without an additional JavaScript runtime.
+
+In the bot's **entry private chat**, ask naturally:
+
+- “List the available projects and tell me which tasks are in progress.”
+- “Create a task in herdr-agent to investigate login failures and verify the fix.”
+- “Create a new project named demo-api and build a health-check endpoint.”
+- “How is that task going? Add this requirement: preserve the existing compatibility behavior.”
+- “I have reviewed the result; mark this task complete.”
+- “Destroy this task's session.”
+
+The bridge checks the actual message sender against the allowlist and verifies task ownership.
+The model can use controlled tools to select configured projects, query tasks, create sessions, add
+instructions, complete, reopen, retry or destroy a session. `herdr_create` uses `new_project=true`
+only when the user explicitly requests a new project; a new task alone reuses an existing project.
+Tool arguments cannot choose another
+operator or an arbitrary local path. Conversation content, required task summaries and tool results
+are sent to the configured model service; the entry point does not upload the whole code repository
+to interpret a request.
+
+Each new task has a Feishu task record and a private task group. Messages in that group still go
+directly to its Codex/Claude agent; startup confirmations and permission dialogs stay there too.
+The entry private chat manages tasks through natural language. Execution state, latest replies and
+update times are written back to the task so the bot can summarize ongoing work and blockers.
+An agent turn ending does not mean the task has been accepted; completion and session destruction
+remain separate operations.
+
+First ask the bot to list projects and ongoing tasks to check model tool calls. Then create a test
+task that changes no files and replies only `FEISHU_AI_OK`. Check the real task, task group, local
+execution pane and reply before testing completion, reopening and explicit destruction. Local tests
+do not replace full verification with your model API, Feishu app and agent environment.
+
 ## Using it from your phone
+
+The private-chat selection flow below applies when `[ai]` is disabled. With AI enabled, plain
+private messages go to the task assistant; use the corresponding task group to talk directly to a coding agent.
 
 In the p2p chat with the bot, send `/ls`. You get a **picker card**: one row per agent, blocked ones
 first, each row showing kind, directory, pane id, status and what the agent says it is doing.
@@ -250,7 +477,7 @@ Slash commands stay available underneath as an escape hatch:
 | `/say <pane> <text>` | send text to that agent through the safe path |
 | `/stop <pane>` | send `esc` — the safe way out of a dialog |
 | `/mirror <pane> on\|off` | follow that agent's transcript in the chat (default off) |
-| `/close` | stop talking to the selected agent; nothing is aimed until you pick one again |
+| `/close` | clear the selected agent; does not stop it or close its pane |
 | `/doctor` | the same checks as `herdr-agent doctor` |
 | `/help` | this table |
 
@@ -317,8 +544,9 @@ used. A stale press sends no keystroke at all and tells you why. Buttons that ca
 and is protected only by its file mode, which makes reaching it equivalent to a shell on this machine
 (G10). Anyone on `allowed_open_ids` can approve any command any agent here is asking to run. So an
 empty list is a hard startup error rather than a quiet allow-all, every entry point checks it —
-messages, card actions, mirrors — and the push target is read from config, never from an incoming
-message, so nobody who can talk to the bot can redirect your agents' screens to themselves.
+messages, card actions, mirrors. Ordinary agents use the configured push destination; managed tasks
+use the private group recorded when that authorized user created the task. Task-group input is
+checked against its owner and cannot select a different pane or redirect another task's output.
 
 **Every reply names the agent it went to.** Not "sent", but "Delivered to claude · herdr-agent ·
 w1:p1. It is now idle." — kind, directory, pane. A pane id is a seat and not an identity: an agent
@@ -356,12 +584,16 @@ a first-class path.
 
 In the open platform console, for your 自建应用:
 
-**权限管理** — add all four, or messages arrive without content, or replies fail:
+**权限管理** — add all four basic chat permissions, or messages arrive without content, or replies fail:
 
 - `im:message`
 - `im:message.p2p_msg:readonly`
 - `im:message:send_as_bot`
 - `im:resource`
+
+For task management, also grant the five permissions in
+[Feishu tasks and project repositories](#feishu-tasks-and-project-repositories). Basic setup alone
+does not grant or verify them.
 
 **凭证与基础信息 — put the credentials on this machine now, before the next step.** Both values are on
 that page:
@@ -408,7 +640,8 @@ behaves exactly as it did before your change, this is why.
 
 That step belongs to **this** path only. An app configured through `herdr-agent setup`'s confirmation
 page arrives with a version already published, its scopes granted and its bot capability on — also
-measured (G18) — so there is nothing to publish after it runs.
+measured (G18) — so basic setup needs no additional publish step. Adding task permissions later
+is a separate app change and must follow the console publication process.
 
 Then run `herdr-agent setup` once anyway — stopping whatever you left connected above first, since
 they share the lock. With credentials already in a file the bridge reads, it opens no page and makes
@@ -422,10 +655,16 @@ and no API we could find deletes one (G18), so every registration is permanent c
 `--reregister` is an explicit flag rather than a fallback, and why picking an existing app on the
 confirmation page — or naming it with `--app cli_…` — is worth the extra second.
 
-**Where state lives.** Everything the bridge owns is under `~/.herdr-agent/` (mode 0700):
-`config.toml`, `.env`, `dedup.json`, `routes.json`, `selection.json`, `herdr-agent.pid` and `log/`.
-Mirror on/off is deliberately not among them: it is in-memory only, so a restart drops back to
-`mirror.default_on` rather than resuming a stream you have forgotten about. The app secret exists only in `.env` (mode 0600) or the process
+**Where state lives.** Bridge configuration and runtime state live under `~/.herdr-agent/` (mode 0700):
+`config.toml`, `.env`, `projects.json`, `dedup.json`, `routes.json`, `selection.json`, `tasks.json`, `herdr-agent.pid` and `log/`.
+`projects.json` stores the locally edited project catalog and global Bypass setting. Explicitly created
+project directories live separately under `~/herder-agent-code/`.
+`tasks.json` persists task/group/workspace/pane bindings and lifecycle progress for restart recovery.
+With AI enabled, `assistant-operations.json` persists tool receipts and `conversations/` holds
+conversation and message receipts isolated by user and chat, with mode 0600. The model receives
+the latest 20 complete conversation turns and queries task tools for current progress.
+Ordinary mirror switches remain in memory and reset to `mirror.default_on`; managed task sessions
+restore their own transcript following from the stored bindings. The app secret exists only in `.env` (mode 0600) or the process
 environment, is never logged, and `config.toml` has no field that could hold it. Nothing rotates the
 logs.
 

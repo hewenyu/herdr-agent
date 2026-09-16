@@ -239,6 +239,9 @@ func (p plan) origin() Origin {
 // inside a checkout, and telling them to move a file (or offering them a second
 // permanent app) is asking them to solve a problem this function can just solve.
 func (r *Runner) choose(ctx context.Context, rep *reporter, d discovery, reregister bool) (plan, error) {
+	if r.permissionUpgrade && reregister {
+		return plan{}, fmt.Errorf("setup: permission updates require an existing app and cannot be combined with --reregister")
+	}
 	if r.reuseAppID != "" {
 		// Validated FIRST, before any message can quote it and before any URL
 		// can carry it: the console lists App ID directly above App Secret, so a
@@ -255,6 +258,10 @@ func (r *Runner) choose(ctx context.Context, rep *reporter, d discovery, reregis
 			return plan{}, fmt.Errorf("setup: --reregister makes a new app while reusing %s means using the one "+
 				"that already exists; pick one", r.reuseAppID)
 		}
+	}
+
+	if r.permissionUpgrade {
+		return r.choosePermissionUpgrade(d)
 	}
 
 	if reregister {
@@ -287,6 +294,42 @@ func (r *Runner) choose(ctx context.Context, rep *reporter, d discovery, reregis
 	default:
 		return r.ask(ctx, rep, d, cands)
 	}
+}
+
+// choosePermissionUpgrade never reaches a registration page that can choose a
+// new app. An explicit target resolves multiple configured apps; otherwise only
+// an unambiguous existing app may be updated.
+func (r *Runner) choosePermissionUpgrade(d discovery) (plan, error) {
+	cands := d.candidates()
+	var app candidate
+	if r.reuseAppID != "" {
+		app = candidate{AppID: r.reuseAppID}
+		for _, c := range cands {
+			if c.AppID == r.reuseAppID {
+				app = c
+				break
+			}
+		}
+	} else {
+		switch len(cands) {
+		case 0:
+			return plan{}, fmt.Errorf("setup: permission updates require an existing app; pass --app <app_id> or run setup first")
+		case 1:
+			app = cands[0]
+		default:
+			return plan{}, fmt.Errorf("%w: pass --app <app_id> to select the existing app whose task permissions should be updated", ErrAmbiguousApps)
+		}
+	}
+	if !appIDShape.MatchString(app.AppID) {
+		return plan{}, fmt.Errorf("%w: configured app ID is not valid for a permission update", ErrMalformedAppID)
+	}
+	return plan{
+		kind:    planUpdate,
+		app:     app,
+		replace: r.reuseAppID != "",
+		says: fmt.Sprintf("Plan: update task permissions on existing app %s through its confirmation page. "+
+			"The saved secret does not skip this update, and no new app is requested.", app.AppID),
+	}, nil
 }
 
 // chooseReuse handles WithReuseAppID: use THIS app, whatever is on disk.

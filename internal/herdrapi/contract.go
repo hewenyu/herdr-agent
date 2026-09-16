@@ -34,10 +34,16 @@ const (
 	CodeAgentNotReady    = "agent_not_ready"
 	CodeAgentPromptStall = "agent_prompt_stalled"
 	CodeAgentNotIdle     = "agent_not_idle"
+	CodeAgentPaneBusy    = "agent_pane_busy"
 	CodeEmptyAgentPrompt = "empty_agent_prompt"
 	CodeTimeout          = "timeout"
 	CodeFeatureDisabled  = "feature_disabled"
 )
+
+// CodeAgentOptionsUnconfirmed means agent.start returned without confirming
+// the requested startup arguments. The agent may exist, but callers must not
+// submit its task or recover it as a successfully configured session.
+const CodeAgentOptionsUnconfirmed = "agent_options_unconfirmed"
 
 // ErrServerUnavailable means the socket could not be reached at all.
 var ErrServerUnavailable = errors.New("herdr server not running")
@@ -130,11 +136,13 @@ type PingResult struct {
 
 // Client is the whitelisted herdr control surface.
 //
-// Methods deliberately absent, and which implementations MUST NOT add:
+// Lifecycle operations are deliberately absent from this interface. The task
+// orchestrator opts into LifecycleClient separately, and may only close panes
+// it owns. The following methods remain forbidden on both interfaces:
 //
 //	agent.focus / pane.focus   clears `done` and yanks the desktop user's UI (G10)
 //	server.stop                out of scope and irreversible
-//	pane.close / workspace.close / *.create
+//	workspace.close / tab.close / tab.create / pane.split
 //	pane.read/agent.read with source=recent
 type Client interface {
 	Ping(ctx context.Context) (PingResult, error)
@@ -152,6 +160,53 @@ type Client interface {
 	// Close releases any cached resources. Safe to call more than once.
 	Close() error
 }
+
+// WorkspaceInfo identifies a workspace created or discovered for a task.
+// WorkspaceList does not return a root pane in herdr's protocol, so PaneID is
+// empty for list results. Cwd is the root pane cwd after creation; in list
+// results it is the Git worktree checkout path, or empty if unavailable.
+type WorkspaceInfo struct {
+	ID     string `json:"workspace_id"`
+	Label  string `json:"label"`
+	Cwd    string `json:"cwd,omitempty"`
+	PaneID string `json:"pane_id,omitempty"`
+}
+
+// LifecycleClient is the explicitly opted-in task lifecycle control surface.
+// New's socket client implements it without widening the ordinary Client used
+// by message forwarding and permission handling. Callers must persist resource
+// ownership and only pass owned pane IDs to PaneClose.
+type LifecycleClient interface {
+	WorkspaceCreate(ctx context.Context, cwd, label string) (WorkspaceInfo, error)
+	WorkspaceList(ctx context.Context) ([]WorkspaceInfo, error)
+	// AgentStart starts an interactive agent, then waits for idle/done readiness
+	// or a blocked approval prompt. A blocked result is successful startup, not
+	// permission to send a task: callers must hold the initial prompt until the
+	// agent is interactive, not launch-pending, and idle/done. No prompt text or
+	// approval keystrokes are sent by AgentStart. On a wait failure it returns
+	// the latest observed AgentInfo along with the error for recovery.
+	AgentStart(ctx context.Context, paneID, kind, name string) (AgentInfo, error)
+	PaneClose(ctx context.Context, paneID string) error
+}
+
+// AgentStartOptions selects the explicitly supported native startup options.
+type AgentStartOptions struct {
+	Directories []string // existing absolute directories in addition to the pane's cwd
+	Bypass      bool     // opt in to bypassing native agent permission checks
+}
+
+// ConfiguredLifecycleClient is the optional configured startup extension.
+// It supports Codex and Claude native directory and permission-bypass flags;
+// no task text, arbitrary flags, or approval keystrokes are accepted.
+// Like AgentStart, an error can accompany an already-created agent. Callers
+// must not send its task until this operation has succeeded and been persisted.
+type ConfiguredLifecycleClient interface {
+	AgentStartWithOptions(ctx context.Context, paneID, kind, name string, opts AgentStartOptions) (AgentInfo, error)
+}
+
+// AgentStartupTimeout bounds polling after a successful agent.start request.
+// herdr accepts startup windows greater than 3 seconds and at most 5 minutes.
+const AgentStartupTimeout = 30 * time.Second
 
 // Options configure the socket client.
 type Options struct {

@@ -155,6 +155,9 @@ func TestJSONRedactsEveryStringField(t *testing.T) {
 		"feishu.app_secret":     c.Feishu.AppSecret,
 		"feishu.notify_chat_id": c.Feishu.NotifyChatID,
 		"herdr.socket_path":     c.Herdr.SocketPath,
+		"tasks.default_project": c.Tasks.DefaultProject,
+		"tasks.projects.path":   c.Tasks.Projects[testSecret].Path,
+		"tasks.projects.agent":  c.Tasks.Projects[testSecret].Agent,
 	} {
 		if got != testSecret {
 			t.Fatalf("plantSecret did not reach %s (= %q); the walk is broken", name, got)
@@ -190,6 +193,14 @@ func plantSecret(v reflect.Value, secret string) {
 			s := reflect.MakeSlice(v.Type(), 1, 1)
 			plantSecret(s.Index(0), secret)
 			v.Set(s)
+		}
+	case reflect.Map:
+		if v.Type().Key().Kind() == reflect.String {
+			m := reflect.MakeMap(v.Type())
+			elem := reflect.New(v.Type().Elem()).Elem()
+			plantSecret(elem, secret)
+			m.SetMapIndex(reflect.ValueOf(secret), elem)
+			v.Set(m)
 		}
 	}
 }

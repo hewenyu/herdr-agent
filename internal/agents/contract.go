@@ -96,6 +96,10 @@ type Guard struct {
 	Kind     string
 	StateSeq uint64
 	IssuedAt time.Time
+	// RequireUnblocked keeps AI task tools from cancelling an approval that
+	// appeared after the registry snapshot. Ordinary human prose keeps the
+	// existing escape-before-input behavior when this is false.
+	RequireUnblocked bool
 }
 
 // MaxGuardAge rejects decisions made against a stale view.
@@ -203,6 +207,8 @@ type Controller interface {
 	// Sending prose to a blocked agent without doing so silently approves the
 	// pending dialog, because agent.prompt pastes the text (which the menu
 	// discards) and then presses Enter, selecting the highlighted default (G1).
+	// When Guard.RequireUnblocked is true, a blocked agent is refused without
+	// sending esc so an AI tool cannot dismiss a pending human approval.
 	//
 	// If the agent is working, Say delivers anyway and reports Delivery.Queued:
 	// the agent has its own input queue and holds the text until the current turn

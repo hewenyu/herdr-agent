@@ -100,6 +100,27 @@ type registerRequest struct {
 	// only way this code can ever know an app was CREATED, which is the only
 	// condition under which the word may be printed.
 	createOnly bool
+	// permissionUpgrade adds the optional task-session scopes to this update.
+	permissionUpgrade bool
+}
+
+// TaskScopes are the additional tenant permissions used by task sessions.
+// They are requested only by an explicit permission update; base setup keeps
+// its original permission set.
+var TaskScopes = []string{
+	"task:task:write",
+	"task:task:read", // subscribing to task updates requires read even when write is granted
+	"im:chat:create",
+	"im:chat:delete",
+	"im:message.group_msg",
+}
+
+func requestedScopes(req registerRequest) []string {
+	scopes := append([]string(nil), Scopes...)
+	if req.permissionUpgrade {
+		scopes = append(scopes, TaskScopes...)
+	}
+	return scopes
 }
 
 // register runs the device-authorization flow until it produces credentials or
@@ -215,7 +236,7 @@ func registerOnce(ctx context.Context, rep *reporter, req registerRequest) (*reg
 		// list, and might well produce an app with no bot at all — which is the
 		// one failure this whole command exists to prevent.
 		Addons: &registration.AppAddons{
-			Scopes:    registration.AppAddonsScopes{Tenant: Scopes},
+			Scopes:    registration.AppAddonsScopes{Tenant: requestedScopes(req)},
 			Events:    registration.AppAddonsEvents{Items: registration.AppAddonsEventItems{Tenant: Events}},
 			Callbacks: registration.AppAddonsCallbacks{Items: Callbacks},
 		},

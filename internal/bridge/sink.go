@@ -11,6 +11,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/agents"
 	"github.com/hewenyu/herdr-agent/internal/cards"
 	"github.com/hewenyu/herdr-agent/internal/screen"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 // nonceBytes is the size of a card's single-use token. It is not a secret —
@@ -29,16 +30,17 @@ const nonceBytes = 16
 // this tab and clear `done` back to `idle`, destroying the very signal the
 // notifier depends on (G10).
 func (b *bridge) PushBlocked(ctx context.Context, a agents.Agent, dialog screen.Screen) error {
+	b.taskObserve(a, tasks.Blocked, dialog.Text(), "")
 	// This card IS the reply to whatever the user last typed at this agent: the
 	// agent stopped, and it stopped to ask them something. So it closes the burst
 	// (see bursts.close) — the next message they send is acknowledged again.
 	b.acks.close(a.PaneID)
 
-	if b.deps.NotifyChatID == "" {
+	if b.notifyChat(a.PaneID) == "" {
 		return fmt.Errorf("%w: cannot tell you that %s is waiting", ErrNoNotifyTarget, a.PaneID)
 	}
 	// Unprompted, so it goes to the configured chat and replies to nothing.
-	return b.pushBlockedTo(ctx, cardTarget{ChatID: b.deps.NotifyChatID}, a, dialog)
+	return b.pushBlockedTo(ctx, cardTarget{ChatID: b.notifyChat(a.PaneID)}, a, dialog)
 }
 
 // cardTarget is where a blocked card goes.
@@ -135,7 +137,7 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	// thing typed is acknowledged again.
 	b.acks.close(a.PaneID)
 
-	if b.deps.NotifyChatID == "" {
+	if b.notifyChat(a.PaneID) == "" {
 		return fmt.Errorf("%w: cannot tell you that %s finished", ErrNoNotifyTarget, a.PaneID)
 	}
 
@@ -143,6 +145,7 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	// the user the answer, and re-reading the transcript to say so would sample
 	// a file the agent may already have moved on in.
 	ans := b.doneAnswer(a, tail)
+	b.taskObserve(a, tasks.Review, "本轮已结束，等待验收或下一步指令", ans.Text)
 
 	// No nonce is minted. Both of this card's buttons are inert — Select aims
 	// the chat at the agent, Screen re-reads it, neither can put a byte into the
@@ -156,7 +159,7 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	}
 
 	if _, err := b.send(ctx, outgoing{
-		ChatID: b.deps.NotifyChatID,
+		ChatID: b.notifyChat(a.PaneID),
 		Card:   card,
 		PaneID: a.PaneID,
 	}); err != nil {
@@ -228,7 +231,7 @@ func (b *bridge) donePost(ctx context.Context, a agents.Agent, ans cards.Answer,
 	body = append(body, fmt.Sprintf("_Reply to this message to send `%s` something new._", a.PaneID))
 
 	if _, err := b.send(ctx, outgoing{
-		ChatID:   b.deps.NotifyChatID,
+		ChatID:   b.notifyChat(a.PaneID),
 		Markdown: strings.Join(body, "\n\n"),
 		Title:    agentLabel(a) + " finished",
 		PaneID:   a.PaneID,
@@ -245,11 +248,12 @@ func (b *bridge) donePost(ctx context.Context, a agents.Agent, ans cards.Answer,
 // lets the reply fall through to the normal routing rules, which will pick the
 // remaining agent or ask which one was meant.
 func (b *bridge) PushGone(ctx context.Context, a agents.Agent) error {
+	b.taskObserve(a, tasks.Attention, "agent 已退出或窗口已关闭", "")
 	// Forget the pane's burst state too: nothing about that agent is true any
 	// more, and this is the last message that will ever mention it.
 	b.acks.close(a.PaneID)
 
-	if b.deps.NotifyChatID == "" {
+	if b.notifyChat(a.PaneID) == "" {
 		return fmt.Errorf("%w: cannot tell you that %s is gone", ErrNoNotifyTarget, a.PaneID)
 	}
 
@@ -260,7 +264,7 @@ func (b *bridge) PushGone(ctx context.Context, a agents.Agent) error {
 	text := fmt.Sprintf("👋 %s is gone — the pane was closed or the agent exited.", agentLabel(a))
 
 	if _, err := b.send(ctx, outgoing{
-		ChatID: b.deps.NotifyChatID,
+		ChatID: b.notifyChat(a.PaneID),
 		Text:   text,
 	}); err != nil {
 		return fmt.Errorf("bridge: push gone %s: %w", a.PaneID, err)

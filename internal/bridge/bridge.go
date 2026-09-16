@@ -13,6 +13,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/notify"
 	"github.com/hewenyu/herdr-agent/internal/selection"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 var (
@@ -46,8 +47,10 @@ var (
 // durable decision lives in the stores, and every agent fact comes from the
 // registry.
 type bridge struct {
-	deps Deps
-	log  *slog.Logger
+	deps      Deps
+	tasks     *tasks.Manager
+	assistant Assistant
+	log       *slog.Logger
 
 	// notifier turns registry transitions into Push* calls on this same object.
 	notifier notify.Notifier
@@ -131,7 +134,7 @@ func newBridge(d Deps, opts ...Option) (*bridge, error) {
 	}
 	b.notifier = notify.New(d.Registry, d.Extractor, b, notifyOpts...)
 
-	if d.NotifyChatID == "" {
+	if d.NotifyChatID == "" && b.tasks == nil {
 		b.log.Warn("bridge: no notify_chat_id configured; nothing will be pushed to the phone " +
 			"when an agent blocks or finishes")
 	}
@@ -228,11 +231,20 @@ func (b *bridge) Run(ctx context.Context) error {
 
 	b.deps.Bot.SetLifecycle(b.lifecycle())
 	b.installHandlers()
+	if b.tasks != nil {
+		if src, ok := b.deps.Bot.(tasks.EventSource); ok {
+			src.OnTaskEvent(b.tasks.Event)
+		}
+	}
 
 	var (
 		wg        sync.WaitGroup
 		notifyErr error
 	)
+	if b.tasks != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = b.tasks.Run(ctx) }()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -294,6 +306,12 @@ func (b *bridge) installHandlers() {
 	b.deps.Bot.OnMessage(func(ctx context.Context, m lark.Msg) error {
 		b.noteFirstEvent("message")
 		err := b.guard(ctx, messageEvent(m), func(ctx context.Context) error {
+			if handled, err := b.assistantMessage(ctx, m); handled {
+				return err
+			}
+			if handled, err := b.taskMessage(ctx, m); handled {
+				return err
+			}
 			return b.handleMessage(ctx, m)
 		})
 		return silenceUnauthorized(err)
@@ -302,6 +320,16 @@ func (b *bridge) installHandlers() {
 	b.deps.Bot.OnCardAction(func(ctx context.Context, a lark.Action) error {
 		b.noteFirstEvent("card action")
 		err := b.guard(ctx, actionEvent(a), func(ctx context.Context) error {
+			if b.tasks != nil {
+				if r, ok := b.tasks.ByChat(a.ChatID); ok {
+					if r.OwnerID != a.Operator || r.Status == tasks.Destroyed || r.Status == tasks.Destroying || r.Status == tasks.Completed {
+						return ErrUnauthorized
+					}
+					if pane, _ := a.Value["pane"].(string); pane != r.PaneID {
+						return ErrUnauthorized
+					}
+				}
+			}
 			return b.handleCardAction(ctx, a)
 		})
 		return silenceUnauthorized(err)

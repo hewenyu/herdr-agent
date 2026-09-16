@@ -608,6 +608,9 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 	}
 
 	if cur.Status == StatusBlocked {
+		if g.RequireUnblocked {
+			return fail(StatusBlocked, fmt.Errorf("agents: %s is waiting for human approval: %w", paneID, ErrCannotUnblock))
+		}
 		if err := c.client.AgentSendKeys(ctx, paneID, []string{keyEscape}); err != nil {
 			return Delivery{FinalStatus: StatusBlocked},
 				fmt.Errorf("agents: escape %s before prompting: %w", paneID, err)

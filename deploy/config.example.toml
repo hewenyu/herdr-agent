@@ -5,7 +5,8 @@
 # shown with the value the bridge uses when the key is absent, so deleting a
 # line changes nothing.
 #
-# Credentials are NOT configurable here. FEISHU_APP_ID and FEISHU_APP_SECRET are
+# Credentials are NOT configurable here. FEISHU_APP_ID, FEISHU_APP_SECRET and
+# the optional HERDR_AGENT_AI_API_KEY are
 # read from the process environment or ~/.herdr-agent/.env (mode 0600). This
 # file has no field for them at all — writing `app_secret` here is a startup
 # error, not a key that is quietly ignored, so a secret cannot end up in a file
@@ -141,3 +142,70 @@ queue_limit = 5
 # and the takeover features (cards, replies) then scroll away. Turn mirroring on
 # per agent, when you actually want to read along.
 default_on = false
+
+[tasks]
+
+# Create Feishu tasks and a dedicated herdr workspace from a configured project.
+# Opt in only after configuring the task and private-group permissions for the
+# existing Feishu app. Existing installations keep their current behavior.
+enabled = false
+
+# Global mode for NEW agents: codex --dangerously-bypass-approvals-and-sandbox
+# or claude --dangerously-skip-permissions. Defaults to true. Set false for normal
+# execution approvals. The local page's Bypass checkbox persists an override.
+bypass = true
+
+# The default project for requests without a project name. Can stay empty while
+# the catalog is empty. Names support letters (including Chinese), digits,
+# hyphens and underscores, with no spaces, slashes or punctuation.
+default_project = ""
+
+# How often to reconcile completion and reopening from the Feishu task panel.
+# Default "30s". This must be positive when tasks are enabled; "0s" is invalid.
+poll_interval = "30s"
+
+# Configure projects at http://127.0.0.1:18790 while serve is running, or use
+# `herdr-agent configure --open` before starting the bridge. Saves apply to new
+# tasks immediately. The page and API are served locally by Go.
+# The first save writes projects.json in the state directory; after that its
+# complete project catalog, default project and bypass override this TOML seed.
+# enabled and poll_interval still come from this file.
+#
+# One project can include several existing directories, including non-Git folders.
+# The first is the working directory; the rest are passed as --add-dir to agents.
+# ~/ is expanded to the home of the OS account running the bridge.
+# Agent can be "codex" or "claude" and defaults to "codex" if omitted.
+# An explicit new-project request creates ~/herder-agent-code/<project-name>/;
+# a normal new task only reuses a configured project. No Git/worktree is created.
+#
+# [tasks.projects.herdr-agent]
+# directories = ["~/code/github/herdr-agent", "~/code/github/herdr"]
+# agent = "codex"
+#
+# [tasks.projects."另一个项目"]
+# path = "~/code/another-project" # legacy single-directory form is supported
+# agent = "claude"
+
+[ai]
+
+# Interpret natural-language requests in the entry bot chat using a model API.
+# Requires tasks.enabled = true. Configure projects locally, or explicitly
+# request a new project through the AI entry point.
+enabled = false
+
+# API protocol: "openai-responses" or "anthropic-messages". The selected model
+# must support tool calls. base_url is the version root, for example
+# https://api.openai.com/v1 or https://api.anthropic.com/v1, with no credentials,
+# query parameters or fragment. Match model to your model service.
+provider = "openai-responses"
+model = ""
+base_url = ""
+
+# HTTPS is required except for loopback HTTP model endpoints. timeout must be
+# positive and no longer than 10 minutes; explicit "0s" is invalid.
+timeout = "2m"
+
+# Set HERDR_AGENT_AI_API_KEY in the environment or ~/.herdr-agent/.env.
+# There is no api_key field in TOML. The key is separate from FEISHU_APP_SECRET.
+# Entry private chats use AI task tools; task groups keep their direct agent
+# conversation. This Go service needs no JavaScript runtime or inbound URL.

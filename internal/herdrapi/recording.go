@@ -5,12 +5,14 @@ import (
 	"sync"
 )
 
-// ForbiddenMethods are the herdr methods this bridge must never send.
+// ForbiddenMethods are the methods the ordinary Client must never send.
 //
 // agent.focus / pane.focus clear `done` and yank the desktop user's UI (G10);
-// the rest are irreversible or out of scope. The list is enforced in two
+// task creation/start/close require a separate LifecycleClient; the rest are
+// out of scope. The list is enforced for the ordinary control surface in two
 // places, neither of them here: structurally, because Client has no method that
 // can express them, and at the transport boundary by allowedMethods in call().
+// LifecycleClient has its own small whitelist, and does not use call().
 // The list itself is a named regression guard for those two.
 //
 // RecordingClient is therefore not what makes S1 §4 item 8 true — it exists so

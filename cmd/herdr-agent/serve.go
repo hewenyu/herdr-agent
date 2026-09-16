@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
+	"github.com/hewenyu/herdr-agent/internal/assistant"
 	"github.com/hewenyu/herdr-agent/internal/bridge"
 	"github.com/hewenyu/herdr-agent/internal/config"
 	"github.com/hewenyu/herdr-agent/internal/dedup"
@@ -18,8 +19,12 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/mirror"
 	"github.com/hewenyu/herdr-agent/internal/notify"
+	"github.com/hewenyu/herdr-agent/internal/projects"
+	"github.com/hewenyu/herdr-agent/internal/projectweb"
 	"github.com/hewenyu/herdr-agent/internal/routes"
 	"github.com/hewenyu/herdr-agent/internal/selection"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
+	"github.com/hewenyu/herdr-agent/internal/tasktools"
 )
 
 // State files serve owns, all inside the state directory alongside
@@ -45,6 +50,8 @@ const (
 // without a unix socket, a Feishu app, or a signal.
 func cmdServe(ctx context.Context, d *deps, args []string) error {
 	fs := newFlags(d, "serve", "")
+	configListen := fs.String("config-listen", defaultConfigListen, "local project configuration address (loopback IP only)")
+	noConfigUI := fs.Bool("no-config-ui", false, "disable the local project configuration page")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -65,6 +72,9 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*noConfigUI {
+		s.configListen = *configListen
+	}
 	defer func() {
 		if err := s.shutdown(); err != nil {
 			// Reported, never returned: by the time this runs the exit code has
@@ -79,8 +89,10 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 // serveDeps is the running bridge: everything built, in the order it was built,
 // with the closers needed to take it down again.
 type serveDeps struct {
-	log      *slog.Logger
-	stateDir string
+	log          *slog.Logger
+	stateDir     string
+	projects     *projects.Catalog
+	configListen string
 
 	lock      instanceLock
 	dedup     *dedup.FileStore
@@ -147,7 +159,7 @@ func defaultServeHooks() serveHooks {
 			return mirror.NewWatcher(r, mirror.WithLogger(log))
 		},
 		newBot: func(cfg config.Config, log *slog.Logger) (lark.Bot, error) {
-			return lark.New(cfg.Feishu.AppID, cfg.Feishu.AppSecret, lark.WithLogger(log))
+			return lark.New(cfg.Feishu.AppID, cfg.Feishu.AppSecret, lark.WithLogger(log), lark.WithTaskChats(cfg.Tasks.Enabled))
 		},
 		newBridge: bridge.NewWith,
 	}
@@ -177,6 +189,12 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	}
 	cfg := d.Cfg
 	s := &serveDeps{log: log, stateDir: d.StateDir}
+	catalog, err := projects.Open(d.StateDir, cfg.Tasks)
+	if err != nil {
+		return nil, &startupError{step: "project configuration", err: err}
+	}
+	s.projects = catalog
+	cfg.Tasks = catalog.Snapshot()
 
 	// Logged BEFORE Validate, so that a configuration which is about to be
 	// rejected is still visible in the log next to the reason. Redacted() is
@@ -208,6 +226,18 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	s.lock = lock
 	s.push("single-instance lock", lock.Release)
 	log.Info("serve: single-instance lock held", "path", lock.Path())
+	// A standalone configure process may have saved and exited between the
+	// initial validation and our lock acquisition. Take the authoritative
+	// snapshot under the lock before wiring shared runtime dependencies.
+	catalog, err = projects.Open(d.StateDir, cfg.Tasks)
+	if err != nil {
+		return nil, s.abort(&startupError{step: "project configuration", err: err})
+	}
+	s.projects = catalog
+	cfg.Tasks = catalog.Snapshot()
+	if err := cfg.Validate(); err != nil {
+		return nil, s.abort(&startupError{step: "configuration", err: err})
+	}
 
 	if err := checkStartup(ctx, d, log); err != nil {
 		return nil, s.abort(err)
@@ -267,6 +297,78 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, s.abort(&startupError{step: "feishu bot", err: err})
 	}
 
+	bridgeOpts := []bridge.Option{bridge.WithSelection(sel)}
+	if cfg.Tasks.Enabled {
+		platform, ok := s.bot.(tasks.Platform)
+		if !ok {
+			return nil, s.abort(&startupError{step: "tasks", err: errors.New("bot does not support task management")})
+		}
+		lifecycle, ok := d.Client.(herdrapi.LifecycleClient)
+		if !ok {
+			return nil, s.abort(&startupError{step: "tasks", err: errors.New("herdr client does not support managed task sessions")})
+		}
+		store, err := tasks.Open(filepath.Join(d.StateDir, "tasks.json"))
+		if err != nil {
+			return nil, s.abort(&startupError{step: "task state", err: err})
+		}
+		manager, err := tasks.New(store, tasks.Options{
+			Config: cfg.Tasks, Projects: catalog, Platform: platform, Client: d.Client, Lifecycle: lifecycle,
+			AllowedOwner: func(owner string) bool {
+				for _, allowed := range cfg.Feishu.AllowedOpenIDs {
+					if strings.TrimSpace(allowed) == owner {
+						return true
+					}
+				}
+				return false
+			},
+			Report: func(ctx context.Context, r tasks.Record) error {
+				chat := taskNotificationChat(r)
+				if chat == "" {
+					return nil
+				}
+				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: tasks.Notice(r)})
+				return err
+			},
+			Controller: d.Controller, Registry: s.registry,
+			Follow: func(pane string) error {
+				if s.watcher.Enabled(pane) {
+					return nil
+				}
+				return s.watcher.Enable(pane)
+			},
+			Announce: func(ctx context.Context, r tasks.Record) error {
+				chat := taskNotificationChat(r)
+				if chat == "" {
+					return nil
+				}
+				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: fmt.Sprintf("任务：%s\n项目：%s · %s\n飞书任务：%s\n进入任务会话：%s\n可在任务面板验收完成；销毁会话用 /task destroy %s。", r.Title, r.Project, r.Agent, r.URL, tasks.ChatURL(r.ChatID), r.ID)})
+				return err
+			},
+		})
+		if err != nil {
+			return nil, s.abort(&startupError{step: "task manager", err: err})
+		}
+		bridgeOpts = append(bridgeOpts, bridge.WithTasks(manager))
+		if cfg.AI.Enabled {
+			engine, err := assistant.NewEngine(cfg.AI)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI model", err: err})
+			}
+			toolBackend, err := tasktools.New(tasktools.Options{
+				OwnerID:   strings.TrimSpace(cfg.Feishu.AllowedOpenIDs[0]),
+				StatePath: filepath.Join(d.StateDir, "assistant-operations.json"),
+				Config:    cfg.Tasks, Projects: catalog, Manager: manager, Registry: s.registry, Controller: d.Controller,
+			})
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI task tools", err: err})
+			}
+			ai, err := assistant.New(engine, toolBackend, filepath.Join(d.StateDir, "conversations"), cfg.AI.Timeout)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI conversations", err: err})
+			}
+			bridgeOpts = append(bridgeOpts, bridge.WithAssistant(ai))
+		}
+	}
 	s.bridge, err = h.newBridge(bridge.Deps{
 		Bot:            s.bot,
 		Registry:       s.registry,
@@ -286,11 +388,24 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		// Without this the bridge still routes — reply-to, then the single agent
 		// — but plain typing stops reaching an agent, which is the whole
 		// card-first interaction: typing is the cheapest thing a phone can do.
-		bridge.WithSelection(sel))
+		bridgeOpts...)
 	if err != nil {
 		return nil, s.abort(&startupError{step: "bridge", err: err})
 	}
+
 	return s, nil
+}
+
+// A cloud assistant's chat is not an address the application bot can use.
+// Tasks created by a tool therefore announce in their own private task group.
+func taskNotificationChat(r tasks.Record) string {
+	if r.EntryChatID != "" {
+		return r.EntryChatID
+	}
+	if !r.ChatDeleted {
+		return r.ChatID
+	}
+	return ""
 }
 
 // checkStartup runs the doctor checks and refuses to continue for exactly two
@@ -408,6 +523,13 @@ func (s *serveDeps) run(ctx context.Context) error {
 	tasks := []serveTask{
 		{"feishu bridge", s.bridge.Run},
 		{"agent registry", s.registry.Run},
+	}
+	if s.configListen != "" {
+		tasks = append(tasks, serveTask{"local project configuration", func(ctx context.Context) error {
+			return projectweb.Serve(ctx, s.configListen, s.projects, func(url string) {
+				s.log.Info("serve: project configuration ready", "url", url)
+			})
+		}})
 	}
 
 	// Buffered for every task, so a goroutine reporting its exit never blocks

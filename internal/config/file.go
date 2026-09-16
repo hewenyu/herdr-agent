@@ -17,10 +17,17 @@ import (
 //
 // It exists for two reasons. First, durations are written as strings ("1s")
 // while Config uses time.Duration, which is an int64 and cannot decode a
-// string on its own. Second, Feishu.AppID/AppSecret have no field here at all,
+// string on its own. Second, Feishu.AppID/AppSecret and AI.APIKey have no field here,
 // which makes it structurally impossible for config.toml to supply a
 // credential — a `toml:"-"` tag would be a convention, this is a guarantee.
 type fileConfig struct {
+	AI struct {
+		Enabled  bool         `toml:"enabled"`
+		Provider string       `toml:"provider"`
+		Model    string       `toml:"model"`
+		BaseURL  string       `toml:"base_url"`
+		Timeout  tomlDuration `toml:"timeout"`
+	} `toml:"ai"`
 	Feishu struct {
 		AllowedOpenIDs []string `toml:"allowed_open_ids"`
 		NotifyChatID   string   `toml:"notify_chat_id"`
@@ -39,6 +46,13 @@ type fileConfig struct {
 	Mirror struct {
 		DefaultOn bool `toml:"default_on"`
 	} `toml:"mirror"`
+	Tasks struct {
+		Enabled        bool               `toml:"enabled"`
+		Bypass         bool               `toml:"bypass"`
+		DefaultProject string             `toml:"default_project"`
+		PollInterval   tomlDuration       `toml:"poll_interval"`
+		Projects       map[string]Project `toml:"projects"`
+	} `toml:"tasks"`
 }
 
 // tomlDuration decodes `poll_interval = "1s"`. TOML has no duration type and
@@ -121,6 +135,45 @@ func applyFile(cfg *Config, path string) error {
 	if md.IsDefined("mirror", "default_on") {
 		cfg.Mirror.DefaultOn = fc.Mirror.DefaultOn
 	}
+	if md.IsDefined("tasks", "enabled") {
+		cfg.Tasks.Enabled = fc.Tasks.Enabled
+	}
+	if md.IsDefined("tasks", "bypass") {
+		cfg.Tasks.Bypass = fc.Tasks.Bypass
+	}
+	cfg.Tasks.DefaultProject = fc.Tasks.DefaultProject
+	// Unlike legacy polling settings, an explicitly configured zero must be
+	// rejected when tasks are enabled, rather than silently substituted.
+	if md.IsDefined("tasks", "poll_interval") {
+		cfg.Tasks.PollInterval = time.Duration(fc.Tasks.PollInterval)
+	}
+	if fc.Tasks.Projects != nil {
+		cfg.Tasks.Projects = make(map[string]Project, len(fc.Tasks.Projects))
+		for name, project := range fc.Tasks.Projects {
+			project.Path = expandTilde(project.Path)
+			for i, directory := range project.Directories {
+				project.Directories[i] = expandTilde(directory)
+			}
+			if len(project.Directories) > 0 {
+				project.Path = project.Directories[0]
+			}
+			if project.Agent == "" {
+				project.Agent = DefaultTaskAgent
+			}
+			cfg.Tasks.Projects[name] = project
+		}
+	}
+	if md.IsDefined("ai", "enabled") {
+		cfg.AI.Enabled = fc.AI.Enabled
+	}
+	if md.IsDefined("ai", "provider") {
+		cfg.AI.Provider = fc.AI.Provider
+	}
+	if md.IsDefined("ai", "timeout") {
+		cfg.AI.Timeout = time.Duration(fc.AI.Timeout)
+	}
+	cfg.AI.Model = fc.AI.Model
+	cfg.AI.BaseURL = fc.AI.BaseURL
 	return nil
 }
 
@@ -162,7 +215,7 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 	for _, k := range undecoded {
 		s := k.String()
 		switch s {
-		case "feishu.app_id", "feishu.app_secret":
+		case "feishu.app_id", "feishu.app_secret", "ai.api_key":
 			credential = true
 		}
 		keys = append(keys, s)
@@ -171,8 +224,8 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 
 	msg := fmt.Sprintf("%s: unknown key(s): %s", path, strings.Join(keys, ", "))
 	if credential {
-		msg += fmt.Sprintf("; credentials are read from %s / %s only, never from %s",
-			EnvAppID, EnvAppSecret, ConfigFileName)
+		msg += fmt.Sprintf("; credentials are read from %s / %s / %s in the environment or .env only, never from %s",
+			EnvAppID, EnvAppSecret, EnvAIAPIKey, ConfigFileName)
 	}
 	return errors.New(msg)
 }

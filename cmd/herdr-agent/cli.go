@@ -179,6 +179,7 @@ func commandTable() []command {
 		{"transcript", "<pane>", "print the agent's native transcript file path", cmdTranscript},
 		{"watch", "", "stream status transitions, one timestamped line each", cmdWatch},
 		{"serve", "", "run the Feishu bridge until SIGINT or SIGTERM", cmdServe},
+		{"configure", "[--listen 127.0.0.1:18790] [--open]", "open local project and agent launch configuration", cmdConfigure},
 		// "or reuse one" is in the summary because the run that motivated these
 		// flags had an app already and was offered only two ways forward: move a
 		// file, or make a second permanent app. Reuse is the third, and it is the
@@ -236,6 +237,7 @@ commands:
 		{"--app <app_id>", "use THAT app — preferred, because every registration is permanent clutter"},
 		{"--reregister", "create a SECOND app on purpose; the first one stays, no API deletes it"},
 		{"--yes", "never prompt (scripts, launchd): two apps is an error, an expired wait is exit 3"},
+		{"--update-permissions", "open a new confirmation URL to add task permissions to the existing app"},
 	} {
 		fmt.Fprintf(w, "  %-32s %s\n", m.flag, m.when)
 	}

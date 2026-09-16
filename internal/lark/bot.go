@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/hewenyu/herdr-agent/internal/tasks"
+
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"github.com/larksuite/oapi-sdk-go/v3/channel"
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
@@ -59,10 +61,17 @@ func New(appID, appSecret string, opts ...Option) (Bot, error) {
 	}
 	api := lark.NewClient(appID, appSecret, apiOpts...)
 
-	ch := channel.NewChannel(api, ws,
+	chOpts := []types.ChannelOption{
 		types.WithSafetyConfig(singleMessageDispatch()),
 		types.WithOutboundConfig(oneMessagePerSend()),
-	)
+	}
+	if s.taskChats {
+		policy := types.DefaultChannelConfig().Policy
+		requireMention := false
+		policy.RequireMention = &requireMention
+		chOpts = append(chOpts, types.WithPolicyConfig(policy))
+	}
+	ch := channel.NewChannel(api, ws, chOpts...)
 
 	b := &bot{
 		ws:        ws,
@@ -73,6 +82,7 @@ func New(appID, appSecret string, opts ...Option) (Bot, error) {
 		log:       s.log,
 	}
 	b.wire()
+	evt.OnP2TaskUpdateUserAccessV2(b.handleTaskEvent)
 	return b, nil
 }
 
@@ -100,6 +110,7 @@ type bot struct {
 	botOpenID string
 	onMessage func(context.Context, Msg) error
 	onAction  func(context.Context, Action) error
+	onTask    func(context.Context, tasks.TaskEvent) error
 	life      Lifecycle
 }
 

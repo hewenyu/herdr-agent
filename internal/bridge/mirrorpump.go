@@ -12,6 +12,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/mirror"
 	"github.com/hewenyu/herdr-agent/internal/outbound"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 const (
@@ -132,7 +133,7 @@ func (b *bridge) pumpMirror(ctx context.Context) {
 		b.log.Error("bridge: the mirror watcher offers no turn channel; nothing will be mirrored")
 		return
 	}
-	if b.deps.NotifyChatID == "" {
+	if b.deps.NotifyChatID == "" && b.tasks == nil {
 		// Turns are still drained: the watcher drops them when its buffer fills
 		// rather than blocking its tail loop, but leaving a channel unread for
 		// the life of the process to rely on that is not a design.
@@ -165,10 +166,13 @@ func (b *bridge) pumpMirror(ctx context.Context) {
 
 // mirrorTurn publishes one turn.
 func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStream, pt mirror.PaneTurn) {
-	if b.deps.NotifyChatID == "" {
+	if b.notifyChat(pt.PaneID) == "" {
 		return
 	}
 	body := mirrorBody(pt.Turn)
+	if b.tasks != nil && pt.Turn.Role == mirrorRoleAssistant {
+		b.taskObserve(agents.Agent{PaneID: pt.PaneID}, tasks.Running, "agent 正在回复", body)
+	}
 	if body == "" {
 		// A record that carried no conversation — a tool result, a metadata
 		// line. The parsers drop most of those; this catches the rest.
@@ -199,7 +203,7 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 	st, open := streams[pt.PaneID]
 	if !open {
 		s, err := b.deps.Bot.Stream(ctx, lark.Out{
-			ChatID:   b.deps.NotifyChatID,
+			ChatID:   b.notifyChat(pt.PaneID),
 			Markdown: body,
 			Title:    title,
 		})
@@ -233,7 +237,7 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 // postTurn mirrors one turn as a message of its own, bound to its pane.
 func (b *bridge) postTurn(ctx context.Context, paneID, title, body string) {
 	if _, err := b.send(ctx, outgoing{
-		ChatID:   b.deps.NotifyChatID,
+		ChatID:   b.notifyChat(paneID),
 		Markdown: body,
 		Title:    title,
 		PaneID:   paneID,

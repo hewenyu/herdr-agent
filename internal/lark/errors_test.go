@@ -108,23 +108,26 @@ func TestKnownCodesAreExplained(t *testing.T) {
 	const appID = "cli_probe"
 
 	tests := []struct {
-		name string
-		code int
-		want []string
+		name    string
+		code    int
+		want    []string
+		notWant []string
 	}{
 		{
 			name: "scope not in effect",
 			code: CodeScopeNotInEffect,
 			want: []string{
 				"99991672",
-				// The fix, not the symptom: a granted scope does nothing until
-				// a version is published.
+				// New feature scopes can be missing even when setup and the
+				// app's existing features work. Publication is conditional.
 				"版本管理与发布",
 				"https://open.feishu.cn/app/" + appID + "/auth",
-				// And the counter-fact, so a setup-created app is not sent
-				// chasing a publish step its confirmation page already did.
 				"herdr-agent setup",
+				"additional scopes",
+				"scopes listed in the API error",
+				"if required",
 			},
+			notWant: []string{"this should not happen", "the version was never published"},
 		},
 		{
 			name: "card callback failed",
@@ -162,6 +165,11 @@ func TestKnownCodesAreExplained(t *testing.T) {
 			for _, frag := range tc.want {
 				if !strings.Contains(adv, frag) {
 					t.Fatalf("explanation of %d does not mention %q:\n%s", tc.code, frag, adv)
+				}
+			}
+			for _, frag := range tc.notWant {
+				if strings.Contains(adv, frag) {
+					t.Fatalf("explanation of %d makes an unsupported claim %q:\n%s", tc.code, frag, adv)
 				}
 			}
 			// The wiring that matters: whoever formats the error — a log line,
@@ -259,8 +267,7 @@ func TestUpdateCardFailureExplainsItselfWithoutLeakingTheSecret(t *testing.T) {
 }
 
 // The advice must survive the send path, which is where a user actually meets
-// 99991672: the first outbound message from an app whose version was never
-// published.
+// 99991672 when a required message scope is not in effect.
 //
 // This is a different stack from the UpdateCard test above. There, bot.go
 // builds the *larkcore.CodeError itself, so APICode is looking at an error this
