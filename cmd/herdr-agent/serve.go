@@ -402,10 +402,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 // Keep task activity in its group. The entry chat receives pre-group failures
 // and the final cleanup receipt after the group has been deleted.
 func taskNotificationChat(r tasks.Record) string {
-	if r.ChatID != "" && !r.ChatDeleted {
-		return r.ChatID
-	}
-	return r.EntryChatID
+	return tasks.NotificationChat(r)
 }
 
 func announceTaskGroup(ctx context.Context, bot lark.Bot, log *slog.Logger, r tasks.Record) error {

@@ -158,6 +158,15 @@ func Parse(text string) (Command, bool) {
 
 func noticePrefix(status Status) string { return "任务进展：" + status.Label() + "\n" }
 
+// NotificationChat keeps execution updates in the surviving task group. Before
+// group creation and after deletion, the entry chat receives lifecycle notices.
+func NotificationChat(r Record) string {
+	if r.ChatID != "" && !r.ChatDeleted {
+		return r.ChatID
+	}
+	return r.EntryChatID
+}
+
 // Notice is a compact lifecycle/progress summary. The notifier separately
 // mirrors full agent replies, so this message never repeats the transcript.
 func Notice(r Record) string {

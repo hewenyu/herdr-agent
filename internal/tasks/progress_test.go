@@ -159,3 +159,37 @@ func TestManagerReportFailureDoesNotCheckpointUnsentNotice(t *testing.T) {
 		t.Fatal("successful retry was not checkpointed")
 	}
 }
+
+func TestManagerReportsExistingNoticeOnceInNewDestination(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	r := h.create(t, "notice-route-migration")
+	r, err := h.store.Update(r.ID, func(r *Record) error {
+		r.Status, r.Error, r.ChatID = Attention, "initial prompt not confirmed", "task-group"
+		r.ReportedNotice = Notice(*r)
+		// Older versions recorded the text but sent it to the entry chat.
+		r.ReportedChatID = ""
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var destinations []string
+	h.manager.opts.Report = func(_ context.Context, r Record) error {
+		destinations = append(destinations, NotificationChat(r))
+		return nil
+	}
+	h.manager.report(context.Background(), r.ID)
+	h.restart(t)
+	h.manager.report(context.Background(), r.ID)
+	if len(destinations) != 1 || destinations[0] != r.ChatID {
+		t.Fatalf("legacy notice was lost or repeated after restart: %v", destinations)
+	}
+	if _, err := h.store.Update(r.ID, func(r *Record) error { r.ChatDeleted = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	h.manager.report(context.Background(), r.ID)
+	h.manager.report(context.Background(), r.ID)
+	if len(destinations) != 2 || destinations[1] != r.EntryChatID {
+		t.Fatalf("same notice did not follow the surviving destination exactly once: %v", destinations)
+	}
+}

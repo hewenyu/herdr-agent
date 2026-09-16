@@ -90,6 +90,7 @@ type Record struct {
 	CreatedAt         time.Time `json:"created_at"`
 	RemoteCheckedAt   time.Time `json:"remote_checked_at"`
 	ReportedNotice    string    `json:"reported_notice,omitempty"`
+	ReportedChatID    string    `json:"reported_chat_id,omitempty"`
 	ReportedAt        time.Time `json:"reported_at,omitempty"`
 	SyncedDescription string    `json:"synced_description,omitempty"`
 }

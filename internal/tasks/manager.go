@@ -347,12 +347,13 @@ func (m *Manager) report(ctx context.Context, id string) {
 		return
 	}
 	notice := Notice(r)
-	if notice == "" || notice == r.ReportedNotice {
+	chat := NotificationChat(r)
+	if notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID) {
 		return
 	}
 	// Only incremental running progress is throttled. State changes, blockers,
 	// acceptance, reopened tasks and errors must always reach the owner promptly.
-	if r.Status == Running && r.Error == "" && r.SyncError == "" &&
+	if chat == r.ReportedChatID && r.Status == Running && r.Error == "" && r.SyncError == "" &&
 		strings.HasPrefix(r.ReportedNotice, noticePrefix(Running)) && time.Since(r.ReportedAt) < runningReportInterval {
 		return
 	}
@@ -360,7 +361,7 @@ func (m *Manager) report(ctx context.Context, id string) {
 		slog.Warn("tasks: report failed", "task", id, "err", err)
 		return
 	}
-	if _, err := m.change(id, func(r *Record) { r.ReportedNotice = notice; r.ReportedAt = time.Now() }); err != nil {
+	if _, err := m.change(id, func(r *Record) { r.ReportedNotice = notice; r.ReportedChatID = chat; r.ReportedAt = time.Now() }); err != nil {
 		slog.Warn("tasks: report checkpoint failed", "task", id, "err", err)
 	}
 }
