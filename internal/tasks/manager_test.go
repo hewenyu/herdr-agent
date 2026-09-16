@@ -49,6 +49,7 @@ type taskTestPlatform struct {
 	updateErr        error
 	createErr        error
 	getErr           error
+	deleteErr        error
 	ignoreCompletion bool
 }
 
@@ -113,6 +114,9 @@ func (p *taskTestPlatform) DeleteTaskChat(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.log.add("delete-chat")
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
 	p.deleted = append(p.deleted, id)
 	return nil
 }
@@ -134,6 +138,7 @@ type taskTestLifecycle struct {
 	closed           []string
 	startupStatus    string
 	startupErr       error
+	closeErr         error
 	workspaceCreated func()
 }
 
@@ -180,6 +185,9 @@ func (l *taskTestLifecycle) PaneClose(_ context.Context, pane string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.log.add("close-pane")
+	if l.closeErr != nil {
+		return l.closeErr
+	}
 	l.closed = append(l.closed, pane)
 	delete(l.agents, pane)
 	return nil
@@ -453,13 +461,14 @@ func TestManagerPublishesProgressAndDoesNotAutoCompleteDone(t *testing.T) {
 
 func TestManagerAcceptsRemoteCompletionAndReopen(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
+	h.manager.opts.BeforeClose = func(context.Context, Record) error { return nil }
 	r := h.reconcile(t, h.create(t, "complete-reopen").ID, 1)
 	h.platform.setCompletion(r.GUID, "1726500000000")
 	if err := h.manager.Event(context.Background(), TaskEvent{GUID: r.GUID}); err != nil {
 		t.Fatal(err)
 	}
 	r = h.reconcile(t, r.ID, 1)
-	if r.Status != Completed || r.CompletedAt != "1726500000000" || len(h.manager.List(r.OwnerID, false)) != 0 {
+	if r.Status != Completed || r.CompletedAt != "1726500000000" || !r.CloseRequested || r.CloseNotifiedAt.IsZero() || len(h.manager.List(r.OwnerID, false)) != 1 {
 		t.Fatalf("panel completion not reflected locally: %+v", r)
 	}
 	if err := h.manager.Observe(r.PaneID, Running, "late status update", ""); err != nil {
@@ -470,11 +479,14 @@ func TestManagerAcceptsRemoteCompletionAndReopen(t *testing.T) {
 		t.Fatal("late agent status reopened a task accepted by its owner")
 	}
 	h.platform.setCompletion(r.GUID, "0")
-	if err := h.manager.Event(context.Background(), TaskEvent{GUID: r.GUID}); err != nil {
+	// No event: the closing grace must recheck remote acceptance even though
+	// the ordinary poll interval has not elapsed yet.
+	if _, err := h.store.Update(r.ID, func(r *Record) error { r.CloseNotifiedAt = time.Now().Add(-closeNoticeGrace); return nil }); err != nil {
 		t.Fatal(err)
 	}
+	h.restart(t)
 	r = h.reconcile(t, r.ID, 1)
-	if r.Status != Review || r.CompletedAt != "" || len(h.manager.List(r.OwnerID, false)) != 1 || len(h.controller.says) != 1 {
+	if r.Status != Review || r.CompletedAt != "" || r.CloseRequested || !r.CloseNotifiedAt.IsZero() || len(h.lifecycle.closed) != 0 || len(h.platform.deleted) != 0 || len(h.manager.List(r.OwnerID, false)) != 1 || len(h.controller.says) != 1 {
 		t.Fatalf("panel reopen did not preserve session for continued conversation: %+v", r)
 	}
 }

@@ -22,7 +22,7 @@ func Description(r Record) string {
 		fmt.Fprintf(&b, "需要处理：%s\n", clip(r.Error, 400))
 	}
 	if r.Status == Review {
-		b.WriteString("\n本轮回复结束不代表任务已经完成。请在任务群内继续反馈或确认验收；也可在飞书任务中勾选完成。\n")
+		b.WriteString("\n本轮回复结束不代表任务已经完成。请在任务群内继续反馈或确认验收；在飞书任务中勾选完成也会关闭对应 Agent 并解散任务群。\n")
 	}
 	if r.CloseRequested && r.Status != Destroyed {
 		b.WriteString("结单请求：用户已确认验收，确认飞书完成状态并保存结果后关闭执行会话与临时群。\n")
@@ -72,7 +72,7 @@ const Help = `/projects — 查看配置的项目和默认 agent
 /task close|complete|reopen|destroy|retry [任务编号] — 验收结单、仅标记完成、重开、销毁会话或重试
 在任务群内可省略任务编号。销毁会话会关闭执行窗口并解散群，群聊天记录不保留；代码和飞书任务保留。`
 
-const GroupCloseHint = "关闭当前任务：发送 /关闭项目，查看说明后回复“确认关闭”，系统会自动解散本群。"
+const GroupCloseHint = "关闭当前任务：发送 /关闭项目，查看说明后回复“确认关闭”；也可在飞书任务面板勾选完成。系统会关闭对应 Agent 并自动解散本群。"
 
 // GroupCloseCommand recognizes explicit group controls, not substrings in
 // feedback, quotes, negations, or conditional acceptance. Confirmation itself

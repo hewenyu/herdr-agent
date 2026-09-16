@@ -126,7 +126,7 @@ func BuildBlocked(a agents.Agent, s screen.Screen, opts []Option, nonce string, 
 func BuildResolved(a agents.Agent, d Decision, operator, outcome string, at time.Time) (string, error) {
 	outcome = fallback(outcome, "not reported")
 	elements := []any{
-		newMarkdown("**Sent** `%s` to `%s`", d.Key, d.Pane),
+		newMarkdown("**Handled** `%s` for `%s`", d.Key, d.Pane),
 		newMarkdown("**By** %s · **at** %s", fallback(operator, "an unknown operator"), at.Format(stampLayout)),
 		newMarkdown("**Outcome** %s", outcome),
 		newMarkdown("_This card is spent: its buttons are gone and it can no longer send anything._"),

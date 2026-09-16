@@ -666,7 +666,9 @@ func (m *Manager) fail(id, msg string, ambiguous bool) error {
 	return errors.New(msg)
 }
 func (m *Manager) syncRemote(ctx context.Context, r Record) error {
-	if time.Since(r.RemoteCheckedAt) < m.opts.Config.PollInterval && r.CompletionRequest == "" && r.SyncedDescription == Description(r) {
+	// Recheck pending closure on every pass so reopening in the task panel can
+	// cancel the grace period even when its change event has not arrived.
+	if time.Since(r.RemoteCheckedAt) < m.opts.Config.PollInterval && r.CompletionRequest == "" && !r.CloseRequested && r.SyncedDescription == Description(r) {
 		return nil
 	}
 	remote, err := m.opts.Platform.GetTask(ctx, r.GUID)
@@ -676,12 +678,18 @@ func (m *Manager) syncRemote(ctx context.Context, r Record) error {
 	desired := r.CompletionRequest
 	r, err = m.change(r.ID, func(r *Record) {
 		r.RemoteCheckedAt = time.Now()
-		if desired == "" {
+		if desired == "" && r.CompletionRequest == "" {
 			completed := remote.CompletedAt != "" && remote.CompletedAt != "0"
 			if completed && r.Status != Destroyed && r.Status != Destroying && (r.Status != Completed || r.CompletedAt != remote.CompletedAt) {
+				// A new panel completion is acceptance and closure. An unchanged
+				// completion already recorded by /task complete keeps its session.
+				if !r.CloseRequested {
+					r.CloseRequested = true
+					r.CloseNotifiedAt = time.Time{}
+				}
 				r.Status = Completed
 				r.CompletedAt = remote.CompletedAt
-				r.Detail = "已在飞书任务中完成验收"
+				r.Detail = "已在飞书任务中完成验收，正在保存结果并关闭执行会话和临时群"
 				r.UpdatedAt = time.Now()
 			}
 			if !completed && r.Status == Completed {

@@ -96,6 +96,9 @@ type Guard struct {
 	Kind     string
 	StateSeq uint64
 	IssuedAt time.Time
+	// MenuChoice marks an explicit numbered card choice. It lets the controller
+	// use the live menu's confirmation keys; raw CLI keys remain literal.
+	MenuChoice bool
 	// RequireUnblocked keeps AI task tools from cancelling an approval that
 	// appeared after the registry snapshot. Ordinary human prose keeps the
 	// existing escape-before-input behavior when this is false.

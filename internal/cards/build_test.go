@@ -327,7 +327,7 @@ func TestBuildResolvedGolden(t *testing.T) {
 		},
 		"body": map[string]any{
 			"elements": []any{
-				map[string]any{"tag": "markdown", "content": "**Sent** `1` to `w1:p1`"},
+				map[string]any{"tag": "markdown", "content": "**Handled** `1` for `w1:p1`"},
 				map[string]any{"tag": "markdown", "content": "**By** ou_a90a043a · **at** 2026-08-14 01:24:05 CST"},
 				map[string]any{"tag": "markdown", "content": "**Outcome** agent is working again"},
 				map[string]any{"tag": "markdown", "content": "_This card is spent: its buttons are gone and it can no longer send anything._"},

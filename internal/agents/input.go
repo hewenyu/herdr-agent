@@ -425,9 +425,9 @@ func (c *controller) get(ctx context.Context, paneID string) (Agent, error) {
 
 // SendKey answers a menu.
 //
-// The key must be one of AllowedKeys. Anything else is rejected outright: this
-// package never escapes, translates or guesses at a key, because the failure
-// mode of guessing wrong is a keystroke executing something in a live agent.
+// The key must be one of AllowedKeys. Anything else is rejected outright;
+// raw keys stay literal. Numbered card choices may use a recognized native
+// confirmation sequence, checked against the current screen and guard.
 func (c *controller) SendKey(ctx context.Context, g Guard, key string) (Agent, error) {
 	cur, err := c.validateGuard(ctx, g, true)
 	if err != nil {
@@ -435,6 +435,23 @@ func (c *controller) SendKey(ctx context.Context, g Guard, key string) (Agent, e
 	}
 	if !slices.Contains(AllowedKeys, key) {
 		return cur, fmt.Errorf("agents: %q: %w", key, ErrKeyNotAllowed)
+	}
+	if g.MenuChoice && cur.Kind == "codex" && key == "1" {
+		raw, truncated, err := herdrapi.ReadFull(ctx, c.client, cur.PaneID, herdrapi.SourceDetection, readWholeBuffer)
+		if err != nil {
+			return cur, fmt.Errorf("agents: read menu before confirming %s: %w", cur.PaneID, err)
+		}
+		keys := []string{key}
+		if !truncated {
+			if confirm := codexTrustConfirmKeys(raw); confirm != nil {
+				keys = confirm
+			}
+		}
+		cur, err = c.validateGuard(ctx, g, true)
+		if err != nil {
+			return cur, err
+		}
+		return c.deliverKeys(ctx, cur, keys)
 	}
 	return c.deliverKey(ctx, cur, key)
 }
@@ -455,21 +472,25 @@ func (c *controller) Interrupt(ctx context.Context, g Guard) (Agent, error) {
 
 // deliverKey writes one key and reports the state it produced.
 func (c *controller) deliverKey(ctx context.Context, cur Agent, key string) (Agent, error) {
+	return c.deliverKeys(ctx, cur, []string{key})
+}
+
+func (c *controller) deliverKeys(ctx context.Context, cur Agent, keys []string) (Agent, error) {
 	// agent.send_keys, never pane.send_keys: herdr writes the whole key list in
 	// a single write, where pane.send_keys issues one syscall per key. Against
 	// a TUI that is reading a menu, a key split across writes is a key that can
 	// interleave with a repaint.
-	if err := c.client.AgentSendKeys(ctx, cur.PaneID, []string{key}); err != nil {
-		return cur, fmt.Errorf("agents: send key %q to %s: %w", key, cur.PaneID, err)
+	if err := c.client.AgentSendKeys(ctx, cur.PaneID, keys); err != nil {
+		return cur, fmt.Errorf("agents: send keys %q to %s: %w", keys, cur.PaneID, err)
 	}
 	if err := c.pause(ctx, c.settleDelay); err != nil {
-		return cur, fmt.Errorf("agents: key %q delivered to %s, then: %w", key, cur.PaneID, err)
+		return cur, fmt.Errorf("agents: keys %q delivered to %s, then: %w", keys, cur.PaneID, err)
 	}
 	next, err := c.get(ctx, cur.PaneID)
 	if err != nil {
 		// The key is already in the agent. Say so, so that nobody retries it.
-		return cur, fmt.Errorf("agents: key %q delivered to %s but reading its state back failed: %w",
-			key, cur.PaneID, err)
+		return cur, fmt.Errorf("agents: keys %q delivered to %s but reading its state back failed: %w",
+			keys, cur.PaneID, err)
 	}
 	return next, nil
 }
