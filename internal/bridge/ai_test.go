@@ -111,8 +111,8 @@ func TestAssistantFailureDoesNotLeakOrFallThrough(t *testing.T) {
 			if calls != 1 || len(h.ctrl.said()) != 0 || len(store.List()) != 0 {
 				t.Fatal("assistant failure retried or escaped to task/terminal routing")
 			}
-			if lastText(t, h) != assistantUnavailable || strings.Contains(logs.String(), secret) {
-				t.Fatalf("assistant failure exposed provider data: reply=%q logs=%q", lastText(t, h), logs.String())
+			if len(h.bot.sends()) != 0 || strings.Contains(logs.String(), secret) {
+				t.Fatalf("assistant failure fabricated a reply or exposed provider data: sends=%+v logs=%q", h.bot.sends(), logs.String())
 			}
 			if !strings.Contains(logs.String(), "kind="+tc.kind) {
 				t.Fatalf("missing safe failure category in logs: %s", logs.String())
@@ -191,8 +191,8 @@ func TestTaskGroupAssistantFailureDoesNotSendTerminalInput(t *testing.T) {
 		return "", errors.New("provider unavailable")
 	}))(h.b)
 	sendTaskMessage(t, h, taskInbound(r, "验收通过，可以结单"))
-	if len(h.ctrl.said()) != 0 || !strings.Contains(lastText(t, h), "/tasks") {
-		t.Fatal("failed group operation fell through or omitted status recovery")
+	if len(h.ctrl.said()) != 0 || len(h.bot.sends()) != 0 {
+		t.Fatal("failed group operation fell through or generated a substitute reply")
 	}
 }
 
@@ -257,6 +257,36 @@ func TestAssistantEmptyMessageDoesNotFallThrough(t *testing.T) {
 	}
 }
 
+func TestNaturalLanguageClosureUsesModelInsteadOfCommandParser(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		for _, input := range []string{"关闭项目", "已完成，关闭本项目", "确认关闭"} {
+			t.Run(fmt.Sprintf("group=%v/%s", group, input), func(t *testing.T) {
+				h := newHarness(t)
+				r := taskBinding("owned", "oc_task", testPane)
+				_, store := attachTaskManager(t, h, r)
+				calls := 0
+				const answer = "我需要结合刚才的要求确认关闭范围。"
+				WithAssistant(assistantFunc(func(_ context.Context, got AssistantMessage) (string, error) {
+					calls++
+					if got.Text != input || group && got.TaskID != r.ID || !group && got.TaskID != "" {
+						t.Fatalf("natural closure lost its scope: %+v", got)
+					}
+					return answer, nil
+				}))(h.b)
+				m := inbound(input)
+				if group {
+					m = taskInbound(r, input)
+				}
+				sendTaskMessage(t, h, m)
+				current, _ := store.Get(r.ID)
+				if calls != 1 || lastText(t, h) != answer || current.CloseRequested || current.CompletionRequest != "" || len(h.ctrl.said()) != 0 {
+					t.Fatal("natural closure bypassed the model or performed an unselected operation")
+				}
+			})
+		}
+	}
+}
+
 func TestAssistantDisabledPreservesPrivateAgentRouting(t *testing.T) {
 	h := newHarness(t)
 	h.reg.setAgents(idleAgent(testPane))
@@ -265,5 +295,122 @@ func TestAssistantDisabledPreservesPrivateAgentRouting(t *testing.T) {
 	sendTaskMessage(t, h, inbound("继续测试"))
 	if said := h.ctrl.said(); len(said) != 1 || said[0].Text != "继续测试" {
 		t.Fatalf("disabled assistant changed normal routing: %+v", said)
+	}
+}
+
+// The actual durable states are tested in assistant/delivery_test.go. This
+// adapter verifies that the bridge reserves before sending and reports every
+// acknowledged chunk, including partial and ambiguous network outcomes.
+type deliveryTrackingAssistant struct {
+	answer    string
+	reserved  bool
+	beginErr  error
+	recordErr error
+	begins    int
+	outcomes  []AssistantReplyDelivery
+	before    func()
+}
+
+func (a *deliveryTrackingAssistant) Reply(context.Context, AssistantMessage) (string, error) {
+	return a.answer, nil
+}
+func (a *deliveryTrackingAssistant) BeginReplyDelivery(_ context.Context, _ AssistantMessage, answer string) (bool, error) {
+	a.begins++
+	if a.before != nil {
+		a.before()
+	}
+	if a.beginErr != nil {
+		return false, a.beginErr
+	}
+	if a.reserved {
+		return false, nil
+	}
+	a.reserved = true
+	return true, nil
+}
+func (a *deliveryTrackingAssistant) RecordReplyDelivery(ctx context.Context, _ AssistantMessage, _ string, outcome AssistantReplyDelivery) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	a.outcomes = append(a.outcomes, outcome)
+	if a.recordErr != nil {
+		return a.recordErr
+	}
+	if outcome.Retryable {
+		a.reserved = false
+	}
+	return nil
+}
+
+func TestAssistantReportsCompletePartialAndUnknownReplyDelivery(t *testing.T) {
+	for _, mode := range []string{"complete", "partial", "unknown", "not-connected"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t)
+			a := &deliveryTrackingAssistant{answer: strings.Repeat("可供讨论的动画方案。", 900)}
+			a.before = func() {
+				if len(h.bot.sends()) != 0 {
+					t.Fatal("network send preceded durable reservation")
+				}
+			}
+			switch mode {
+			case "partial":
+				h.bot.failNext(nil, timeoutError{})
+			case "unknown":
+				h.bot.failNext(timeoutError{})
+			case "not-connected":
+				h.bot.failNext(lark.ErrNotConnected, lark.ErrNotConnected, lark.ErrNotConnected)
+			}
+			WithAssistant(a)(h.b)
+			in := inbound("讨论动画方案")
+			handled, err := h.b.assistantMessage(context.Background(), in)
+			if !handled || len(a.outcomes) != 1 || (err == nil) != (mode == "complete") {
+				t.Fatalf("delivery route: handled=%v error=%v outcomes=%+v", handled, err, a.outcomes)
+			}
+			outcome := a.outcomes[0]
+			if outcome.Complete != (mode == "complete") || outcome.Retryable != (mode == "not-connected") {
+				t.Fatalf("wrong certainty: %+v", outcome)
+			}
+			if mode == "complete" && len(outcome.MessageIDs) < 2 || mode == "partial" && len(outcome.MessageIDs) != 1 || (mode == "unknown" || mode == "not-connected") && len(outcome.MessageIDs) != 0 {
+				t.Fatalf("wrong acknowledged chunks: %+v", outcome)
+			}
+			if mode != "not-connected" {
+				a.before = nil
+				before := len(h.bot.sends())
+				if _, err := h.b.assistantMessage(context.Background(), in); err != nil || len(h.bot.sends()) != before {
+					t.Fatal("complete or uncertain reply was resent")
+				}
+			}
+		})
+	}
+}
+
+func TestAssistantDoesNotSendWithoutDurableReservationOrRepeatAfterAckWriteFailure(t *testing.T) {
+	for _, failBefore := range []bool{false, true} {
+		t.Run(fmt.Sprint(failBefore), func(t *testing.T) {
+			h := newHarness(t)
+			a := &deliveryTrackingAssistant{answer: "建议使用蓝色背景。"}
+			if failBefore {
+				a.beginErr = errors.New("reservation write failed")
+			} else {
+				a.recordErr = errors.New("acknowledgement write failed")
+			}
+			WithAssistant(a)(h.b)
+			in := inbound("先讨论方案")
+			if handled, err := h.b.assistantMessage(context.Background(), in); !handled || err == nil {
+				t.Fatal("delivery persistence failure was hidden")
+			}
+			want := 1
+			if failBefore {
+				want = 0
+			}
+			if len(h.bot.sends()) != want {
+				t.Fatal("send crossed a failed durable reservation")
+			}
+			if !failBefore {
+				if _, err := h.b.assistantMessage(context.Background(), in); err != nil || len(h.bot.sends()) != 1 {
+					t.Fatal("lost outcome acknowledgement caused duplicate network send")
+				}
+			}
+		})
 	}
 }

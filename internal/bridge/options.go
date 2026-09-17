@@ -16,6 +16,16 @@ import (
 // the second one behind an Option keeps the distinction visible.
 type Option func(*bridge)
 
+// WithDeliveryStore preserves confirmed task-result deliveries across restarts.
+// Open the store once during startup; every acknowledgement is written through.
+func WithDeliveryStore(store *DeliveryStore) Option {
+	return func(b *bridge) {
+		if store != nil {
+			b.deliveryStore = store
+		}
+	}
+}
+
 // WithNotifyCooldown sets the minimum interval between proactive notifications
 // about a pane. Values <= 0 leave notify.DefaultCooldown in effect.
 func WithNotifyCooldown(d time.Duration) Option {

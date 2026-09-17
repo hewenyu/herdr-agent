@@ -55,46 +55,54 @@ func (s Status) Label() string {
 }
 
 type Record struct {
-	ID                string    `json:"id"`
-	OwnerID           string    `json:"owner_id"`
-	EntryChatID       string    `json:"entry_chat_id"`
-	Project           string    `json:"project"`
-	Path              string    `json:"path"`
-	Directories       []string  `json:"directories,omitempty"`
-	Bypass            bool      `json:"bypass,omitempty"`
-	Agent             string    `json:"agent"`
-	Title             string    `json:"title"`
-	GUID              string    `json:"task_guid,omitempty"`
-	URL               string    `json:"task_url,omitempty"`
-	ChatID            string    `json:"chat_id,omitempty"`
-	WorkspaceID       string    `json:"workspace_id,omitempty"`
-	WorkspaceCwd      string    `json:"workspace_cwd,omitempty"`
-	AgentCwd          string    `json:"agent_cwd,omitempty"`
-	PaneID            string    `json:"pane_id,omitempty"`
-	SessionID         string    `json:"session_id,omitempty"`
-	Started           bool      `json:"started"`
-	PromptSent        bool      `json:"prompt_sent"`
-	PromptReceipt     string    `json:"prompt_receipt,omitempty"`
-	Pending           string    `json:"pending,omitempty"`
-	Status            Status    `json:"status"`
-	Detail            string    `json:"detail,omitempty"`
-	Result            string    `json:"result,omitempty"`
-	Error             string    `json:"error,omitempty"`
-	SyncError         string    `json:"sync_error,omitempty"`
-	CompletionRequest string    `json:"completion_request,omitempty"`
-	CloseRequested    bool      `json:"close_requested,omitempty"`
-	CloseNotifiedAt   time.Time `json:"close_notified_at,omitempty"`
-	CompletedAt       string    `json:"completed_at,omitempty"`
-	PaneClosed        bool      `json:"pane_closed,omitempty"`
-	ChatDeleted       bool      `json:"chat_deleted,omitempty"`
-	Announced         bool      `json:"announced,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	CreatedAt         time.Time `json:"created_at"`
-	RemoteCheckedAt   time.Time `json:"remote_checked_at"`
-	ReportedNotice    string    `json:"reported_notice,omitempty"`
-	ReportedChatID    string    `json:"reported_chat_id,omitempty"`
-	ReportedAt        time.Time `json:"reported_at,omitempty"`
-	SyncedDescription string    `json:"synced_description,omitempty"`
+	ID                    string    `json:"id"`
+	OwnerID               string    `json:"owner_id"`
+	EntryChatID           string    `json:"entry_chat_id"`
+	Project               string    `json:"project"`
+	Path                  string    `json:"path"`
+	Directories           []string  `json:"directories,omitempty"`
+	Bypass                bool      `json:"bypass,omitempty"`
+	Agent                 string    `json:"agent"`
+	Title                 string    `json:"title"`
+	GUID                  string    `json:"task_guid,omitempty"`
+	URL                   string    `json:"task_url,omitempty"`
+	ChatID                string    `json:"chat_id,omitempty"`
+	WorkspaceID           string    `json:"workspace_id,omitempty"`
+	WorkspaceCwd          string    `json:"workspace_cwd,omitempty"`
+	AgentCwd              string    `json:"agent_cwd,omitempty"`
+	PaneID                string    `json:"pane_id,omitempty"`
+	SessionID             string    `json:"session_id,omitempty"`
+	Started               bool      `json:"started"`
+	PromptSent            bool      `json:"prompt_sent"`
+	PromptReceipt         string    `json:"prompt_receipt,omitempty"`
+	Pending               string    `json:"pending,omitempty"`
+	Status                Status    `json:"status"`
+	Detail                string    `json:"detail,omitempty"`
+	Result                string    `json:"result,omitempty"`
+	Error                 string    `json:"error,omitempty"`
+	SyncError             string    `json:"sync_error,omitempty"`
+	CompletionRequest     string    `json:"completion_request,omitempty"`
+	CloseRequested        bool      `json:"close_requested,omitempty"`
+	CloseNotifiedAt       time.Time `json:"close_notified_at,omitempty"`
+	CompletedAt           string    `json:"completed_at,omitempty"`
+	PaneClosed            bool      `json:"pane_closed,omitempty"`
+	ChatDeleted           bool      `json:"chat_deleted,omitempty"`
+	Announced             bool      `json:"announced,omitempty"`
+	UpdatedAt             time.Time `json:"updated_at"`
+	CreatedAt             time.Time `json:"created_at"`
+	RemoteCheckedAt       time.Time `json:"remote_checked_at"`
+	ReportedNotice        string    `json:"reported_notice,omitempty"`
+	ReportedChatID        string    `json:"reported_chat_id,omitempty"`
+	ReportedAt            time.Time `json:"reported_at,omitempty"`
+	ReviewVersion         uint64    `json:"review_version,omitempty"`
+	ReportedReviewVersion uint64    `json:"reported_review_version,omitempty"`
+	ReportedStateKey      string    `json:"reported_state_key,omitempty"`
+	ReportedStatus        Status    `json:"reported_status,omitempty"`
+	ReportedSequence      uint64    `json:"reported_sequence,omitempty"`
+	CloseVersion          uint64    `json:"close_version,omitempty"`
+	ResultDelivered       bool      `json:"result_delivered,omitempty"`
+	ResultDeliveredAt     time.Time `json:"result_delivered_at,omitempty"`
+	SyncedDescription     string    `json:"synced_description,omitempty"`
 }
 
 // Store fails closed on corruption. Losing these bindings could orphan running
@@ -124,9 +132,23 @@ func Open(path string) (*Store, error) {
 	if disk.Version != 1 || disk.Records == nil {
 		return nil, errors.New("tasks: unsupported or incomplete state")
 	}
+	migrated := false
 	for id, r := range disk.Records {
 		if id != r.ID || id == "" || r.OwnerID == "" {
 			return nil, errors.New("tasks: invalid persisted binding")
+		}
+		if migrateNotificationState(&r) {
+			disk.Records[id] = r
+			migrated = true
+		}
+	}
+	if migrated {
+		data, err := json.MarshalIndent(disk, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := statefile.Write(path, data, 0600); err != nil {
+			return nil, fmt.Errorf("tasks: migrate notification state: %w", err)
 		}
 	}
 	s.records = disk.Records
@@ -155,6 +177,17 @@ func (s *Store) Update(id string, fn func(*Record) error) (Record, error) {
 	original, existed := s.records[id]
 	if err := fn(&r); err != nil {
 		return r, err
+	}
+	if existed {
+		if r.Status == Review && original.Status != Review && r.ReviewVersion <= original.ReviewVersion {
+			r.ReviewVersion = original.ReviewVersion + 1
+		}
+		if r.Status == Running && original.Status != Running {
+			r.ResultDelivered, r.ResultDeliveredAt = false, time.Time{}
+		}
+		if (!original.CloseRequested && r.CloseRequested) || (!original.CloseRequested && !r.CloseRequested && r.Status == Destroying && original.Status != Destroying) {
+			r.CloseVersion = original.CloseVersion + 1
+		}
 	}
 	if r.ID != id || r.OwnerID == "" {
 		return r, errors.New("tasks: invalid record")

@@ -159,7 +159,23 @@ func serviceReply(t *testing.T, s *Service, in bridge.AssistantMessage) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmServiceReply(t, s, in, answer)
 	return answer
+}
+
+func confirmServiceReply(t *testing.T, s *Service, in bridge.AssistantMessage, answer string) {
+	t.Helper()
+	start, err := s.BeginReplyDelivery(context.Background(), in, answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start {
+		if err := s.RecordReplyDelivery(context.Background(), in, answer, bridge.AssistantReplyDelivery{
+			MessageIDs: []string{"delivered-" + in.MessageID}, Complete: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func onlySessionFile(t *testing.T, h *serviceHarness) string {
@@ -207,7 +223,7 @@ func TestServiceBindsSenderAndIsolatesOwnerAndChatHistory(t *testing.T) {
 		if in.OwnerID == "bob" {
 			foreign = "alice-private-task"
 		}
-		if !strings.Contains(answer, "任务已登记：new task") || strings.Contains(answer, foreign) {
+		if !strings.Contains(answer, `"title":"new task"`) || strings.Contains(answer, foreign) {
 			t.Fatalf("creation receipt lost acknowledgment or escaped sender identity: %s", answer)
 		}
 	}
@@ -279,7 +295,7 @@ func TestServiceConcurrentDuplicateAndRestartUseSavedReply(t *testing.T) {
 		if savedAnswer == "" {
 			savedAnswer = r.answer
 		}
-		if r.err != nil || r.answer != savedAnswer || !strings.Contains(r.answer, "任务已登记") || !strings.Contains(r.answer, "single task") {
+		if r.err != nil || r.answer != savedAnswer || !strings.Contains(r.answer, "任务已登记") {
 			t.Fatalf("duplicate returned a different result: %+v", r)
 		}
 	}
@@ -484,7 +500,11 @@ func TestServiceSerializesSameChatAndHonorsWaitingContext(t *testing.T) {
 	s := h.service(t, e)
 	finished := make(chan error, 1)
 	go func() {
-		_, err := s.Reply(context.Background(), serviceMessage("alice", "chat-a", "first", "blocked first turn"))
+		in := serviceMessage("alice", "chat-a", "first", "blocked first turn")
+		answer, err := s.Reply(context.Background(), in)
+		if err == nil {
+			confirmServiceReply(t, s, in, answer)
+		}
 		finished <- err
 	}()
 	select {

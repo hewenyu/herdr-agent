@@ -112,6 +112,23 @@ func TestInboundMessageReachesHandler(t *testing.T) {
 	}
 }
 
+func TestBotRemovalEventIsAcknowledgedWithoutBecomingTaskInput(t *testing.T) {
+	b, http := newTestBot(t)
+	b.OnMessage(func(context.Context, Msg) error {
+		t.Error("bot removal was converted into a user message")
+		return nil
+	})
+	payload := []byte(`{"schema":"2.0","header":{"event_id":"evt-bot-removed","event_type":"im.chat.member.bot.deleted_v1","app_id":"cli_test","tenant_key":"tk"},"event":{"chat_id":"oc_closed_task"}}`)
+	for range 2 {
+		if _, err := b.ws.EventHandler().Do(context.Background(), payload); err != nil {
+			t.Fatalf("bot removal dispatch: %v", err)
+		}
+	}
+	if calls := http.snapshot(); len(calls) != 0 {
+		t.Fatalf("bot removal triggered external operations: %+v", calls)
+	}
+}
+
 // Task chats must deliver plain text through the real SDK policy gate. Task
 // ownership and binding are enforced by the bridge after this adapter delivers
 // the message; with task chats disabled the SDK's mention requirement remains.

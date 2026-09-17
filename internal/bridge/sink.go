@@ -140,6 +140,9 @@ func (b *bridge) blockedFallback(ctx context.Context, to cardTarget, a agents.Ag
 // and must keep doing so. The screen is still one tap away here, behind the
 // card's Screen button, which is where the detail belongs.
 func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Screen) error {
+	delivery := b.paneDelivery(a.PaneID)
+	delivery.mu.Lock()
+	defer delivery.mu.Unlock()
 	// The settle reply. A burst of messages produces exactly one of these — the
 	// agent goes working once and finishes once, and the notifier coalesces
 	// anything closer together than its cooldown — which is why the deliveries
@@ -157,8 +160,52 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	// Resolved once and kept: every way this can fail from here on still owes
 	// the user the answer, and re-reading the transcript to say so would sample
 	// a file the agent may already have moved on in.
-	ans := b.doneAnswer(a, tail)
-	b.taskObserve(a, tasks.Review, "本轮已结束，等待验收或下一步指令", ans.Text)
+	ans, record := b.doneAnswerRecord(a, tail)
+	result := ans.Text
+	if b.taskDeliveryEnabled(a) {
+		result = ""
+	}
+	if record != nil {
+		result = record.Text
+	}
+	b.taskObserve(a, tasks.Review, tasks.ReviewDetail, result)
+	if b.taskDeliveryEnabled(a) {
+		// A screen tail or a tool-only record is not a final answer. The task
+		// notification owns lifecycle facts when no assistant text is available.
+		if record == nil || strings.TrimSpace(record.Text) == "" {
+			return nil
+		}
+		id, coordinated := b.deliveryID(a, *record)
+		markDelivered := func() error {
+			if err := b.tasks.MarkResultDelivered(a.PaneID, record.Text); err != nil {
+				return err
+			}
+			return b.recordDeliveredResult(ctx, a, record.Text, id, coordinated)
+		}
+		if stream, mirrored := delivery.lookup(id); coordinated && mirrored {
+			if stream == nil {
+				if err := delivery.confirm(id); err != nil {
+					return err
+				}
+				return markDelivered()
+			}
+			// Append can buffer its last chunk. Confirm the answer reached the
+			// existing message before suppressing the completion fallback.
+			flushErr := stream.s.Flush(ctx)
+			persistErr := delivery.finishStream(stream, flushErr == nil)
+			if flushErr == nil {
+				if persistErr != nil {
+					return persistErr
+				}
+				return markDelivered()
+			}
+			b.log.Warn("bridge: mirror flush failed; sending completion fallback", "pane", a.PaneID, "err", flushErr)
+		}
+		if err := b.postTaskRecord(ctx, a, *record, id, coordinated); err != nil {
+			return err
+		}
+		return markDelivered()
+	}
 
 	// No nonce is minted. Both of this card's buttons are inert — Select aims
 	// the chat at the agent, Screen re-reads it, neither can put a byte into the

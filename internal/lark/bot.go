@@ -83,7 +83,18 @@ func New(appID, appSecret string, opts ...Option) (Bot, error) {
 	}
 	b.wire()
 	evt.OnP2TaskUpdateUserAccessV2(b.handleTaskEvent)
+	evt.OnP2ChatMemberBotDeletedV1(b.handleBotRemoved)
 	return b, nil
+}
+
+// Feishu emits this event when the bot leaves a group, including task groups
+// closed by this application. Acknowledge it without treating removal as user
+// acceptance or replaying task cleanup; those have their own durable workflow.
+func (b *bot) handleBotRemoved(ctx context.Context, event *larkim.P2ChatMemberBotDeletedV1) error {
+	if event != nil && event.Event != nil && event.Event.ChatId != nil {
+		b.logger().InfoContext(ctx, "lark: bot removed from chat", "chat_id", *event.Event.ChatId)
+	}
+	return nil
 }
 
 type connState int

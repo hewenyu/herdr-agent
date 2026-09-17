@@ -16,6 +16,7 @@ type operation struct {
 	Done        bool            `json:"done"`
 	Result      json.RawMessage `json:"result,omitempty"`
 	Error       string          `json:"error,omitempty"`
+	NotExecuted bool            `json:"not_executed,omitempty"`
 }
 
 type journal struct {
@@ -43,7 +44,7 @@ func openJournal(path string) (*journal, error) {
 		return nil, errors.New("assistant: corrupt or unsupported operation state")
 	}
 	for key, op := range disk.Ops {
-		if key == "" || len(op.Fingerprint) != 64 || (op.Done && len(op.Result) == 0 && op.Error == "") {
+		if key == "" || len(op.Fingerprint) != 64 || (op.Done && len(op.Result) == 0 && op.Error == "") || (op.NotExecuted && (!op.Done || op.Error == "")) {
 			return nil, errors.New("assistant: incomplete operation state")
 		}
 	}

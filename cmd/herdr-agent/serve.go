@@ -323,6 +323,20 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 
 	bridgeOpts := []bridge.Option{bridge.WithSelection(sel), bridge.WithNotifyCooldown(cfg.UI.NotifyCooldown)}
 	if cfg.Tasks.Enabled {
+		deliveries, err := bridge.OpenDeliveryStore(filepath.Join(d.StateDir, "deliveries.json"))
+		if err != nil {
+			return nil, s.abort(&startupError{step: "task delivery state", err: err})
+		}
+		bridgeOpts = append(bridgeOpts, bridge.WithDeliveryStore(deliveries))
+		var notifier *assistant.Notifier
+		notify := func(ctx context.Context, r tasks.Record, kind tasks.NotificationKind, chat string) error {
+			if notifier == nil {
+				return errors.New("task notification model is unavailable")
+			}
+			return notifier.Notify(ctx, tasks.NewNotificationEvent(r, kind, chat), func(ctx context.Context, chat, text string) (string, error) {
+				return s.bot.Send(ctx, lark.Out{ChatID: chat, Text: text})
+			})
+		}
 		platform, ok := s.bot.(tasks.Platform)
 		if !ok {
 			return nil, s.abort(&startupError{step: "tasks", err: errors.New("bot does not support task management")})
@@ -337,7 +351,8 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		}
 		manager, err := tasks.New(store, tasks.Options{
 			Config: cfg.Tasks, Projects: catalog, Platform: platform, Client: d.Client, Lifecycle: lifecycle,
-			PrepareProject: projects.EnsureRepository,
+			AsyncNotifications: cfg.AI.Enabled,
+			PrepareProject:     projects.EnsureRepository,
 			AllowedOwner: func(owner string) bool {
 				for _, allowed := range cfg.Feishu.AllowedOpenIDs {
 					if strings.TrimSpace(allowed) == owner {
@@ -351,12 +366,18 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 				if chat == "" {
 					return nil
 				}
+				if cfg.AI.Enabled {
+					return notify(ctx, r, tasks.NotificationProgress, chat)
+				}
 				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: tasks.Notice(r)})
 				return err
 			},
 			BeforeClose: func(ctx context.Context, r tasks.Record) error {
 				if r.ChatID == "" || r.ChatDeleted {
 					return nil
+				}
+				if cfg.AI.Enabled {
+					return notify(ctx, r, tasks.NotificationClosing, r.ChatID)
 				}
 				_, err := s.bot.Send(ctx, lark.Out{ChatID: r.ChatID, Text: taskClosingMessage(r)})
 				return err
@@ -369,6 +390,9 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 				return s.watcher.Enable(pane)
 			},
 			Announce: func(ctx context.Context, r tasks.Record) error {
+				if cfg.AI.Enabled {
+					return announceModelTaskGroup(ctx, r, notify)
+				}
 				return announceTaskGroup(ctx, s.bot, log, r)
 			},
 		})
@@ -397,6 +421,10 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 				assistant.WithContextTokens(cfg.AI.ContextTokens), memoryOption)
 			if err != nil {
 				return nil, s.abort(&startupError{step: "AI conversations", err: err})
+			}
+			notifier, err = assistant.NewNotifier(engine, toolBackend, filepath.Join(d.StateDir, "notifications"), cfg.AI.Timeout, ai.RecordDeliveredMessage)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI notifications", err: err})
 			}
 			bridgeOpts = append(bridgeOpts, bridge.WithAssistant(ai))
 		}
@@ -432,6 +460,20 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 // failures; successful group creation has its own one-time entry receipt.
 func taskNotificationChat(r tasks.Record) string {
 	return tasks.NotificationChat(r)
+}
+
+func announceModelTaskGroup(ctx context.Context, r tasks.Record, notify func(context.Context, tasks.Record, tasks.NotificationKind, string) error) error {
+	if r.ChatID != "" && !r.ChatDeleted {
+		if err := notify(ctx, r, tasks.NotificationWelcome, r.ChatID); err != nil {
+			return err
+		}
+	}
+	if r.EntryChatID != "" && r.EntryChatID != r.ChatID {
+		// Each destination has its own durable decision and send receipt. A
+		// failed entry handoff can retry without repeating the group welcome.
+		return notify(ctx, r, tasks.NotificationGroupReady, r.EntryChatID)
+	}
+	return nil
 }
 
 func announceTaskGroup(ctx context.Context, bot lark.Bot, log *slog.Logger, r tasks.Record) error {

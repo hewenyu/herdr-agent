@@ -2,17 +2,18 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/mirror"
 	"github.com/hewenyu/herdr-agent/internal/outbound"
-	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
 
 const (
@@ -94,7 +95,8 @@ func (p paneResolver) Resolve(paneID string) (path, kind string, ok bool) {
 
 // mirrorStream is one Feishu message being edited as a pane keeps talking.
 type mirrorStream struct {
-	s lark.Stream
+	s       lark.Stream
+	records map[deliveryID]struct{}
 	// lastAt is when something was last appended, on the bridge's clock. It is
 	// what decides that a turn has ended.
 	lastAt time.Time
@@ -166,13 +168,13 @@ func (b *bridge) pumpMirror(ctx context.Context) {
 
 // mirrorTurn publishes one turn.
 func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStream, pt mirror.PaneTurn) {
+	delivery := b.paneDelivery(pt.PaneID)
+	delivery.mu.Lock()
+	defer delivery.mu.Unlock()
 	if b.notifyChat(pt.PaneID) == "" {
 		return
 	}
 	body := mirrorBody(pt.Turn)
-	if b.tasks != nil && pt.Turn.Role == mirrorRoleAssistant {
-		b.taskObserve(agents.Agent{PaneID: pt.PaneID}, tasks.Running, "agent 正在回复", body)
-	}
 	if body == "" {
 		// A record that carried no conversation — a tool result, a metadata
 		// line. The parsers drop most of those; this catches the rest.
@@ -180,6 +182,17 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 	}
 
 	a := b.mirrorAgent(pt.PaneID)
+	id, coordinated := b.deliveryID(a, pt.Turn)
+	if pt.Turn.Role == mirrorRoleAssistant {
+		if _, sent := delivery.lookup(id); coordinated && sent {
+			return
+		}
+		if b.tasks != nil {
+			if err := b.tasks.ObserveProgress(pt.PaneID, "agent 正在回复", body); err != nil {
+				b.log.Error("bridge: persist task progress", "err", err)
+			}
+		}
+	}
 	title := mirrorTitle(a, pt.Turn.Role)
 
 	// Two things take a turn out of the pane's open message:
@@ -194,9 +207,18 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 	// Both then produce a message id, so the message is bound to its pane and
 	// replying to it in the chat routes straight back to that agent (S2 §3.5).
 	// A streamed message cannot be bound: lark.Stream reports no id.
-	if pt.Turn.Role != mirrorRoleAssistant || outbound.HasMarkdownTable(body) {
-		b.closeMirrorStream(ctx, streams, pt.PaneID, "this turn goes out as its own message")
+	post := func() {
+		if pt.Turn.Role == mirrorRoleAssistant && b.taskDeliveryEnabled(a) {
+			if err := b.postTaskRecord(ctx, a, pt.Turn, id, coordinated); err != nil {
+				b.log.Error("bridge: could not post task transcript", "pane", pt.PaneID, "err", err)
+			}
+			return
+		}
 		b.postTurn(ctx, pt.PaneID, title, body)
+	}
+	if pt.Turn.Role != mirrorRoleAssistant || outbound.HasMarkdownTable(body) || (b.taskDeliveryEnabled(a) && utf8.RuneCountInString(body) > outbound.SplitTarget) {
+		b.closeMirrorStream(ctx, streams, pt.PaneID, "this turn goes out as its own message")
+		post()
 		return
 	}
 
@@ -215,10 +237,13 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 			// opens with.
 			b.log.Warn("bridge: could not open a mirror stream; posting this turn as one message",
 				"pane", pt.PaneID, "err", err)
-			b.postTurn(ctx, pt.PaneID, title, body)
+			post()
 			return
 		}
 		streams[pt.PaneID] = &mirrorStream{s: s, lastAt: b.now()}
+		if coordinated {
+			delivery.remember(id, streams[pt.PaneID])
+		}
 		return
 	}
 
@@ -232,10 +257,13 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 		return
 	}
 	st.lastAt = b.now()
+	if coordinated {
+		delivery.remember(id, st)
+	}
 }
 
 // postTurn mirrors one turn as a message of its own, bound to its pane.
-func (b *bridge) postTurn(ctx context.Context, paneID, title, body string) {
+func (b *bridge) postTurn(ctx context.Context, paneID, title, body string) bool {
 	if _, err := b.send(ctx, outgoing{
 		ChatID:   b.notifyChat(paneID),
 		Markdown: body,
@@ -243,7 +271,29 @@ func (b *bridge) postTurn(ctx context.Context, paneID, title, body string) {
 		PaneID:   paneID,
 	}); err != nil {
 		b.log.Error("bridge: could not mirror a turn", "pane", paneID, "err", err)
+		return false
 	}
+	return true
+}
+
+// Both completion fallback and mirror fallback use the same body and chunk
+// identity, so a retry resumes confirmed chunks even if the other path wins.
+func (b *bridge) postTaskRecord(ctx context.Context, a agents.Agent, turn mirror.Turn, id deliveryID, coordinated bool) error {
+	key := ""
+	if coordinated {
+		key = id.String()
+	}
+	_, err := b.send(ctx, outgoing{
+		ChatID: b.notifyChat(a.PaneID), PaneID: a.PaneID,
+		Markdown: mirrorBody(turn), Title: mirrorTitle(a, turn.Role), DeliveryKey: key,
+	})
+	if err != nil {
+		return err
+	}
+	if coordinated {
+		return b.paneDelivery(a.PaneID).confirm(id)
+	}
+	return nil
 }
 
 // sweepMirrorStreams closes the message of every pane that has gone quiet.
@@ -252,10 +302,14 @@ func (b *bridge) sweepMirrorStreams(ctx context.Context, streams map[string]*mir
 	// Sorted so that a sweep closing several panes does it in the same order
 	// every time; map order would make the log non-deterministic for no gain.
 	for _, paneID := range slices.Sorted(maps.Keys(streams)) {
+		delivery := b.paneDelivery(paneID)
+		delivery.mu.Lock()
 		if now.Sub(streams[paneID].lastAt) < mirrorTurnIdle {
+			delivery.mu.Unlock()
 			continue
 		}
 		b.closeMirrorStream(ctx, streams, paneID, "the turn went quiet")
+		delivery.mu.Unlock()
 	}
 }
 
@@ -272,7 +326,10 @@ func (b *bridge) closeAllMirrorStreams(ctx context.Context, streams map[string]*
 	defer cancel()
 
 	for _, paneID := range slices.Sorted(maps.Keys(streams)) {
+		delivery := b.paneDelivery(paneID)
+		delivery.mu.Lock()
 		b.closeMirrorStream(closeCtx, streams, paneID, "the bridge is shutting down")
+		delivery.mu.Unlock()
 	}
 }
 
@@ -289,7 +346,17 @@ func (b *bridge) closeMirrorStream(ctx context.Context, streams map[string]*mirr
 	}
 	delete(streams, paneID)
 
-	if err := st.s.Close(ctx); err != nil {
+	delivery := b.paneDelivery(paneID)
+	var flushErr error
+	if len(st.records) != 0 {
+		// SDK timer updates can fail without surfacing their error, and
+		// Close does no update once that timer has fired. Only an explicit
+		// Flush confirms the final content before suppressing Done.
+		flushErr = st.s.Flush(ctx)
+	}
+	err := errors.Join(flushErr, st.s.Close(ctx))
+	err = errors.Join(err, delivery.finishStream(st, err == nil))
+	if err != nil {
 		// Close is what flushes the last chunk, so a failure here is content
 		// the user never sees rather than a tidy-up problem (S2 §3.8: never
 		// fail silently).

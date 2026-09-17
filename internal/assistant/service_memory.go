@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/hewenyu/herdr-agent/internal/bridge"
 	"github.com/hewenyu/herdr-agent/internal/config"
@@ -103,29 +102,7 @@ func (s *Service) prepareMemory(ctx context.Context, in bridge.AssistantMessage,
 		}
 	}
 	state.Memory = entry
-	// Store the actual user-visible conversation, not the sanitized model view.
+	// Keep the actual conversation alongside its summary for restart recovery.
 	state.Messages = append([]Message(nil), state.Messages[len(state.Messages)-len(recent):]...)
 	return nil
-}
-
-func memoryFailureReply(err error) string {
-	switch {
-	case errors.Is(err, errMemoryProvider):
-		return errMemoryProvider.Error()
-	case errors.Is(err, errMemoryBudget), errors.Is(err, ErrContextBudget):
-		return errMemoryBudget.Error()
-	default:
-		return errMemoryFailed.Error()
-	}
-}
-
-func observedDialogue(calls []observation, generated string) string {
-	for _, call := range calls {
-		switch call.name {
-		case "herdr_projects", "herdr_list", "herdr_get":
-		default:
-			return ""
-		}
-	}
-	return conversationalReply(strings.TrimSpace(generated))
 }
