@@ -1,5 +1,7 @@
 # 代码结构与可靠性审计
 
+> Go 历史参考（基线 [7b75511](https://github.com/hewenyu/herdr-agent/blob/7b7551182bbc7ed962672720f54f7b06072888ee/README.md)）：本文保留旧实现与当时验证记录，不描述当前 Node 程序。当前能力请看 [实施设计](node-pi-design.md) 与 [验收证据](acceptance.md)。文中的 `internal/`、`cmd/` 源码路径均指该固定历史版本。
+
 分支：`audit/architecture-reliability`。基线：`7107d566`（PR #7 合并结果）。
 代码修复与共享实现提交：`8175d6b`。
 

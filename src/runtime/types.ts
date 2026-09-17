@@ -1,0 +1,71 @@
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { ActorContext, StoredMessage } from "../core/types.js";
+
+/** Only application business tools are injected; this runtime has no coding or shell tools. */
+export interface RuntimeTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  readOnly: boolean;
+  execute(
+    args: Record<string, unknown>,
+    actor: ActorContext,
+    signal?: AbortSignal,
+    operationId?: string,
+  ): Promise<unknown>;
+}
+
+export interface EngineInput {
+  actor: ActorContext;
+  systemPrompt: string;
+  messages: AgentMessage[];
+  prompt: string;
+  tools: RuntimeTool[];
+  sessionId: string;
+  signal?: AbortSignal;
+  onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
+}
+
+export interface EngineResult {
+  text: string;
+  messages: AgentMessage[];
+}
+export interface SummaryInput {
+  messages: AgentMessage[];
+  previousSummary: string;
+  signal?: AbortSignal;
+}
+export interface ConversationEngine {
+  readonly contextTokens: number;
+  run(input: EngineInput): Promise<EngineResult>;
+  summarize(input: SummaryInput): Promise<string>;
+}
+export interface EngineOptions {
+  streamFn?: StreamFn;
+  fetch?: typeof fetch;
+}
+export interface ReplyOptions {
+  signal?: AbortSignal;
+  readOnly?: boolean;
+  systemPrompt?: string;
+}
+export interface DeliveryOutcome {
+  complete: boolean;
+  ids: string[];
+  retryable?: boolean;
+}
+export interface ExternalMessage {
+  id: string;
+  text: string;
+  participantId?: string;
+  source?: string;
+  deliveredAt?: string;
+  /** Web-only outputs become visible context only after the UI acknowledges rendering. */
+  pendingDelivery?: boolean;
+}
+export interface TurnReceipt {
+  generation: number;
+  status: "running" | "finished" | "failed";
+  replyId: string;
+}
+export type MessageRecord = StoredMessage & { sequence: number };

@@ -1,204 +1,52 @@
-# CI for herdr-agent.
-#
-# Two jobs, and both of them have to keep working for the release workflow to be
-# worth anything:
-#
-#   test   build, embedded UI smoke check, vet, gofmt and race detector
-#   cross  every target release.yml ships, compiled and proved to be that target
-#
-# Every action is pinned to a full commit SHA. A tag is a mutable pointer: the
-# owner of the repository can move v7 to any commit at any time, and this
-# workflow has the checkout and the Go toolchain of a project that publishes
-# binaries people download.
 name: ci
-
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
-
-# Read-only. Nothing here comments, labels or publishes; the release workflow is
-# the only one that needs a write scope.
 permissions:
   contents: read
-
-# A second push to the same branch makes the first run's answer worthless.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  test:
-    name: build · vet · gofmt · test -race
-    runs-on: ubuntu-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # go-version-file rather than a version literal: go.mod already declares
-      # the toolchain this module is built with, and two places to write it down
-      # is one place to forget. `go 1.24` there resolves to the newest 1.24.x.
-      #
-      # cache: true (the default) caches both the module cache and the build
-      # cache, keyed on go.sum.
-      - name: set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: go build
-        run: go build ./...
-
-      # Copy only the executable into an empty directory: a checkout must not
-      # accidentally supply the HTML, CSS or JavaScript that releases need.
-      - name: verify the embedded configuration page
-        run: |
-          go build -o "$RUNNER_TEMP/herdr-agent-ui" ./cmd/herdr-agent
-          python3 .github/scripts/check-embedded-ui.py --binary "$RUNNER_TEMP/herdr-agent-ui"
-
-      - name: go vet
-        run: go vet ./...
-
-      # `gofmt -l` prints names and exits 0 whether or not it found any, so the
-      # exit status has to be built here. -d as well as -l: a CI failure that
-      # only names files makes the reader go and run gofmt to find out what it
-      # wanted, and the diff is already available.
-      - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt is unhappy with these files; run gofmt -w ."
-            echo "$unformatted"
-            gofmt -d .
-            exit 1
-          fi
-          echo "gofmt: clean"
-
-      # CGO_ENABLED is deliberately left at its default (1) for this job: the
-      # race detector needs cgo and refuses to run without it. The release
-      # targets are built with CGO_ENABLED=0 in the cross job below, which is
-      # what release.yml does.
-      #
-      # This suite has no macOS dependency even though the product is measured
-      # there. The two places that could have had one do not: doctor's reader of
-      # another process's environment shells out to `pgrep` and `ps eww` (G7),
-      # but the tests exercise the parser against a captured sample string and
-      # do not inspect real process environments. Project tests use the runner's
-      # Git to verify initialization and existing-worktree preservation; they
-      # write only temporary repositories. The browser launcher is injected,
-      # so tests never open the real one.
-      - name: go test -race
-        run: go test -race ./...
-
-      # A downloaded binary has to be able to say what it is, and the failure
-      # mode is silent: -X against a variable that no longer exists is ignored
-      # by the linker without a warning, so a rename in cmd/herdr-agent would
-      # ship releases that all report "dev". This builds with the same flags
-      # release.yml uses and reads the answer back out of the binary.
-      - name: the version stamp still reaches the binary
-        run: |
-          go build \
-            -ldflags "-X main.buildVersion=v0.0.0-ci -X main.buildCommit=ci0000000000 -X main.buildDate=2026-01-01T00:00:00Z" \
-            -o /tmp/herdr-agent-stamped ./cmd/herdr-agent
-          out=$(/tmp/herdr-agent-stamped version)
-          echo "$out"
-          for want in v0.0.0-ci ci0000000000 2026-01-01T00:00:00Z; do
-            case "$out" in
-              *"$want"*) ;;
-              *)
-                echo "::error::-ldflags -X did not reach the binary ($want is missing);"
-                echo "::error::release.yml would ship binaries that report \"dev\"."
-                exit 1
-                ;;
-            esac
-          done
-          # An unstamped build must not borrow a version from anywhere else: Go
-          # 1.24 and later synthesise a pseudo-version into the build info, and
-          # reporting it would announce a local build as v0.0.0-<date>-<hash>.
-          go build -o /tmp/herdr-agent-plain ./cmd/herdr-agent
-          plain=$(/tmp/herdr-agent-plain version)
-          echo "$plain"
-          case "$plain" in
-            "herdr-agent dev"*) ;;
-            *) echo "::error::an unstamped build must report \"dev\", got: $(echo "$plain" | head -1)"; exit 1 ;;
-          esac
-
-  cross:
-    name: cross ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+  check:
+    name: check and SEA · ${{ matrix.target }}
     strategy:
-      # Every target's answer is wanted, not just the first failure's.
       fail-fast: false
       matrix:
-        # Exactly the three targets release.yml ships. Adding one here without
-        # adding it there would prove a platform nobody can download.
         include:
-          - goos: darwin
-            goarch: arm64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: amd64
-    env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-      # Matches release.yml. Every dependency is pure Go, so this is also what
-      # makes cross-compiling work at all without a toolchain per target.
-      CGO_ENABLED: 0
+          - runner: macos-15
+            target: darwin_arm64
+            platform: darwin
+            arch: arm64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            platform: linux
+            arch: arm64
+          - runner: ubuntu-22.04
+            target: linux_amd64
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        id: go
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
-          go-version-file: go.mod
-          # setup-go's own cache is keyed on the runner and go.sum, which is the
-          # same key for all three targets in this matrix: they would overwrite
-          # each other's build cache and log a reservation conflict doing it.
-          # The cache below is keyed per target instead.
-          cache: false
-
-      - name: locate the Go caches
-        id: caches
+          node-version: 24.13.0
+          cache: npm
+      - name: Verify native build target
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
+      - run: npm ci
+      - run: npm run check
+      - name: Build and exercise standalone executable
+        env:
+          VERSION: v0.0.0-ci
+          COMMIT: ci0000000000
+          BUILD_DATE: '2026-01-01T00:00:00Z'
         run: |
-          echo "mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
-          echo "build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
-
-      - name: cache modules and build output
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ steps.caches.outputs.mod }}
-            ${{ steps.caches.outputs.build }}
-          # The toolchain version is in the key because a build cache from
-          # another Go release is dead weight.
-          key: go-${{ steps.go.outputs.go-version }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            go-${{ steps.go.outputs.go-version }}-${{ matrix.goos }}-${{ matrix.goarch }}-
-
-      - name: go build
-        run: go build ./...
-
-      # vet compiles the test files too, so this is what catches a _test.go that
-      # only builds on darwin. `go build ./...` would not.
-      - name: go vet
-        run: go vet ./...
-
-      # The claim of this job is "this target still builds". A step that quietly
-      # produced a host binary would make that claim falsely, so the artifact is
-      # asked what it is rather than assumed.
-      - name: prove the binary is really ${{ matrix.goos }}/${{ matrix.goarch }}
-        run: |
-          go build -trimpath -o /tmp/herdr-agent ./cmd/herdr-agent
-          settings=$(go version -m /tmp/herdr-agent)
-          echo "$settings"
-          for want in "GOOS=${GOOS}" "GOARCH=${GOARCH}" "CGO_ENABLED=0"; do
-            case "$settings" in
-              *"$want"*) ;;
-              *) echo "::error::built binary does not report $want; the matrix is not building what it says"; exit 1 ;;
-            esac
-          done
+          npm run binary
+          npm run smoke

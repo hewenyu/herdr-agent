@@ -1,5 +1,7 @@
 # 在飞书中用自然语言管理 herdr 任务
 
+> Go 历史参考（基线 [7b75511](https://github.com/hewenyu/herdr-agent/blob/7b7551182bbc7ed962672720f54f7b06072888ee/README.md)）：本文保留旧实现与当时验证记录，不描述当前 Node 程序。当前能力请看 [实施设计](node-pi-design.md) 与 [验收证据](acceptance.md)。文中的 `internal/`、`cmd/` 源码路径均指该固定历史版本。
+
 更新日期：2026-09-17。
 
 本项目的 AI 入口基于 [Eino](ai-framework.md)，运行在 Go 服务中，使用用户配置的模型 API、模型名称和 API key。在现有飞书应用机器人的私聊里直接描述需求，即可查询项目、创建开发任务和主动查询任务总览。例如：“在 herdr-agent 项目里排查登录失败的问题”“目前有哪些任务正在进行”。补充要求、具体进度和验收结单在对应任务群继续。日常操作不需要记住 `/new` 等命令。
@@ -44,7 +46,7 @@ Pi 的相关框架包使用 TypeScript；当前实现采用纯 Go，保留自然
 
 ## 配置与使用
 
-沿用本项目已经完成授权的飞书应用，无需飞书 CLI，也无需给云端个人助手发布一个可访问本机的 MCP 地址。具体配置字段、API 协议和示例以 [README 的自然语言任务入口](../README.md#control-tasks-with-natural-language)为准。
+沿用本项目已经完成授权的飞书应用，无需飞书 CLI，也无需给云端个人助手发布一个可访问本机的 MCP 地址。具体配置字段、API 协议和示例以 [README 的自然语言任务入口](https://github.com/hewenyu/herdr-agent/blob/7b7551182bbc7ed962672720f54f7b06072888ee/README.md#control-tasks-with-natural-language)为准。
 
 1. 启用任务管理，确认当前用户在本项目允许名单中。在本机配置页面设置项目名、一个或多个目录及默认 Codex 或 Claude，也可以稍后明确要求 AI 创建新项目。
 2. 启用 AI 入口，设置模型服务的协议、API base URL、模型名称及请求超时。选用支持工具调用的模型。

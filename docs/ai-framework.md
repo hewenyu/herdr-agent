@@ -1,5 +1,7 @@
 # Go AI 框架选型
 
+> Go 历史参考（基线 [7b75511](https://github.com/hewenyu/herdr-agent/blob/7b7551182bbc7ed962672720f54f7b06072888ee/README.md)）：本文保留旧实现与当时验证记录，不描述当前 Node 程序。当前能力请看 [实施设计](node-pi-design.md) 与 [验收证据](acceptance.md)。文中的 `internal/`、`cmd/` 源码路径均指该固定历史版本。
+
 更新日期：2026-09-17。目标是在现有 Go 服务中通过连续自然语言对话调用飞书任务工具，让用户配置 API 地址、模型和 key，仅支持 OpenAI Responses 与 Anthropic Messages。
 
 选择 **CloudWeGo Eino**，使用官方模型组件、agent 工具调用循环和原生 summarization middleware，不引入 Node.js。

@@ -1,16 +1,19 @@
 default: build
 
 build:
-    go build ./...
+    npm run build
+
+binary:
+    npm run binary
 
 test:
-    go test ./...
+    npm test
 
-vet:
-    go vet ./...
+check:
+    npm run check
 
-check: vet test
-    gofmt -l . | (! grep .) || (echo "gofmt needed"; exit 1)
+smoke:
+    npm run smoke
 
 run *ARGS:
-    go run ./cmd/herdr-agent {{ARGS}}
+    npm run dev -- {{ARGS}}

@@ -1,83 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  com.hewenyu.herdr-agent — the Feishu <-> herdr bridge (`herdr-agent serve`).
-
-  Install with deploy/install.sh. It substitutes every placeholder below (a name
-  between double underscores) with an absolute path: launchd expands nothing, so
-  "$HOME" and "~" inside a plist are literal characters, and a relative program
-  name would be looked up in launchd's minimal PATH rather than yours.
-
-  This job does not need the environment scrubbing that com.hewenyu.herdr-server
-  needs (G7) — the bridge spawns no panes, it only speaks to the herdr socket —
-  but it also inherits nothing useful, so everything it needs is spelled out.
--->
+<!-- Render with deploy/install.sh. LaunchAgents start at GUI login, not at boot.
+     herdr retains ownership of Claude/Codex processes. This service only schedules.
+     Credentials stay in the private state directory; log files need external rotation. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>com.hewenyu.herdr-agent</string>
-
   <key>ProgramArguments</key>
   <array>
     <string>__HERDR_AGENT_BIN__</string>
-    <!-- Explicit state directory. The bridge would derive the same path from
-         HOME, but a LaunchAgent that somehow lost HOME would quietly read a
-         different config.toml — i.e. a different allowlist — instead of
-         failing. State is: config.toml, .env, dedup.json, routes.json,
-         mirrors.json, herdr-agent.pid, log/. -->
-    <string>-state-dir</string>
-    <string>__HOME__/.herdr-agent</string>
     <string>serve</string>
+    <string>--state-dir</string>
+    <string>__HOME__/.herdr-agent</string>
   </array>
-
   <key>WorkingDirectory</key>
   <string>__HOME__</string>
-
   <key>RunAtLoad</key>
   <true/>
-
-  <!-- Restart unconditionally: the phone is the only way to reach a blocked
-       agent, and a bridge that is down looks exactly like an agent that has
-       nothing to say.
-
-       Restarting is safe because serve takes an flock'd pid file before any
-       network IO, and that lock is correctness rather than hygiene. Feishu's
-       long-connection delivery is CLUSTER MODE: one app may hold up to 50
-       connections at once and each event is handed to a RANDOM one of them
-       (G15). So two bridges on the same app_id do not fight and do not
-       disconnect each other — neither one errors, neither drops its socket,
-       and each receives roughly half the events. From the phone that is not a
-       failure anybody can point at, only messages that "sometimes arrive".
-       A copy launchd starts while the previous one is still alive therefore
-       exits at once, instead of quietly splitting the user's real messages
-       with it. -->
+  <!-- State locking excludes duplicate connections. Missing authorization keeps
+       the local Web available; unrecoverable failures retry at a bounded rate. -->
   <key>KeepAlive</key>
   <true/>
-
-  <!-- A bridge that is misconfigured — no credentials, empty allowlist — exits
-       at once and on purpose. 30s makes that a readable line every half minute
-       in herdr-agent.err.log instead of a spin. -->
   <key>ThrottleInterval</key>
   <integer>30</integer>
-
   <key>StandardOutPath</key>
   <string>__HOME__/.herdr-agent/log/herdr-agent.out.log</string>
   <key>StandardErrorPath</key>
   <string>__HOME__/.herdr-agent/log/herdr-agent.err.log</string>
-
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- launchd's default PATH is already /usr/bin:/bin:/usr/sbin:/sbin, which
-         is where pgrep and ps live; `herdr-agent doctor` shells out to those
-         two to read the herdr server's environment (G7). Nothing else is
-         needed — herdr is reached over the unix socket, never by exec. -->
     <key>PATH</key>
-    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
-
-    <!-- FEISHU_APP_ID / FEISHU_APP_SECRET are deliberately NOT here. They are
-         read from ~/.herdr-agent/.env, which is mode 0600; a plist in
-         ~/Library/LaunchAgents is world-readable and its contents show up in
-         `launchctl print`. -->
+    <string>__CLEAN_PATH__</string>
   </dict>
 </dict>
 </plist>

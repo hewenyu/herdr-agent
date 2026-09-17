@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <meta name="color-scheme" content="light">
+  <title>herdr · 调度工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="/" aria-label="herdr 工作台"><span class="brand-mark">h</span><span>herdr<span class="brand-caption">调度工作台</span></span></a>
+      <div class="rail-label">工作空间</div>
+      <nav id="navigation" aria-label="主导航"></nav>
+      <div class="rail-note"><span class="live-dot"></span>本机运行<br><span>pi 调度 · herdr 托管执行</span></div>
+    </aside>
+    <main>
+      <header class="topbar"><div><div class="eyebrow">YOUR LOCAL WORKSPACE</div><h1 id="page-title">会话</h1></div><span id="connection" class="connection">正在连接</span></header>
+      <section id="authorization" aria-label="连接与授权状态"></section>
+      <div id="feedback" role="status" aria-live="polite"></div>
+      <section id="content" aria-label="工作台内容"><div class="empty">正在读取本机状态…</div></section>
+      <footer>需求讨论与实际开发由 Claude / Codex 参与完成。</footer>
+    </main>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+</body>
+</html>
