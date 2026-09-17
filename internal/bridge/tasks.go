@@ -39,6 +39,13 @@ func (b *bridge) taskMessage(ctx context.Context, m lark.Msg) (bool, error) {
 		return true, ErrUnauthorized
 	}
 	if bound {
+		parsed := commands.Parse(m.Text)
+		if parsed.Kind == commands.KindClear {
+			return true, b.reply(ctx, m, "", "/clear 仅用于主应用私聊。任务群保持独立会话，通过自动压缩和记忆延续上下文。")
+		}
+		if parsed.Kind == commands.KindBadArgs && strings.HasPrefix(parsed.Reason, "/clear:") {
+			return true, b.handleMessage(ctx, m)
+		}
 		if groupCommand, ok := tasks.GroupCloseCommand(m.Text); ok {
 			cmd, command = groupCommand, true
 		}

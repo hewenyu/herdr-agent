@@ -50,6 +50,11 @@ func (b *bridge) handleMessage(ctx context.Context, m lark.Msg) error {
 
 	case commands.KindClose:
 		return b.commandClose(ctx, m)
+	case commands.KindClear:
+		if m.ChatType != lark.ChatP2P {
+			return b.reply(ctx, m, "", "/clear 仅用于主应用私聊。任务群保持独立会话，通过自动压缩和记忆延续上下文。")
+		}
+		return b.reply(ctx, m, "", "AI 助手尚未启用，无法使用 /clear 开启新的主应用会话。")
 
 	case commands.KindDoctor:
 		return b.reply(ctx, m, "", b.doctor())

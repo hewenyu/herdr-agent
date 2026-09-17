@@ -30,6 +30,9 @@ const (
 	KindUnknown
 	// KindBadArgs is a recognised command with unusable arguments.
 	KindBadArgs
+	// KindClear resets the main app's private-chat AI assistant context without
+	// changing task sessions, agent sessions or the selected pane.
+	KindClear
 )
 
 func (k Kind) String() string {
@@ -52,6 +55,8 @@ func (k Kind) String() string {
 		return "help"
 	case KindClose:
 		return "close"
+	case KindClear:
+		return "clear"
 	case KindBadArgs:
 		return "bad-args"
 	default:
@@ -86,6 +91,7 @@ type Command struct {
 //     (also accept the legacy forms herdr tolerates: w1-1, bare integers)
 //   - "/say <pane> <text...>" requires both
 //   - "/mirror <pane> on|off"
+//   - "/clear" resets the AI assistant conversation and rejects arguments
 //   - an unknown slash command => KindUnknown with Reason naming the closest
 //     known command if one is within edit distance 2
 type Parser interface {

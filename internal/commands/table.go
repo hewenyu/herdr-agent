@@ -72,6 +72,12 @@ var table = []spec{
 		parse:   parseNoArgs,
 	},
 	{
+		name:    "clear",
+		kind:    KindClear,
+		summary: "start a fresh AI assistant session in the main app's private chat only; keep task sessions",
+		parse:   parseClear,
+	},
+	{
 		name:    "doctor",
 		kind:    KindDoctor,
 		summary: "check the herdr environment and report what is wrong",

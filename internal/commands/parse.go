@@ -173,6 +173,15 @@ func parseNoArgs(sp spec, _, raw string) Command {
 	return Command{Kind: sp.kind, Raw: raw}
 }
 
+// parseClear rejects trailing text so a new requirement cannot be silently
+// discarded while the user's existing conversation is reset.
+func parseClear(sp spec, rest, raw string) Command {
+	if strings.TrimSpace(rest) != "" {
+		return badArgs(sp, raw, "请单独发送 /clear，收到确认后再发送新需求")
+	}
+	return Command{Kind: sp.kind, Raw: raw}
+}
+
 // parsePane handles "/card <pane>" and "/stop <pane>".
 //
 // Extra words after the pane are ignored for the same reason as parseNoArgs,
