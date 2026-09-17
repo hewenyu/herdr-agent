@@ -714,6 +714,9 @@ great deal cheaper than finding out from silence.
 
 ## Notes
 
+**Architecture and reliability.** The [code audit record](docs/code-audit.md) (Chinese) documents
+module responsibilities, reproduced defects and fixes, shared implementations, verification and remaining limitations.
+
 **Reusing an app beats registering another one.** `setup` creates a real Feishu app in your tenant,
 and no API we could find deletes one (G18), so every registration is permanent clutter. That is why
 `--reregister` is an explicit flag rather than a fallback, and why picking an existing app on the
