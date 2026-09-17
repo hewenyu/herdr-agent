@@ -50,7 +50,7 @@ const (
 // without a unix socket, a Feishu app, or a signal.
 func cmdServe(ctx context.Context, d *deps, args []string) error {
 	fs := newFlags(d, "serve", "")
-	configListen := fs.String("config-listen", defaultConfigListen, "local project configuration address (loopback IP only)")
+	configListen := fs.String("config-listen", configurationAddress(d.Cfg), "local project configuration address (overrides ui.config_listen; loopback IP only)")
 	noConfigUI := fs.Bool("no-config-ui", false, "disable the local project configuration page")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -251,7 +251,9 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	startupCtx := ctx
 	if h.configListen != "" {
 		if err := s.startConfiguration(ctx, h.configListen, status.snapshot); err != nil {
-			return nil, s.abort(&startupError{step: "local project configuration", err: err})
+			return nil, s.abort(&startupError{step: "local project configuration", err: fmt.Errorf(
+				"%w; change [ui].config_listen in %s to a free loopback port and restart, or use serve --config-listen / --no-config-ui",
+				err, filepath.Join(d.StateDir, config.ConfigFileName))})
 		}
 		startupCtx = s.configuration.ctx
 	}

@@ -36,6 +36,7 @@ const (
 	DefaultTailLines        = 18
 	DefaultNotifyCooldown   = 30 * time.Second
 	DefaultQueueLimit       = 5
+	DefaultConfigListen     = "127.0.0.1:18790"
 	DefaultTaskPollInterval = 30 * time.Second
 	DefaultTaskAgent        = "codex"
 	DefaultAIProvider       = "openai-responses"
@@ -70,6 +71,7 @@ func Default() Config {
 			CallTimeout:  DefaultCallTimeout,
 		},
 		UI: UI{
+			ConfigListen:   DefaultConfigListen,
 			MaxCols:        DefaultMaxCols,
 			TailLines:      DefaultTailLines,
 			NotifyCooldown: DefaultNotifyCooldown,

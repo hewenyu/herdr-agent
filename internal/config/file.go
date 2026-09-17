@@ -38,6 +38,7 @@ type fileConfig struct {
 		CallTimeout  tomlDuration `toml:"call_timeout"`
 	} `toml:"herdr"`
 	UI struct {
+		ConfigListen   string       `toml:"config_listen"`
 		MaxCols        int          `toml:"max_cols"`
 		TailLines      int          `toml:"tail_lines"`
 		NotifyCooldown tomlDuration `toml:"notify_cooldown"`
@@ -118,6 +119,9 @@ func applyFile(cfg *Config, path string) error {
 	}
 
 	u := &cfg.UI
+	if fc.UI.ConfigListen != "" {
+		u.ConfigListen = fc.UI.ConfigListen
+	}
 	if fc.UI.MaxCols != 0 {
 		u.MaxCols = fc.UI.MaxCols
 	}

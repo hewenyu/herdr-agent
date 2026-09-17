@@ -96,6 +96,13 @@ call_timeout = "10s"
 
 [ui]
 
+# Address of the local project configuration page for both serve and configure.
+# Change the port if it is in use, then restart. Only literal loopback IPs are
+# accepted (127.0.0.1 or [::1]); 0 requests an available port printed at startup.
+# CLI overrides: serve --config-listen IP:port, configure --listen IP:port.
+# serve --no-config-ui disables the page. Default "127.0.0.1:18790".
+config_listen = "127.0.0.1:18790"
+
 # Column budget for screen text pushed to the phone.
 #
 # A pane that has ever had a terminal attached is typically 173 columns (G5).
@@ -164,7 +171,7 @@ default_project = ""
 # Default "30s". This must be positive when tasks are enabled; "0s" is invalid.
 poll_interval = "30s"
 
-# Configure projects at http://127.0.0.1:18790 while serve is running, or use
+# Configure projects at ui.config_listen (default http://127.0.0.1:18790), or use
 # `herdr-agent configure --open` before starting the bridge. Saves apply to new
 # tasks immediately. The page and API are served locally by Go.
 # The first save writes projects.json in the state directory; after that its

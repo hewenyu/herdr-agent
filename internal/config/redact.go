@@ -34,6 +34,8 @@ func (c Config) Redacted() string {
 	b.WriteString(c.Herdr.PollInterval.String())
 	b.WriteString(" herdr.call_timeout=")
 	b.WriteString(c.Herdr.CallTimeout.String())
+	b.WriteString(" ui.config_listen=")
+	b.WriteString(orDefault(c.UI.ConfigListen, DefaultConfigListen))
 	b.WriteString(" ui.max_cols=")
 	b.WriteString(strconv.Itoa(c.UI.MaxCols))
 	b.WriteString(" ui.tail_lines=")
@@ -187,6 +189,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		}
 	}
 	redacted.Herdr.SocketPath = c.scrub(c.Herdr.SocketPath)
+	redacted.UI.ConfigListen = c.scrub(c.UI.ConfigListen)
 	redacted.Tasks.DefaultProject = c.scrub(c.Tasks.DefaultProject)
 	redacted.AI.Provider = c.scrub(c.AI.Provider)
 	redacted.AI.Model = c.scrub(c.AI.Model)

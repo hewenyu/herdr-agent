@@ -219,8 +219,8 @@ Feishu login and authorization link for the **same App ID**. Open it, log in and
 The refreshed credentials are saved locally; the allowlist and existing project configuration are
 preserved. This does not register another app or open a second Feishu connection.
 
-While waiting, **http://127.0.0.1:18790/** remains available. Its top panel shows the authorization
-status, missing scopes, the current login link. The program opens this local page once and
+While waiting, the local configuration page (default **http://127.0.0.1:18790/**) remains available.
+Its top panel shows the authorization status, missing scopes and the current login link. The program opens this local page once and
 also prints the authorization URL in its log. With `--no-config-ui`, use the logged URL; the program
 attempts to open the authorization page directly. Expired links are replaced automatically after
 rechecking permissions. After confirmation, the program checks again and starts the bridge only when
@@ -237,7 +237,7 @@ stop the bridge before running that separate command. Normal startup recovery ta
 Task management is optional and defaults to off. Keep your existing Feishu app, credentials and
 allowlist. Enable `[tasks]` in `~/.herdr-agent/config.toml`, then start `herdr-agent serve`.
 It checks the permissions below and offers an authorization link if they are missing. Its local
-configuration page is available at **http://127.0.0.1:18790/**, including while awaiting authorization.
+configuration page defaults to **http://127.0.0.1:18790/**, including while awaiting authorization.
 
 The page lets you add or edit projects, choose a default project and agent, and add multiple folders
 in order. The first folder is the working directory; the remaining folders are passed to Codex or
@@ -254,8 +254,21 @@ herdr-agent configure --open
 ```
 
 This standalone command holds the same instance lock as `serve`. If the bridge is already running,
-open its configuration URL instead. `serve --config-listen 127.0.0.1:18791` changes the local address;
-`serve --no-config-ui` disables the page. The frontend and its API are served by the Go binary.
+open its configuration URL instead. To change the address persistently, set `config_listen` under
+the existing `[ui]` section in `~/.herdr-agent/config.toml`:
+
+```toml
+[ui]
+config_listen = "127.0.0.1:18791"
+```
+
+Both `serve` and `configure` read this setting; the default is `127.0.0.1:18790`.
+`serve --config-listen 127.0.0.1:18792` and `configure --listen 127.0.0.1:18792` override TOML
+for that invocation. Only literal loopback IP addresses are accepted. Restart the running command
+after changing the TOML address. If the port is occupied, choose an available port in this setting
+or start `serve --no-config-ui` to disable the page and use the logged authorization link.
+
+The frontend and its API are served by the Go binary.
 Go's `embed` packages the HTML, CSS and JavaScript into the executable at build time, so the
 downloaded binary provides the page without Node.js or a separate assets directory. CI checks
 the page, styles, scripts and project API with only the binary in an empty directory; the release

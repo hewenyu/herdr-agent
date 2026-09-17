@@ -38,6 +38,7 @@ type Herdr struct {
 }
 
 type UI struct {
+	ConfigListen   string        `toml:"config_listen"`   // empty => 127.0.0.1:18790
 	MaxCols        int           `toml:"max_cols"`        // 0 => screen.DefaultMaxCols
 	TailLines      int           `toml:"tail_lines"`      // 0 => 18
 	NotifyCooldown time.Duration `toml:"notify_cooldown"` // 0 => 30s

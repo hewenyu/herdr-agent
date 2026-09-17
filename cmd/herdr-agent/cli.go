@@ -179,7 +179,7 @@ func commandTable() []command {
 		{"transcript", "<pane>", "print the agent's native transcript file path", cmdTranscript},
 		{"watch", "", "stream status transitions, one timestamped line each", cmdWatch},
 		{"serve", "", "run the Feishu bridge until SIGINT or SIGTERM", cmdServe},
-		{"configure", "[--listen 127.0.0.1:18790] [--open]", "open local project and agent launch configuration", cmdConfigure},
+		{"configure", "[--listen IP:port] [--open]", "open local project and agent launch configuration", cmdConfigure},
 		// "or reuse one" is in the summary because the run that motivated these
 		// flags had an app already and was offered only two ways forward: move a
 		// file, or make a second permanent app. Reuse is the third, and it is the
