@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -41,6 +42,9 @@ type outgoing struct {
 	// replying to a message is how the user drives that agent (S2 §3.5): this
 	// is the primary interaction model, not a convenience.
 	PaneID string
+	// DeliveryKey identifies a task transcript record. Confirmed post chunks
+	// can be resumed after failure or restart without repeating their prefix.
+	DeliveryKey string
 }
 
 // send delivers o, splitting, downgrading and retrying as the measured
@@ -86,8 +90,22 @@ func (b *bridge) send(ctx context.Context, o outgoing) ([]string, error) {
 	}
 
 	chunks := outbound.Split(body, outbound.SplitTarget)
+	var checkpoint string
+	if o.DeliveryKey != "" {
+		checkpoint = fmt.Sprintf("post:%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%t\n%d\n%s", o.DeliveryKey, markdown, outbound.SplitTarget, body))))
+	}
+	confirmed := 0
+	if checkpoint != "" {
+		confirmed = b.deliveryStore.receipt(checkpoint).Chunks
+		if confirmed > len(chunks) {
+			return nil, errors.New("bridge: delivered chunk checkpoint exceeds this message")
+		}
+	}
 	ids := make([]string, 0, len(chunks))
-	for _, c := range chunks {
+	for index, c := range chunks {
+		if index < confirmed {
+			continue
+		}
 		out := lark.Out{
 			ChatID: o.ChatID,
 			// Every chunk replies to the same target rather than chaining onto
@@ -110,6 +128,11 @@ func (b *bridge) send(ctx context.Context, o outgoing) ([]string, error) {
 		}
 		b.bind(id, o.PaneID)
 		ids = append(ids, id)
+		if checkpoint != "" {
+			if err := b.deliveryStore.acknowledge(checkpoint, deliveryReceipt{Chunks: index + 1}); err != nil {
+				return ids, fmt.Errorf("bridge: persist delivered chunk: %w", err)
+			}
+		}
 	}
 	return ids, nil
 }
@@ -127,6 +150,9 @@ func (b *bridge) sendOne(ctx context.Context, out lark.Out) (string, error) {
 	for {
 		id, err := b.deps.Bot.Send(ctx, out)
 		if err == nil {
+			if id == "" {
+				return "", errors.New("bridge: send returned no message ID; delivery is unconfirmed")
+			}
 			return id, nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {

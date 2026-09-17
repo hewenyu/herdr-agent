@@ -1,10 +1,42 @@
 package tasktools
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/tasks"
 )
+
+func TestTaskQueryDoesNotDescribeProcessedClosingDecisionAsDelivery(t *testing.T) {
+	s, m, _ := harness(t)
+	processedAt := time.Date(2026, time.September, 17, 9, 0, 0, 0, time.UTC)
+	r := m.records["owned"]
+	r.Status, r.CloseRequested, r.CloseNotifiedAt = tasks.Completed, true, processedAt
+	m.records[r.ID] = r
+	result, err := call(s, "herdr_get", map[string]any{"task_id": r.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facts map[string]json.RawMessage
+	if err := json.Unmarshal(data, &facts); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimsNotice := facts["close_notified_at"]; claimsNotice {
+		t.Fatal("processed closing decision was exposed as a delivered notification")
+	}
+	var got time.Time
+	if err := json.Unmarshal(facts["close_decision_processed_at"], &got); err != nil || !got.Equal(processedAt) {
+		t.Fatalf("closing decision checkpoint lost: %s, %v", data, err)
+	}
+	if !m.records[r.ID].CloseNotifiedAt.Equal(processedAt) {
+		t.Fatal("query changed the internal closing grace-period checkpoint")
+	}
+}
 
 func TestListDefaultsToUnfinishedTasksEvenDuringCleanup(t *testing.T) {
 	s, m, _ := harness(t)

@@ -77,8 +77,16 @@ func memoryPrepare(ctx context.Context, engine Engine, oldSummary string, messag
 	// carried in the summary, while the current user message stays verbatim.
 	cut, limit := 0, 0
 	var recent []Message
-	for rounds := min(memoryRecentRounds, (len(messages)-1)/2); rounds >= 0; rounds-- {
-		cut = len(messages) - (rounds*2 + 1)
+	// Confirmed notifications can add consecutive assistant messages or precede
+	// the first user turn. Choose boundaries from actual user turns, not parity.
+	boundaries := []int{0}
+	for i := 1; i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			boundaries = append(boundaries, i)
+		}
+	}
+	for rounds := min(memoryRecentRounds, len(boundaries)-1); rounds >= 0; rounds-- {
+		cut = boundaries[len(boundaries)-1-rounds]
 		if cut == 0 && oldSummary == "" {
 			continue
 		}
@@ -126,15 +134,11 @@ func memoryPrepare(ctx context.Context, engine Engine, oldSummary string, messag
 }
 
 func memoryValidMessages(messages []Message) bool {
-	if len(messages)%2 != 1 {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
 		return false
 	}
-	for i, message := range messages {
-		role := "user"
-		if i%2 == 1 {
-			role = "assistant"
-		}
-		if message.Role != role || !utf8.ValidString(message.Content) {
+	for _, message := range messages {
+		if (message.Role != "user" && message.Role != "assistant") || !utf8.ValidString(message.Content) {
 			return false
 		}
 	}
@@ -180,13 +184,18 @@ func memoryChunk(summary string, old []Message, index, offset, limit, budget int
 		return nil, index, offset, errMemoryBudget
 	}
 	for index < len(old) {
-		if offset == 0 && index%2 == 0 && index+1 < len(old) {
-			pair := append(append([]memoryExcerpt(nil), parts...),
-				memoryExcerpt{Role: old[index].Role, Content: old[index].Content},
-				memoryExcerpt{Role: old[index+1].Role, Content: old[index+1].Content})
-			if fits(pair) {
-				parts = pair
-				index += 2
+		if offset == 0 && old[index].Role == "user" && index+1 < len(old) {
+			end := index + 1
+			for end < len(old) && old[end].Role == "assistant" {
+				end++
+			}
+			round := append([]memoryExcerpt(nil), parts...)
+			for _, message := range old[index:end] {
+				round = append(round, memoryExcerpt{Role: message.Role, Content: message.Content})
+			}
+			if fits(round) {
+				parts = round
+				index = end
 				continue
 			}
 			if len(parts) > 0 {

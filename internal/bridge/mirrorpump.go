@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
 	"github.com/hewenyu/herdr-agent/internal/lark"
@@ -94,7 +95,8 @@ func (p paneResolver) Resolve(paneID string) (path, kind string, ok bool) {
 
 // mirrorStream is one Feishu message being edited as a pane keeps talking.
 type mirrorStream struct {
-	s lark.Stream
+	s       lark.Stream
+	records map[deliveryID]struct{}
 	// lastAt is when something was last appended, on the bridge's clock. It is
 	// what decides that a turn has ended.
 	lastAt time.Time
@@ -182,7 +184,7 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 	a := b.mirrorAgent(pt.PaneID)
 	id, coordinated := b.deliveryID(a, pt.Turn)
 	if pt.Turn.Role == mirrorRoleAssistant {
-		if _, sent := delivery.records[id]; coordinated && sent {
+		if _, sent := delivery.lookup(id); coordinated && sent {
 			return
 		}
 		if b.tasks != nil {
@@ -205,11 +207,18 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 	// Both then produce a message id, so the message is bound to its pane and
 	// replying to it in the chat routes straight back to that agent (S2 §3.5).
 	// A streamed message cannot be bound: lark.Stream reports no id.
-	if pt.Turn.Role != mirrorRoleAssistant || outbound.HasMarkdownTable(body) {
-		b.closeMirrorStream(ctx, streams, pt.PaneID, "this turn goes out as its own message")
-		if b.postTurn(ctx, pt.PaneID, title, body) && pt.Turn.Role == mirrorRoleAssistant && coordinated {
-			delivery.remember(id, nil)
+	post := func() {
+		if pt.Turn.Role == mirrorRoleAssistant && b.taskDeliveryEnabled(a) {
+			if err := b.postTaskRecord(ctx, a, pt.Turn, id, coordinated); err != nil {
+				b.log.Error("bridge: could not post task transcript", "pane", pt.PaneID, "err", err)
+			}
+			return
 		}
+		b.postTurn(ctx, pt.PaneID, title, body)
+	}
+	if pt.Turn.Role != mirrorRoleAssistant || outbound.HasMarkdownTable(body) || (b.taskDeliveryEnabled(a) && utf8.RuneCountInString(body) > outbound.SplitTarget) {
+		b.closeMirrorStream(ctx, streams, pt.PaneID, "this turn goes out as its own message")
+		post()
 		return
 	}
 
@@ -228,9 +237,7 @@ func (b *bridge) mirrorTurn(ctx context.Context, streams map[string]*mirrorStrea
 			// opens with.
 			b.log.Warn("bridge: could not open a mirror stream; posting this turn as one message",
 				"pane", pt.PaneID, "err", err)
-			if b.postTurn(ctx, pt.PaneID, title, body) && coordinated {
-				delivery.remember(id, nil)
-			}
+			post()
 			return
 		}
 		streams[pt.PaneID] = &mirrorStream{s: s, lastAt: b.now()}
@@ -267,6 +274,26 @@ func (b *bridge) postTurn(ctx context.Context, paneID, title, body string) bool 
 		return false
 	}
 	return true
+}
+
+// Both completion fallback and mirror fallback use the same body and chunk
+// identity, so a retry resumes confirmed chunks even if the other path wins.
+func (b *bridge) postTaskRecord(ctx context.Context, a agents.Agent, turn mirror.Turn, id deliveryID, coordinated bool) error {
+	key := ""
+	if coordinated {
+		key = id.String()
+	}
+	_, err := b.send(ctx, outgoing{
+		ChatID: b.notifyChat(a.PaneID), PaneID: a.PaneID,
+		Markdown: mirrorBody(turn), Title: mirrorTitle(a, turn.Role), DeliveryKey: key,
+	})
+	if err != nil {
+		return err
+	}
+	if coordinated {
+		return b.paneDelivery(a.PaneID).confirm(id)
+	}
+	return nil
 }
 
 // sweepMirrorStreams closes the message of every pane that has gone quiet.
@@ -321,17 +348,14 @@ func (b *bridge) closeMirrorStream(ctx context.Context, streams map[string]*mirr
 
 	delivery := b.paneDelivery(paneID)
 	var flushErr error
-	for _, pending := range delivery.records {
-		if pending == st {
-			// SDK timer updates can fail without surfacing their error, and
-			// Close does no update once that timer has fired. Only an explicit
-			// Flush confirms the final content before suppressing Done.
-			flushErr = st.s.Flush(ctx)
-			break
-		}
+	if len(st.records) != 0 {
+		// SDK timer updates can fail without surfacing their error, and
+		// Close does no update once that timer has fired. Only an explicit
+		// Flush confirms the final content before suppressing Done.
+		flushErr = st.s.Flush(ctx)
 	}
 	err := errors.Join(flushErr, st.s.Close(ctx))
-	delivery.finishStream(st, err == nil)
+	err = errors.Join(err, delivery.finishStream(st, err == nil))
 	if err != nil {
 		// Close is what flushes the last chunk, so a failure here is content
 		// the user never sees rather than a tidy-up problem (S2 §3.8: never

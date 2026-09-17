@@ -20,7 +20,10 @@ type Options struct {
 	// AllowedOwner rechecks persisted owners against the current installation allowlist.
 	AllowedOwner func(string) bool
 	Report       func(context.Context, Record) error
-	Config       config.Tasks
+	// AsyncNotifications isolates model/transport latency from agent execution.
+	// BeforeClose remains synchronous because it precedes destructive cleanup.
+	AsyncNotifications bool
+	Config             config.Tasks
 	// Projects supplies the current local configuration for each new task.
 	Projects interface{ Snapshot() config.Tasks }
 	// PrepareProject initializes/checks the configured primary repository before
@@ -218,6 +221,7 @@ func (m *Manager) Request(owner, id, action string) (Record, error) {
 			}
 			r.Error = ""
 			r.ReportedNotice = ""
+			r.ReportedStateKey = ""
 			r.Status = Starting
 		default:
 			return errors.New("未知任务操作")
@@ -300,13 +304,33 @@ func (m *Manager) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, 4)
+	notificationSlots := make(chan struct{}, 2)
+	var notifying sync.Map
 	defer wg.Wait()
 	for {
 		for _, r := range m.store.List() {
 			if !m.OwnerAllowed(r.OwnerID) {
 				continue
 			}
-			if r.Status == Destroyed && (r.GUID == "" || r.SyncedDescription == Description(r)) && (m.opts.Report == nil || NotificationChat(r) == "" || r.ReportedNotice == Notice(r)) {
+			if m.opts.AsyncNotifications && (NotificationChat(r) != "" || (!r.Announced && r.ChatID != "" && !r.ChatDeleted)) {
+				if _, busy := notifying.LoadOrStore(r.ID, true); !busy {
+					wg.Add(1)
+					go func(id string) {
+						defer wg.Done()
+						defer notifying.Delete(id)
+						select {
+						case notificationSlots <- struct{}{}:
+							defer func() { <-notificationSlots }()
+						case <-ctx.Done():
+							return
+						}
+						noticeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+						defer cancel()
+						m.notifyLifecycle(noticeCtx, id)
+					}(r.ID)
+				}
+			}
+			if r.Status == Destroyed && (r.GUID == "" || r.SyncedDescription == Description(r)) && (m.opts.Report == nil || NotificationChat(r) == "" || notificationAlreadyReported(r)) {
 				continue
 			}
 			m.mu.Lock()
@@ -365,16 +389,15 @@ func (m *Manager) report(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
-	notice := Notice(r)
+	stateKey := NotificationStateKey(r)
 	chat := NotificationChat(r)
-	sameReview := r.Status != Review || r.ReviewVersion == r.ReportedReviewVersion
-	if chat == "" || notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID && sameReview) {
+	if chat == "" || stateKey == "" || notificationAlreadyReported(r) {
 		return
 	}
 	// Only incremental running progress is throttled. State changes, blockers,
 	// acceptance, reopened tasks and errors must always reach the owner promptly.
 	if chat == r.ReportedChatID && r.Status == Running && r.Error == "" && r.SyncError == "" &&
-		strings.HasPrefix(r.ReportedNotice, noticePrefix(Running)) && time.Since(r.ReportedAt) < runningReportInterval {
+		(r.ReportedStatus == Running || (r.ReportedStateKey == "" && strings.HasPrefix(r.ReportedNotice, noticePrefix(Running)))) && time.Since(r.ReportedAt) < runningReportInterval {
 		return
 	}
 	if err := m.opts.Report(ctx, r); err != nil {
@@ -382,11 +405,19 @@ func (m *Manager) report(ctx context.Context, id string) {
 		return
 	}
 	reviewVersion := r.ReviewVersion
+	reportedStatus, sequence := r.Status, r.ReportedSequence+1
+	if r.Error != "" || r.SyncError != "" {
+		reportedStatus = "" // recovery is a transition, not throttled progress
+	}
+	notice := Notice(r) // retained only for compatibility with existing checkpoints
 	if _, err := m.change(id, func(r *Record) {
 		r.ReportedNotice = notice
 		r.ReportedChatID = chat
 		r.ReportedAt = time.Now()
 		r.ReportedReviewVersion = reviewVersion
+		r.ReportedStateKey = stateKey
+		r.ReportedStatus = reportedStatus
+		r.ReportedSequence = sequence
 	}); err != nil {
 		slog.Warn("tasks: report checkpoint failed", "task", id, "err", err)
 	}
@@ -396,8 +427,10 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 	// Publish actionable state changes in the task group. The welcome already
 	// acknowledges normal startup; before the group exists, only failures reach
 	// the entry chat, where the creation reply is separate.
-	m.report(ctx, id)
-	defer m.report(ctx, id)
+	if !m.opts.AsyncNotifications {
+		m.report(ctx, id)
+		defer m.report(ctx, id)
+	}
 	r, _ := m.store.Get(id)
 	if r.Status == Destroying {
 		if err := m.destroy(ctx, r); err != nil {
@@ -410,7 +443,7 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 			return err
 		}
 		r, _ = m.store.Get(id)
-		if !r.CloseRequested || r.Status != Completed {
+		if !m.opts.AsyncNotifications && (!r.CloseRequested || r.Status != Completed) {
 			m.report(ctx, id)
 		}
 	}
@@ -470,7 +503,7 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 		}
 		r, _ = m.store.Get(id)
 	}
-	if !r.Announced && m.opts.Announce != nil {
+	if !m.opts.AsyncNotifications && !r.Announced && m.opts.Announce != nil {
 		if err := m.opts.Announce(ctx, r); err != nil {
 			return err
 		}
@@ -647,7 +680,9 @@ func (m *Manager) step(ctx context.Context, id, step string, fn func(Record) (fu
 	if err != nil {
 		return err
 	}
-	m.report(ctx, id)
+	if !m.opts.AsyncNotifications {
+		m.report(ctx, id)
+	}
 	// A lifecycle request can arrive while the progress notification is in
 	// flight. No external side effect has started yet, so abandon its intent.
 	current, _ := m.store.Get(id)
@@ -681,7 +716,7 @@ func (m *Manager) step(ctx context.Context, id, step string, fn func(Record) (fu
 		return m.fail(id, step+": "+callErr.Error(), ambiguous)
 	}
 	_, err = m.change(id, func(r *Record) { apply(r); r.Pending = ""; r.UpdatedAt = time.Now() })
-	if err == nil {
+	if err == nil && !m.opts.AsyncNotifications {
 		m.report(ctx, id)
 	}
 	return err

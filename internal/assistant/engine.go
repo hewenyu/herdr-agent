@@ -41,6 +41,7 @@ type Message struct {
 	Content  string `json:"content"`
 	Kind     string `json:"kind,omitempty"`
 	Dialogue string `json:"dialogue,omitempty"`
+	TurnID   string `json:"turn_id,omitempty"`
 }
 
 type ToolCall func(context.Context, string, json.RawMessage) (any, error)
@@ -237,7 +238,11 @@ func (t *taskTool) InvokableRun(ctx context.Context, arguments string, _ ...tool
 	if err != nil {
 		// Business failures are useful model context (e.g. unknown project),
 		// so the framework can explain them or correct the next tool call.
-		result = map[string]any{"ok": false, "error": strings.ReplaceAll(err.Error(), t.apiKey, "[redacted]")}
+		execution := "unknown"
+		if errors.Is(err, tasktools.ErrNotExecuted) || t.readOnly {
+			execution = "not_executed"
+		}
+		result = map[string]any{"ok": false, "error": strings.ReplaceAll(err.Error(), t.apiKey, "[redacted]"), "execution": execution}
 	}
 	encoded, err := json.Marshal(result)
 	text := `{"ok":false,"error":"无法编码工具返回结果"}`

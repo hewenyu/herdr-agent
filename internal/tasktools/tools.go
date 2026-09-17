@@ -159,16 +159,18 @@ type Task struct {
 	PendingOperation   string       `json:"pending_operation,omitempty"`
 	CompletionRequest  string       `json:"completion_request,omitempty"`
 	CloseRequested     bool         `json:"close_requested,omitempty"`
-	CloseNotifiedAt    time.Time    `json:"close_notified_at,omitempty"`
-	CompletedAt        string       `json:"completed_at,omitempty"`
-	TaskURL            string       `json:"task_url,omitempty"`
-	ChatURL            string       `json:"chat_url,omitempty"`
-	UpdatedAt          time.Time    `json:"updated_at"`
-	RemoteCheckedAt    time.Time    `json:"remote_checked_at"`
+	// A processed decision may intentionally skip the notification. This is
+	// the closing grace-period checkpoint, not evidence of message delivery.
+	CloseDecisionProcessedAt time.Time `json:"close_decision_processed_at,omitempty"`
+	CompletedAt              string    `json:"completed_at,omitempty"`
+	TaskURL                  string    `json:"task_url,omitempty"`
+	ChatURL                  string    `json:"chat_url,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at"`
+	RemoteCheckedAt          time.Time `json:"remote_checked_at"`
 }
 
 func view(r tasks.Record) Task {
-	v := Task{ID: r.ID, Title: r.Title, Project: r.Project, Agent: r.Agent, Started: r.Started, PromptSent: r.PromptSent, Status: r.Status, StatusLabel: r.Status.Label(), Progress: r.Detail, LatestReply: r.Result, Error: r.Error, SyncError: r.SyncError, PendingOperation: r.Pending, CompletionRequest: r.CompletionRequest, CloseRequested: r.CloseRequested, CloseNotifiedAt: r.CloseNotifiedAt, CompletedAt: r.CompletedAt, TaskURL: r.URL, UpdatedAt: r.UpdatedAt, RemoteCheckedAt: r.RemoteCheckedAt}
+	v := Task{ID: r.ID, Title: r.Title, Project: r.Project, Agent: r.Agent, Started: r.Started, PromptSent: r.PromptSent, Status: r.Status, StatusLabel: r.Status.Label(), Progress: r.Detail, LatestReply: r.Result, Error: r.Error, SyncError: r.SyncError, PendingOperation: r.Pending, CompletionRequest: r.CompletionRequest, CloseRequested: r.CloseRequested, CloseDecisionProcessedAt: r.CloseNotifiedAt, CompletedAt: r.CompletedAt, TaskURL: r.URL, UpdatedAt: r.UpdatedAt, RemoteCheckedAt: r.RemoteCheckedAt}
 	if r.Status == tasks.Destroyed {
 		// Preserve the stored request for audit, but it is no longer pending.
 		v.CloseRequested = false
@@ -214,7 +216,15 @@ type arguments struct {
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
-func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
+func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (result any, callErr error) {
+	// Until an existing operation is encountered or mutation starts, rejection
+	// is a local validation outcome and is safe for the model to correct.
+	mayHaveExecuted := false
+	defer func() {
+		if callErr != nil && !mayHaveExecuted {
+			callErr = notExecuted(callErr)
+		}
+	}()
 	if !s.opts.Manager.OwnerAllowed(s.opts.OwnerID) {
 		return nil, errors.New("当前用户不在本项目允许名单内")
 	}
@@ -337,6 +347,7 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 	fingerprint := hex.EncodeToString(sum[:])
 	key := s.opts.OwnerID + "\x00" + a.RequestID
 	if op, ok := s.journal.ops[key]; ok {
+		mayHaveExecuted = true
 		if op.Fingerprint != fingerprint {
 			return nil, errors.New("request_id 已用于另一项操作或不同参数，请为新操作生成新 ID")
 		}
@@ -344,7 +355,11 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 			return nil, errors.New("此请求的执行结果尚未确认，已阻止重复执行；请查询任务和会话，不要自动换 ID 重发")
 		}
 		if op.Error != "" {
-			return nil, errors.New(op.Error)
+			err := errors.New(op.Error)
+			if op.NotExecuted {
+				err = notExecuted(err)
+			}
+			return nil, err
 		}
 		var result receipt
 		if err := json.Unmarshal(op.Result, &result); err != nil {
@@ -369,14 +384,19 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 	if err := s.journal.put(key, op); err != nil {
 		return nil, fmt.Errorf("保存操作记录失败，未执行: %w", err)
 	}
-	result, callErr := s.mutate(ctx, name, a)
+	mayHaveExecuted = true
+	result, callErr = s.mutate(ctx, name, a)
 	op.Done = true
 	if callErr != nil {
 		op.Error = callErr.Error()
+		op.NotExecuted = errors.Is(callErr, ErrNotExecuted)
 	} else {
 		op.Result, _ = json.Marshal(result)
 	}
 	if err := s.journal.put(key, op); err != nil {
+		if op.NotExecuted {
+			return nil, notExecuted(errors.New("操作未执行，但无法保存失败回执"))
+		}
 		return nil, errors.New("操作可能已经执行，但无法保存回执；请查询任务状态，不要自动重发")
 	}
 	return result, callErr
@@ -442,20 +462,20 @@ func (s *Service) mutate(ctx context.Context, name string, a arguments) (receipt
 	} else {
 		r, err = s.owned(a.TaskID)
 		if err != nil {
-			return out, err
+			return out, notExecuted(err)
 		}
 		if name == "herdr_send" {
 			if r.CloseRequested || r.Status == tasks.Completed || r.Status == tasks.Destroying || r.Status == tasks.Destroyed || !r.Started || r.PaneID == "" {
-				return out, errors.New("任务当前不能接收指令，请先查询状态；已完成任务须先重新打开")
+				return out, notExecuted(errors.New("任务当前不能接收指令，请先查询状态；已完成任务须先重新打开"))
 			}
 			agent, ok := s.opts.Registry.Get(r.PaneID)
 			if !ok || agent.PaneID != r.PaneID || agent.Kind != r.Agent || agent.WorkspaceID != r.WorkspaceID {
-				return out, errors.New("任务 agent 不可用或已被替换")
+				return out, notExecuted(errors.New("任务 agent 不可用或已被替换"))
 			}
 			// Approval stays with the human in the task group. A plain follow-up
 			// must not intentionally cancel an existing approval prompt.
 			if agent.Status == agents.StatusBlocked {
-				return out, errors.New("agent 正在等待审批，请先在任务会话中处理")
+				return out, notExecuted(errors.New("agent 正在等待审批，请先在任务会话中处理"))
 			}
 			d, sendErr := s.opts.Controller.Say(ctx, agents.Guard{PaneID: agent.PaneID, Kind: agent.Kind, StateSeq: agent.StateSeq, IssuedAt: time.Now(), RequireUnblocked: true}, a.Text)
 			if sendErr != nil {
@@ -497,7 +517,7 @@ func (s *Service) Tools() []Tool {
 	tools := []Tool{
 		makeTool("herdr_projects", "查看本地页面最新配置的项目、默认 agent、目录数量和 Bypass 模式。项目可以关联多个文件夹，不可指定任意路径。", true, false, map[string]any{}),
 		makeTool("herdr_list", "默认只查询本人未结束的任务，用状态、进展、最近回复和同步错误总结。review 表示待验收，不等于完成。只有用户明确查询历史、所有任务或已完成/已销毁任务时才用 all=true 包含已结束记录。", true, false, map[string]any{"all": map[string]any{"type": "boolean"}}),
-		makeTool("herdr_get", "查询一个任务的当前状态、最近回复、飞书任务和会话链接。remote_checked_at 是最近核对飞书的时间，sync_error 表示同步问题。", true, false, map[string]any{"task_id": id}, "task_id"),
+		makeTool("herdr_get", "查询一个任务的当前状态、最近回复、飞书任务和会话链接。remote_checked_at 是最近核对飞书的时间，sync_error 表示同步问题。close_decision_processed_at 仅表示关闭前通知决策已处理，决策可能是不发送，不能据此认定通知已送达。", true, false, map[string]any{"task_id": id}, "task_id"),
 		makeTool("herdr_create", "按用户要求登记编码任务，使用项目的全部目录启动 agent，自动创建飞书任务、独立群和 herdr 会话。默认使用已配置项目；仅用户明确要求新建项目时设置 new_project=true，并给出新项目名称，会在本机用户 ~/herder-agent-code/<项目名>/ 创建目录并保存关联。未知项目不能自动当作新项目。accepted 仅表示登记，调用 herdr_get 查询进展。", false, false, map[string]any{"request_id": req, "text": str("完整任务要求"), "project": str("项目名称；已有项目省略时使用默认项目，新项目必须明确命名"), "new_project": map[string]any{"type": "boolean", "description": "仅用户明确要求新建项目时为 true；新建任务不等于新建项目，默认 false"}, "agent": map[string]any{"type": "string", "enum": []string{"codex", "claude"}}}, "request_id", "text"),
 		makeTool("herdr_send", "给指定任务的 agent 发送用户的后续要求。不会代替人处理审批。delivered 只代表投递已验证，queued 表示 agent 稍后读取；unconfirmed 不得称为成功或自动重发。", false, false, map[string]any{"request_id": req, "task_id": id, "text": str("用户的后续要求")}, "request_id", "task_id", "text"),
 	}

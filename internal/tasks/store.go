@@ -96,6 +96,12 @@ type Record struct {
 	ReportedAt            time.Time `json:"reported_at,omitempty"`
 	ReviewVersion         uint64    `json:"review_version,omitempty"`
 	ReportedReviewVersion uint64    `json:"reported_review_version,omitempty"`
+	ReportedStateKey      string    `json:"reported_state_key,omitempty"`
+	ReportedStatus        Status    `json:"reported_status,omitempty"`
+	ReportedSequence      uint64    `json:"reported_sequence,omitempty"`
+	CloseVersion          uint64    `json:"close_version,omitempty"`
+	ResultDelivered       bool      `json:"result_delivered,omitempty"`
+	ResultDeliveredAt     time.Time `json:"result_delivered_at,omitempty"`
 	SyncedDescription     string    `json:"synced_description,omitempty"`
 }
 
@@ -126,9 +132,23 @@ func Open(path string) (*Store, error) {
 	if disk.Version != 1 || disk.Records == nil {
 		return nil, errors.New("tasks: unsupported or incomplete state")
 	}
+	migrated := false
 	for id, r := range disk.Records {
 		if id != r.ID || id == "" || r.OwnerID == "" {
 			return nil, errors.New("tasks: invalid persisted binding")
+		}
+		if migrateNotificationState(&r) {
+			disk.Records[id] = r
+			migrated = true
+		}
+	}
+	if migrated {
+		data, err := json.MarshalIndent(disk, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := statefile.Write(path, data, 0600); err != nil {
+			return nil, fmt.Errorf("tasks: migrate notification state: %w", err)
 		}
 	}
 	s.records = disk.Records
@@ -157,6 +177,17 @@ func (s *Store) Update(id string, fn func(*Record) error) (Record, error) {
 	original, existed := s.records[id]
 	if err := fn(&r); err != nil {
 		return r, err
+	}
+	if existed {
+		if r.Status == Review && original.Status != Review && r.ReviewVersion <= original.ReviewVersion {
+			r.ReviewVersion = original.ReviewVersion + 1
+		}
+		if r.Status == Running && original.Status != Running {
+			r.ResultDelivered, r.ResultDeliveredAt = false, time.Time{}
+		}
+		if (!original.CloseRequested && r.CloseRequested) || (!original.CloseRequested && !r.CloseRequested && r.Status == Destroying && original.Status != Destroying) {
+			r.CloseVersion = original.CloseVersion + 1
+		}
 	}
 	if r.ID != id || r.OwnerID == "" {
 		return r, errors.New("tasks: invalid record")

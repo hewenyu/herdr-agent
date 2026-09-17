@@ -159,7 +159,23 @@ func serviceReply(t *testing.T, s *Service, in bridge.AssistantMessage) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmServiceReply(t, s, in, answer)
 	return answer
+}
+
+func confirmServiceReply(t *testing.T, s *Service, in bridge.AssistantMessage, answer string) {
+	t.Helper()
+	start, err := s.BeginReplyDelivery(context.Background(), in, answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start {
+		if err := s.RecordReplyDelivery(context.Background(), in, answer, bridge.AssistantReplyDelivery{
+			MessageIDs: []string{"delivered-" + in.MessageID}, Complete: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func onlySessionFile(t *testing.T, h *serviceHarness) string {
@@ -484,7 +500,11 @@ func TestServiceSerializesSameChatAndHonorsWaitingContext(t *testing.T) {
 	s := h.service(t, e)
 	finished := make(chan error, 1)
 	go func() {
-		_, err := s.Reply(context.Background(), serviceMessage("alice", "chat-a", "first", "blocked first turn"))
+		in := serviceMessage("alice", "chat-a", "first", "blocked first turn")
+		answer, err := s.Reply(context.Background(), in)
+		if err == nil {
+			confirmServiceReply(t, s, in, answer)
+		}
 		finished <- err
 	}()
 	select {

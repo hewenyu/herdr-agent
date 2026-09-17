@@ -352,6 +352,7 @@ func TestTaskNotificationsAndMirrorsStayInTheirTaskChats(t *testing.T) {
 	_, store := attachTaskManager(t, h, first, second)
 	a, b := taskAgent(first), taskAgent(second)
 	h.reg.setAgents(a, b)
+	h.transcript(b.PaneID, writeTranscript(t, claudeFixture(t)...))
 	ctx := context.Background()
 	if err := h.b.PushBlocked(ctx, a, permissionDialog()); err != nil {
 		t.Fatal(err)

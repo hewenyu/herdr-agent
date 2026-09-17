@@ -162,40 +162,49 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	// a file the agent may already have moved on in.
 	ans, record := b.doneAnswerRecord(a, tail)
 	result := ans.Text
+	if b.taskDeliveryEnabled(a) {
+		result = ""
+	}
 	if record != nil {
 		result = record.Text
 	}
 	b.taskObserve(a, tasks.Review, tasks.ReviewDetail, result)
-	var id deliveryID
-	var coordinated bool
-	if record != nil {
-		id, coordinated = b.deliveryID(a, *record)
-		if stream, mirrored := delivery.records[id]; coordinated && mirrored {
+	if b.taskDeliveryEnabled(a) {
+		// A screen tail or a tool-only record is not a final answer. The task
+		// notification owns lifecycle facts when no assistant text is available.
+		if record == nil || strings.TrimSpace(record.Text) == "" {
+			return nil
+		}
+		id, coordinated := b.deliveryID(a, *record)
+		markDelivered := func() error {
+			if err := b.tasks.MarkResultDelivered(a.PaneID, record.Text); err != nil {
+				return err
+			}
+			return b.recordDeliveredResult(ctx, a, record.Text, id, coordinated)
+		}
+		if stream, mirrored := delivery.lookup(id); coordinated && mirrored {
 			if stream == nil {
-				return nil
+				if err := delivery.confirm(id); err != nil {
+					return err
+				}
+				return markDelivered()
 			}
 			// Append can buffer its last chunk. Confirm the answer reached the
 			// existing message before suppressing the completion fallback.
-			err := stream.s.Flush(ctx)
-			delivery.finishStream(stream, err == nil)
-			if err == nil {
-				return nil
+			flushErr := stream.s.Flush(ctx)
+			persistErr := delivery.finishStream(stream, flushErr == nil)
+			if flushErr == nil {
+				if persistErr != nil {
+					return persistErr
+				}
+				return markDelivered()
 			}
-			b.log.Warn("bridge: mirror flush failed; sending completion fallback", "pane", a.PaneID, "err", err)
+			b.log.Warn("bridge: mirror flush failed; sending completion fallback", "pane", a.PaneID, "err", flushErr)
 		}
-	}
-	remember := func(err error) error {
-		if err == nil && coordinated {
-			delivery.remember(id, nil)
+		if err := b.postTaskRecord(ctx, a, *record, id, coordinated); err != nil {
+			return err
 		}
-		return err
-	}
-	if record != nil && ans.Truncated && b.taskDeliveryEnabled(a) {
-		// A later full mirror record may be suppressed after this delivery.
-		// Send the whole task result through the splitting post path instead
-		// of treating a card excerpt as delivery of the complete answer.
-		ans.Text, ans.Truncated = record.Text, false
-		return remember(b.donePost(ctx, a, ans, tail, ""))
+		return markDelivered()
 	}
 
 	// No nonce is minted. Both of this card's buttons are inert — Select aims
@@ -206,7 +215,7 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	card, err := cards.BuildDone(a, ans, "", b.now())
 	if err != nil {
 		b.log.Error("bridge: could not build the finished card", "pane", a.PaneID, "err", err)
-		return remember(b.donePost(ctx, a, ans, tail, ""))
+		return b.donePost(ctx, a, ans, tail, "")
 	}
 
 	if _, err := b.send(ctx, outgoing{
@@ -221,9 +230,9 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 		// transition to try again on.
 		b.log.Error("bridge: finished card was not delivered; falling back to plain text",
 			"pane", a.PaneID, "err", err)
-		return remember(b.donePost(ctx, a, ans, tail, "the card could not be delivered"))
+		return b.donePost(ctx, a, ans, tail, "the card could not be delivered")
 	}
-	return remember(nil)
+	return nil
 }
 
 // donePost is the finished notification without the card, and it carries the

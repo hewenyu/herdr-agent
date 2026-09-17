@@ -4,13 +4,30 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/lark"
+	"github.com/hewenyu/herdr-agent/internal/outbound"
 )
 
 // Assistant handles task management in the entry chat and bound task groups.
 type Assistant interface {
 	Reply(context.Context, AssistantMessage) (string, error)
+}
+
+// AssistantReplyDelivery records the complete logical reply, not just its first
+// Feishu message. Incomplete delivery is never evidence that the user saw a proposal.
+type AssistantReplyDelivery struct {
+	MessageIDs []string
+	Complete   bool
+	Retryable  bool // known that no part left the machine
+}
+
+// AssistantDelivery optionally adds a durable outbox to the conversation.
+// Reserving before sending prevents duplicate posts after a lost acknowledgement.
+type AssistantDelivery interface {
+	BeginReplyDelivery(context.Context, AssistantMessage, string) (bool, error)
+	RecordReplyDelivery(context.Context, AssistantMessage, string, AssistantReplyDelivery) error
 }
 
 // AssistantMessage carries the authorized Feishu sender and the source message.
@@ -56,10 +73,11 @@ func (b *bridge) assistantMessage(ctx context.Context, m lark.Msg) (bool, error)
 		return true, nil
 	}
 
-	answer, err := b.assistant.Reply(ctx, AssistantMessage{
+	in := AssistantMessage{
 		OwnerID: m.UserID, ChatID: m.ChatID, MessageID: m.MessageID, Text: m.Text,
 		TaskID: taskID,
-	})
+	}
+	answer, err := b.assistant.Reply(ctx, in)
 	if err != nil || strings.TrimSpace(answer) == "" {
 		// Provider errors may contain request bodies or credentials. Neither the
 		// user-facing reply nor logs may include the original error or input.
@@ -78,8 +96,32 @@ func (b *bridge) assistantMessage(ctx context.Context, m lark.Msg) (bool, error)
 		// event handled: tools may already have acted before generation failed.
 		return true, nil
 	}
-	_, sendErr := b.send(ctx, outgoing{
+	delivery, tracksDelivery := b.assistant.(AssistantDelivery)
+	if tracksDelivery {
+		start, err := delivery.BeginReplyDelivery(ctx, in, answer)
+		if err != nil || !start {
+			return true, err
+		}
+	}
+	ids, sendErr := b.send(ctx, outgoing{
 		ChatID: m.ChatID, ReplyTo: m.MessageID, Markdown: answer,
 	})
+	if tracksDelivery {
+		complete := sendErr == nil && len(ids) > 0
+		for _, id := range ids {
+			complete = complete && id != ""
+		}
+		// Persist the outcome even if cancellation interrupted the network call.
+		// An incomplete/unknown send must not become visible history or be replayed.
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err := delivery.RecordReplyDelivery(recordCtx, in, answer, AssistantReplyDelivery{
+			MessageIDs: ids, Complete: complete,
+			Retryable: len(ids) == 0 && sendErr != nil && classifySend(sendErr) == outbound.ClassRetryable,
+		})
+		if err != nil {
+			return true, errors.Join(sendErr, err)
+		}
+	}
 	return true, sendErr
 }

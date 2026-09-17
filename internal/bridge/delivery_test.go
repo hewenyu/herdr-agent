@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,15 +17,28 @@ import (
 )
 
 func completionFixture(t *testing.T) (*harness, agents.Agent, mirror.PaneTurn, string) {
+	return completionFixtureFor(t, "claude")
+}
+
+func completionFixtureFor(t *testing.T, kind string) (*harness, agents.Agent, mirror.PaneTurn, string) {
 	t.Helper()
 	h := newHarness(t)
 	a := finishedAgent()
+	a.Kind = kind
 	r := taskBinding("completion", "oc_task", a.PaneID)
+	r.Agent = kind
 	a.WorkspaceID = r.WorkspaceID
 	attachTaskManager(t, h, r)
 	h.reg.setAgents(a)
 	records := claudeFixture(t)
 	path := writeTranscript(t, records[fxUserRead], records[fxAssistantAMD])
+	if kind == "codex" {
+		data, err := os.ReadFile(filepath.Join("..", "mirror", "testdata", "codex-rollout.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path = writeTranscript(t, strings.TrimSpace(string(data)))
+	}
 	h.transcript(a.PaneID, path)
 	turns, err := mirror.LastTurns(path, a.Kind, 2)
 	if err != nil || len(turns) != 2 {
@@ -32,40 +46,60 @@ func completionFixture(t *testing.T) (*harness, agents.Agent, mirror.PaneTurn, s
 	}
 	// The live parser and LastTurns start counting at different file offsets.
 	turns[1].Seq += 100
+	if kind == "codex" {
+		// Parse the live rollout independently, including a split JSONL record.
+		// Done later reads it through LastTurns with its own parser/window.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parser, _ := mirror.ParserFor(kind)
+		_, rest, err := parser.Parse(data[:len(data)/2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		live, _, err := parser.Parse(append(rest, data[len(data)/2:]...))
+		if err != nil || len(live) == 0 {
+			t.Fatalf("parse live Codex rollout: %v", err)
+		}
+		turns[1] = live[len(live)-1]
+	}
 	return h, a, mirror.PaneTurn{PaneID: a.PaneID, Turn: turns[1]}, path
 }
 
 func TestCompletionAndMirrorPublishAnswerOnceInEitherOrder(t *testing.T) {
-	for _, order := range []string{"mirror-first", "done-first", "concurrent"} {
-		t.Run(order, func(t *testing.T) {
-			h, a, turn, _ := completionFixture(t)
-			ctx := context.Background()
-			streams := map[string]*mirrorStream{}
-			done := func() {
-				if err := h.b.PushDone(ctx, a, scrollback()); err != nil {
-					t.Errorf("completion: %v", err)
+	for _, kind := range []string{"claude", "codex"} {
+		for _, order := range []string{"mirror-first", "done-first", "concurrent"} {
+			t.Run(kind+"/"+order, func(t *testing.T) {
+				h, a, turn, _ := completionFixtureFor(t, kind)
+				ctx := context.Background()
+				streams := map[string]*mirrorStream{}
+				done := func() {
+					if err := h.b.PushDone(ctx, a, scrollback()); err != nil {
+						t.Errorf("completion: %v", err)
+					}
 				}
-			}
-			mirrored := func() { h.b.mirrorTurn(ctx, streams, turn) }
-			switch order {
-			case "mirror-first":
-				mirrored()
-				done()
-			case "done-first":
-				done()
-				mirrored()
-			case "concurrent":
-				var wg sync.WaitGroup
-				wg.Add(2)
-				go func() { defer wg.Done(); mirrored() }()
-				go func() { defer wg.Done(); done() }()
-				wg.Wait()
-			}
-			h.b.closeAllMirrorStreams(ctx, streams)
-			if count := len(h.bot.openStreams()) + len(h.bot.sends()); count != 1 {
-				t.Fatalf("answer published %d times", count)
-			}
-		})
+				mirrored := func() { h.b.mirrorTurn(ctx, streams, turn) }
+				switch order {
+				case "mirror-first":
+					mirrored()
+					done()
+				case "done-first":
+					done()
+					mirrored()
+				case "concurrent":
+					var wg sync.WaitGroup
+					wg.Add(2)
+					go func() { defer wg.Done(); mirrored() }()
+					go func() { defer wg.Done(); done() }()
+					wg.Wait()
+				}
+				h.b.closeAllMirrorStreams(ctx, streams)
+				if count := len(h.bot.openStreams()) + len(h.bot.sends()); count != 1 {
+					t.Fatalf("answer published %d times", count)
+				}
+			})
+		}
 	}
 }
 
@@ -143,7 +177,7 @@ func TestSuccessfulStreamCloseDoesNotHideAnUndeliveredFinalUpdate(t *testing.T) 
 			if len(sends) != map[bool]int{false: 0, true: 1}[failed] {
 				t.Fatalf("completion delivery ignored the actual flush result: %+v", sends)
 			}
-			if failed && !strings.Contains(sends[0].Out.Card, fxAnswerAMD) {
+			if failed && !strings.Contains(sends[0].Out.Markdown, fxAnswerAMD) {
 				t.Fatal("undelivered final answer was lost")
 			}
 		})
@@ -159,7 +193,7 @@ func TestCompletionFallsBackWhenMirrorOpenAndPostBothFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	sends := h.bot.sends()
-	if len(sends) != 2 || sends[0].Err == nil || sends[1].Err != nil || !strings.Contains(sends[1].Out.Card, fxAnswerAMD) {
+	if len(sends) != 2 || sends[0].Err == nil || sends[1].Err != nil || !strings.Contains(sends[1].Out.Markdown, fxAnswerAMD) {
 		t.Fatalf("missing completion fallback: %+v", sends)
 	}
 }
@@ -182,7 +216,7 @@ func TestCompletionFallsBackAfterFailedAppendOrClose(t *testing.T) {
 				t.Fatal(err)
 			}
 			sends := h.bot.sends()
-			if len(sends) != 1 || !strings.Contains(sends[0].Out.Card, fxAnswerAMD) {
+			if len(sends) != 1 || !strings.Contains(sends[0].Out.Markdown, fxAnswerAMD) {
 				t.Fatalf("failed %s swallowed the completion result: %+v", failure, sends)
 			}
 		})

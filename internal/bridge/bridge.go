@@ -76,7 +76,8 @@ type bridge struct {
 
 	// deliveries coordinates transcript mirroring and completion notifications
 	// for each pane. Different panes can still publish concurrently.
-	deliveries sync.Map // pane ID -> *paneDelivery
+	deliveries    sync.Map // pane ID -> *paneDelivery
+	deliveryStore *DeliveryStore
 
 	// newNonce mints the single-use token a card's buttons carry (G17). A field
 	// so tests can make a card's identity predictable.
@@ -117,13 +118,14 @@ func newBridge(d Deps, opts ...Option) (*bridge, error) {
 	d = withDefaults(d)
 
 	b := &bridge{
-		deps:      d,
-		log:       slog.Default(),
-		newNonce:  randomNonce,
-		sleep:     realSleep,
-		newTicker: realTicker,
-		acks:      newBursts(),
-		pickers:   newPickerIndex(),
+		deps:          d,
+		log:           slog.Default(),
+		newNonce:      randomNonce,
+		sleep:         realSleep,
+		newTicker:     realTicker,
+		acks:          newBursts(),
+		pickers:       newPickerIndex(),
+		deliveryStore: &DeliveryStore{receipts: make(map[string]deliveryReceipt)},
 	}
 	// Options before the notifier, so that anything they set is in place by the
 	// time a subscription can deliver the first transition.
