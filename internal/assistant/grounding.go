@@ -58,6 +58,40 @@ func compactQuery(text string) string {
 	}, strings.TrimSpace(text))
 }
 
+// Listing history is a choice made by the user, not by an all=true argument
+// invented by the model. Keep this separate from group-bound task details.
+func taskHistoryRequested(text string) bool {
+	query := compactQuery(text)
+	for _, current := range []string{"未完成", "未结束", "进行中", "正在进行", "正在做"} {
+		if strings.Contains(query, current) {
+			return false
+		}
+	}
+	for _, marker := range []string{"历史", "所有任务", "全部任务", "已完成", "已销毁", "已结束", "已关闭"} {
+		if strings.Contains(query, marker) {
+			for _, negative := range []string{"不要", "不含", "不包括", "排除"} {
+				if strings.Contains(query, negative+marker) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return explicitAllQuery.MatchString(strings.ToLower(text))
+}
+
+var explicitAllQuery = regexp.MustCompile(`(^|[^a-z])all($|[^a-z])`)
+
+func activeTasks(records []tasktools.Task) []tasktools.Task {
+	active := make([]tasktools.Task, 0, len(records))
+	for _, r := range records {
+		if r.Status != tasks.Completed && r.Status != tasks.Destroyed {
+			active = append(active, r)
+		}
+	}
+	return active
+}
+
 func progressOnly(text string, records []tasktools.Task) bool {
 	query := compactQuery(text)
 	// Resolve a named task/project before recognizing a bounded status question.
@@ -83,7 +117,8 @@ func progressOnly(text string, records []tasktools.Task) bool {
 	case "进度", "进展", "状态", "任务进度", "项目进度", "任务状态", "项目状态", "任务的进度", "项目的进度", "当前任务", "当前进度", "目前进度", "现在进度", "当前任务进度", "目前任务进度", "现在任务进度", "最新进度", "任务最新进度",
 		"进度如何", "进度怎么样", "进度怎样", "进展如何", "进展怎么样", "任务进度如何", "项目进度如何", "任务进度怎么样", "项目进度怎么样", "任务的进度怎么样", "项目的进度怎么样", "现在任务进度如何", "现在项目进度如何", "现在任务进度怎么样", "现在项目进度怎么样", "当前任务进度如何", "目前任务进度如何", "任务现在什么进度", "项目现在什么进度", "任务现在进度如何", "任务现在进度怎么样", "现在什么进度", "目前什么进度", "现在进度如何", "现在进度怎么样",
 		"任务状态如何", "项目状态如何", "任务状态怎么样", "现在任务状态", "现在任务状态如何", "任务进行到哪一步了", "进行到哪一步了", "现在进行到哪了", "现在做得怎么样", "现在做得怎么样了", "做得怎么样了", "任务做得怎么样了", "任务完成了吗", "项目完成了吗", "这个任务完成了吗", "完成了吗", "做完了吗", "现在怎么样了",
-		"有哪些任务", "任务列表", "现在有哪些任务", "目前有哪些任务", "正在进行哪些任务", "现在正在进行哪些任务", "有哪些任务正在进行", "目前正在做哪些任务", "正在做哪些任务", "有哪些进行中的任务":
+		"有哪些任务", "任务列表", "现在有哪些任务", "现在还有哪些任务", "目前有哪些任务", "目前还有哪些任务", "还有哪些任务", "正在进行哪些任务", "现在正在进行哪些任务", "有哪些任务正在进行", "目前正在做哪些任务", "正在做哪些任务", "有哪些进行中的任务",
+		"历史任务", "历史任务列表", "任务历史", "所有任务", "所有任务列表", "全部任务", "全部任务列表", "有哪些历史任务", "有哪些已完成的任务", "有哪些已完成任务", "已完成任务", "已完成的任务", "已销毁任务", "已销毁的任务", "已结束任务", "已结束的任务", "已关闭任务", "已关闭的任务":
 		return true
 	default:
 		return false
@@ -94,8 +129,22 @@ func progressRecords(text string, records []tasktools.Task, group bool) []taskto
 	if group {
 		return records
 	}
-	var named, active []tasktools.Task
 	query := compactQuery(text)
+	var identified []tasktools.Task
+	for _, r := range records {
+		if len(r.ID) >= 2 && strings.Contains(query, compactQuery(r.ID)) {
+			identified = append(identified, r)
+		}
+	}
+	// An explicit task ID asks about that one record, even after it has ended.
+	// Ordinary overviews and project references still default to active tasks.
+	if len(identified) > 0 {
+		return identified
+	}
+	if !taskHistoryRequested(text) {
+		records = activeTasks(records)
+	}
+	var named []tasktools.Task
 	for _, r := range records {
 		for _, name := range []string{r.ID, r.Project, r.Title} {
 			if len([]rune(name)) >= 2 && strings.Contains(query, compactQuery(name)) {
@@ -103,14 +152,11 @@ func progressRecords(text string, records []tasktools.Task, group bool) []taskto
 				break
 			}
 		}
-		if r.Status != tasks.Completed && r.Status != tasks.Destroyed {
-			active = append(active, r)
-		}
 	}
 	if len(named) > 0 {
 		return named
 	}
-	return active
+	return records
 }
 
 func renderTasks(records []tasktools.Task) string {
@@ -148,7 +194,7 @@ func renderTasks(records []tasktools.Task) string {
 		if r.CompletionRequest != "" {
 			lines = append(lines, "等待飞书确认的状态操作："+r.CompletionRequest)
 		}
-		if r.CloseRequested {
+		if r.CloseRequested && r.Status != tasks.Destroyed {
 			lines = append(lines, "结单已登记，正在同步完成并关闭会话。")
 		}
 		if r.SyncError != "" {

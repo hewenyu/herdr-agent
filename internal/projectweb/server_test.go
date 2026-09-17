@@ -28,14 +28,14 @@ type fixture struct {
 
 const localURL = "http://127.0.0.1:18790"
 
-func setup(t *testing.T) fixture {
+func setup(t *testing.T, opts ...Option) fixture {
 	t.Helper()
 	state := t.TempDir()
 	catalog, err := projects.Open(state, config.Tasks{Bypass: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := New(catalog)
+	handler, err := New(catalog, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,11 @@ func TestServeBindsLoopbackChecksPortAndStops(t *testing.T) {
 	defer cancel()
 	ready := make(chan string, 1)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, "127.0.0.1:0", f.Catalog, func(url string) { ready <- url }) }()
+	go func() {
+		done <- Serve(ctx, "127.0.0.1:0", f.Catalog, func(url string) { ready <- url }, WithAuthorizationStatus(func() AuthorizationStatus {
+			return AuthorizationStatus{State: "ready", Message: "权限检查通过"}
+		}))
+	}()
 	var base string
 	select {
 	case base = <-ready:
@@ -300,6 +304,16 @@ func TestServeBindsLoopbackChecksPortAndStops(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("local GET: %d", response.StatusCode)
+	}
+	response, err = client.Get(base + "/api/feishu/authorization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authorization AuthorizationStatus
+	err = json.NewDecoder(response.Body).Decode(&authorization)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK || authorization.State != "ready" {
+		t.Fatalf("Serve did not apply authorization option: status=%d value=%+v err=%v", response.StatusCode, authorization, err)
 	}
 	request, err := http.NewRequest("GET", base+"/", nil)
 	if err != nil {

@@ -193,7 +193,7 @@ func TestGroupCloseCommandsCannotSelectATaskOutsideItsGroup(t *testing.T) {
 }
 
 func TestTaskGroupListsOnlyItsBoundTask(t *testing.T) {
-	for _, input := range []string{"/tasks", "/tasks all", "/projects"} {
+	for _, input := range []string{"/tasks", "/tasks all", "/projects", "现在还有哪些任务", "现在有哪些任务", "正在进行哪些任务"} {
 		t.Run(input, func(t *testing.T) {
 			h := newHarness(t)
 			r := taskBinding("current", "oc_current", testPane)
@@ -208,6 +208,33 @@ func TestTaskGroupListsOnlyItsBoundTask(t *testing.T) {
 		})
 	}
 
+}
+
+func TestEntryTaskListOnlyIncludesUnfinishedTasksUnlessAllRequested(t *testing.T) {
+	for _, input := range []string{"/tasks", "/tasks all", "现在还有哪些任务", "现在有哪些任务", "正在进行哪些任务"} {
+		t.Run(input, func(t *testing.T) {
+			h := newHarness(t)
+			active := taskBinding("active", "oc_active", testPane)
+			completed := taskBinding("completed-history", "oc_completed", secondPane)
+			completed.Status, completed.CloseRequested = tasks.Completed, true
+			destroyed := taskBinding("destroyed-history", "oc_destroyed", "closed-pane")
+			destroyed.Status, destroyed.Pending, destroyed.ChatDeleted = tasks.Destroyed, "workspace", true
+			manager, _ := attachTaskManager(t, h, active, completed, destroyed)
+			if len(manager.List(testOwner, false)) != 3 {
+				t.Fatal("fixture must include terminal records retained for operational cleanup")
+			}
+			sendTaskMessage(t, h, inbound(input))
+			answer := lastText(t, h)
+			if !strings.Contains(answer, active.ID) {
+				t.Fatalf("active task missing: %s", answer)
+			}
+			for _, terminal := range []string{completed.ID, destroyed.ID} {
+				if strings.Contains(answer, terminal) != (input == "/tasks all") {
+					t.Fatalf("history scope for %q via %q: %s", terminal, input, answer)
+				}
+			}
+		})
+	}
 }
 
 func TestUnboundUnmentionedGroupCannotForwardOrCreateTasks(t *testing.T) {

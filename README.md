@@ -94,6 +94,10 @@ wrong. [More about setup](#more-about-setup).
 non-PASS results, so read them rather than counting them; [Troubleshooting](#troubleshooting) says
 which are expected.
 
+Every `serve` startup checks the existing app's granted permissions. If authorization needs repair,
+follow the login link in the local page or startup log; the bridge waits and resumes automatically
+after the permissions take effect. See [Startup permission checks](#startup-permission-checks).
+
 With task management disabled, the bridge only carries conversations with agents you started.
 Enable the [task workflow](#feishu-tasks-and-project-repositories) to create an agent from a message;
 select a configured project, or explicitly ask to create a new project.
@@ -173,7 +177,7 @@ Nothing less than both round trips is treated as success:
 | 3 | the app exists and its credentials are on disk, but a round trip was not proven. A numbered checklist with one URL per item says what is left; re-running `setup` skips registration and re-verifies |
 | 1 | nothing usable was produced |
 
-Re-running `setup` is the intended repair path rather than a second install: credentials already
+Re-running `setup` verifies message and button delivery without reinstalling: credentials already
 anywhere the bridge reads them are adopted and verified, so the re-run opens no page, makes no app,
 and tells you which of the two round trips is broken. Three flags exist for what it cannot infer,
 and none is needed on a first run:
@@ -197,15 +201,43 @@ herdr-agent setup
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hewenyu.herdr-agent.plist
 ```
 
-One caveat on the mechanism: the device-authorization endpoint `setup` uses is **undocumented**. It
+One caveat on the mechanism: the device-authorization endpoint used by `setup` and startup permission
+recovery is **undocumented**. It
 appears nowhere on open.feishu.cn. It can change or vanish without notice, which is why the manual
 checklist below is a supported path and not a footnote.
+
+### Startup permission checks
+
+Each `herdr-agent serve` startup takes the single-instance lock, obtains a fresh app token and reads
+the current app's granted scopes before opening the Feishu long connection or processing agent tasks.
+It checks the four basic chat scopes and, when `tasks.enabled = true`, the five task scopes listed below.
+The scope-list API needs no additional permission. This check covers granted scopes; event subscriptions,
+card callbacks and the app's user availability still need the setup round trip or manual verification.
+
+If the configured App Secret is missing or invalid, or scopes are missing, the program generates a
+Feishu login and authorization link for the **same App ID**. Open it, log in and confirm the update.
+The refreshed credentials are saved locally; the allowlist and existing project configuration are
+preserved. This does not register another app or open a second Feishu connection.
+
+While waiting, **http://127.0.0.1:18790/** remains available. Its top panel shows the authorization
+status, missing scopes, the current login link. The program opens this local page once and
+also prints the authorization URL in its log. With `--no-config-ui`, use the logged URL; the program
+attempts to open the authorization page directly. Expired links are replaced automatically after
+rechecking permissions. After confirmation, the program checks again and starts the bridge only when
+the required scopes are effective. Network and service errors appear as an unconfirmed check and are
+retried; they are not treated as proof that permission is missing.
+
+This recovery applies to an app that is already configured. Without a valid App ID or an allowlist,
+run `herdr-agent setup` first. `setup --update-permissions` remains available for manual maintenance;
+stop the bridge before running that separate command. Normal startup recovery takes place inside
+`serve`, so it needs no separate setup process or restart after confirmation.
 
 ## Feishu tasks and project repositories
 
 Task management is optional and defaults to off. Keep your existing Feishu app, credentials and
-allowlist. Enable `[tasks]` in `~/.herdr-agent/config.toml`, grant the permissions below, then start
-`herdr-agent serve`. Its local configuration page is available at **http://127.0.0.1:18790/**.
+allowlist. Enable `[tasks]` in `~/.herdr-agent/config.toml`, then start `herdr-agent serve`.
+It checks the permissions below and offers an authorization link if they are missing. Its local
+configuration page is available at **http://127.0.0.1:18790/**, including while awaiting authorization.
 
 The page lets you add or edit projects, choose a default project and agent, and add multiple folders
 in order. The first folder is the working directory; the remaining folders are passed to Codex or
@@ -278,7 +310,7 @@ when concurrent edits need isolation. Chat messages choose project names and can
 local paths. Model API credentials are still configured through TOML/environment as described below;
 the local page manages projects and Bypass.
 
-In the app console, grant the following **in addition to** the basic chat permissions from setup:
+Task management requires the following **in addition to** the basic chat permissions from setup:
 
 | permission | purpose |
 |---|---|
@@ -288,13 +320,13 @@ In the app console, grant the following **in addition to** the basic chat permis
 | `im:chat:delete` | dissolve that group when you destroy the session |
 | `im:message.group_msg` | receive your task-group messages without an @ mention |
 
-For an existing app, stop the bridge and run `herdr-agent setup --update-permissions`. It opens a
-fresh confirmation URL with the task permissions, even when credentials already exist. Use
-`--app cli_…` to pin the app if needed. After confirmation, credentials are saved immediately and
-the usual message/button verification follows; a different returned app ID is rejected. Restart
-`herdr-agent serve` afterwards. You can also apply the changes through your tenant's approval and
-app publication process. Editing `config.toml` does not grant scopes, and the basic `setup`
-message/button checks do not verify this task workflow.
+For an existing app, follow the link offered by `serve` during its
+[startup permission check](#startup-permission-checks). No separate setup command is needed.
+You can still stop the bridge and run `herdr-agent setup --update-permissions` for manual maintenance,
+optionally with `--app cli_…`. That command saves the refreshed credentials and runs the usual
+message/button verification; a different returned app ID is rejected. You can also grant scopes
+through your tenant's app approval and publication process. Editing `config.toml` does not grant
+scopes, and neither a successful scope check nor the basic setup round trip proves the task workflow.
 The bot owns the groups it creates. Each task assigns both you and the application, with completion
 mode `2` (any assignee can complete), so it appears in your task panel and falls within the app's
 subscription scope. The bridge requests Task v2 subscriptions and receives
@@ -402,6 +434,8 @@ The entry chat receives a short creation acknowledgment and the task group link 
 It does not receive duplicate execution updates, permission cards or review notices. Continue
 implementation feedback, progress queries and acceptance in the corresponding task group.
 An overview remains available whenever you explicitly ask for it in the entry chat.
+By default, task queries show only unfinished tasks. Ask explicitly for all tasks, completed tasks or
+task history to include completed and destroyed records; a destroyed session is shown as closed.
 
 The bridge checks the actual message sender against the allowlist and verifies task ownership.
 The model can use controlled tools to select configured projects, query tasks, create sessions, add
@@ -580,7 +614,8 @@ comparing either ended conversations that had not ended.
 |---|---|
 | macOS refuses to run the binary: "cannot be opened because the developer cannot be verified" | it is a downloaded, unsigned binary and Gatekeeper quarantined it: `xattr -d com.apple.quarantine <path>`. Nothing is wrong with the install |
 | messages **sometimes** arrive and sometimes do not | two processes are using the same `app_id`. Feishu's long connection is cluster mode — up to 50 connections per app — and it distributes events **randomly** across whichever are open, so nothing errors and nothing disconnects: each process just receives about half of your messages (G15). That is why one instance is enforced rather than merely encouraged, and why a diagnostic probe run next to a live bridge silently steals half your real traffic. Check for a stray `herdr-agent serve`, and for any other tool pointed at the same app |
-| bridge restarts every 30s | it exits at startup; the reason is in `log/herdr-agent.err.log`, usually an empty `allowed_open_ids` or a credential that did not load |
+| bridge restarts every 30s | it exits at startup; check `log/herdr-agent.err.log` for an empty `allowed_open_ids`, missing App ID or another configuration error. Repairable authorization problems keep `serve` waiting instead |
+| startup is waiting for Feishu authorization | open the local page or the authorization URL in the startup log, log in and confirm for the existing app. Expired links refresh automatically; `serve` continues after it verifies the required scopes. A network check error is retried without assuming permissions are missing |
 | `serve: not implemented yet` | the binary predates the bridge — rebuild, or download a current release |
 | nothing arrives on the phone at all | the log says `feishu long connection up` and never `first feishu event delivered`: the credentials are fine and something about the app's events is not. **If you configured the app by hand in the console, you probably did not publish a version after your last change** — that is required on the manual path only; an app from `herdr-agent setup` arrives with a version already published (G18). Either way, run `herdr-agent setup` against the existing credentials: it adopts them, opens no page, and tells you which round trip is broken |
 | a card button fails with `200340` | the card path is genuinely off, which is a different thing from a card whose button nobody pressed. On a hand-made app check both causes — the 交互卡片 toggle and the `card.action.trigger` subscription — because the code cannot tell them apart, then publish a version. On an app configured through `setup`'s confirmation page the card path arrives working (measured), so look at the subscription |

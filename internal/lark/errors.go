@@ -233,8 +233,10 @@ func adviseCode(code int, appID string) string {
 	case CodeScopeNotInEffect:
 		return "a required scope is not in effect (99991672). " +
 			"`herdr-agent setup` grants the scopes requested during setup; optional features such as task management " +
-			"may need additional scopes on the same application. For task permissions, stop the bridge and run " +
-			"`herdr-agent setup --update-permissions` to open a new confirmation URL for the existing app. " +
+			"may need additional scopes on the same application. Restart `herdr-agent serve` to check permissions " +
+			"and automatically generate a login URL on the local configuration page when needed. " +
+			"For manual maintenance, stop the bridge and run `herdr-agent setup --update-permissions` " +
+			"to open a new confirmation URL for the existing app. " +
 			"Check the required scopes listed in the API error " +
 			"at https://open.feishu.cn/app/" + appID + "/auth and enable the appropriate application permissions. " +
 			"Complete approval and publish the updated version under 版本管理与发布 (创建版本 → 申请发布) " +

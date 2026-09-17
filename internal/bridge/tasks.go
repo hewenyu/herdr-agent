@@ -72,7 +72,19 @@ func (b *bridge) taskMessage(ctx context.Context, m lark.Msg) (bool, error) {
 			if bound {
 				return true, b.reply(ctx, m, "", tasks.Summary([]tasks.Record{r})+"\n\n"+tasks.GroupCloseHint)
 			}
-			return true, b.reply(ctx, m, "", tasks.Summary(b.tasks.List(m.UserID, cmd.All)))
+			records := b.tasks.List(m.UserID, cmd.All)
+			if !cmd.All {
+				// The manager also tracks cleanup and uncertain resource creation
+				// on terminal records. Those are history in a user task overview.
+				active := records[:0]
+				for _, record := range records {
+					if record.Status != tasks.Completed && record.Status != tasks.Destroyed {
+						active = append(active, record)
+					}
+				}
+				records = active
+			}
+			return true, b.reply(ctx, m, "", tasks.Summary(records))
 		case "new":
 			if bound {
 				return true, b.reply(ctx, m, "", "请回入口机器人私聊新建任务，当前群只处理绑定的任务。")

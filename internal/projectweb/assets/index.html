@@ -19,6 +19,10 @@
       <div><p class="eyebrow">YOUR WORKSPACE</p><h1>把项目交给 Agent</h1><p class="intro">关联项目目录，在飞书里用自然语言开始开发。</p></div>
       <button id="add-project" type="button" class="primary"><span aria-hidden="true">＋</span> 添加项目</button>
     </div>
+    <section id="feishu-authorization" class="authorization" aria-labelledby="authorization-title" data-state="checking">
+      <div class="authorization-copy"><div class="authorization-heading"><h2 id="authorization-title">飞书授权</h2><span id="authorization-state" class="authorization-state">正在检查</span></div><p id="authorization-message" role="status" aria-live="polite">正在读取飞书权限状态…</p><p id="authorization-scopes" class="authorization-scopes" hidden></p></div>
+      <a id="authorization-link" class="primary" target="_blank" rel="noopener noreferrer" hidden>登录飞书并更新权限</a>
+    </section>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <section class="global-settings" aria-label="全局 Agent 设置"><label class="bypass-control"><input id="bypass-mode" type="checkbox" disabled><span><strong>Bypass 模式</strong><small>关闭 Agent 的审批与沙箱限制。保存后用于新启动的 Codex 和 Claude Code 会话。</small></span></label><span id="bypass-status">正在读取…</span></section>
     <div class="workspace">

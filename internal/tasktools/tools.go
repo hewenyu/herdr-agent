@@ -169,6 +169,10 @@ type Task struct {
 
 func view(r tasks.Record) Task {
 	v := Task{ID: r.ID, Title: r.Title, Project: r.Project, Agent: r.Agent, Started: r.Started, PromptSent: r.PromptSent, Status: r.Status, StatusLabel: r.Status.Label(), Progress: r.Detail, LatestReply: r.Result, Error: r.Error, SyncError: r.SyncError, PendingOperation: r.Pending, CompletionRequest: r.CompletionRequest, CloseRequested: r.CloseRequested, CloseNotifiedAt: r.CloseNotifiedAt, CompletedAt: r.CompletedAt, TaskURL: r.URL, UpdatedAt: r.UpdatedAt, RemoteCheckedAt: r.RemoteCheckedAt}
+	if r.Status == tasks.Destroyed {
+		// Preserve the stored request for audit, but it is no longer pending.
+		v.CloseRequested = false
+	}
 	v.DirectoryCount = len(r.Directories)
 	if v.DirectoryCount == 0 && r.Path != "" {
 		v.DirectoryCount = 1
@@ -176,7 +180,7 @@ func view(r tasks.Record) Task {
 	v.Bypass = r.Bypass
 	v.WorkingDirectory = r.Path
 	v.WorkingDirectories = inspectDirectories(r.Path, r.Directories)
-	if r.ChatID != "" && !r.ChatDeleted {
+	if r.ChatID != "" && !r.ChatDeleted && r.Status != tasks.Destroyed {
 		v.ChatURL = tasks.ChatURL(r.ChatID)
 	}
 	return v
@@ -305,7 +309,10 @@ func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) (a
 	case "herdr_list":
 		out := []Task{}
 		for _, r := range s.opts.Manager.List(s.opts.OwnerID, a.All) {
-			if r.OwnerID == s.opts.OwnerID {
+			// The manager may keep finished records in its operational list
+			// while cleanup or reconciliation remains pending. User overviews
+			// only include those records when history was explicitly requested.
+			if r.OwnerID == s.opts.OwnerID && (a.All || r.Status != tasks.Completed && r.Status != tasks.Destroyed) {
 				out = append(out, view(r))
 			}
 		}
@@ -489,7 +496,7 @@ func (s *Service) Tools() []Tool {
 	}
 	tools := []Tool{
 		makeTool("herdr_projects", "查看本地页面最新配置的项目、默认 agent、目录数量和 Bypass 模式。项目可以关联多个文件夹，不可指定任意路径。", true, false, map[string]any{}),
-		makeTool("herdr_list", "查询本人正在跟踪的任务，用状态、进展、最近回复和同步错误总结。review 表示待验收，不等于完成。all=true 包含已完成和已销毁记录。", true, false, map[string]any{"all": map[string]any{"type": "boolean"}}),
+		makeTool("herdr_list", "默认只查询本人未结束的任务，用状态、进展、最近回复和同步错误总结。review 表示待验收，不等于完成。只有用户明确查询历史、所有任务或已完成/已销毁任务时才用 all=true 包含已结束记录。", true, false, map[string]any{"all": map[string]any{"type": "boolean"}}),
 		makeTool("herdr_get", "查询一个任务的当前状态、最近回复、飞书任务和会话链接。remote_checked_at 是最近核对飞书的时间，sync_error 表示同步问题。", true, false, map[string]any{"task_id": id}, "task_id"),
 		makeTool("herdr_create", "按用户要求登记编码任务，使用项目的全部目录启动 agent，自动创建飞书任务、独立群和 herdr 会话。默认使用已配置项目；仅用户明确要求新建项目时设置 new_project=true，并给出新项目名称，会在本机用户 ~/herder-agent-code/<项目名>/ 创建目录并保存关联。未知项目不能自动当作新项目。accepted 仅表示登记，调用 herdr_get 查询进展。", false, false, map[string]any{"request_id": req, "text": str("完整任务要求"), "project": str("项目名称；已有项目省略时使用默认项目，新项目必须明确命名"), "new_project": map[string]any{"type": "boolean", "description": "仅用户明确要求新建项目时为 true；新建任务不等于新建项目，默认 false"}, "agent": map[string]any{"type": "string", "enum": []string{"codex", "claude"}}}, "request_id", "text"),
 		makeTool("herdr_send", "给指定任务的 agent 发送用户的后续要求。不会代替人处理审批。delivered 只代表投递已验证，queued 表示 agent 稍后读取；unconfirmed 不得称为成功或自动重发。", false, false, map[string]any{"request_id": req, "task_id": id, "text": str("用户的后续要求")}, "request_id", "task_id", "text"),

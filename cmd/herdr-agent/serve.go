@@ -68,12 +68,16 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 	restore := setDefaultLogger(log)
 	defer restore()
 
-	s, err := buildServe(ctx, d, log, defaultServeHooks())
-	if err != nil {
-		return err
-	}
+	hooks := defaultServeHooks()
 	if !*noConfigUI {
-		s.configListen = *configListen
+		hooks.configListen = *configListen
+	}
+	s, err := buildServe(ctx, d, log, hooks)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
 	}
 	defer func() {
 		if err := s.shutdown(); err != nil {
@@ -89,10 +93,10 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 // serveDeps is the running bridge: everything built, in the order it was built,
 // with the closers needed to take it down again.
 type serveDeps struct {
-	log          *slog.Logger
-	stateDir     string
-	projects     *projects.Catalog
-	configListen string
+	log           *slog.Logger
+	stateDir      string
+	projects      *projects.Catalog
+	configuration *serveConfiguration
 
 	lock      instanceLock
 	dedup     *dedup.FileStore
@@ -130,14 +134,16 @@ type instanceLock interface {
 
 // serveHooks are the seams of the startup sequence.
 //
-// Only the four collaborators that would otherwise touch a socket, a pid file
-// or a Feishu app are behind hooks. Everything else — config, the stores, the
+// Collaborators that touch a socket, a pid file or a Feishu app are behind
+// hooks. Everything else — config, the stores, the
 // registry, the doctor checks — runs for real in tests, because running it for
 // real is the only way the wiring is actually tested.
 type serveHooks struct {
-	lock       func(dir string, log *slog.Logger) (instanceLock, error)
-	newWatcher func(r mirror.PathResolver, log *slog.Logger) (mirror.Watcher, error)
-	newBot     func(cfg config.Config, log *slog.Logger) (lark.Bot, error)
+	configListen string
+	authorize    func(context.Context, string, config.Config, func(projectweb.AuthorizationStatus)) (config.Config, error)
+	lock         func(dir string, log *slog.Logger) (instanceLock, error)
+	newWatcher   func(r mirror.PathResolver, log *slog.Logger) (mirror.Watcher, error)
+	newBot       func(cfg config.Config, log *slog.Logger) (lark.Bot, error)
 	// newBridge takes the optional dependencies as well as Deps: bridge.Deps is
 	// frozen by contract and the selection store arrived after it, so it travels
 	// as an Option (bridge.NewWith).
@@ -146,6 +152,7 @@ type serveHooks struct {
 
 func defaultServeHooks() serveHooks {
 	return serveHooks{
+		authorize: ensureServeAuthorization,
 		lock: func(dir string, log *slog.Logger) (instanceLock, error) {
 			l, err := bridge.AcquireInstanceLock(dir, bridge.WithLockLogger(log))
 			if err != nil {
@@ -175,9 +182,10 @@ func defaultServeHooks() serveHooks {
 //     disconnects anybody: the two split the user's events, invisibly from both
 //     ends, and the user calls it "Feishu is flaky". It has to die before it
 //     connects, because afterwards nothing reveals it;
-//  3. the startup checks, so a machine with no herdr never connects to Feishu
-//     at all;
-//  4. state, agent plumbing, the bot, the bridge.
+//  3. the local page and Feishu permission check; any required login finishes
+//     before constructing the bot with the current credentials;
+//  4. the herdr startup checks, then state, agent plumbing, the bot and bridge.
+//     A machine with no herdr never opens the Feishu WebSocket.
 //
 // Every failure after step 2 unwinds what has already been built, so a bridge
 // that refuses to start does not leave its pid file behind for the next one to
@@ -202,7 +210,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	// not as a prefix and not as a length (S2 §3.1).
 	log.Info("serve: starting", "state_dir", d.StateDir, "config", cfg.Redacted())
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateServeConfiguration(cfg, h.authorize != nil); err != nil {
 		return nil, &startupError{step: "configuration", err: err}
 	}
 	if d.Resolver == nil {
@@ -235,8 +243,31 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	}
 	s.projects = catalog
 	cfg.Tasks = catalog.Snapshot()
-	if err := cfg.Validate(); err != nil {
+	if err := validateServeConfiguration(cfg, h.authorize != nil); err != nil {
 		return nil, s.abort(&startupError{step: "configuration", err: err})
+	}
+
+	status := newServeAuthorizationState(h.authorize != nil)
+	startupCtx := ctx
+	if h.configListen != "" {
+		if err := s.startConfiguration(ctx, h.configListen, status.snapshot); err != nil {
+			return nil, s.abort(&startupError{step: "local project configuration", err: err})
+		}
+		startupCtx = s.configuration.ctx
+	}
+	if h.authorize != nil {
+		cfg, err = h.authorize(startupCtx, d.StateDir, cfg, s.authorizationReporter(status, d.OpenURL))
+		if err != nil {
+			if s.configuration != nil && s.configuration.failure() != nil {
+				err = s.configuration.failure()
+			}
+			return nil, s.abort(&startupError{step: "feishu authorization", err: err})
+		}
+		// Configuration can be edited while the user follows the login link.
+		cfg.Tasks = catalog.Snapshot()
+		if err := cfg.Validate(); err != nil {
+			return nil, s.abort(&startupError{step: "configuration", err: err})
+		}
 	}
 
 	if err := checkStartup(ctx, d, log); err != nil {
@@ -291,8 +322,8 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, s.abort(&startupError{step: "transcript mirror", err: err})
 	}
 
-	// First contact with Feishu is Bot.Start, inside bridge.Run — long after
-	// the lock above.
+	// Permission checks and any credential refresh have finished under the
+	// instance lock. The one WebSocket connection starts later in bridge.Run.
 	if s.bot, err = h.newBot(cfg, log); err != nil {
 		return nil, s.abort(&startupError{step: "feishu bot", err: err})
 	}
@@ -550,12 +581,8 @@ func (s *serveDeps) run(ctx context.Context) error {
 		{"feishu bridge", s.bridge.Run},
 		{"agent registry", s.registry.Run},
 	}
-	if s.configListen != "" {
-		tasks = append(tasks, serveTask{"local project configuration", func(ctx context.Context) error {
-			return projectweb.Serve(ctx, s.configListen, s.projects, func(url string) {
-				s.log.Info("serve: project configuration ready", "url", url)
-			})
-		}})
+	if s.configuration != nil {
+		tasks = append(tasks, serveTask{"local project configuration", s.configuration.run})
 	}
 
 	// Buffered for every task, so a goroutine reporting its exit never blocks

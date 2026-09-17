@@ -28,11 +28,12 @@ import (
 var assets embed.FS
 
 type server struct {
-	catalog *projects.Catalog
-	token   string
-	page    []byte
-	css     []byte
-	js      []byte
+	catalog             *projects.Catalog
+	authorizationStatus func() AuthorizationStatus
+	token               string
+	page                []byte
+	css                 []byte
+	js                  []byte
 }
 
 type projectView struct {
@@ -62,7 +63,7 @@ type createRequest struct {
 
 // New returns a handler guarded against non-loopback and cross-origin requests.
 // Serve should normally be used so the handler is also tied to the bound port.
-func New(catalog *projects.Catalog) (http.Handler, error) {
+func New(catalog *projects.Catalog, opts ...Option) (http.Handler, error) {
 	if catalog == nil {
 		return nil, errors.New("projectweb: project catalog is required")
 	}
@@ -84,11 +85,17 @@ func New(catalog *projects.Catalog) (http.Handler, error) {
 	}
 	token := hex.EncodeToString(secret[:])
 	s := &server{catalog: catalog, token: token, page: bytes.ReplaceAll(page, []byte("__CSRF_TOKEN__"), []byte(token)), css: css, js: js}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /assets/style.css", s.style)
 	mux.HandleFunc("GET /assets/app.js", s.script)
 	mux.HandleFunc("GET /api/projects", s.list)
+	mux.HandleFunc("GET /api/feishu/authorization", s.authorization)
 	mux.HandleFunc("PUT /api/settings", s.settings)
 	mux.HandleFunc("POST /api/projects", s.create)
 	mux.HandleFunc("PUT /api/projects/{name}", s.save)
@@ -98,7 +105,7 @@ func New(catalog *projects.Catalog) (http.Handler, error) {
 
 // Serve binds only a literal loopback address and shuts down when ctx ends.
 // onReady receives the actual local URL, including an allocated port for :0.
-func Serve(ctx context.Context, addr string, catalog *projects.Catalog, onReady func(string)) error {
+func Serve(ctx context.Context, addr string, catalog *projects.Catalog, onReady func(string), opts ...Option) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || !isLoopback(host) || !validPort(port, true) {
 		return fmt.Errorf("projectweb: address must be a loopback IP and port, for example 127.0.0.1:18790")
@@ -106,7 +113,7 @@ func Serve(ctx context.Context, addr string, catalog *projects.Catalog, onReady 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	handler, err := New(catalog)
+	handler, err := New(catalog, opts...)
 	if err != nil {
 		return err
 	}

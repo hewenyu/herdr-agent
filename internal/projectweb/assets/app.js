@@ -7,6 +7,7 @@
   let mode = 'existing';
   let busy = false;
   let dirty = false;
+  let authorizationExpiry;
 
   function notice(message, error = false) {
     const box = $('notice');
@@ -16,8 +17,9 @@
     box.hidden = false;
   }
 
-  async function api(path, method = 'GET', body) {
+  async function api(path, method = 'GET', body, signal) {
     const options = {method, mode: 'same-origin', credentials: 'omit', headers: {Accept: 'application/json'}};
+    if (signal) options.signal = signal;
     if (method !== 'GET') {
       options.headers['Content-Type'] = 'application/json';
       options.headers['X-CSRF-Token'] = csrf;
@@ -28,6 +30,50 @@
     try { result = await response.json(); } catch { throw new Error('无法读取服务响应，请确认本地服务仍在运行。'); }
     if (!response.ok) throw new Error(result.error || '操作失败，请重试。');
     return result;
+  }
+
+  function renderAuthorization(status) {
+    clearTimeout(authorizationExpiry);
+    const labels = {checking: '正在检查', required: '需要授权', ready: '已就绪', error: '检查失败', disabled: '尚未检查'};
+    const state = Object.hasOwn(labels, status.state) ? status.state : 'error';
+    $('feishu-authorization').dataset.state = state;
+    $('authorization-state').textContent = labels[state];
+    $('authorization-message').textContent = status.message || '暂时无法读取飞书权限状态，稍后会自动重试。';
+    const scopes = Array.isArray(status.missing_scopes) ? status.missing_scopes.filter(scope => typeof scope === 'string') : [];
+    $('authorization-scopes').textContent = scopes.length ? '缺少权限：' + scopes.join('、') : '';
+    $('authorization-scopes').hidden = !scopes.length;
+    const link = $('authorization-link');
+    link.hidden = true;
+    link.removeAttribute('href');
+    const expiresAt = status.expires_at ? Date.parse(status.expires_at) : null;
+    if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) {
+      if (state === 'required') $('authorization-message').textContent = '授权链接已过期，正在等待更新。';
+      return;
+    }
+    try {
+      const url = new URL(status.url);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return;
+      link.href = url.href;
+      link.hidden = false;
+      if (expiresAt !== null) authorizationExpiry = setTimeout(() => renderAuthorization(status), Math.min(expiresAt - Date.now(), 2147483647));
+    } catch { /* No usable login link until the next status update. */ }
+  }
+
+  async function refreshAuthorization() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    let delay = 3000;
+    try {
+      const status = await api('/api/feishu/authorization', 'GET', undefined, controller.signal);
+      renderAuthorization(status);
+      if (status.state === 'ready' || status.state === 'disabled') delay = 30000;
+    } catch {
+      renderAuthorization({state: 'error', message: '暂时无法读取飞书权限状态，稍后会自动重试。'});
+      delay = 5000;
+    } finally {
+      clearTimeout(timeout);
+      setTimeout(refreshAuthorization, delay);
+    }
   }
 
   function elem(tag, className, text) {
@@ -231,6 +277,7 @@
     finally { setBusy(false); }
   });
   window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+  refreshAuthorization();
   api('/api/projects').then(result => {
     settings = result;
     $('form-fields').disabled = false;

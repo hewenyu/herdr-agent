@@ -124,6 +124,7 @@ func TestKnownCodesAreExplained(t *testing.T) {
 				"https://open.feishu.cn/app/" + appID + "/auth",
 				"herdr-agent setup",
 				"additional scopes",
+				"automatically generate a login URL",
 				"scopes listed in the API error",
 				"if required",
 			},

@@ -25,6 +25,7 @@ const systemPrompt = `你是 herdr-agent 的飞书任务助手。使用中文简
 创建任务时将用户完整要求交给 herdr_create，不要仅写一个省略细节的标题。项目或任务指代不清楚时先查询；只有一个合理默认项时直接使用。
 创建后的私聊只确认任务登记并提供已有的真实任务/群链接；任务群未就绪时说明稍后提供入口。不要主动追加执行状态、目录、产物或审批详情，这些进展和确认只在任务群处理。用户主动查询任务总览时仍返回真实状态。
 查询进度必须调用工具取得当前状态，不根据旧聊天猜测。汇总任务标题、阶段、近期进展、阻塞/错误、最近更新时间和链接。
+默认只列未结束的任务；“现在还有哪些任务”“现在有哪些任务”“正在进行哪些任务”均不包含已完成或已销毁记录。只有用户明确查询历史、所有任务、all 或已完成/已销毁任务时才能使用 herdr_list 的 all=true。status=destroyed 表示会话已关闭，即使 close_requested=true 也不能说正在关闭。
 日期、文件名、产物大小、测试和截图验证结果只能引用本轮工具实际返回的数据；不能补全或虚构。latest_reply是agent的自述，不是系统独立验证过的产物，引用时注明是agent反馈。started=false表示尚无执行会话，prompt_sent=false表示初始要求尚未确认送出；此时不得声称任务已执行或产物已生成。
 工具的 accepted 只表示操作已登记，不是已经执行完成。review/done 表示agent这一轮结束或待验收，不等于用户验收完成。完成与销毁是独立操作。
 只有用户明确验收完成时才complete；只有用户明确要求销毁会话时才destroy。销毁会关闭执行窗口并解散任务群，群聊天记录不会保留，代码和飞书任务结果保留。
@@ -42,7 +43,7 @@ const groupSystemPrompt = `你是 herdr-agent 当前任务群的助手。使用�
 用户明确说“验收通过”“我验收了，可以结单”“关闭这个问题”“这项任务完成了”时，调用herdr_close：登记验收完成，确认飞书任务已完成后关闭执行会话并解散本群，保留代码、飞书任务和结果摘要。不要将验收或结单文字发给编码agent。若用户明确说“只标记完成，保留群”或保留会话，则仅调用herdr_complete。
 “没有验收通过”“不能结单”“还有问题”“不要关闭”“等验收通过后再关闭”等否定、未解决反馈或条件性将来表述不能触发关闭；明确的修改要求仍应发给agent。仅问“是否可以关闭”是在询问，结合最新状态答复，不直接关闭。意思不清时只澄清影响操作的部分，不重复询问已绑定的任务。
 只有明确要求销毁执行会话但不验收完成时才用herdr_destroy；普通验收结单使用herdr_close。销毁会解散本群，群聊天记录不会保留。若用户要求新建其他项目或任务，说明本群只处理当前任务，请在主应用私聊创建，不调用本群工具代替创建。
-accepted仅代表请求已登记，不代表已经完成同步或关闭。review/done只是agent本轮结束或待验收，不等于用户验收通过。close_requested表示结单正在收尾；pending、completion_request、sync_error和error都必须如实说明，查询后仍未完成就说明等待处理，不反复登记。
+accepted仅代表请求已登记，不代表已经完成同步或关闭。review/done只是agent本轮结束或待验收，不等于用户验收通过。close_requested仅在status不是destroyed时表示结单正在收尾；destroyed表示会话已经关闭。pending、completion_request、sync_error和error都必须如实说明，查询后仍未完成就说明等待处理，不反复登记。
 herdr_send返回delivered仅代表投递已验证，queued表示agent稍后读取；unconfirmed不能说成功、不能自动重发。cancelled_dialog或may_have_answered_dialog为真时必须告知用户。工具失败或结果不明确后只查询并解释，不改参数重试副作用。
 agent审批必须由用户在群内卡片处理；不得代用户批准、取消或回复审批。你可告知当前阻塞和下一步。避免要求用户回到主应用私聊处理本任务的进度、对话或验收。`
 
@@ -138,13 +139,15 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 		snapshot = []tasktools.Task{current.(tasktools.Task)}
 		prompt = groupSystemPrompt
 	} else {
+		// Retain the full internal snapshot for explicit task IDs and replayed
+		// creation receipts. The visible/model overview is scoped below.
 		current, err := bound.Call(ctx, "herdr_list", json.RawMessage(`{"all":true}`))
 		if err != nil {
 			return "", err
 		}
 		snapshot = current.([]tasktools.Task)
 	}
-	prompt += snapshotContext(snapshot)
+	prompt += snapshotContext(progressRecords(in.Text, snapshot, in.TaskID != ""))
 	if state.Pending != "" {
 		state.Messages = append(state.Messages, Message{Role: "assistant", Content: "上一轮响应中断，部分任务操作可能已登记。继续前请先查询任务状态。"})
 	}
@@ -209,6 +212,11 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 			args, _ = json.Marshal(payload)
 		}
 		result, err := bound.Call(callCtx, name, args)
+		if err == nil && name == "herdr_list" {
+			// The current user request determines list scope, even if the model
+			// requests all=true. Record and return the same filtered observation.
+			result = progressRecords(in.Text, result.([]tasktools.Task), false)
+		}
 		if !found.ReadOnly {
 			if err != nil {
 				uncertainEffect = true

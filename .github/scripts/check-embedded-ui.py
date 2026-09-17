@@ -100,6 +100,8 @@ def check(args):
                 page = get(url + "/", "text/html").decode("utf-8")
                 if 'id="directory-list"' not in page or 'id="bypass-mode"' not in page:
                     raise RuntimeError("binary did not serve the project configuration page")
+                if 'id="feishu-authorization"' not in page:
+                    raise RuntimeError("binary omitted the Feishu authorization section")
                 assets = PageAssets()
                 assets.feed(page)
                 if not assets.styles or not assets.scripts:
@@ -115,6 +117,9 @@ def check(args):
                 data = json.loads(get(url + "/api/projects", "application/json"))
                 if data.get("projects") != [] or data.get("bypass") is not True:
                     raise RuntimeError("standalone binary did not load isolated default configuration")
+                auth = json.loads(get(url + "/api/feishu/authorization", "application/json"))
+                if auth.get("state") != "disabled" or auth.get("url"):
+                    raise RuntimeError("standalone configure claimed a startup permission check or login")
                 if process.poll() is not None:
                     raise RuntimeError("configuration server exited during the check")
             finally:
