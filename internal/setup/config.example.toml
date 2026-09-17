@@ -5,12 +5,11 @@
 # shown with the value the bridge uses when the key is absent, so deleting a
 # line changes nothing.
 #
-# Credentials are NOT configurable here. FEISHU_APP_ID, FEISHU_APP_SECRET and
-# the optional HERDR_AGENT_AI_API_KEY are
-# read from the process environment or ~/.herdr-agent/.env (mode 0600). This
-# file has no field for them at all — writing `app_secret` here is a startup
-# error, not a key that is quietly ignored, so a secret cannot end up in a file
-# you might paste into a chat.
+# Model credentials are configured as [ai].api_key below. Keep this file private
+# (chmod 600 ~/.herdr-agent/config.toml) and redact api_key before sharing it.
+# Feishu credentials still use setup / .env: FEISHU_APP_ID and FEISHU_APP_SECRET
+# are read from the process environment or ~/.herdr-agent/.env (mode 0600).
+# There are no TOML fields for them; writing `app_secret` here is a startup error.
 #
 # Unknown keys are rejected at startup. `allowed_open_id` (singular, a plausible
 # typo) must not read as "the allowlist is empty" and lock you out of your own
@@ -203,12 +202,16 @@ provider = "openai-responses"
 model = ""
 base_url = ""
 
+# Model service API key; required when enabled. Read only from this TOML field.
+# HERDR_AGENT_AI_API_KEY in the environment or .env is no longer read; migrate
+# an existing model key here before restarting serve. Feishu credentials stay
+# separate in setup / .env. Changing AI configuration requires a restart.
+api_key = ""
+
 # HTTPS is required except for loopback HTTP model endpoints. timeout must be
 # positive and no longer than 10 minutes; explicit "0s" is invalid.
 timeout = "2m"
 
-# Set HERDR_AGENT_AI_API_KEY in the environment or ~/.herdr-agent/.env.
-# There is no api_key field in TOML. The key is separate from FEISHU_APP_SECRET.
 # Entry private chats use AI tools for task creation and overviews; task groups
 # use AI tools for bound-task feedback, progress and acceptance.
 # This Go service needs no JavaScript runtime or inbound URL.

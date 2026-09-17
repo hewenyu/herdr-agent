@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,31 +17,37 @@ import (
 const testAIAPIKey = "api-Q9w4G7k3J5v8R2p6X1y0N4m7B8z5"
 
 func TestAICredentialSources(t *testing.T) {
-	for _, scenario := range []string{"absent", "repository", "state", "environment", "explicit empty environment"} {
+	for _, scenario := range []string{"absent", "repository", "state", "environment", "explicit empty environment", "TOML", "TOML with obsolete sources"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir, repo := isolate(t)
 			want := ""
 			if scenario != "absent" {
-				writeFile(t, filepath.Join(repo, DotEnvFileName), EnvAIAPIKey+"=repository-key\n")
-				want = "repository-key"
+				writeFile(t, filepath.Join(repo, DotEnvFileName), "HERDR_AGENT_AI_API_KEY=repository-key\n")
 			}
 			if scenario == "state" || strings.Contains(scenario, "environment") {
-				writeFile(t, filepath.Join(dir, DotEnvFileName), EnvAIAPIKey+"=state-key\n")
-				want = "state-key"
+				writeFile(t, filepath.Join(dir, DotEnvFileName), "HERDR_AGENT_AI_API_KEY=state-key\n")
 			}
 			if strings.Contains(scenario, "environment") {
-				want = testAIAPIKey
+				value := testAIAPIKey
 				if scenario == "explicit empty environment" {
-					want = ""
+					value = ""
 				}
-				t.Setenv(EnvAIAPIKey, want)
+				t.Setenv("HERDR_AGENT_AI_API_KEY", value)
+			}
+			if strings.HasPrefix(scenario, "TOML") {
+				want = testAIAPIKey
+				writeFile(t, filepath.Join(dir, ConfigFileName), "[ai]\napi_key = \""+testAIAPIKey+"\"\n")
+				if scenario == "TOML with obsolete sources" {
+					writeFile(t, filepath.Join(dir, DotEnvFileName), "HERDR_AGENT_AI_API_KEY=state-key\n")
+					t.Setenv("HERDR_AGENT_AI_API_KEY", "obsolete-environment-key")
+				}
 			}
 			c, err := Load(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if c.AI.APIKey != want {
-				t.Fatal("AI API key did not honor credential source precedence")
+				t.Fatal("AI API key must come only from TOML")
 			}
 			if c.AI.Enabled || c.AI.Provider != DefaultAIProvider || c.AI.Timeout != 2*time.Minute {
 				t.Fatalf("unexpected AI defaults: %s", c.AI)
@@ -51,9 +58,9 @@ func TestAICredentialSources(t *testing.T) {
 
 func TestLoadAIConfiguration(t *testing.T) {
 	dir, _ := isolate(t)
-	t.Setenv(EnvAIAPIKey, testAIAPIKey)
 	writeFile(t, filepath.Join(dir, ConfigFileName), `[ai]
 enabled = true
+api_key = "`+testAIAPIKey+`"
 provider = "anthropic-messages"
 model = "test-model"
 base_url = "https://models.example/v1"
@@ -68,15 +75,38 @@ timeout = "3m"
 	}
 }
 
-func TestAICredentialCannotComeFromTOML(t *testing.T) {
+func TestFreshInstallWithTOMLAPIKey(t *testing.T) {
 	dir, _ := isolate(t)
-	writeFile(t, filepath.Join(dir, ConfigFileName), "[ai]\napi_key = \""+testAIAPIKey+"\"\n")
-	_, err := Load(dir)
-	if err == nil || !strings.Contains(err.Error(), "ai.api_key") || !strings.Contains(err.Error(), EnvAIAPIKey) {
-		t.Fatalf("expected credential source advice, got %v", err)
+	writeFile(t, filepath.Join(dir, DotEnvFileName), "FEISHU_APP_ID=cli_test\nFEISHU_APP_SECRET=feishu-test-secret\n")
+	writeFile(t, filepath.Join(dir, ConfigFileName), `[feishu]
+allowed_open_ids = ["ou_test"]
+[tasks]
+enabled = true
+[ai]
+enabled = true
+model = "test-model"
+base_url = "https://models.example/v1"
+api_key = "`+testAIAPIKey+`"
+`)
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(err.Error(), testAIAPIKey) {
-		t.Fatal("TOML credential rejection leaked key")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("fresh configuration rejected: %v", err)
+	}
+	if c.AI.APIKey != testAIAPIKey || !strings.Contains(c.Redacted(), "ai.api_key=<redacted>") || strings.Contains(c.Redacted(), testAIAPIKey) {
+		t.Fatal("TOML API key was not loaded or was exposed in startup configuration")
+	}
+}
+
+func TestMissingAIKeyPointsToTOML(t *testing.T) {
+	c := validConfig()
+	c.Tasks.Enabled = true
+	c.AI = AI{Enabled: true, Provider: DefaultAIProvider, Model: "test-model", BaseURL: "https://models.example/v1", Timeout: DefaultAITimeout}
+	err := c.Validate()
+	if !errors.Is(err, ErrAIAPIKey) || !strings.Contains(err.Error(), "ai.api_key") || !strings.Contains(err.Error(), ConfigFileName) || strings.Contains(err.Error(), "HERDR_AGENT_AI_API_KEY") {
+		t.Fatal("missing AI key advice must name the TOML setting")
 	}
 }
 
@@ -177,8 +207,7 @@ func TestAIAPIKeyRedactedAcrossConfiguration(t *testing.T) {
 
 func TestAIAPIKeyRedactedFromConfigurationErrors(t *testing.T) {
 	dir, _ := isolate(t)
-	t.Setenv(EnvAIAPIKey, testAIAPIKey)
-	writeFile(t, filepath.Join(dir, ConfigFileName), "[ai]\ntimeout = \""+testAIAPIKey+"\"\n")
+	writeFile(t, filepath.Join(dir, ConfigFileName), "[ai]\ntimeout = \""+testAIAPIKey+"\"\napi_key = \""+testAIAPIKey+"\"\n")
 	_, err := Load(dir)
 	if err == nil || strings.Contains(err.Error(), testAIAPIKey) {
 		t.Fatalf("parse failure did not redact key: %v", err)
@@ -191,5 +220,34 @@ func TestAIAPIKeyRedactedFromConfigurationErrors(t *testing.T) {
 	c.Tasks.Projects = map[string]Project{testAIAPIKey: {Path: "/missing/" + testAIAPIKey, Agent: "codex"}}
 	if err := c.Validate(); err == nil || strings.Contains(err.Error(), testAIAPIKey) {
 		t.Fatalf("validation failure did not redact key: %v", err)
+	}
+}
+
+func TestTOMLCredentialParseFailuresDoNotExposeValues(t *testing.T) {
+	for _, body := range []string{
+		"[ai]\napi_key = " + testAIAPIKey + "\n",
+		"[ai]\napi_key = [\"" + testAIAPIKey + "\"]\n",
+		"[ai]\napi_key = \"" + testAIAPIKey + "\"\napi_key = \"duplicate\"\n",
+		"[ai]\napi_key = \"" + testAIAPIKey + "\"\n[\"" + testAIAPIKey + "\"]\nunknown = true\n",
+		"[ai]\ntimeout = \"" + testAIAPIKey + "\"\napi_key = \"" + testAIAPIKey + "\"\n",
+	} {
+		dir, _ := isolate(t)
+		writeFile(t, filepath.Join(dir, ConfigFileName), body)
+		_, err := Load(dir)
+		if err == nil || !strings.Contains(err.Error(), ConfigFileName) || strings.Contains(err.Error(), testAIAPIKey) {
+			t.Fatalf("invalid TOML must fail without exposing the credential: %v", err)
+		}
+	}
+}
+
+func TestQuotedTOMLAPIKeyIsRedactedFromDecodeErrors(t *testing.T) {
+	for _, key := range []string{"api-\"\\private-model-key", "short"} {
+		dir, _ := isolate(t)
+		quoted := strconv.Quote(key)
+		writeFile(t, filepath.Join(dir, ConfigFileName), "[ai]\ntimeout = "+quoted+"\napi_key = "+quoted+"\n")
+		_, err := Load(dir)
+		if err == nil || strings.Contains(err.Error(), key) || strings.Contains(err.Error(), quoted[1:len(quoted)-1]) {
+			t.Fatalf("quoted TOML key was not redacted from the diagnostic: %v", err)
+		}
 	}
 }

@@ -81,7 +81,7 @@ def check(args):
         binary = root / "herdr-agent"
         install_binary(args, binary)
         env = os.environ.copy()
-        for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "HERDR_AGENT_AI_API_KEY"):
+        for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET"):
             env.pop(name, None)
         with ExitStack() as resources:
             process = subprocess.Popen(
