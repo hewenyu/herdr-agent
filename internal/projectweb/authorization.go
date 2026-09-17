@@ -2,9 +2,9 @@ package projectweb
 
 import (
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
+
+	"github.com/hewenyu/herdr-agent/internal/feishuurl"
 )
 
 // AuthorizationStatus is the current startup permission check, without app
@@ -32,22 +32,8 @@ func (s *server) authorization(w http.ResponseWriter, _ *http.Request) {
 	if s.authorizationStatus != nil {
 		status = s.authorizationStatus()
 	}
-	if !safeAuthorizationURL(status.URL) || !status.ExpiresAt.IsZero() && !time.Now().Before(status.ExpiresAt) {
+	if !feishuurl.ValidAuthorization(status.URL) || !status.ExpiresAt.IsZero() && !time.Now().Before(status.ExpiresAt) {
 		status.URL = ""
 	}
 	writeJSON(w, http.StatusOK, status)
-}
-
-func safeAuthorizationURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.Port() != "" && u.Port() != "443" {
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "accounts.feishu.cn", "open.feishu.cn", "passport.feishu.cn",
-		"accounts.larksuite.com", "open.larksuite.com", "passport.larksuite.com":
-		return true
-	default:
-		return false
-	}
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,9 @@ func TestServeAuthorizationRefreshesExpiredLinksAndRechecksNewCredentials(t *tes
 	}
 	var urls []string
 	for _, s := range statuses {
+		if s.State == "error" && (!strings.Contains(s.Message, "生成新的登录链接") || s.URL != "") {
+			t.Fatalf("failed login was not scheduled for renewal: %+v", s)
+		}
 		if s.URL != "" {
 			urls = append(urls, s.URL)
 			if s.State != "required" || len(s.MissingScopes) != 1 || s.ExpiresAt.IsZero() {
@@ -83,6 +87,62 @@ func TestServeAuthorizationRefreshesExpiredLinksAndRechecksNewCredentials(t *tes
 	}
 	if len(urls) != 2 || urls[0] == urls[1] || statuses[len(statuses)-1].State != "ready" || statuses[len(statuses)-1].URL != "" {
 		t.Fatal("the expired login link remained active or success was not published")
+	}
+}
+
+func TestServeAuthorizationReportsFailureBeforeLoginLink(t *testing.T) {
+	for _, previousLink := range []bool{false, true} {
+		t.Run(fmt.Sprintf("previous_link=%t", previousLink), func(t *testing.T) {
+			var statuses []projectweb.AuthorizationStatus
+			refreshes, waits := 0, 0
+			failedAttempt := 1
+			if previousLink {
+				failedAttempt++
+			}
+			flow := authorizationFlow{
+				check: func(_ context.Context, cfg config.Config) (setup.AuthorizationCheck, error) {
+					if cfg.Feishu.AppSecret == "updated-secret" {
+						return setup.AuthorizationCheck{}, nil
+					}
+					return setup.AuthorizationCheck{MissingScopes: []string{"task:task:read"}}, nil
+				},
+				refresh: func(_ context.Context, _ string, cfg config.Config, link func(string, time.Time)) (config.Config, error) {
+					refreshes++
+					if refreshes == failedAttempt {
+						return cfg, errors.New("request failed: fake-secret")
+					}
+					link("https://open.feishu.cn/page/launcher?code=temporary", time.Now().Add(time.Minute))
+					if refreshes < failedAttempt {
+						return cfg, errors.New("login expired: fake-secret")
+					}
+					cfg.Feishu.AppSecret = "updated-secret"
+					return cfg, nil
+				},
+				wait: func(context.Context) error { waits++; return nil }, now: time.Now,
+			}
+			got, err := flow.run(context.Background(), t.TempDir(), validServeConfig(), func(s projectweb.AuthorizationStatus) { statuses = append(statuses, s) })
+			if err != nil || got.Feishu.AppSecret != "updated-secret" || refreshes != failedAttempt+1 || waits != failedAttempt {
+				t.Fatalf("link generation did not recover: err=%v refresh=%d waits=%d", err, refreshes, waits)
+			}
+			var failure projectweb.AuthorizationStatus
+			for _, status := range statuses {
+				if status.State == "error" {
+					failure = status
+				}
+			}
+			if !strings.Contains(failure.Message, "无法生成飞书授权链接") || !strings.Contains(failure.Message, "自动重试") ||
+				strings.Contains(failure.Message, "失效") || strings.Contains(failure.Message, "过期") || failure.URL != "" ||
+				!slices.Equal(failure.MissingScopes, []string{"task:task:read"}) {
+				t.Fatalf("failure before URL was misleading: %+v", failure)
+			}
+			published, err := json.Marshal(statuses)
+			if err != nil || strings.Contains(string(published), "fake-secret") {
+				t.Fatalf("authorization status exposed private error details: %s, %v", published, err)
+			}
+			if statuses[len(statuses)-1].State != "ready" {
+				t.Fatal("successful retry did not become ready")
+			}
+		})
 	}
 }
 

@@ -231,6 +231,13 @@ func TestRefreshAuthorizationRejectsWrongAppAndUnsafeURL(t *testing.T) {
 		{"different app", otherAppID, "https://accounts.feishu.cn/confirm"},
 		{"unsafe url", testAppID, "javascript:alert(1)"},
 		{"foreign host", testAppID, "https://accounts.feishu.cn.example.com/confirm"},
+		{"foreign launcher host", testAppID, "https://open.feishu.cn.example.com/page/launcher"},
+		{"insecure launcher", testAppID, "http://open.feishu.cn/page/launcher"},
+		{"launcher userinfo", testAppID, "https://other@open.feishu.cn/page/launcher"},
+		{"launcher foreign authority", testAppID, "https://open.feishu.cn@evil.example/page/launcher"},
+		{"launcher nonstandard port", testAppID, "https://open.feishu.cn:8443/page/launcher"},
+		{"relative launcher", testAppID, "//open.feishu.cn/page/launcher"},
+		{"opaque launcher", testAppID, "https:open.feishu.cn/page/launcher"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

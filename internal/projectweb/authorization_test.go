@@ -75,6 +75,9 @@ func TestAuthorizationStatusOnlyPublishesValidUnexpiredOfficialLinks(t *testing.
 	}{
 		{"https://accounts.feishu.cn/oauth/v1/app/registration?code=example", time.Now().Add(time.Minute), true},
 		{"https://open.feishu.cn/app/cli_example/auth", time.Time{}, true},
+		{"https://open.feishu.cn/page/launcher?user_code=example&clientID=cli_example", time.Now().Add(time.Minute), true},
+		{"https://open.larksuite.com/page/launcher?user_code=example", time.Now().Add(time.Minute), true},
+		{"https://OPEN.FEISHU.CN:443/page/launcher?user_code=example", time.Now().Add(time.Minute), true},
 		{"https://accounts.larksuite.com/oauth/v1/app/registration?code=example", time.Now().Add(time.Minute), true},
 		{"https://accounts.feishu.cn/oauth/v1/app/registration?code=expired", time.Now().Add(-time.Second), false},
 		{"http://accounts.feishu.cn/oauth/v1/app/registration", time.Time{}, false},
@@ -84,6 +87,9 @@ func TestAuthorizationStatusOnlyPublishesValidUnexpiredOfficialLinks(t *testing.
 		{"https://accounts.feishu.cn@evil.example/login", time.Time{}, false},
 		{"https://evil.example@accounts.feishu.cn/login", time.Time{}, false},
 		{"https://accounts.feishu.cn:8443/login", time.Time{}, false},
+		{"https://open.feishu.cn.evil.example/page/launcher", time.Time{}, false},
+		{"https://other@open.feishu.cn/page/launcher", time.Time{}, false},
+		{"https://open.feishu.cn:8443/page/launcher", time.Time{}, false},
 	} {
 		t.Run(test.url, func(t *testing.T) {
 			status.URL, status.ExpiresAt = test.url, test.expires

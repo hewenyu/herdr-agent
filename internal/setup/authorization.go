@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/config"
+	"github.com/hewenyu/herdr-agent/internal/feishuurl"
 	larksdk "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkauth "github.com/larksuite/oapi-sdk-go/v3/service/auth/v3"
@@ -149,8 +149,7 @@ type authorizationProgress struct {
 }
 
 func (p *authorizationProgress) Verification(raw string, expiresIn int) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || (u.Host != "accounts.feishu.cn" && u.Host != "accounts.larksuite.com") {
+	if !feishuurl.ValidAuthorization(raw) {
 		p.invalidURL = true
 		p.cancel()
 		return
