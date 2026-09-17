@@ -177,7 +177,8 @@ poll_interval = "30s"
 # ~/ is expanded to the home of the OS account running the bridge.
 # Agent can be "codex" or "claude" and defaults to "codex" if omitted.
 # An explicit new-project request creates ~/herder-agent-code/<project-name>/;
-# a normal new task only reuses a configured project. No Git/worktree is created.
+# a normal new task only reuses a configured project. The primary directory is
+# initialized as a Git repository if needed; no worktree is created.
 #
 # [tasks.projects.herdr-agent]
 # directories = ["~/code/github/herdr-agent", "~/code/github/herdr"]
@@ -208,5 +209,6 @@ timeout = "2m"
 
 # Set HERDR_AGENT_AI_API_KEY in the environment or ~/.herdr-agent/.env.
 # There is no api_key field in TOML. The key is separate from FEISHU_APP_SECRET.
-# Entry private chats use AI task tools; task groups keep their direct agent
-# conversation. This Go service needs no JavaScript runtime or inbound URL.
+# Entry private chats use AI tools for task creation and overviews; task groups
+# use AI tools for bound-task feedback, progress and acceptance.
+# This Go service needs no JavaScript runtime or inbound URL.

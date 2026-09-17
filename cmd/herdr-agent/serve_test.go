@@ -566,6 +566,8 @@ func TestAFailingMirrorLeavesTheBridgeRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := buildForTest(t, ctx, h, hooks)
+	logged := make(chan struct{})
+	s.log = slog.New(&mirrorFailureLogHandler{Handler: s.log.Handler(), logged: logged})
 
 	done := make(chan error, 1)
 	go func() { done <- s.run(ctx) }()
@@ -587,6 +589,17 @@ func TestAFailingMirrorLeavesTheBridgeRunning(t *testing.T) {
 		t.Fatal("the bridge never connected to Feishu after the mirror failed")
 	}
 
+	// The fake closes stopped before Run returns; it does not mean startMirror
+	// has observed or logged the error yet. Cancelling in that window correctly
+	// suppresses the shutdown log, so wait for the actual diagnostic first.
+	select {
+	case <-logged:
+	case err := <-done:
+		t.Fatalf("the process ended before reporting the mirror failure: %v", err)
+	case <-time.After(waitFor):
+		t.Fatal("the mirror failure was never logged while the bridge was running")
+	}
+
 	// The load-bearing assertion: a supervised task would have cancelled the run
 	// context and made this a non-zero exit naming the mirror.
 	cancel()
@@ -596,6 +609,22 @@ func TestAFailingMirrorLeavesTheBridgeRunning(t *testing.T) {
 	if !strings.Contains(h.stderr(), "transcript mirror stopped") {
 		t.Errorf("the mirror failure was swallowed instead of logged:\n%s", h.stderr())
 	}
+}
+
+// Signal after the real handler writes the diagnostic, without reading the
+// harness's bytes.Buffer concurrently with the running service.
+type mirrorFailureLogHandler struct {
+	slog.Handler
+	logged chan struct{}
+	once   sync.Once
+}
+
+func (h *mirrorFailureLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	err := h.Handler.Handle(ctx, record)
+	if strings.Contains(record.Message, "transcript mirror stopped") {
+		h.once.Do(func() { close(h.logged) })
+	}
+	return err
 }
 
 func TestServeReportsTheFirstTaskFailure(t *testing.T) {
