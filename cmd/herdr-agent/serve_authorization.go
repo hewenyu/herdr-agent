@@ -81,7 +81,11 @@ func (f authorizationFlow) run(ctx context.Context, dir string, cfg config.Confi
 			CheckedAt: now, MissingScopes: checked.MissingScopes,
 		}
 		report(status)
+		linkPublished := false
 		updated, err := f.refresh(ctx, dir, cfg, func(url string, expires time.Time) {
+			if url != "" {
+				linkPublished = true
+			}
 			link := status
 			link.Message = "请登录飞书并确认更新当前应用权限。完成后服务会自动继续启动。"
 			link.URL, link.ExpiresAt = url, expires
@@ -97,7 +101,11 @@ func (f authorizationFlow) run(ctx context.Context, dir string, cfg config.Confi
 		}
 		// Registration errors can contain sensitive request data. Keep the
 		// local status actionable without exposing SDK bodies or credentials.
-		report(projectweb.AuthorizationStatus{State: "error", Message: "授权尚未完成或链接已失效，系统会重新检查并自动生成新的登录链接。", CheckedAt: now, MissingScopes: checked.MissingScopes})
+		message := "无法生成飞书授权链接，请检查网络或飞书服务状态；系统会自动重试。"
+		if linkPublished {
+			message = "授权尚未完成或链接已失效，系统会重新检查并自动生成新的登录链接。"
+		}
+		report(projectweb.AuthorizationStatus{State: "error", Message: message, CheckedAt: now, MissingScopes: checked.MissingScopes})
 		if err := f.wait(ctx); err != nil {
 			return cfg, err
 		}

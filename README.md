@@ -227,6 +227,11 @@ rechecking permissions. After confirmation, the program checks again and starts 
 the required scopes are effective. Network and service errors appear as an unconfirmed check and are
 retried; they are not treated as proof that permission is missing.
 
+The official login link may use `https://open.feishu.cn/page/launcher` as well as the
+Feishu account domain. A failure before any link is issued is reported as a link-generation failure,
+instead of suggesting that a link has expired. The program retries automatically, and logs omit raw
+remote responses and credentials.
+
 This recovery applies to an app that is already configured. Without a valid App ID or an allowlist,
 run `herdr-agent setup` first. `setup --update-permissions` remains available for manual maintenance;
 stop the bridge before running that separate command. Normal startup recovery takes place inside
