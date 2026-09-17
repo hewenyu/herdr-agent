@@ -64,6 +64,14 @@ func TestParse(t *testing.T) {
 		{name: "ls with leading space", in: "   /ls", want: Command{Kind: KindLs}},
 		{name: "doctor", in: "/doctor", want: Command{Kind: KindDoctor}},
 		{name: "help", in: "/help", want: Command{Kind: KindHelp}},
+		{name: "clear", in: "/clear", want: Command{Kind: KindClear}},
+		{name: "clear is case insensitive", in: "/CLEAR", want: Command{Kind: KindClear}},
+		{name: "clear with whitespace", in: " \t/ clear\n", want: Command{Kind: KindClear}},
+		{name: "clear with fullwidth slash", in: "／clear", want: Command{Kind: KindClear}},
+		{name: "clear with fraction slash", in: "⁄clear", want: Command{Kind: KindClear}},
+		{name: "clear with division slash", in: "∕clear", want: Command{Kind: KindClear}},
+		{name: "clear rejects inline request", in: "/clear 创建一个新项目", want: Command{Kind: KindBadArgs}, reasonHas: "请单独发送 /clear"},
+		{name: "clear rejects multiline request", in: "/clear\n创建一个新项目", want: Command{Kind: KindBadArgs}, reasonHas: "再发送新需求"},
 		{name: "help tolerates junk", in: "/help me", want: Command{Kind: KindHelp}},
 
 		// --- /card -------------------------------------------------------
@@ -397,6 +405,7 @@ func TestKindStringIsStable(t *testing.T) {
 		KindMirror:  "mirror",
 		KindDoctor:  "doctor",
 		KindHelp:    "help",
+		KindClear:   "clear",
 		KindUnknown: "unknown",
 		KindBadArgs: "bad-args",
 	}

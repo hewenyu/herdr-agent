@@ -462,6 +462,13 @@ In the bot's **entry private chat**, ask naturally:
 - “How are my tasks going?”
 
 The entry chat supports requirements discussion, clarifications, task creation and overviews.
+Send `/clear` on its own to start a fresh assistant session in the main app's entry private
+chat, then send the new request after the confirmation. Task groups do not support `/clear`;
+each retains its independent session with automatic compaction and memory. Previous private-chat conversation
+and summary are archived locally and excluded from the new context. Tasks, task groups, coding
+agent sessions and operation deduplication records are retained. This requires AI to be enabled;
+it does not reset the coding agent's own context or guarantee that a new task will be created.
+
 Ordinary replies and clarification questions preserve their natural wording. A reply such as
 “call it pelican-bike-svg” continues the preceding project-name question, including after a restart.
 The entry chat receives a short creation acknowledgment and the task group link when available.
@@ -592,6 +599,7 @@ Slash commands stay available underneath as an escape hatch:
 | `/stop <pane>` | send `esc` — the safe way out of a dialog |
 | `/mirror <pane> on\|off` | follow that agent's transcript in the chat (default off) |
 | `/close` | clear the selected agent; does not stop it or close its pane |
+| `/clear` | start a fresh AI assistant session in the main app's private chat only; preserve task sessions |
 | `/doctor` | the same checks as `herdr-agent doctor` |
 | `/help` | this table |
 

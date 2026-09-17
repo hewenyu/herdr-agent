@@ -197,7 +197,7 @@ func (n *Notifier) recordHistory(ctx context.Context, path string, r *notificati
 	// bounded budget and does not inherit that exhausted model/send context.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := n.record(recordCtx, bridge.AssistantMessage{OwnerID: r.OwnerID, ChatID: r.ChatID, TaskID: r.ConversationTaskID, MessageID: "notification:" + r.EventID, Text: r.Text}); err != nil {
+	if err := n.record(recordCtx, bridge.AssistantMessage{OwnerID: r.OwnerID, ChatID: r.ChatID, TaskID: r.ConversationTaskID, MessageID: "notification:" + r.EventID, Text: r.Text, DeliveredAt: r.DeliveredAt}); err != nil {
 		return err
 	}
 	r.Recorded = true

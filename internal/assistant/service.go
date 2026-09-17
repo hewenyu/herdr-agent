@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/bridge"
+	"github.com/hewenyu/herdr-agent/internal/commands"
 	"github.com/hewenyu/herdr-agent/internal/config"
 	localmemory "github.com/hewenyu/herdr-agent/internal/memory"
 	"github.com/hewenyu/herdr-agent/internal/statefile"
@@ -97,21 +98,25 @@ func New(engine Engine, backend *tasktools.Service, dir string, timeout time.Dur
 }
 
 type turnReceipt struct {
-	Reply       string   `json:"reply,omitempty"`
-	Finished    bool     `json:"finished"`
-	Failed      bool     `json:"failed,omitempty"`
-	Delivery    string   `json:"delivery,omitempty"`
-	DeliveryIDs []string `json:"delivery_ids,omitempty"`
+	Generation   uint64   `json:"generation,omitempty"`
+	ContextReset bool     `json:"context_reset,omitempty"`
+	Reply        string   `json:"reply,omitempty"`
+	Finished     bool     `json:"finished"`
+	Failed       bool     `json:"failed,omitempty"`
+	Delivery     string   `json:"delivery,omitempty"`
+	DeliveryIDs  []string `json:"delivery_ids,omitempty"`
 }
 type session struct {
-	Version  int                    `json:"version"`
-	Owner    string                 `json:"owner"`
-	Chat     string                 `json:"chat"`
-	TaskID   string                 `json:"task_id,omitempty"`
-	Messages []Message              `json:"messages"`
-	Receipts map[string]turnReceipt `json:"receipts"`
-	Pending  string                 `json:"pending,omitempty"`
-	Memory   localmemory.Entry      `json:"memory,omitempty"`
+	Version    int                    `json:"version"`
+	Generation uint64                 `json:"generation,omitempty"`
+	ClearedAt  time.Time              `json:"cleared_at,omitempty"`
+	Owner      string                 `json:"owner"`
+	Chat       string                 `json:"chat"`
+	TaskID     string                 `json:"task_id,omitempty"`
+	Messages   []Message              `json:"messages"`
+	Receipts   map[string]turnReceipt `json:"receipts"`
+	Pending    string                 `json:"pending,omitempty"`
+	Memory     localmemory.Entry      `json:"memory,omitempty"`
 }
 
 func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string, error) {
@@ -131,6 +136,9 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 	if err != nil {
 		return "", err
 	}
+	if in.TaskID != "" && commands.Parse(in.Text).Kind == commands.KindClear {
+		return "", errors.New("/clear 仅用于主应用私聊，不能重置任务群会话")
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	path, release, err := s.lockConversation(ctx, in.OwnerID, in.ChatID)
@@ -148,6 +156,9 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 		}
 		return receipt.Reply, nil
 	}
+	if commands.Parse(in.Text).Kind == commands.KindClear {
+		return s.clearConversation(path, in, state)
+	}
 	prompt := systemPrompt
 	if in.TaskID != "" {
 		binding, _ := json.Marshal(map[string]string{"task_id": in.TaskID})
@@ -164,7 +175,7 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 		return "", err
 	}
 	prompt += memoryContext(state.Memory.Summary)
-	state.Receipts[in.MessageID] = turnReceipt{}
+	state.Receipts[in.MessageID] = turnReceipt{Generation: state.Generation}
 	state.Pending = in.MessageID
 	if err := writeSession(path, state); err != nil {
 		return "", err
@@ -239,10 +250,10 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 			failure.Kind, failure.Content = "failure", failedDialogueContext
 		}
 		state.Messages = append(state.Messages, failure)
-		state.Receipts[in.MessageID] = turnReceipt{Finished: true, Failed: true}
+		state.Receipts[in.MessageID] = turnReceipt{Generation: state.Generation, Finished: true, Failed: true}
 	} else {
 		state.Messages = append(state.Messages, Message{Role: "assistant", Content: answer, Kind: "delivery_pending", TurnID: in.MessageID})
-		state.Receipts[in.MessageID] = turnReceipt{Finished: true, Reply: answer, Delivery: deliveryPrepared}
+		state.Receipts[in.MessageID] = turnReceipt{Generation: state.Generation, Finished: true, Reply: answer, Delivery: deliveryPrepared}
 	}
 	state.Pending = ""
 	if err := writeSession(path, state); err != nil {

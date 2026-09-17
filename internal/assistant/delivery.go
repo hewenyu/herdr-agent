@@ -70,6 +70,9 @@ func (s *Service) BeginReplyDelivery(ctx context.Context, in bridge.AssistantMes
 	if !ok || !r.Finished || r.Failed || answer == "" || r.Reply != answer {
 		return false, errors.New("assistant: reply does not match its durable receipt")
 	}
+	if r.Generation != state.Generation {
+		return false, nil
+	}
 	if r.Delivery != deliveryPrepared && r.Delivery != deliveryRetryable {
 		return false, nil
 	}
@@ -123,6 +126,9 @@ func (s *Service) RecordReplyDelivery(ctx context.Context, in bridge.AssistantMe
 	switch {
 	case outcome.Complete:
 		r.Delivery = deliveryConfirmed
+		if r.Generation != state.Generation || r.ContextReset {
+			break // persist the acknowledgement without restoring cleared context
+		}
 		// The reply may have completed after later user turns or notifications.
 		// Remove its pending placeholder and append the actual reply at the
 		// point delivery became known. If compaction removed the placeholder,
@@ -172,7 +178,12 @@ func (s *Service) RecordDeliveredMessage(ctx context.Context, in bridge.Assistan
 		}
 		return errors.New("assistant: delivered message identity already used")
 	}
-	state.Messages = append(state.Messages, Message{Role: "assistant", Content: in.Text, Kind: "dialogue", TurnID: in.MessageID})
-	state.Receipts[in.MessageID] = turnReceipt{Reply: in.Text, Finished: true, Delivery: deliveryConfirmed, DeliveryIDs: []string{in.MessageID}}
+	// History repair can arrive after /clear. A notification already delivered
+	// before that boundary must not restore the previous conversation. Legacy
+	// receipts without a delivery time cannot prove they belong after a reset.
+	if state.ClearedAt.IsZero() || (!in.DeliveredAt.IsZero() && in.DeliveredAt.After(state.ClearedAt)) {
+		state.Messages = append(state.Messages, Message{Role: "assistant", Content: in.Text, Kind: "dialogue", TurnID: in.MessageID})
+	}
+	state.Receipts[in.MessageID] = turnReceipt{Generation: state.Generation, Reply: in.Text, Finished: true, Delivery: deliveryConfirmed, DeliveryIDs: []string{in.MessageID}}
 	return writeSession(path, state)
 }

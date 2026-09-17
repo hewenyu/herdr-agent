@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hewenyu/herdr-agent/internal/commands"
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/outbound"
 )
@@ -34,6 +35,8 @@ type AssistantDelivery interface {
 // OwnerID is supplied by the bridge guard, never by a model's tool arguments.
 type AssistantMessage struct {
 	OwnerID, ChatID, MessageID, Text string
+	// DeliveredAt is set for notification history repair, not user input.
+	DeliveredAt time.Time
 	// TaskID is set only from the bridge's durable task/chat binding. The model
 	// cannot select this scope or use it to operate on another task.
 	TaskID string
@@ -66,11 +69,15 @@ func (b *bridge) assistantMessage(ctx context.Context, m lark.Msg) (bool, error)
 		return false, nil
 	}
 	text := strings.TrimSpace(m.Text)
-	if strings.HasPrefix(text, "/") || strings.HasPrefix(text, "／") {
-		return false, nil
-	}
 	if text == "" {
 		return true, nil
+	}
+	command := commands.Parse(m.Text)
+	if command.Kind != commands.KindProse && command.Kind != commands.KindClear {
+		return false, nil
+	}
+	if command.Kind == commands.KindClear && taskID != "" {
+		return true, b.reply(ctx, m, "", "/clear 仅用于主应用私聊。任务群保持独立会话，通过自动压缩和记忆延续上下文。")
 	}
 
 	in := AssistantMessage{
@@ -92,6 +99,9 @@ func (b *bridge) assistantMessage(ctx context.Context, m lark.Msg) (bool, error)
 		}
 		b.log.Warn("bridge: assistant could not produce a reply", "kind", kind,
 			"message_id", m.MessageID, "task_id", taskID)
+		if command.Kind == commands.KindClear {
+			return true, b.reply(ctx, m, "", "开启新助手会话失败，请重试；已创建的任务不受影响。")
+		}
 		// Only model-authored replies belong in this conversation. Keep the
 		// event handled: tools may already have acted before generation failed.
 		return true, nil

@@ -61,7 +61,7 @@ func (s *Service) prepareMemory(ctx context.Context, in bridge.AssistantMessage,
 		return errMemoryProvider
 	}
 	previous := state.Memory
-	if previous.Summary == "" && len(state.Messages) == 1 && len(state.Receipts) == 0 && state.Pending == "" {
+	if state.Generation == 0 && previous.Summary == "" && len(state.Messages) == 1 && len(state.Receipts) == 0 && state.Pending == "" {
 		previous = recalled
 	}
 	// The local checkpoint and deduplication receipts are committed together.
