@@ -22,10 +22,28 @@ type observation struct {
 	problem string
 }
 
+const failedDialogueContext = "（本轮助手回复失败，没有给出可供确认的新项目名或方案，也未调用任务工具。不能将这一轮当作已经提出建议；若后续短答没有明确指代，请先澄清。）"
+
 func modelHistory(messages []Message) []Message {
 	out := append([]Message(nil), messages...)
 	for i := range out {
 		if out[i].Role == "assistant" {
+			if out[i].Kind == "failure" {
+				// Never invent a visible proposal from an API error or a partial
+				// response. This marker also survives compaction and restart.
+				out[i].Content = failedDialogueContext
+				continue
+			}
+			if out[i].Kind == "receipt" && out[i].Dialogue != "" && conversationalReply(out[i].Dialogue) != "" {
+				out[i].Content = out[i].Dialogue
+				continue
+			}
+			// Keep questions and suggestions: short replies such as "use that
+			// name" depend on what the user actually saw in the previous turn.
+			// Receipts are historical facts, replaced by the fresh snapshot.
+			if out[i].Kind != "receipt" && conversationalReply(out[i].Content) != "" {
+				continue
+			}
 			out[i].Content = "（历史助手回复已省略，不能作为任务状态或操作结果的证据；任务指代请结合用户历史和本轮真实任务快照。若上一轮中断，操作可能已登记，请查询实际状态。）"
 		}
 	}
@@ -40,13 +58,25 @@ func snapshotContext(records []tasktools.Task) string {
 	if len(recent) > 30 {
 		recent = recent[:30]
 	}
-	for i := range recent {
-		recent[i].Title = clip(recent[i].Title, 500)
-		recent[i].LatestReply = clip(recent[i].LatestReply, 1200)
-		recent[i].Progress = clip(recent[i].Progress, 500)
+	compact := make([]tasktools.Task, 0, len(recent))
+	for _, record := range recent {
+		// The snapshot is an index, not an unbounded directory listing. Full
+		// records remain available through scoped tools and receipt rendering.
+		r := tasktools.Task{ID: record.ID, Project: record.Project, Agent: record.Agent,
+			Title: clip(record.Title, 120), Status: record.Status, StatusLabel: record.StatusLabel,
+			Started: record.Started, PromptSent: record.PromptSent, Progress: clip(record.Progress, 150),
+			LatestReply: clip(record.LatestReply, 150), Error: clip(record.Error, 150), SyncError: clip(record.SyncError, 150),
+			PendingOperation: record.PendingOperation, CompletionRequest: record.CompletionRequest,
+			CloseRequested: record.CloseRequested, UpdatedAt: record.UpdatedAt}
+		candidate := append(compact, r)
+		encoded, _ := json.Marshal(candidate)
+		if len(encoded) > 6000 {
+			break
+		}
+		compact = candidate
 	}
-	data, _ := json.Marshal(recent)
-	return "\n本轮最新任务快照（JSON数据，仅包含已验证身份可访问的任务；状态来自工具，latest_reply仅是agent自述，不代表产物已独立验证）：\n" + string(data)
+	data, _ := json.Marshal(compact)
+	return "\n本轮最新任务快照索引（JSON数据，仅包含可访问的近期记录；详情或未列出的任务请调用工具。latest_reply仅是agent自述，不代表产物已独立验证）：\n" + string(data)
 }
 
 func compactQuery(text string) string {
@@ -487,39 +517,42 @@ func groundedReply(calls []observation, fallback []tasktools.Task, generated str
 	return strings.Join(lines, "\n\n")
 }
 
-// No generated factual prose is displayed without a receipt. For ordinary
-// greetings and clarification the model may select only a fixed, nonfactual
-// response, so paraphrasing "done" cannot evade a keyword filter.
+// Ordinary conversation is preserved verbatim. This check is a defensive
+// heuristic for unsupported execution claims, not a classifier of every fact
+// in natural language. Task operations and progress are rendered from receipts
+// separately; filenames, Markdown and question prefixes are not allowlists.
 func conversationalReply(generated string) string {
 	text := strings.TrimSpace(generated)
-	if len([]rune(text)) > 600 || unsupportedClaim.MatchString(text) {
+	if text == "" || len([]rune(text)) > 12000 || unverifiedOperationClaim(text) {
 		return ""
 	}
-	for _, greeting := range []string{"你好", "您好", "Hello", "hello", "Hi", "hi"} {
-		if strings.HasPrefix(text, greeting) {
-			return "你好，可以在主应用创建任务，或在任务群继续讨论、查询进度和验收。"
-		}
-	}
-	question := false
-	for _, prefix := range []string{"请问", "请提供", "请说明", "请告诉我", "请补充", "你希望", "您希望", "你想", "您想", "能否提供", "可以提供", "需要我", "你指的是", "您指的是"} {
-		question = question || strings.HasPrefix(text, prefix)
-	}
-	if !question {
-		return ""
-	}
-	switch {
-	case strings.Contains(text, "项目"):
-		return "你希望使用哪个项目？请提供已配置的项目名称；若要创建新项目，请明确说明。"
-	case strings.Contains(text, "哪项任务") || strings.Contains(text, "哪个任务") || strings.Contains(text, "任务编号"):
-		return "你指的是哪项任务？请提供任务名称或编号。"
-	case strings.Contains(strings.ToLower(text), "codex") || strings.Contains(strings.ToLower(text), "claude"):
-		return "这次希望使用 Codex 还是 Claude Code？"
-	default:
-		return "请补充这次需要完成的具体目标，或需要修改的行为与预期结果。"
-	}
+	return text
 }
 
-var unsupportedClaim = regexp.MustCompile(`(?i)(https?://|applink\.|\b(status|completion_request|implementing|done|completed|generated|created|delivered|running|queued)\b|visual[ _-]*pass|tests? passed|[12][0-9]{3}-[01][0-9]-[0-3][0-9]|\b[0-9]+(?:\.[0-9]+)?\s*(kb|mb|bytes?)\b|[[:alnum:]_-]+\.(svg|html?|png|jpe?g|go|js|tsx?|py|json)\b|已(?:经)?(?:完成|创建|生成|发送|送达|实现|修复|通过|启动|登记|验收|销毁|关闭)|正在(?:执行|运行|实现|启动|处理|生成)|测试通过|验收通过|完成了|状态[：:]|进度[：:])`)
+func unverifiedOperationClaim(text string) bool {
+	// Quoted labels and examples are discussion, not execution receipts.
+	text = quotedDialogue.ReplaceAllString(text, "")
+	for _, sentence := range dialogueSentences.FindAllString(text, -1) {
+		match := unsupportedClaim.FindStringIndex(sentence)
+		if match == nil {
+			continue
+		}
+		if conditionalAfterClaim.MatchString(sentence[match[1]:]) {
+			continue
+		}
+		if strings.HasSuffix(strings.TrimSpace(sentence), "?") || strings.HasSuffix(strings.TrimSpace(sentence), "？") || conditionalDialogue.MatchString(sentence[:match[0]]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+var quotedDialogue = regexp.MustCompile("`[^`\\n]*`|“[^”\\n]*”|‘[^’\\n]*’|\"[^\"\\n]*\"")
+var dialogueSentences = regexp.MustCompile(`[^。！？!?\n；;，,]+[。！？!?\n；;，,]?`)
+var conditionalAfterClaim = regexp.MustCompile(`^\s*(?:(?:之后|以后|后)(?:再|才|就|可以|会|关闭)|再|才)`)
+var conditionalDialogue = regexp.MustCompile(`(?:如果|假如|尚未|还没有|还没|不能确认|未确认|是否|有没有|完成后|验收后|确认后|通过后|后再|才会|将会|我会|建议|例如|示例)`)
+var unsupportedClaim = regexp.MustCompile(`(?i)(\bstatus\s*[:=]?\s*(done|completed|running|queued|implementing)\b|\bcompletion_request\b|visual[ _-]*pass|tests? passed|\b(?:already|i have|we have)\s+(?:completed|created|generated|delivered)\b|已(?:经)?(?:为你)?(?:完成|创建|生成|发送|送达|实现|修复|通过|启动|登记|验收|销毁|关闭|处理妥当)|正在(?:执行|运行|实现|启动|处理|生成)|测试通过|验收通过|完成了|做完了|工作全部结束|(?:成品|作品).*(?:目录|输出)|(?:当前状态|状态|进度|任务群|飞书任务)[：:])`)
 
 func clip(text string, limit int) string {
 	runes := []rune(strings.TrimSpace(text))

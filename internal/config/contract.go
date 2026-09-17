@@ -13,6 +13,7 @@ type Config struct {
 	Mirror Mirror `toml:"mirror"`
 	Tasks  Tasks  `toml:"tasks"`
 	AI     AI     `toml:"ai"`
+	Memory Memory `toml:"memory"`
 }
 
 type Feishu struct {
@@ -71,16 +72,40 @@ type Project struct {
 	Agent       string   `toml:"agent" json:"agent"`
 }
 
-// AI configures the model API used to interpret natural-language task requests
-// in the bot's entry chat. The bridge supplies authorized task tools.
+// AI configures the model API used for natural-language dialogue in the bot's
+// entry chat and task groups. The bridge supplies authorized task tools.
 type AI struct {
 	Enabled  bool          `toml:"enabled"`
 	Provider string        `toml:"provider"`
 	Model    string        `toml:"model"`
 	BaseURL  string        `toml:"base_url"`
 	Timeout  time.Duration `toml:"timeout"`
+	// ContextTokens is the input context limit/compaction threshold (default
+	// 50000, range 16384..1048576). Allow another 4096 output tokens within the
+	// selected model's actual context window.
+	ContextTokens int `toml:"context_tokens"`
 	// APIKey is read only from [ai].api_key in config.toml and is always redacted.
 	APIKey string `toml:"api_key"`
+}
+
+// Memory configures storage and recall of conversation summaries, independently
+// of the model provider used for replies/summaries. Recent original dialogue,
+// checkpoints, archives and operation/message receipts remain in local state.
+type Memory struct {
+	Provider string                    `toml:"provider"`
+	BaseURL  string                    `toml:"base_url"`
+	APIKey   string                    `toml:"api_key"`
+	Timeout  time.Duration             `toml:"timeout"`
+	Users    map[string]MemoryProvider `toml:"users"`
+}
+
+// MemoryProvider is a complete per-user storage configuration. Overrides do
+// not inherit the global endpoint or credentials; omitted fields use defaults.
+type MemoryProvider struct {
+	Provider string        `toml:"provider"`
+	BaseURL  string        `toml:"base_url"`
+	APIKey   string        `toml:"api_key"`
+	Timeout  time.Duration `toml:"timeout"`
 }
 
 // StateDir is where the bridge keeps dedup, routes and the pid file.

@@ -212,6 +212,46 @@ api_key = ""
 # positive and no longer than 10 minutes; explicit "0s" is invalid.
 timeout = "2m"
 
+# Input context limit and automatic compaction threshold. Keep another 4096
+# tokens available for model output within the selected model's actual window.
+# Valid range: 16384..1048576; default 50000. Entry chats and task groups retain
+# recent conversation and automatically summarize older history before it fills.
+# UTF-8 bytes and message/tool overhead are counted conservatively; oversized
+# messages or tool results stop safely before another model request is sent.
+context_tokens = 50000
+
 # Entry private chats use AI tools for task creation and overviews; task groups
 # use AI tools for bound-task feedback, progress and acceptance.
 # This Go service needs no JavaScript runtime or inbound URL.
+
+[memory]
+
+# Conversation summary storage, independent of [ai]'s model API. The default
+# file provider stores summaries in ~/.herdr-agent/memory/. Recent original
+# dialogue, checkpoints, archives and operation/message receipts remain local.
+# After switching providers, local checkpoint summaries sync to the new store
+# on the next turn using memory; old provider data and original dialogue are
+# not automatically migrated or deleted.
+# "http" uses a compatible conversation-storage service (see integration docs),
+# not an OpenAI/Anthropic endpoint. Failure never silently switches to another
+# provider or discards existing history.
+provider = "file"
+
+# For HTTP storage, configure its API root and optional path prefix. HTTPS is
+# required except on loopback. Remote hosts require an API key; an unauthenticated
+# loopback service is allowed. Keys are read only from TOML and never from env.
+base_url = ""
+api_key = ""
+
+# HTTP storage request timeout, positive and no longer than 2 minutes.
+timeout = "10s"
+
+# Complete overrides by Feishu open_id. Each override uses independent default
+# values (file, empty URL/key, 10s); it never inherits another user's or the
+# global provider's endpoint/credentials. Users without overrides use [memory].
+#
+# [memory.users."ou_REPLACE_WITH_YOUR_OWN_OPEN_ID"]
+# provider = "http"
+# base_url = "https://memory.example.com/api"
+# api_key = "REPLACE_WITH_STORAGE_KEY"
+# timeout = "10s"

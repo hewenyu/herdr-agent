@@ -9,12 +9,13 @@ import (
 )
 
 var (
-	ErrAITasks    = errors.New("ai.enabled requires tasks.enabled = true")
-	ErrAIProvider = errors.New("ai.provider must be openai-responses or anthropic-messages")
-	ErrAIModel    = errors.New("ai.model is required when AI is enabled")
-	ErrAIBaseURL  = errors.New("ai.base_url must be an HTTP(S) URL without credentials, query or fragment; HTTP is allowed only on loopback hosts")
-	ErrAITimeout  = errors.New("ai.timeout must be positive and no longer than 10m")
-	ErrAIAPIKey   = errors.New("ai.api_key in config.toml is required when AI is enabled")
+	ErrAITasks         = errors.New("ai.enabled requires tasks.enabled = true")
+	ErrAIProvider      = errors.New("ai.provider must be openai-responses or anthropic-messages")
+	ErrAIModel         = errors.New("ai.model is required when AI is enabled")
+	ErrAIBaseURL       = errors.New("ai.base_url must be an HTTP(S) URL without credentials, query or fragment; HTTP is allowed only on loopback hosts")
+	ErrAITimeout       = errors.New("ai.timeout must be positive and no longer than 10m")
+	ErrAIAPIKey        = errors.New("ai.api_key in config.toml is required when AI is enabled")
+	ErrAIContextTokens = errors.New("ai.context_tokens must be between 16384 and 1048576")
 )
 
 func (c Config) validateAI() error {
@@ -42,6 +43,9 @@ func (c Config) validateAI() error {
 	}
 	if c.AI.Timeout <= 0 || c.AI.Timeout > 10*time.Minute {
 		errs = append(errs, ErrAITimeout)
+	}
+	if c.AI.ContextTokens < MinAIContextTokens || c.AI.ContextTokens > MaxAIContextTokens {
+		errs = append(errs, ErrAIContextTokens)
 	}
 	if strings.TrimSpace(c.AI.APIKey) == "" {
 		errs = append(errs, ErrAIAPIKey)

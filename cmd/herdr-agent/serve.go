@@ -389,7 +389,12 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 			if err != nil {
 				return nil, s.abort(&startupError{step: "AI task tools", err: err})
 			}
-			ai, err := assistant.New(engine, toolBackend, filepath.Join(d.StateDir, "conversations"), cfg.AI.Timeout)
+			memoryOption, err := conversationMemoryOptions(d.StateDir, cfg.Memory)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI memory", err: err})
+			}
+			ai, err := assistant.New(engine, toolBackend, filepath.Join(d.StateDir, "conversations"), cfg.AI.Timeout,
+				assistant.WithContextTokens(cfg.AI.ContextTokens), memoryOption)
 			if err != nil {
 				return nil, s.abort(&startupError{step: "AI conversations", err: err})
 			}

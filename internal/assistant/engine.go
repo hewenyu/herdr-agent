@@ -19,7 +19,6 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
-	"github.com/eino-contrib/jsonschema"
 	"github.com/hewenyu/herdr-agent/internal/config"
 	"github.com/hewenyu/herdr-agent/internal/tasktools"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -38,8 +37,10 @@ var (
 // Message is the persistent conversation format. Tool calls and results remain
 // in Eino's per-turn context; credentials are never part of conversation state.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	Kind     string `json:"kind,omitempty"`
+	Dialogue string `json:"dialogue,omitempty"`
 }
 
 type ToolCall func(context.Context, string, json.RawMessage) (any, error)
@@ -49,9 +50,10 @@ type Engine interface {
 }
 
 type einoEngine struct {
-	model   model.BaseModel[*schema.AgenticMessage]
-	apiKey  string
-	timeout time.Duration
+	model       model.BaseModel[*schema.AgenticMessage]
+	apiKey      string
+	timeout     time.Duration
+	inputBudget int
 }
 
 // NewEngine uses Eino's native tool loop and official Responses/Anthropic
@@ -70,6 +72,12 @@ func NewEngine(cfg config.AI) (Engine, error) {
 			return nil, errModelConfig
 		}
 	}
+	if cfg.ContextTokens == 0 {
+		cfg.ContextTokens = config.DefaultAIContextTokens
+	}
+	if cfg.ContextTokens < config.MinAIContextTokens || cfg.ContextTokens > config.MaxAIContextTokens {
+		return nil, errModelConfig
+	}
 	client := &http.Client{
 		Timeout: cfg.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -79,7 +87,7 @@ func NewEngine(cfg config.AI) (Engine, error) {
 	var m model.BaseModel[*schema.AgenticMessage]
 	switch cfg.Provider {
 	case "openai-responses":
-		zero, tokens, disabled := 0, 4096, false
+		zero, tokens, disabled := 0, contextOutputReserve, false
 		m, err = agenticopenai.NewResponsesModel(context.Background(), &agenticopenai.ResponsesConfig{
 			APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: strings.TrimRight(cfg.BaseURL, "/"),
 			HTTPClient: client, Timeout: &cfg.Timeout, MaxRetries: &zero, MaxTokens: &tokens,
@@ -91,7 +99,7 @@ func NewEngine(cfg config.AI) (Engine, error) {
 		u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/v1")
 		u.RawPath = ""
 		m, err = agenticclaude.New(context.Background(), &agenticclaude.Config{
-			APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: u.String(), MaxTokens: 4096,
+			APIKey: cfg.APIKey, Model: cfg.Model, BaseURL: u.String(), MaxTokens: contextOutputReserve,
 			HTTPClient: client, RequestTimeout: cfg.Timeout,
 		})
 	default:
@@ -100,32 +108,23 @@ func NewEngine(cfg config.AI) (Engine, error) {
 	if err != nil {
 		return nil, errModelConfig
 	}
-	return &einoEngine{model: m, apiKey: cfg.APIKey, timeout: cfg.Timeout}, nil
+	budget := ContextInputBudget(cfg.ContextTokens)
+	return &einoEngine{model: &contextBudgetModel{base: m, inputBudget: budget}, apiKey: cfg.APIKey, timeout: cfg.Timeout, inputBudget: budget}, nil
 }
 
 func (e *einoEngine) Reply(ctx context.Context, history []Message, definitions []tasktools.Tool, call ToolCall) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
-	messages := make([]*schema.AgenticMessage, 0, len(history))
-	for _, message := range history {
-		switch message.Role {
-		case "system":
-			messages = append(messages, schema.SystemAgenticMessage(message.Content))
-		case "user":
-			messages = append(messages, schema.UserAgenticMessage(message.Content))
-		case "assistant":
-			messages = append(messages, &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{
-				schema.NewContentBlock(&schema.AssistantGenText{Text: message.Content}),
-			}})
-		default:
-			return "", errModelConfig
-		}
+	messages, err := agenticHistory(history)
+	if err != nil {
+		return "", err
 	}
 	if len(messages) == 0 || (len(definitions) > 0 && call == nil) {
 		return "", errModelConfig
 	}
 	var calls atomic.Int32
 	var limited atomic.Bool
+	var compressed atomic.Bool
 	boundTools := make([]tool.BaseTool, 0, len(definitions))
 	names := make(map[string]bool)
 	for _, definition := range definitions {
@@ -133,18 +132,19 @@ func (e *einoEngine) Reply(ctx context.Context, history []Message, definitions [
 			return "", errModelConfig
 		}
 		names[definition.Name] = true
-		encoded, err := json.Marshal(definition.InputSchema)
+		info, err := toolInfo(definition)
 		if err != nil {
 			return "", errModelConfig
 		}
-		var params jsonschema.Schema
-		if err := json.Unmarshal(encoded, &params); err != nil {
-			return "", errModelConfig
-		}
 		boundTools = append(boundTools, &taskTool{
-			info: &schema.ToolInfo{Name: definition.Name, Desc: definition.Description, ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&params)},
+			info: info,
 			call: call, calls: &calls, limited: &limited, apiKey: e.apiKey,
+			readOnly: definition.ReadOnly, compressed: &compressed, results: map[string]string{},
 		})
+	}
+	memory, err := e.runtimeSummarizer(ctx, messages, definitions, &compressed)
+	if err != nil {
+		return "", safeModelError(ctx, err)
 	}
 	agent, err := adk.NewTypedChatModelAgent(ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name: "herdr_assistant", Description: "Manage the current user's herdr tasks", Model: e.model,
@@ -152,6 +152,7 @@ func (e *einoEngine) Reply(ctx context.Context, history []Message, definitions [
 			Tools: boundTools, ExecuteSequentially: true,
 		}},
 		MaxIterations: 24,
+		Handlers:      []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{memory},
 	})
 	if err != nil {
 		return "", safeModelError(ctx, err)
@@ -195,11 +196,14 @@ func (e *einoEngine) Reply(ctx context.Context, history []Message, definitions [
 }
 
 type taskTool struct {
-	info    *schema.ToolInfo
-	call    ToolCall
-	calls   *atomic.Int32
-	limited *atomic.Bool
-	apiKey  string
+	info       *schema.ToolInfo
+	call       ToolCall
+	calls      *atomic.Int32
+	limited    *atomic.Bool
+	apiKey     string
+	readOnly   bool
+	compressed *atomic.Bool
+	results    map[string]string
 }
 
 func (t *taskTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
@@ -212,6 +216,20 @@ func (t *taskTool) InvokableRun(ctx context.Context, arguments string, _ ...tool
 		t.limited.Store(true)
 		return "", errToolLimit
 	}
+	// Summarization rewrites model context, never tool receipts. A repeated
+	// mutation after compaction gets its exact earlier result without calling
+	// the backend again, even if the model forgot that it already executed.
+	key := arguments
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(arguments), &fields) == nil {
+		canonical, _ := json.Marshal(fields)
+		key = string(canonical)
+	}
+	if !t.readOnly && t.compressed != nil && t.compressed.Load() {
+		if previous, ok := t.results[key]; ok {
+			return previous, nil
+		}
+	}
 	result, err := t.call(ctx, t.info.Name, json.RawMessage(arguments))
 	if ctx.Err() != nil {
 		return "", ctx.Err()
@@ -222,10 +240,14 @@ func (t *taskTool) InvokableRun(ctx context.Context, arguments string, _ ...tool
 		result = map[string]any{"ok": false, "error": strings.ReplaceAll(err.Error(), t.apiKey, "[redacted]")}
 	}
 	encoded, err := json.Marshal(result)
-	if err != nil {
-		return `{"ok":false,"error":"无法编码工具返回结果"}`, nil
+	text := `{"ok":false,"error":"无法编码工具返回结果"}`
+	if err == nil {
+		text = strings.ReplaceAll(string(encoded), t.apiKey, "[redacted]")
 	}
-	return strings.ReplaceAll(string(encoded), t.apiKey, "[redacted]"), nil
+	if !t.readOnly && t.results != nil {
+		t.results[key] = text
+	}
+	return text, nil
 }
 
 // Discard SDK error bodies: compatible endpoints may echo request headers or
@@ -233,6 +255,9 @@ func (t *taskTool) InvokableRun(ctx context.Context, arguments string, _ ...tool
 func safeModelError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if errors.Is(err, ErrContextBudget) {
+		return ErrContextBudget
 	}
 	status := 0
 	var openaiError *openaiapi.Error

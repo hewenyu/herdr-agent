@@ -26,6 +26,7 @@ const (
 // Redacted is the one-line form of the configuration that is safe to log at
 // startup. It never contains the app secret or AI API key.
 func (c Config) Redacted() string {
+	c = c.redactedCopy()
 	var b strings.Builder
 	b.WriteString(c.Feishu.String())
 	b.WriteString(" herdr.socket_path=")
@@ -56,6 +57,8 @@ func (c Config) Redacted() string {
 	b.WriteString(c.Tasks.PollInterval.String())
 	b.WriteByte(' ')
 	b.WriteString(c.AI.String())
+	b.WriteByte(' ')
+	b.WriteString(c.Memory.String())
 	names := make([]string, 0, len(c.Tasks.Projects))
 	for name := range c.Tasks.Projects {
 		names = append(names, name)
@@ -113,8 +116,8 @@ func (a AI) String() string {
 	if a.APIKey != "" {
 		key = RedactedSecret
 	}
-	return scrub(fmt.Sprintf("ai.enabled=%t ai.provider=%s ai.model=%s ai.base_url=%s ai.timeout=%s ai.api_key=%s",
-		a.Enabled, orDefault(a.Provider, unsetValue), orDefault(a.Model, unsetValue), orDefault(a.BaseURL, unsetValue), a.Timeout, key), a.APIKey)
+	return scrub(fmt.Sprintf("ai.enabled=%t ai.provider=%s ai.model=%s ai.base_url=%s ai.timeout=%s ai.context_tokens=%d ai.api_key=%s",
+		a.Enabled, orDefault(a.Provider, unsetValue), orDefault(a.Model, unsetValue), orDefault(a.BaseURL, unsetValue), a.Timeout, a.ContextTokens, key), a.APIKey)
 }
 
 func (a AI) MarshalJSON() ([]byte, error) {
@@ -123,13 +126,14 @@ func (a AI) MarshalJSON() ([]byte, error) {
 		key = RedactedSecret
 	}
 	return json.Marshal(struct {
-		Enabled  bool   `json:"enabled"`
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-		BaseURL  string `json:"base_url"`
-		Timeout  string `json:"timeout"`
-		APIKey   string `json:"api_key"`
-	}{a.Enabled, scrub(a.Provider, a.APIKey), scrub(a.Model, a.APIKey), scrub(a.BaseURL, a.APIKey), a.Timeout.String(), key})
+		Enabled       bool   `json:"enabled"`
+		Provider      string `json:"provider"`
+		Model         string `json:"model"`
+		BaseURL       string `json:"base_url"`
+		Timeout       string `json:"timeout"`
+		ContextTokens int    `json:"context_tokens"`
+		APIKey        string `json:"api_key"`
+	}{a.Enabled, scrub(a.Provider, a.APIKey), scrub(a.Model, a.APIKey), scrub(a.BaseURL, a.APIKey), a.Timeout.String(), a.ContextTokens, key})
 }
 
 // MarshalJSON redacts the secret as well, because a structured logger reaches
@@ -179,8 +183,20 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	// The alias sheds Config's method set; marshalling Config itself here
 	// would recurse. Feishu keeps its own MarshalJSON, which is what we want.
 	type alias Config
-	redacted := alias(c)
+	b, err := json.Marshal(alias(c.redactedCopy()))
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+	return b, nil
+}
+
+// Share per-field scrubbing between plain and structured logging. Scrubbing
+// before formatting also protects short credentials pasted as an entire field,
+// without replacing every occurrence of a short substring in normal text.
+func (c Config) redactedCopy() Config {
+	redacted := c
 	redacted.Feishu.AppID = c.scrub(c.Feishu.AppID)
+	redacted.Feishu.AppSecret = memoryKey(c.Feishu.AppSecret)
 	redacted.Feishu.NotifyChatID = c.scrub(c.Feishu.NotifyChatID)
 	if c.Feishu.AllowedOpenIDs != nil {
 		redacted.Feishu.AllowedOpenIDs = make([]string, len(c.Feishu.AllowedOpenIDs))
@@ -194,6 +210,8 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	redacted.AI.Provider = c.scrub(c.AI.Provider)
 	redacted.AI.Model = c.scrub(c.AI.Model)
 	redacted.AI.BaseURL = c.scrub(c.AI.BaseURL)
+	redacted.AI.APIKey = memoryKey(c.AI.APIKey)
+	redacted.Memory = c.Memory.scrubFields(c.scrub)
 	if c.Tasks.Projects != nil {
 		redacted.Tasks.Projects = make(map[string]Project, len(c.Tasks.Projects))
 		for name, project := range c.Tasks.Projects {
@@ -209,21 +227,23 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	b, err := json.Marshal(redacted)
-	if err != nil {
-		return nil, fmt.Errorf("marshal config: %w", err)
-	}
-	return b, nil
+	return redacted
 }
 
-// scrub applies both credentials, including to fields where either was pasted
-// accidentally. Replace the longer credential first when their contents overlap.
+// scrub applies every configured credential, including per-user memory keys,
+// to fields where a credential was accidentally pasted.
 func (c Config) scrub(s string) string {
-	first, second := c.Feishu.AppSecret, c.AI.APIKey
-	if len(second) > len(first) {
-		first, second = second, first
+	secrets := append(c.Memory.secrets(), c.Feishu.AppSecret, c.AI.APIKey)
+	return scrubSecrets(s, secrets)
+}
+
+func scrubSecrets(s string, secrets []string) string {
+	// Longer credentials must go first when one credential contains another.
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, secret := range secrets {
+		s = scrub(s, secret)
 	}
-	return scrub(scrub(s, first), second)
+	return s
 }
 
 // Preserve errors.Is/As while keeping parser errors from echoing credentials.
@@ -241,6 +261,9 @@ func (e *redactedError) Unwrap() error { return e.cause }
 func scrub(s, secret string) string {
 	if secret == "" {
 		return s
+	}
+	if s == secret {
+		return RedactedSecret
 	}
 	// TOML credentials can contain quotes or backslashes. Parser diagnostics
 	// escape these with %q, so the raw value alone would miss the leaked key.
