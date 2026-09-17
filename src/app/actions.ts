@@ -8,12 +8,34 @@ import type { ApplicationContext } from "./context.js";
 import { presentScreen } from "./presentation.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
 
+function localOwner(context: ApplicationContext): string | undefined {
+  const selected = context.store.get<unknown>("web_identity", "selected");
+  if (typeof selected === "string" && context.config.feishu.allowedOpenIds.includes(selected))
+    return selected;
+  if (selected !== undefined) context.store.delete("web_identity", "selected");
+  return context.config.feishu.allowedOpenIds[0];
+}
+
+function localSession(context: ApplicationContext, ownerId: string): Session {
+  const selected = context.store.get<string>("web_selection", ownerId);
+  if (selected) {
+    const session = context.store.get<Session>("sessions", selected);
+    if (session?.ownerId === ownerId && !session.archived) return session;
+    context.store.delete("web_selection", ownerId);
+  }
+  return context.sessions.current(ownerId, `web:${ownerId}`);
+}
+
 export function localActor(
   context: ApplicationContext,
   input: Record<string, unknown> = {},
 ): ActorContext {
-  const ownerId = context.config.feishu.allowedOpenIds[0];
+  const ownerId = localOwner(context);
   if (!ownerId) fail("setup_required", "请先通过 setup 设置允许用户，再管理会话和任务。");
+  const expectedOwnerId = optionalString(input, "expectedOwnerId");
+  if (expectedOwnerId && expectedOwnerId !== ownerId)
+    fail("web_identity_changed", "本机管理身份已切换，请刷新后重新操作。");
+  if ("ownerId" in input) fail("web_identity_input", "请通过本机管理身份选择控件切换用户。");
   const taskId = optionalString(input, "taskId");
   if (taskId) {
     const task = context.tasks.records.get({ ownerId, chatId: `web:${ownerId}` }, taskId);
@@ -28,14 +50,9 @@ export function localActor(
     };
   }
   const explicitSession = optionalString(input, "sessionId");
-  let sessionId = explicitSession ?? context.store.get<string>("web_selection", ownerId);
-  if (sessionId && !explicitSession && context.sessions.get(ownerId, sessionId).archived) {
-    context.store.delete("web_selection", ownerId);
-    sessionId = undefined;
-  }
-  const session = sessionId
-    ? context.sessions.get(ownerId, sessionId)
-    : context.sessions.current(ownerId, `web:${ownerId}`);
+  const session = explicitSession
+    ? context.sessions.get(ownerId, explicitSession)
+    : localSession(context, ownerId);
   if (session.taskId) {
     const task = context.tasks.records.get({ ownerId, chatId: `web:${ownerId}` }, session.taskId);
     return {
@@ -57,21 +74,17 @@ export function localActor(
 }
 
 export function snapshot(context: ApplicationContext): Record<string, unknown> {
-  const ownerId = context.config.feishu.allowedOpenIds[0];
+  const ownerId = localOwner(context);
   const catalog = context.projects.snapshot();
   let session: Session | undefined;
-  if (ownerId) {
-    const selected = context.store.get<string>("web_selection", ownerId);
-    session = selected
-      ? context.sessions.get(ownerId, selected)
-      : context.sessions.current(ownerId, `web:${ownerId}`);
-    if (session.archived) {
-      context.store.delete("web_selection", ownerId);
-      session = context.sessions.current(ownerId, `web:${ownerId}`);
-    }
-  }
+  if (ownerId) session = localSession(context, ownerId);
   const tasks = ownerId ? context.tasks.records.list(ownerId, true) : [];
   return {
+    activeOwnerId: ownerId,
+    identities: [...new Set(context.config.feishu.allowedOpenIds)].map((id) => ({
+      id,
+      sessionCount: context.sessions.list(id, { archived: true }).length,
+    })),
     projects: catalog.projects,
     catalog,
     sessions: ownerId
@@ -98,6 +111,14 @@ export async function dispatch(
   action: string,
   input: Record<string, unknown>,
 ): Promise<unknown> {
+  if (action === "identity.select") {
+    const ownerId = string(input, "ownerId");
+    if (!context.config.feishu.allowedOpenIds.includes(ownerId))
+      fail("unauthorized", "只能选择配置允许名单中的本机管理身份。");
+    context.store.set("web_identity", "selected", ownerId);
+    context.changed();
+    return { ownerId };
+  }
   if (action.startsWith("project.") || action === "catalog.bypass") {
     return projectAction(context, action, input);
   }

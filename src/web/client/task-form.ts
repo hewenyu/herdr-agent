@@ -1,6 +1,7 @@
 import type { WebState } from "../contracts.js";
 import type { Action } from "./api.js";
 import { actions, button, check, closeModal, el, field, modal, select } from "./dom.js";
+import { discussionParents, taskContextFields } from "./task-context.js";
 
 export function participantFields(container: HTMLElement, initialKind = "codex") {
   const row = el("div", "participant-row");
@@ -41,10 +42,10 @@ export function createTaskForm(state: WebState, action: Action): void {
   const title = field("任务标题");
   title.input.required = true;
   const requirements = field(
-    "完整要求",
+    "本次完整要求",
     "",
     "textarea",
-    "需求内容将传给参与者；pi 只负责组织本工具的任务流程。",
+    "完整要求将传给参与者。关联讨论只提供背景，不会自动授权开发或代替本次要求。",
   );
   requirements.input.required = true;
   const kind = select("任务类型", [
@@ -54,10 +55,55 @@ export function createTaskForm(state: WebState, action: Action): void {
     ["test", "测试"],
   ]);
   const projects = state.catalog?.projects ?? state.projects ?? [];
-  const project = select("项目", [
-    ["", "使用默认项目 / 无项目讨论"],
+  const projectMode = select(
+    "项目方式",
+    [
+      ["existing", "使用已有项目"],
+      ["new", "新建项目"],
+      ["none", "无项目讨论"],
+    ],
+    projects.length ? "existing" : "none",
+  );
+  const project = select("已有项目", [
+    [
+      "",
+      state.catalog?.defaultProject ? `默认：${state.catalog.defaultProject}` : "请选择已有项目",
+    ],
     ...projects.map((item): [string, string] => [item.name, item.name]),
   ]);
+  const newProject = field(
+    "新项目名称",
+    "",
+    "text",
+    "将新建项目目录并初始化 Git；已有同名目录不会被覆盖。",
+  );
+  const projectDetails = el("div", "stack");
+  const updateProjectFields = () => {
+    const none = [...projectMode.input.options].find((option) => option.value === "none");
+    if (none) none.disabled = kind.input.value !== "discussion";
+    if (kind.input.value !== "discussion" && projectMode.input.value === "none")
+      projectMode.input.value = "existing";
+    projectDetails.replaceChildren(
+      projectMode.input.value === "new"
+        ? newProject.wrapper
+        : projectMode.input.value === "existing"
+          ? project.wrapper
+          : el("p", "subtle", "讨论使用独立目录，不登记新项目。"),
+    );
+  };
+  projectMode.input.addEventListener("change", updateProjectFields);
+  kind.input.addEventListener("change", updateProjectFields);
+  updateProjectFields();
+  const parent = select("关联先前讨论（可选）", [
+    ["", "不关联"],
+    ...discussionParents(state).map((task): [string, string] => [
+      task.id,
+      `${task.title} · ${task.id}`,
+    ]),
+  ]);
+  parent.wrapper.append(
+    el("small", "", "沿用所选讨论的背景与已有结论。请在下方明确本次任务和所有约束。"),
+  );
   const sessions = (state.sessions ?? []).filter((item) => !item.archived && !item.taskId);
   const session = select(
     "调度会话",
@@ -92,7 +138,7 @@ export function createTaskForm(state: WebState, action: Action): void {
       item.input.max = max;
     }
   const row = el("div", "form-row");
-  row.append(kind.wrapper, project.wrapper);
+  row.append(kind.wrapper, projectMode.wrapper);
   const secondary = el("div", "form-row");
   secondary.append(session.wrapper, directories.wrapper);
   const participants = el("div", "stack");
@@ -105,7 +151,9 @@ export function createTaskForm(state: WebState, action: Action): void {
   body.append(
     title.wrapper,
     row,
+    projectDetails,
     secondary,
+    parent.wrapper,
     requirements.wrapper,
     el("h3", "", "参与者与职责"),
     participants,
@@ -123,12 +171,15 @@ export function createTaskForm(state: WebState, action: Action): void {
     group.wrapper,
     remote.wrapper,
   );
+  const validation = el("div");
+  body.append(validation);
   body.append(
     actions(
       button("取消", closeModal),
       button(
         "创建并调度",
         async () => {
+          validation.replaceChildren();
           if (!title.input.value.trim() || !requirements.input.value.trim()) {
             title.input.reportValidity();
             requirements.input.reportValidity();
@@ -136,12 +187,35 @@ export function createTaskForm(state: WebState, action: Action): void {
           }
           if (!maxRounds.input.reportValidity() || !maxMinutes.input.reportValidity()) return;
           if (!session.input.value) {
-            body.append(el("p", "notice error", "请先在会话页创建或恢复一个独立调度会话。"));
+            validation.append(el("p", "notice error", "请先在会话页创建或恢复一个独立调度会话。"));
             return;
           }
           const members = getters.map((get) => get()).filter(Boolean);
           if (!members.length) {
-            body.append(el("p", "notice error", "请至少添加一位参与者。"));
+            validation.append(el("p", "notice error", "请至少添加一位参与者。"));
+            return;
+          }
+          let context: ReturnType<typeof taskContextFields>;
+          try {
+            context = taskContextFields(
+              {
+                kind: kind.input.value,
+                projectMode: projectMode.input.value,
+                existingProject: project.input.value,
+                newProjectName: newProject.input.value,
+                parentTaskId: parent.input.value,
+                requirements: requirements.input.value,
+              },
+              state,
+            );
+          } catch (error) {
+            validation.append(
+              el(
+                "p",
+                "notice error",
+                error instanceof Error ? error.message : "任务项目与关联讨论无效。",
+              ),
+            );
             return;
           }
           if (
@@ -149,8 +223,7 @@ export function createTaskForm(state: WebState, action: Action): void {
               sessionId: session.input.value,
               kind: kind.input.value,
               title: title.input.value.trim(),
-              requirements: requirements.input.value.trim(),
-              ...(project.input.value ? { project: project.input.value } : {}),
+              ...context,
               participants: members,
               directoryMode: directories.input.value,
               keepGroup: keepGroup.input.checked,

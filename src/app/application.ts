@@ -70,7 +70,7 @@ export class Application implements ApplicationContext {
     this.engine =
       options.engine ??
       (this.config.ai.enabled
-        ? new PiEngine(this.config.ai)
+        ? new PiEngine(this.config.ai, { logger: this.logger })
         : {
             contextTokens: this.config.ai.contextTokens,
             async run() {

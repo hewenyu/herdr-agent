@@ -13,6 +13,29 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
     fail("task_destroyed", "执行资源已关闭，不能重开；可创建关联的新任务。");
   if (task.status === "destroying" && action !== "destroy")
     fail("task_destroying", "任务已进入资源清理，不能更改动作。");
+  if (task.status === "completed" && ["pause", "resume", "retry"].includes(action))
+    fail("task_completed", "已完成任务需要先重开。");
+  const requested = ["complete", "close"].includes(action)
+    ? "complete"
+    : action === "reopen"
+      ? "reopen"
+      : undefined;
+  const pending = task.completionRequest
+    ? context.store.get<{ id: string; request: string }>("completion_sync", task.id)
+    : undefined;
+  const attempted = pending
+    ? context.store.get<OperationReceipt>("operations", pending.id)
+    : undefined;
+  if (
+    requested &&
+    pending &&
+    pending.request !== requested &&
+    attempted &&
+    attempted.state !== "failed"
+  )
+    fail("completion_pending", "前次完成状态同步尚未确认，请先核对，不能改为相反操作。");
+  const reuseCompletion = requested && pending?.request === requested;
+  if (reuseCompletion && attempted?.state === "failed") context.operations.resetFailed(pending.id);
   switch (action) {
     case "complete":
       task.completionRequest = "complete";
@@ -54,7 +77,7 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
     default:
       fail("task_action", "未知任务操作。");
   }
-  if (["complete", "close", "reopen"].includes(action)) {
+  if (requested && !reuseCompletion) {
     context.store.set("completion_sync", task.id, {
       id: `${task.id}:completion:${newId("c")}`,
       request: task.completionRequest,

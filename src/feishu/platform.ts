@@ -12,7 +12,12 @@ interface Connection {
 }
 export interface PlatformDependencies {
   request?: Requester;
-  connection?: (callbacks: { onReady(): void; onError(error: Error): void }) => Connection;
+  connection?: (callbacks: {
+    onReady(): void;
+    onError(error: Error): void;
+    onReconnecting(): void;
+    onReconnected(): void;
+  }) => Connection;
   connectTimeoutMs?: number;
 }
 
@@ -54,6 +59,10 @@ export class FeishuPlatform implements PlatformPort {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.connection?.close({ force: true });
+          this.options.logger?.error("等待飞书连接超时。", {
+            event: "feishu.connection_failed",
+            code: "feishu_connect_timeout",
+          });
           reject(new OperationError("feishu_connect_timeout", "等待飞书连接超时。"));
         }, this.dependencies.connectTimeoutMs ?? 30_000);
         let settled = false;
@@ -65,13 +74,29 @@ export class FeishuPlatform implements PlatformPort {
           error ? reject(error) : resolve();
         };
         this.cancelConnect = () => finish(new OperationError("feishu_stopped", "飞书连接已停止。"));
-        const onReady = () => finish();
+        const onReady = () => {
+          if (generation !== this.generation || signal.aborted || settled) return;
+          this.options.logger?.info("飞书长连接已就绪。", { event: "feishu.connection_ready" });
+          finish();
+        };
         const onError = (_error: Error) => {
-          this.options.logger?.error("飞书连接失败，请检查凭据与网络。");
+          if (generation !== this.generation || signal.aborted) return;
+          this.options.logger?.error("飞书连接失败，请检查凭据与网络。", {
+            event: "feishu.connection_failed",
+            code: "feishu_connect_failed",
+          });
           finish(new OperationError("feishu_connect_failed", "飞书连接失败，请检查凭据与网络。"));
         };
+        const onReconnecting = () => {
+          if (generation !== this.generation || signal.aborted) return;
+          this.options.logger?.warn("飞书正在重连。", { event: "feishu.reconnecting" });
+        };
+        const onReconnected = () => {
+          if (generation !== this.generation || signal.aborted) return;
+          this.options.logger?.info("飞书已恢复连接。", { event: "feishu.reconnected" });
+        };
         this.connection =
-          this.dependencies.connection?.({ onReady, onError }) ??
+          this.dependencies.connection?.({ onReady, onError, onReconnecting, onReconnected }) ??
           new WSClient({
             ...this.options,
             logger: sdkLogger(this.options.logger),
@@ -83,8 +108,8 @@ export class FeishuPlatform implements PlatformPort {
             wsConfig: { pingTimeout: 15 },
             onReady,
             onError,
-            onReconnecting: () => this.options.logger?.warn("飞书正在重连。"),
-            onReconnected: () => this.options.logger?.info("飞书已恢复连接。"),
+            onReconnecting,
+            onReconnected,
           });
         const abort = () => {
           this.connection?.close({ force: true });
@@ -122,12 +147,29 @@ export class FeishuPlatform implements PlatformPort {
       "im.message.receive_v1": async (raw) => {
         if (!accepted(raw)) return;
         const message = normalizeMessage(raw, this.botOpenId);
-        if (message) await handlers.message(message);
+        if (message) {
+          this.options.logger?.info("收到飞书消息事件。", {
+            event: "feishu.message_received",
+            eventId: message.eventId,
+            messageId: message.messageId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+          });
+          await handlers.message(message);
+        }
       },
       "card.action.trigger": async (raw: unknown) => {
         if (!accepted(raw)) return;
         const action = normalizeAction(raw);
-        if (action) await handlers.action(action);
+        if (action) {
+          this.options.logger?.info("收到飞书卡片事件。", {
+            event: "feishu.action_received",
+            eventId: action.eventId,
+            messageId: action.messageId,
+            chatId: action.chatId,
+          });
+          await handlers.action(action);
+        }
         return {};
       },
       "task.task.update_user_access_v2": async (raw) => {

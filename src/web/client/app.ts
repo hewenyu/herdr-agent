@@ -2,7 +2,7 @@ import type { StoredMessage } from "../../core/types.js";
 import type { WebState } from "../contracts.js";
 import { type Action, dispatch, state as fetchState } from "./api.js";
 import { displayThenAcknowledge } from "./delivery.js";
-import { button, el } from "./dom.js";
+import { button, closeModal, el, select } from "./dom.js";
 import { renderProjects, renderSettings } from "./projects.js";
 import { renderSessions } from "./sessions.js";
 import { renderTasks } from "./tasks.js";
@@ -21,6 +21,9 @@ let activeTask = "";
 let archived = false;
 let refreshing = false;
 let pending = false;
+let pendingForce = false;
+let identityVersion = 0;
+let switchingIdentity = false;
 const historyBySession = new Map<string, StoredMessage[]>();
 const acknowledgements = new Set<string>();
 
@@ -35,35 +38,103 @@ function feedback(message: string, error = false) {
   area.replaceChildren(el("div", `notice ${error ? "error" : "good"}`, message));
 }
 
+function clearIdentityView() {
+  identityVersion++;
+  activeSession = "";
+  activeTask = "";
+  archived = false;
+  historyBySession.clear();
+  acknowledgements.clear();
+  current = {
+    ...current,
+    activeSessionId: undefined,
+    sessions: [],
+    tasks: [],
+    participants: [],
+    messages: [],
+  };
+  node("#feedback").replaceChildren();
+  closeModal();
+}
+
+async function switchIdentity(ownerId: string) {
+  if (switchingIdentity || ownerId === current.activeOwnerId) return;
+  switchingIdentity = true;
+  clearIdentityView();
+  render();
+  try {
+    await dispatch("identity.select", { ownerId });
+  } catch (error) {
+    feedback(error instanceof Error ? error.message : "身份切换未完成。", true);
+  } finally {
+    switchingIdentity = false;
+    await refresh(true);
+  }
+}
+
+function renderIdentity() {
+  const area = node("#identity");
+  area.replaceChildren();
+  if (!current.identities?.length) return;
+  const chooser = select(
+    "本机管理身份",
+    current.identities.map(({ id, sessionCount }) => [
+      id,
+      `${id.length > 22 ? `${id.slice(0, 11)}…${id.slice(-7)}` : id} · ${sessionCount} 个会话`,
+    ]),
+    current.activeOwnerId,
+  );
+  chooser.input.disabled = switchingIdentity;
+  chooser.input.title = current.activeOwnerId ?? "";
+  chooser.input.addEventListener("change", () => void switchIdentity(chooser.input.value));
+  chooser.wrapper.append(
+    el("small", "", "查看此身份的飞书与本机会话、任务；切换不会移动已有记录。"),
+  );
+  area.append(chooser.wrapper);
+}
+
 async function acknowledge(
   messageId: string,
   sessionId: string,
   display = () => {},
   quiet = false,
+  ownerId = current.activeOwnerId,
+  version = identityVersion,
 ): Promise<void> {
+  if (version !== identityVersion || switchingIdentity) return;
   acknowledgements.add(messageId);
   await displayThenAcknowledge(
     display,
     async () => {
-      await dispatch("chat.ack", { messageId, sessionId });
+      await dispatch("chat.ack", { messageId, sessionId, expectedOwnerId: ownerId });
+      if (version !== identityVersion) return;
       if (!quiet) feedback("回复已显示，送达确认已保存。");
       await refresh(true);
     },
     () => {
+      if (version !== identityVersion) return;
       feedback(
         `回复已显示，但送达确认尚未保存。消息 ID：${messageId}。请重试确认，不要重发原消息。`,
         true,
       );
       node("#feedback").append(
-        button("重试送达确认", () => acknowledge(messageId, sessionId), "small"),
+        button(
+          "重试送达确认",
+          () => acknowledge(messageId, sessionId, undefined, false, ownerId, version),
+          "small",
+        ),
       );
     },
   );
 }
 
 const action: Action = async (name, input) => {
+  if (switchingIdentity) return undefined;
+  const version = identityVersion;
+  const ownerId = current.activeOwnerId;
   try {
-    const result = await dispatch(name, input);
+    const result = await dispatch(name, { ...input, expectedOwnerId: ownerId });
+    if (version !== identityVersion) return undefined;
     if (name === "session.history" && Array.isArray(result)) {
       current.messages = result as StoredMessage[];
       if (typeof input.id === "string") historyBySession.set(input.id, current.messages);
@@ -107,6 +178,7 @@ const action: Action = async (name, input) => {
     await refresh(true);
     return result;
   } catch (error) {
+    if (version !== identityVersion) return undefined;
     feedback(error instanceof Error ? error.message : "操作未完成，请核对当前状态。", true);
     await refresh(false);
     return undefined;
@@ -149,7 +221,12 @@ function render() {
       ),
     );
   node("#page-title").textContent = tabs.find(([key]) => key === currentTab)?.[1] ?? "工作台";
+  renderIdentity();
   renderAuthorization();
+  if (switchingIdentity) {
+    node("#content").replaceChildren(el("div", "empty", "正在切换本机管理身份…"));
+    return;
+  }
   const viewState = { ...current, activeSessionId: activeSession || current.activeSessionId };
   const content =
     currentTab === "sessions"
@@ -188,19 +265,26 @@ function render() {
 }
 
 async function refresh(force: boolean) {
+  if (switchingIdentity) return;
   if (refreshing) {
     pending = true;
+    pendingForce ||= force;
     return;
   }
   refreshing = true;
+  const version = identityVersion;
   try {
-    current = await fetchState();
+    const next = await fetchState();
+    if (version !== identityVersion || switchingIdentity) return;
+    const identityChanged = current.activeOwnerId !== next.activeOwnerId;
+    if (identityChanged) clearIdentityView();
+    current = next;
     if (archived && activeSession && historyBySession.has(activeSession)) {
       current.messages = historyBySession.get(activeSession);
     }
     node("#connection").textContent = "● 本机已连接";
     const editing = document.activeElement?.matches("input,textarea,select") ?? false;
-    if (force || !editing) render();
+    if (force || identityChanged || !editing) render();
   } catch (error) {
     node("#connection").textContent = "连接中断 · 等待恢复";
     if (force) feedback(error instanceof Error ? error.message : "读取状态失败", true);
@@ -208,7 +292,9 @@ async function refresh(force: boolean) {
     refreshing = false;
     if (pending) {
       pending = false;
-      void refresh(false);
+      const forceNext = pendingForce;
+      pendingForce = false;
+      void refresh(forceNext);
     }
   }
 }

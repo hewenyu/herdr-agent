@@ -1,4 +1,4 @@
-import { safeError } from "../core/errors.js";
+import { fail, safeError } from "../core/errors.js";
 import type { HerdrPort } from "../core/ports.js";
 import type { ActorContext } from "../core/types.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
@@ -294,6 +294,26 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       ["sessionId", "name"],
       async (args, ctx) =>
         services.sessions.rename(ctx.ownerId, string(args, "sessionId"), string(args, "name")),
+    ),
+    tool(
+      "session_archive",
+      "按用户要求归档主入口pi会话。归档当前会话会在本轮答复生成后生效，保留历史和任务；不关闭herdr执行资源。",
+      false,
+      { sessionId: text("待归档的主入口会话编号") },
+      ["sessionId"],
+      async (args, ctx) => services.sessions.requestArchive(ctx, string(args, "sessionId")),
+    ),
+    tool(
+      "session_restore",
+      "恢复当前用户已归档的主入口pi会话，保留原历史；需要切换时再使用session_select。",
+      false,
+      { sessionId: text("待恢复的主入口会话编号") },
+      ["sessionId"],
+      async (args, ctx) => {
+        const session = services.sessions.get(ctx.ownerId, string(args, "sessionId"));
+        if (session.taskId) fail("task_session", "任务会话由任务生命周期管理，不能在主入口恢复。");
+        return services.sessions.restore(ctx.ownerId, session.id);
+      },
     ),
   );
   return tools;

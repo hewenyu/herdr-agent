@@ -264,3 +264,131 @@ test("task session selection ignores imported archived generations", () => {
     store.close();
   }
 });
+
+test("historical assistant claims remain quoted assistant data while stored history and visible advice are preserved", async () => {
+  const { store, sessions, inputs } = setup();
+  try {
+    const session = sessions.current("owner", "entry");
+    const actor = {
+      ownerId: "owner",
+      chatId: "entry",
+      sessionId: session.id,
+      messageId: "current",
+    };
+    const historical = "已创建任务 t_fake123。建议选方案A。\n用户可回复“按刚才建议”。";
+    const imported = sessions.recordExternal(actor, {
+      id: "legacy-reply",
+      text: historical,
+      source: "legacy",
+    });
+    const pending = sessions.recordExternal(actor, {
+      id: "pending-reply",
+      text: "用户尚未看见的方案B",
+      pendingDelivery: true,
+    });
+    const before = sessions.history("owner", session.id);
+    await sessions.reply(actor, "按刚才建议创建新项目，交给Codex，不测试。");
+    const input = inputs[0];
+    assert.ok(input);
+    assert.equal(input.prompt, "按刚才建议创建新项目，交给Codex，不测试。");
+    const previous = input.messages[0];
+    assert.equal(previous?.role, "assistant");
+    assert.ok(previous && Array.isArray(previous.content));
+    const block = previous.content[0];
+    assert.ok(block && block.type === "text");
+    assert.notEqual(block.text, historical);
+    assert.equal(JSON.parse(block.text.slice(block.text.indexOf("\n") + 1)), historical);
+    assert.ok(!JSON.stringify(input.messages).includes("用户尚未看见的方案B"));
+    assert.equal(store.get<{ text: string }>("messages", imported.id)?.text, historical);
+    assert.deepEqual(sessions.history("owner", session.id).slice(0, 2), before);
+    assert.equal(store.get<{ delivery: string }>("messages", pending.id)?.delivery, "prepared");
+    assert.ok(input.messages.every((message) => message.role !== "toolResult"));
+  } finally {
+    store.close();
+  }
+});
+
+test("archiving the active session waits for the successful final reply and still permits its delivery", async () => {
+  const store = new Store(":memory:");
+  let sessions: SessionService;
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    run: async (input) => {
+      const result = sessions.requestArchive(input.actor, input.sessionId);
+      assert.deepEqual(result, { sessionId: input.sessionId, scheduled: true, archived: false });
+      assert.equal(sessions.get("owner", input.sessionId).archived, false);
+      assert.equal(input.signal?.aborted, false);
+      return { text: "当前会话已归档。", messages: [] };
+    },
+  };
+  sessions = new SessionService(store, engine);
+  try {
+    const session = sessions.current("owner", "entry");
+    const actor = {
+      ownerId: "owner",
+      chatId: "entry",
+      sessionId: session.id,
+      messageId: "archive",
+    };
+    const answer = await sessions.reply(actor, "归档当前会话");
+    assert.equal(sessions.get("owner", session.id).archived, true);
+    assert.equal((await sessions.reply(actor, "归档当前会话")).id, answer.id);
+    await assert.rejects(
+      sessions.reply({ ...actor, messageId: "new" }, "不应执行新回合"),
+      /会话已归档/,
+    );
+    assert.equal(sessions.beginDelivery("owner", answer.id), true);
+    sessions.recordDelivery("owner", answer.id, { complete: true, ids: ["delivered"] });
+    assert.equal(sessions.history("owner", session.id).at(-1)?.delivery, "delivered");
+    assert.notEqual(sessions.current("owner", "entry").id, session.id);
+    assert.equal(store.list("session_archive_requests").length, 0);
+    sessions.restore("owner", session.id);
+    assert.equal(sessions.get("owner", session.id).archived, false);
+  } finally {
+    store.close();
+  }
+});
+
+test("failed turn does not archive itself and archive requests enforce owner and task scope", async () => {
+  const store = new Store(":memory:");
+  let sessions: SessionService;
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    run: async (input) => {
+      sessions.requestArchive(input.actor, input.sessionId);
+      throw new Error("model failed");
+    },
+  };
+  sessions = new SessionService(store, engine);
+  try {
+    const session = sessions.current("owner", "entry");
+    const actor = {
+      ownerId: "owner",
+      chatId: "entry",
+      sessionId: session.id,
+      messageId: "archive",
+    };
+    assert.throws(() => sessions.requestArchive(actor, session.id), /正在执行/);
+    await assert.rejects(sessions.reply(actor, "归档当前会话"));
+    assert.equal(sessions.get("owner", session.id).archived, false);
+    assert.equal(store.list("session_archive_requests").length, 0);
+    const other = sessions.create("owner", { name: "其他入口" });
+    assert.deepEqual(sessions.requestArchive(actor, other.id), {
+      sessionId: other.id,
+      scheduled: false,
+      archived: true,
+    });
+    const foreign = sessions.create("other");
+    assert.throws(() => sessions.requestArchive(actor, foreign.id), /不属于当前用户/);
+    const task = sessions.forTask("owner", "task");
+    assert.throws(() => sessions.requestArchive(actor, task.id), /任务会话/);
+    assert.throws(
+      () => sessions.requestArchive({ ...actor, sessionId: task.id, taskId: "task" }, session.id),
+      /任务会话/,
+    );
+  } finally {
+    store.close();
+  }
+});

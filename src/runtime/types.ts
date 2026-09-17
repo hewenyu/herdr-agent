@@ -1,4 +1,5 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { Logger } from "../core/ports.js";
 import type { ActorContext, StoredMessage } from "../core/types.js";
 
 /** Only application business tools are injected; this runtime has no coding or shell tools. */
@@ -43,6 +44,7 @@ export interface ConversationEngine {
 export interface EngineOptions {
   streamFn?: StreamFn;
   fetch?: typeof fetch;
+  logger?: Logger;
 }
 export interface ReplyOptions {
   signal?: AbortSignal;

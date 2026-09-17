@@ -9,6 +9,7 @@ import { streamSimple as streamAnthropic } from "@earendil-works/pi-ai/api/anthr
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
+import type { Logger } from "../core/ports.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import type {
   ConversationEngine,
@@ -27,11 +28,13 @@ export class PiEngine implements ConversationEngine {
   readonly contextTokens: number;
   private readonly model: Model<Api>;
   private readonly stream: StreamFn;
+  private readonly logger?: Logger;
 
   constructor(
     private readonly config: ModelConfig,
     options: EngineOptions = {},
   ) {
+    this.logger = options.logger;
     this.contextTokens = config.contextTokens;
     const url = new URL(config.baseUrl);
     if (
@@ -80,6 +83,16 @@ export class PiEngine implements ConversationEngine {
     if (!this.config.enabled) throw new OperationError("ai_disabled", "pi 调度模型尚未启用。");
     if (input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
     let calls = 0;
+    let executedCalls = 0;
+    let writes = 0;
+    const startedAt = Date.now();
+    const trace = { sessionId: input.sessionId, messageId: input.actor.messageId };
+    this.logger?.info("pi 开始处理", {
+      event: "pi.turn_started",
+      ...trace,
+      model: this.config.model,
+      toolCount: input.tools.length,
+    });
     let uncertain = false;
     let finalText = "";
     const tools: AgentTool[] = input.tools.map((tool) => ({
@@ -92,13 +105,37 @@ export class PiEngine implements ConversationEngine {
         if (signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
         if (!tool.readOnly && uncertain)
           throw new OperationError("effect_uncertain", "已有写操作未确认，只能查询状态。");
+        executedCalls++;
+        if (!tool.readOnly) writes++;
+        const toolStartedAt = Date.now();
+        this.logger?.info("pi 调用工具", {
+          event: "pi.tool_started",
+          ...trace,
+          tool: tool.name,
+          readOnly: tool.readOnly,
+        });
         try {
           const result = await tool.execute(args as Record<string, unknown>, input.actor, signal);
           if (!tool.readOnly && isUncertain(result)) uncertain = true;
+          this.logger?.info("pi 工具已返回", {
+            event: "pi.tool_completed",
+            ...trace,
+            tool: tool.name,
+            outcome: isUncertain(result) ? "unknown" : "returned",
+            durationMs: Date.now() - toolStartedAt,
+          });
           return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
         } catch (error) {
           if (!tool.readOnly && !isNotExecuted(error)) uncertain = true;
           const safe = safeError(error);
+          this.logger?.warn("pi 工具未完成", {
+            event: "pi.tool_failed",
+            ...trace,
+            tool: tool.name,
+            code: safe.code,
+            outcome: safe.outcome,
+            durationMs: Date.now() - toolStartedAt,
+          });
           return {
             content: [{ type: "text", text: JSON.stringify({ error: safe.message, ...safe }) }],
             details: {},
@@ -204,7 +241,26 @@ export class PiEngine implements ConversationEngine {
       }
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
+      this.logger?.info("pi 已生成回复", {
+        event: "pi.turn_completed",
+        ...trace,
+        toolCalls: executedCalls,
+        writeCalls: writes,
+        durationMs: Date.now() - startedAt,
+      });
       return { text: finalText, messages: safeMessages(agent.state.messages) };
+    } catch (error) {
+      const failure = safeError(error);
+      this.logger?.error("pi 本轮未完成", {
+        event: "pi.turn_failed",
+        ...trace,
+        code: failure.code,
+        outcome: failure.outcome,
+        toolCalls: executedCalls,
+        writeCalls: writes,
+        durationMs: Date.now() - startedAt,
+      });
+      throw error;
     } finally {
       clearTimeout(timeout);
       input.signal?.removeEventListener("abort", abort);

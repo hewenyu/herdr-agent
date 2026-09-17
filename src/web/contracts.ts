@@ -15,6 +15,8 @@ export interface WebBackend {
 
 /** All fields may be absent while setup or recovery is still in progress. */
 export interface WebState {
+  activeOwnerId?: string;
+  identities?: Array<{ id: string; sessionCount: number }>;
   catalog?: Catalog;
   projects?: Catalog["projects"];
   sessions?: Session[];
@@ -61,6 +63,8 @@ export interface WebActionResult {
 
 /**
  * Action contract consumed by the application facade:
+ * identity.select {ownerId}: select only a configured allowed identity for local management.
+ * Owner-scoped actions may include expectedOwnerId to reject stale browser identity state.
  * project.save {name,directories,agent}; project.delete/default {name}; catalog.bypass {bypass}
  * session.create {name}; session.select/archive/clear {id}; session.rename {id,name}
  * chat.send {sessionId,text}; task.create TaskCreateInput + {sessionId}
