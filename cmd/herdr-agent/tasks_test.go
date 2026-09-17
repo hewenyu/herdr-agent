@@ -185,8 +185,13 @@ func TestTaskNotificationRouting(t *testing.T) {
 		want   string
 	}{
 		{"active group", tasks.Record{ChatID: "group", EntryChatID: "entry"}, "group"},
-		{"before group creation", tasks.Record{EntryChatID: "entry"}, "entry"},
-		{"deleted group", tasks.Record{ChatID: "group", EntryChatID: "entry", ChatDeleted: true}, "entry"},
+		{"before group creation", tasks.Record{EntryChatID: "entry"}, ""},
+		{"pre-group creation failure", tasks.Record{EntryChatID: "entry", Error: "cannot create group"}, "entry"},
+		{"pre-group sync failure", tasks.Record{EntryChatID: "entry", SyncError: "task service unavailable"}, "entry"},
+		{"group failure", tasks.Record{ChatID: "group", EntryChatID: "entry", Error: "agent failed"}, "group"},
+		{"deleted group", tasks.Record{ChatID: "group", EntryChatID: "entry", ChatDeleted: true}, ""},
+		{"failure after group deletion", tasks.Record{ChatID: "group", EntryChatID: "entry", ChatDeleted: true, SyncError: "update failed"}, ""},
+		{"destroyed before group creation", tasks.Record{EntryChatID: "entry", Status: tasks.Destroyed, Error: "unknown creation result"}, ""},
 		{"group without entry", tasks.Record{ChatID: "group"}, "group"},
 		{"no surviving destination", tasks.Record{ChatID: "group", ChatDeleted: true}, ""},
 	} {

@@ -19,11 +19,11 @@ func TestManagerReportsStartupBeforeLaunchingAndDeduplicatesAfterRestart(t *test
 		return nil
 	}
 	h.lifecycle.workspaceCreated = func() {
-		if len(reports) == 0 || reports[0].Status != Queued {
-			t.Error("queued progress was not delivered before provisioning")
-		}
 		groupReported := false
 		for _, r := range reports {
+			if r.ChatID == "" || NotificationChat(r) != r.ChatID {
+				t.Error("normal provisioning progress escaped the task group")
+			}
 			if r.ChatID != "" && r.Status == Starting {
 				groupReported = true
 			}
@@ -145,7 +145,7 @@ func TestManagerClosingNoticeFailureDoesNotFloodGroup(t *testing.T) {
 
 func TestManagerReportFailureDoesNotCheckpointUnsentNotice(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
-	r := h.create(t, "report-retry")
+	r := h.reconcile(t, h.create(t, "report-retry").ID, 1)
 	h.manager.opts.Report = func(context.Context, Record) error { return errors.New("delivery unavailable") }
 	h.manager.report(context.Background(), r.ID)
 	r, _ = h.store.Get(r.ID)
@@ -189,7 +189,93 @@ func TestManagerReportsExistingNoticeOnceInNewDestination(t *testing.T) {
 	}
 	h.manager.report(context.Background(), r.ID)
 	h.manager.report(context.Background(), r.ID)
-	if len(destinations) != 2 || destinations[1] != r.EntryChatID {
-		t.Fatalf("same notice did not follow the surviving destination exactly once: %v", destinations)
+	h.restart(t)
+	h.manager.report(context.Background(), r.ID)
+	if len(destinations) != 1 {
+		t.Fatalf("deleted group's notice escaped to the entry chat: %v", destinations)
+	}
+	after, _ := h.store.Get(r.ID)
+	if after.ReportedChatID != r.ChatID {
+		t.Fatalf("suppressed notice changed its delivery checkpoint: %+v", after)
+	}
+}
+
+func TestManagerNormalProvisioningDoesNotReportOrCheckpointWithoutGroup(t *testing.T) {
+	for _, status := range []Status{Queued, Starting} {
+		t.Run(string(status), func(t *testing.T) {
+			h := newTaskTestHarness(t, "codex")
+			r := h.create(t, "quiet-provisioning")
+			if _, err := h.store.Update(r.ID, func(r *Record) error { r.Status = status; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			h.manager.opts.Report = func(context.Context, Record) error {
+				t.Fatal("normal provisioning sent a duplicate entry-chat progress message")
+				return nil
+			}
+			h.manager.report(context.Background(), r.ID)
+			h.restart(t)
+			h.manager.report(context.Background(), r.ID)
+			r, _ = h.store.Get(r.ID)
+			if r.ReportedNotice != "" || r.ReportedChatID != "" || !r.ReportedAt.IsZero() {
+				t.Fatalf("notification with no destination was checkpointed as sent: %+v", r)
+			}
+		})
+	}
+}
+
+func TestManagerPreGroupFailureUsesEntryUntilRecoveryCreatesGroup(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	var reports []Record
+	h.manager.opts.Report = func(_ context.Context, r Record) error { reports = append(reports, r); return nil }
+	h.platform.createErr = &herdrapi.APIError{Code: herdrapi.CodeInvalidParams, Message: "task creation rejected"}
+	r := h.create(t, "create-failure-route")
+	if err := h.manager.reconcile(context.Background(), r.ID); err == nil {
+		t.Fatal("task creation failure was hidden")
+	}
+	if len(reports) != 1 || reports[0].Error == "" || NotificationChat(reports[0]) != r.EntryChatID {
+		t.Fatalf("entry chat did not receive exactly the creation failure: %+v", reports)
+	}
+	h.restart(t)
+	h.manager.report(context.Background(), r.ID)
+	if len(reports) != 1 {
+		t.Fatal("restart duplicated the entry-chat failure")
+	}
+	h.platform.createErr = nil
+	if _, err := h.manager.Request(r.OwnerID, r.ID, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	r = h.reconcile(t, r.ID, 1)
+	if len(reports) < 2 || r.ChatID == "" || r.Status != Running {
+		t.Fatalf("retry did not reach a running task group: %+v", r)
+	}
+	for _, report := range reports[1:] {
+		if NotificationChat(report) != r.ChatID {
+			t.Fatalf("recovered lifecycle progress returned to the entry chat: %+v", report)
+		}
+	}
+}
+
+func TestManagerCompletedCleanupNeverReportsBackToEntryChat(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	var reports []Record
+	h.manager.opts.Report = func(_ context.Context, r Record) error { reports = append(reports, r); return nil }
+	r := h.reconcile(t, h.create(t, "close-group-only").ID, 1)
+	if _, err := h.manager.Request(r.OwnerID, r.ID, "close"); err != nil {
+		t.Fatal(err)
+	}
+	r = h.reconcile(t, r.ID, 1)
+	if r.Status != Destroyed || !r.ChatDeleted {
+		t.Fatalf("test never reached completed cleanup: %+v", r)
+	}
+	for _, report := range reports {
+		if NotificationChat(report) != r.ChatID || report.Status == Destroyed {
+			t.Fatalf("task lifecycle escaped the group or sent a post-deletion receipt: %+v", report)
+		}
+	}
+	count := len(reports)
+	h.restart(t)
+	h.reconcile(t, r.ID, 1)
+	if len(reports) != count {
+		t.Fatal("restart sent cleanup results to the entry chat")
 	}
 }

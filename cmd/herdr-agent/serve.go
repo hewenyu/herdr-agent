@@ -399,8 +399,8 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	return s, nil
 }
 
-// Keep task activity in its group. The entry chat receives pre-group failures
-// and the final cleanup receipt after the group has been deleted.
+// Keep task activity in its group. The entry chat only receives pre-group
+// failures; successful group creation has its own one-time entry receipt.
 func taskNotificationChat(r tasks.Record) string {
 	return tasks.NotificationChat(r)
 }

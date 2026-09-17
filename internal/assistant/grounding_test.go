@@ -141,3 +141,120 @@ func TestAgentSelfReportDoesNotReplaceDirectoryObservation(t *testing.T) {
 		t.Fatalf("agent self-report hid real empty directory or became completed status: %s", answer)
 	}
 }
+
+func TestCreationReplyShowsOnlyRegisteredTaskAndAvailableLinks(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		t.Run(map[bool]string{false: "group-pending", true: "group-ready"}[ready], func(t *testing.T) {
+			r := tasktools.Task{ID: "created", Project: "project", Title: "fix login", Status: tasks.Blocked,
+				Started: true, PromptSent: false, Progress: "waiting for native trust", Error: "startup requires approval",
+				LatestReply: "agent-result-only-for-group", WorkingDirectory: "/private/repo", TaskURL: "https://example.test/task"}
+			if ready {
+				r.ChatURL = "https://example.test/group"
+			}
+			receipt, err := json.Marshal(map[string]any{"outcome": "accepted", "task": r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			query, _ := json.Marshal(r)
+			answer, handled := groundedCreationReply([]observation{{name: "herdr_get", result: query}, {name: "herdr_create", result: receipt}, {name: "herdr_get", result: query}}, nil)
+			if !handled {
+				t.Fatal("creation acknowledgment was not handled")
+			}
+			for _, want := range []string{"任务已登记", "created", "project", "fix login", r.TaskURL, "后续进展、确认和验收请在任务群处理"} {
+				if !strings.Contains(answer, want) {
+					t.Fatalf("missing acknowledgment %q: %s", want, answer)
+				}
+			}
+			for _, unwanted := range []string{"当前状态", "初始任务", "本地工作目录", r.WorkingDirectory, r.Progress, r.Error, r.LatestReply} {
+				if strings.Contains(answer, unwanted) {
+					t.Fatalf("creation duplicated group execution detail %q: %s", unwanted, answer)
+				}
+			}
+			if ready {
+				if !strings.Contains(answer, "任务群已创建："+r.ChatURL) || strings.Contains(answer, "尚未就绪") {
+					t.Fatalf("ready group was not offered: %s", answer)
+				}
+			} else if !strings.Contains(answer, "请留意本应用的建群通知，其中提供任务群入口") || strings.Contains(answer, "任务群已创建") {
+				t.Fatalf("pending group was reported as created: %s", answer)
+			}
+		})
+	}
+}
+
+func TestCreationReplyDoesNotInventSuccessOrLinksForUncertainResults(t *testing.T) {
+	for _, call := range []observation{
+		{name: "herdr_create", failed: true, problem: "timeout after registration"},
+		{name: "herdr_create", result: json.RawMessage(`{"outcome":"unconfirmed","task":{"id":"maybe-created","chat_url":"https://example.test/unconfirmed"}}`)},
+		{name: "herdr_create", result: json.RawMessage(`{"outcome":"accepted"}`)},
+		{name: "herdr_create", result: json.RawMessage(`invalid`)},
+	} {
+		answer, handled := groundedCreationReply([]observation{call}, nil)
+		if !handled || !strings.Contains(answer, "未确认") || !strings.Contains(answer, "未自动重发") {
+			t.Fatalf("uncertain creation was not identified: %s", answer)
+		}
+		for _, invented := range []string{"任务已登记", "任务群已创建", "https://", "agent 已启动"} {
+			if strings.Contains(answer, invented) {
+				t.Fatalf("uncertain creation claimed success %q: %s", invented, answer)
+			}
+		}
+	}
+}
+
+func TestEntryCreationQueriesDoNotAppendExecutionState(t *testing.T) {
+	h := newServiceHarness(t)
+	e := &serviceTestEngine{run: func(ctx context.Context, _ []Message, _ []tasktools.Tool, call ToolCall) (string, error) {
+		if _, err := call(ctx, "herdr_list", json.RawMessage(`{}`)); err != nil {
+			return "", err
+		}
+		if _, err := call(ctx, "herdr_create", json.RawMessage(`{"text":"new login task","project":"project"}`)); err != nil {
+			return "", err
+		}
+		_, err := call(ctx, "herdr_get", json.RawMessage(`{"task_id":"created-1"}`))
+		return inventedStatus, err
+	}}
+	in := serviceMessage("alice", "private-chat", "create", "创建一个修复登录的任务")
+	s := h.service(t, e)
+	answer := serviceReply(t, s, in)
+	for _, want := range []string{"任务已登记", "created-1", "new login task", "项目：project", "建群通知，其中提供任务群入口"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("missing creation receipt %q: %s", want, answer)
+		}
+	}
+	for _, unwanted := range []string{"alice-private-task", "当前状态", "执行会话尚未启动", "Visual PASS", "example.invalid"} {
+		if strings.Contains(answer, unwanted) {
+			t.Fatalf("private creation duplicated execution or unverified detail %q: %s", unwanted, answer)
+		}
+	}
+	if repeated := serviceReply(t, s, in); repeated != answer || len(h.manager.created()) != 1 || len(e.calls()) != 1 {
+		t.Fatal("duplicate event repeated task creation or changed the handoff")
+	}
+}
+
+func TestCreationReplyUsesLatestGroupLinkAndDoesNotReviveDestroyedGroup(t *testing.T) {
+	registered := tasktools.Task{ID: "created", Title: "fix login", Project: "project", Status: tasks.Queued}
+	data, _ := json.Marshal(map[string]any{"outcome": "accepted", "task": registered})
+	ready := registered
+	ready.ChatURL = "https://example.test/current-group"
+	query, _ := json.Marshal(ready)
+	answer, _ := groundedCreationReply([]observation{{name: "herdr_create", result: data}, {name: "herdr_get", result: query}}, nil)
+	if !strings.Contains(answer, "任务群已创建："+ready.ChatURL) || strings.Contains(answer, "尚未就绪") {
+		t.Fatalf("later group creation was ignored: %s", answer)
+	}
+
+	replayed, _ := json.Marshal(map[string]any{"outcome": "accepted", "replayed": true, "task": ready})
+	closed := ready
+	closed.Status = tasks.Destroyed
+	for _, fromQuery := range []bool{false, true} {
+		calls := []observation{{name: "herdr_create", result: replayed}}
+		snapshot := []tasktools.Task{closed}
+		if fromQuery {
+			query, _ = json.Marshal(closed)
+			calls = append(calls, observation{name: "herdr_get", result: query})
+			snapshot = nil
+		}
+		answer, _ = groundedCreationReply(calls, snapshot)
+		if !strings.Contains(answer, "本次未重复创建") || !strings.Contains(answer, "任务群已关闭") || strings.Contains(answer, ready.ChatURL) || strings.Contains(answer, "建立后") {
+			t.Fatalf("replayed creation revived destroyed group: %s", answer)
+		}
+	}
+}

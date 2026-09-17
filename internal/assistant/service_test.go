@@ -186,6 +186,13 @@ func TestServiceBindsSenderAndIsolatesOwnerAndChatHistory(t *testing.T) {
 			return "", err
 		}
 		encoded, err := json.Marshal(result)
+		own, foreign := "alice-private-task", "bob-private-task"
+		if strings.Contains(history[len(history)-1].Content, "BOB_CHAT_A_PRIVATE") {
+			own, foreign = foreign, own
+		}
+		if !strings.Contains(string(encoded), own) || strings.Contains(string(encoded), foreign) {
+			return "", errors.New("task query escaped sender identity")
+		}
 		return string(encoded), err
 	}}
 	s := h.service(t, e)
@@ -196,12 +203,12 @@ func TestServiceBindsSenderAndIsolatesOwnerAndChatHistory(t *testing.T) {
 	}
 	for _, in := range inputs {
 		answer := serviceReply(t, s, in)
-		own, foreign := "alice-private-task", "bob-private-task"
+		foreign := "bob-private-task"
 		if in.OwnerID == "bob" {
-			own, foreign = foreign, own
+			foreign = "alice-private-task"
 		}
-		if !strings.Contains(answer, own) || strings.Contains(answer, foreign) {
-			t.Fatalf("task query escaped sender identity: %s", answer)
+		if !strings.Contains(answer, "任务已登记：new task") || strings.Contains(answer, foreign) {
+			t.Fatalf("creation receipt lost acknowledgment or escaped sender identity: %s", answer)
 		}
 	}
 	for i, created := range h.manager.created() {

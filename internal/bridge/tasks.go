@@ -15,11 +15,14 @@ func WithTasks(m *tasks.Manager) Option { return func(b *bridge) { b.tasks = m }
 func (b *bridge) notifyChat(pane string) string {
 	if b.tasks != nil {
 		if r, ok := b.tasks.ByPane(pane); ok {
-			if !b.tasks.OwnerAllowed(r.OwnerID) || r.Status == tasks.Destroying || r.Status == tasks.Destroyed {
+			if !b.tasks.OwnerAllowed(r.OwnerID) || r.ChatDeleted || r.Status == tasks.Destroying || r.Status == tasks.Destroyed {
 				return ""
 			}
 			return r.ChatID
 		}
+		// Task mode owns its group destinations. Other local agents, including
+		// temporary development panes, must not post into the entry chat.
+		return ""
 	}
 	return b.deps.NotifyChatID
 }
@@ -78,7 +81,7 @@ func (b *bridge) taskMessage(ctx context.Context, m lark.Msg) (bool, error) {
 			if err != nil {
 				return true, b.reply(ctx, m, "", err.Error())
 			}
-			return true, b.reply(ctx, m, "", fmt.Sprintf("任务已登记：%s\n项目：%s · %s\n编号：%s\n正在创建飞书任务和执行会话，可用 /tasks 查看进展。", created.Title, created.Project, created.Agent, created.ID))
+			return true, b.reply(ctx, m, "", fmt.Sprintf("任务已登记：%s\n项目：%s · %s\n编号：%s\n任务群建立后会在此发送入口；后续进度、审批和验收均在任务群内处理。", created.Title, created.Project, created.Agent, created.ID))
 		case "action":
 			id := cmd.ID
 			if id == "" && bound {

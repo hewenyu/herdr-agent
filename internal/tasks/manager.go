@@ -287,7 +287,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			if !m.OwnerAllowed(r.OwnerID) {
 				continue
 			}
-			if r.Status == Destroyed && (r.GUID == "" || r.SyncedDescription == Description(r)) && (m.opts.Report == nil || r.ReportedNotice == Notice(r)) {
+			if r.Status == Destroyed && (r.GUID == "" || r.SyncedDescription == Description(r)) && (m.opts.Report == nil || NotificationChat(r) == "" || r.ReportedNotice == Notice(r)) {
 				continue
 			}
 			m.mu.Lock()
@@ -348,7 +348,7 @@ func (m *Manager) report(ctx context.Context, id string) {
 	}
 	notice := Notice(r)
 	chat := NotificationChat(r)
-	if notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID) {
+	if chat == "" || notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID) {
 		return
 	}
 	// Only incremental running progress is throttled. State changes, blockers,
@@ -367,8 +367,8 @@ func (m *Manager) report(ctx context.Context, id string) {
 }
 
 func (m *Manager) reconcile(ctx context.Context, id string) error {
-	// Publishing before provisioning and on every exit makes startup and failure
-	// visible even when the next external operation takes a long time.
+	// Publish startup and progress once the task group exists. Before that, only
+	// provisioning failures reach the entry chat; the creation reply is separate.
 	m.report(ctx, id)
 	defer m.report(ctx, id)
 	r, _ := m.store.Get(id)

@@ -23,6 +23,7 @@ const systemPrompt = `你是 herdr-agent 的飞书任务助手。使用中文简
 只操作用户这次要求的事情；缺少必要信息时问清楚。优先使用 herdr_projects 返回的已配置项目，不接受任意本地目录、终端窗口或用户身份。项目可以关联多个文件夹，工具会把全部配置目录传给 agent。
 新建任务不等于新建项目。只有用户明确要求新建项目时，才在 herdr_create 设置 new_project=true 并填写项目名；系统会在本机运行用户的 ~/herder-agent-code/<项目名>/ 创建目录。项目未知时先查询或澄清，不得擅自新建目录。目录和 Bypass 模式由用户在本地页面配置，你不能修改它们。
 创建任务时将用户完整要求交给 herdr_create，不要仅写一个省略细节的标题。项目或任务指代不清楚时先查询；只有一个合理默认项时直接使用。
+创建后的私聊只确认任务登记并提供已有的真实任务/群链接；任务群未就绪时说明稍后提供入口。不要主动追加执行状态、目录、产物或审批详情，这些进展和确认只在任务群处理。用户主动查询任务总览时仍返回真实状态。
 查询进度必须调用工具取得当前状态，不根据旧聊天猜测。汇总任务标题、阶段、近期进展、阻塞/错误、最近更新时间和链接。
 日期、文件名、产物大小、测试和截图验证结果只能引用本轮工具实际返回的数据；不能补全或虚构。latest_reply是agent的自述，不是系统独立验证过的产物，引用时注明是agent反馈。started=false表示尚无执行会话，prompt_sent=false表示初始要求尚未确认送出；此时不得声称任务已执行或产物已生成。
 工具的 accepted 只表示操作已登记，不是已经执行完成。review/done 表示agent这一轮结束或待验收，不等于用户验收完成。完成与销毁是独立操作。
@@ -237,7 +238,12 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 	}
 	if runErr == nil && !progressOnly(in.Text, snapshot) {
 		observationsMu.Lock()
-		answer = groundedReply(observations, progressRecords(in.Text, snapshot, in.TaskID != ""), answer)
+		creationReply, creating := groundedCreationReply(observations, snapshot)
+		if in.TaskID == "" && creating {
+			answer = creationReply
+		} else {
+			answer = groundedReply(observations, progressRecords(in.Text, snapshot, in.TaskID != ""), answer)
+		}
 		observationsMu.Unlock()
 	}
 	if runErr != nil {

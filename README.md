@@ -11,8 +11,9 @@ one machine, one Feishu app, one `open_id` on the allowlist.
 With optional task management enabled, a message to the bot can create a Feishu task, start a new
 agent in a dedicated herdr workspace, and open a private group for that task. Local configuration
 connects each project to one or more local directories and selects `codex` or `claude`.
-Enable the [AI task entry point](#control-tasks-with-natural-language) to create tasks, check progress
-and add instructions by talking naturally to this project's bot.
+Enable the [AI task entry point](#control-tasks-with-natural-language) to create tasks and request
+a task overview in the bot's private chat. Continue progress queries, feedback and confirmations
+in the corresponding task group.
 
 The bridge dials out over Feishu's WebSocket, so a laptop behind NAT works without a public callback
 or tunnel. The AI entry point calls the model API address you configure, using your own API key.
@@ -135,8 +136,9 @@ server will use two different sockets. Both are commented, with fixes, at the to
 Every knob lives in `~/.herdr-agent/config.toml`, and `deploy/config.example.toml` documents each one
 with its default and the trade-off it makes. Credentials are not among them: that file has no field
 for a secret, so one cannot end up there by accident. The two basic chat settings are
-`feishu.allowed_open_ids` (mandatory) and `feishu.notify_chat_id` (empty means no proactive pushes
-for agents outside the task workflow). Managed tasks send their notifications to their own groups.
+`feishu.allowed_open_ids` (mandatory) and `feishu.notify_chat_id` (the proactive push destination when task management is disabled; empty
+means no pushes). With task management enabled, only managed task groups receive execution
+notifications; unrelated local agents do not push to the entry chat, even if this setting is filled.
 
 ### More about setup
 
@@ -396,7 +398,10 @@ In the bot's **entry private chat**, ask naturally:
 - “Create a new project named demo-api and build a health-check endpoint.”
 - “How are my tasks going?”
 
-Continue implementation feedback, progress queries and acceptance in the corresponding task group.
+The entry chat receives a short creation acknowledgment and the task group link when available.
+It does not receive duplicate execution updates, permission cards or review notices. Continue
+implementation feedback, progress queries and acceptance in the corresponding task group.
+An overview remains available whenever you explicitly ask for it in the entry chat.
 
 The bridge checks the actual message sender against the allowlist and verifies task ownership.
 The model can use controlled tools to select configured projects, query tasks, create sessions, add
@@ -554,7 +559,8 @@ used. A stale press sends no keystroke at all and tells you why. Buttons that ca
 and is protected only by its file mode, which makes reaching it equivalent to a shell on this machine
 (G10). Anyone on `allowed_open_ids` can approve any command any agent here is asking to run. So an
 empty list is a hard startup error rather than a quiet allow-all, every entry point checks it —
-messages, card actions, mirrors. Ordinary agents use the configured push destination; managed tasks
+messages, card actions, mirrors. With task management disabled, ordinary agents use the configured
+push destination. With it enabled, only managed tasks receive proactive notifications; those tasks
 use the private group recorded when that authorized user created the task. Task-group input is
 checked against its owner and cannot select a different pane or redirect another task's output.
 

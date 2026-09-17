@@ -146,7 +146,7 @@ func (s *bursts) close(paneID string) {
 //   - no notify chat configured means nothing will ever speak later, so this is
 //     the only chance to report anything at all.
 func (b *bridge) reportDelivery(ctx context.Context, chatID, replyTo string, a agents.Agent, note string, d agents.Delivery) error {
-	if note != "" || !b.settleWillReport() || mustReportNow(d) {
+	if note != "" || !b.settleWillReport(a.PaneID) || mustReportNow(d) {
 		return b.say(ctx, chatID, replyTo, a.PaneID, withNote(note, deliveryNote(a, d)))
 	}
 
@@ -193,13 +193,9 @@ func mustReportNow(d agents.Delivery) bool {
 
 // settleWillReport is whether anything will speak when the agent stops.
 //
-// The settle reply is the notifier's, and the notifier pushes into
-// Deps.NotifyChatID. With none configured the Push* methods answer
-// ErrNoNotifyTarget and the chat would hear nothing about this message ever
-// again, so the per-delivery report stays on — the bridge is half a product in
-// that configuration (New warns about it at startup), and the half that is left
-// must not also go quiet.
-func (b *bridge) settleWillReport() bool { return b.deps.NotifyChatID != "" }
+// A task reports into its group. Other agents only have automatic notifications
+// in legacy mode; when there is no destination, direct input needs its receipt.
+func (b *bridge) settleWillReport(pane string) bool { return b.notifyChat(pane) != "" }
 
 // burstAck is the one line a run of messages to one agent costs.
 //

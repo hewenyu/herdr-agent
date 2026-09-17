@@ -24,6 +24,90 @@ func TestDescriptionExposesProgressAndResultAsReadableTaskText(t *testing.T) {
 	}
 }
 
+func TestDescriptionMakesLocalFileLinksReadableWithoutInvalidURLs(t *testing.T) {
+	// This exact link caused Feishu error 1470400 in an agent's delivered result.
+	const local = "/Users/yueban/herder-agent-code/pelican-bike-svg/index.html"
+	const markdown = "[index.html](" + local + ")"
+	r := Record{ID: "t_local", Project: "demo", Agent: "codex", Status: Review,
+		Title: markdown, Detail: markdown, Error: markdown,
+		Result: "已生成 " + markdown + "\n```js\nconst points = [1, 2];\n```", ChatID: "oc_task"}
+	desc := Description(r)
+	if strings.Contains(desc, markdown) || strings.Count(desc, "index.html（"+local+"）") != 4 {
+		t.Fatalf("local links were retained or lost their label/path: %s", desc)
+	}
+	if !strings.Contains(desc, "const points = [1, 2];") || !strings.Contains(desc, ChatURL(r.ChatID)) {
+		t.Fatal("normalizing file links lost code content or the task-group URL")
+	}
+	if r.Title != markdown || !strings.Contains(r.Result, markdown) {
+		t.Fatal("description rendering modified the original agent result")
+	}
+}
+
+func TestDescriptionLinkNormalizationPreservesSupportedLinksAndDestinations(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"[file](./src/main.go:12)", "file（./src/main.go:12）"},
+		{"[file](file:///tmp/index.html)", "file（file:///tmp/index.html）"},
+		{"![image](/tmp/screen.png)", "image（/tmp/screen.png）"},
+		{"[file](</Users/example/My Project/main.go:3>)", "file（</Users/example/My Project/main.go:3>）"},
+		{"[file](/tmp/project(copy)/index.html)", "file（/tmp/project(copy)/index.html）"},
+		{"[section](#result)", "section（#result）"},
+		{"[mail](mailto:dev@example.test)", "mail（mailto:dev@example.test）"},
+		{"[docs](https://example.test/docs)", "[docs](https://example.test/docs)"},
+		{"[docs](http://example.test/docs)", "[docs](http://example.test/docs)"},
+		{"[task](applink://client/task/123)", "[task](applink://client/task/123)"},
+		{`[docs](https://example.test/docs "Documentation")`, `[docs](https://example.test/docs "Documentation")`},
+		{"[docs](<https://example.test/docs>)", "[docs](<https://example.test/docs>)"},
+		{"[file][source]\n[source]: /tmp/index.html", "[file][source]\nsource：/tmp/index.html"},
+		{"[docs][source]\n[source]: https://example.test/docs", "[docs][source]\n[source]: https://example.test/docs"},
+		{"<file:///tmp/index.html>", "file:///tmp/index.html"},
+		{"<https://example.test/docs>", "<https://example.test/docs>"},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			if got := descriptionText(tc.text); got != tc.want {
+				t.Fatalf("descriptionText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDescriptionNormalizesLocalLinksBeforeClipping(t *testing.T) {
+	path := "/Users/example/" + strings.Repeat("folder/", 120) + "index.html"
+	desc := Description(Record{Title: "[long path](" + path + ")", Result: "仍保留最终结果"})
+	if strings.Contains(desc, "[long path](") || !strings.Contains(desc, "long path（/Users/example/") || !strings.Contains(desc, "仍保留最终结果") {
+		t.Fatalf("clipping retained an unsupported Markdown URL or lost content: %s", desc)
+	}
+}
+
+func TestDescriptionLinkNormalizationPreservesInlineAndFencedCode(t *testing.T) {
+	const code = "handlers[0](ctx)\n[source]: /tmp/source.go\n[file](/tmp/source.go)\n<file:///tmp/source.go>"
+	for _, tc := range []struct{ name, text string }{
+		{"inline", "调用 `handlers[0](ctx)` 即可"},
+		{"long inline", "调用 ``handlers[0](ctx); `nested` `` 即可"},
+		{"multiline inline", "`" + code + "`"},
+		{"backtick fence", "```go\n" + code + "\n```"},
+		{"long backtick fence", "````go\n" + code + "\n```\nhandlers[0](ctx)\n`````"},
+		{"tilde fence", "~~~go\n" + code + "\n~~~"},
+		{"long tilde fence", "~~~~go\n" + code + "\n~~~\nhandlers[0](ctx)\n~~~~~"},
+		{"indented fence", "  ```go\n" + code + "\n  ```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text + "\n[file](/tmp/real.go)\n[ref]: /tmp/real.go"
+			want := tc.text + "\nfile（/tmp/real.go）\nref：/tmp/real.go"
+			if got := descriptionText(text); got != want {
+				t.Fatalf("code changed or ordinary links escaped normalization:\n got %q\nwant %q", got, want)
+			}
+			desc := Description(Record{Title: "修复处理器", Result: text})
+			if !strings.Contains(desc, want) {
+				t.Fatalf("task description lost code content: %s", desc)
+			}
+		})
+	}
+	openFence := "```go\n" + code
+	if got := descriptionText(openFence); got != openFence {
+		t.Fatalf("unfinished code fence lost code content: %q", got)
+	}
+}
+
 func TestTaskCommandsPreserveTaskTextAndRecognizeProgressQueries(t *testing.T) {
 	tests := []struct {
 		input string

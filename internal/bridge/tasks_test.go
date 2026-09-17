@@ -349,14 +349,59 @@ func TestTaskNotificationsAndMirrorsStayInTheirTaskChats(t *testing.T) {
 	if len(opened) != 2 || opened[0].out.ChatID != first.ChatID || opened[1].out.ChatID != second.ChatID {
 		t.Fatalf("mirror destinations = %+v", opened)
 	}
-	// Non-task panes retain the configured notification target.
+	// Task mode does not forward unrelated local agents to the entry chat.
 	outside := idleAgent("w99:p99")
+	count := len(h.bot.sends())
 	if err := h.b.PushGone(ctx, outside); err != nil {
 		t.Fatal(err)
 	}
-	last := h.bot.sends()[len(h.bot.sends())-1]
-	if last.Out.ChatID != testChat {
-		t.Fatalf("legacy notification target changed: %+v", last)
+	if len(h.bot.sends()) != count {
+		t.Fatal("unrelated agent notification leaked into entry chat")
+	}
+}
+
+func TestTaskModeSuppressesAutomaticMessagesWithoutALiveTaskGroup(t *testing.T) {
+	for _, kind := range []string{"unmanaged", "before-group", "deleted-group", "destroying", "destroyed"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			r := taskBinding("task", "oc_task", testPane)
+			switch kind {
+			case "unmanaged":
+				attachTaskManager(t, h)
+			case "before-group":
+				r.ChatID = ""
+			case "deleted-group":
+				r.ChatDeleted = true
+			case "destroying":
+				r.Status = tasks.Destroying
+			case "destroyed":
+				r.Status = tasks.Destroyed
+			}
+			if kind != "unmanaged" {
+				attachTaskManager(t, h, r)
+			}
+			a := taskAgent(r)
+			h.reg.setAgents(a)
+			ctx := context.Background()
+			for _, push := range []func() error{
+				func() error { return h.b.PushBlocked(ctx, a, permissionDialog()) },
+				func() error { return h.b.PushDone(ctx, a, permissionDialog()) },
+				func() error { return h.b.PushGone(ctx, a) },
+			} {
+				if err := push(); err != nil {
+					t.Fatalf("intentional suppression would trigger retries: %v", err)
+				}
+			}
+			streams := map[string]*mirrorStream{}
+			h.b.mirrorTurn(ctx, streams, assistantTurn("agent progress"))
+			h.b.mirrorTurn(ctx, streams, userTurn("original prompt"))
+			if len(h.bot.sends()) != 0 || len(h.bot.openStreams()) != 0 {
+				t.Fatal("suppressed agent activity was delivered outside its task group")
+			}
+			if h.b.settleWillReport(a.PaneID) {
+				t.Fatal("direct input was promised an automatic reply with no task group")
+			}
+		})
 	}
 }
 

@@ -12,6 +12,15 @@ func sortStrings(s []string) { sort.Strings(s) }
 // resource. Both humans and Feishu assistants can read the same state without
 // access to local JSON, terminal transcripts, or a custom card renderer.
 func Description(r Record) string {
+	// Normalize before truncating, so cutting through a local link cannot leave
+	// its unsupported destination in a partially rendered Markdown expression.
+	r.Project = descriptionText(r.Project)
+	r.Agent = descriptionText(r.Agent)
+	r.ID = descriptionText(r.ID)
+	r.Title = descriptionText(r.Title)
+	r.Detail = descriptionText(r.Detail)
+	r.Error = descriptionText(r.Error)
+	r.Result = descriptionText(r.Result)
 	var b strings.Builder
 	fmt.Fprintf(&b, "项目：%s\n执行者：%s\n当前状态：%s\n更新时间：%s\n追踪编号：%s\n", clip(r.Project, 120), r.Agent, r.Status.Label(), r.UpdatedAt.Format("2006-01-02 15:04:05 -07:00"), r.ID)
 	if r.ChatID != "" && r.Status != Destroyed {
@@ -179,13 +188,20 @@ func Parse(text string) (Command, bool) {
 
 func noticePrefix(status Status) string { return "任务进展：" + status.Label() + "\n" }
 
-// NotificationChat keeps execution updates in the surviving task group. Before
-// group creation and after deletion, the entry chat receives lifecycle notices.
+// NotificationChat keeps execution updates in the task group. The entry chat
+// only receives failures that prevent reaching a group; normal provisioning is
+// acknowledged separately, and completed group cleanup never falls back there.
 func NotificationChat(r Record) string {
-	if r.ChatID != "" && !r.ChatDeleted {
+	if r.ChatDeleted {
+		return ""
+	}
+	if r.ChatID != "" {
 		return r.ChatID
 	}
-	return r.EntryChatID
+	if r.Status != Destroyed && (r.Error != "" || r.SyncError != "") {
+		return r.EntryChatID
+	}
+	return ""
 }
 
 // Notice is a compact lifecycle/progress summary. The notifier separately

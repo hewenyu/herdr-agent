@@ -37,6 +37,9 @@ func (b *bridge) PushBlocked(ctx context.Context, a agents.Agent, dialog screen.
 	b.acks.close(a.PaneID)
 
 	if b.notifyChat(a.PaneID) == "" {
+		if b.tasks != nil {
+			return nil
+		}
 		return fmt.Errorf("%w: cannot tell you that %s is waiting", ErrNoNotifyTarget, a.PaneID)
 	}
 	// Unprompted, so it goes to the configured chat and replies to nothing.
@@ -138,6 +141,9 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	b.acks.close(a.PaneID)
 
 	if b.notifyChat(a.PaneID) == "" {
+		if b.tasks != nil {
+			return nil
+		}
 		return fmt.Errorf("%w: cannot tell you that %s finished", ErrNoNotifyTarget, a.PaneID)
 	}
 
@@ -254,6 +260,9 @@ func (b *bridge) PushGone(ctx context.Context, a agents.Agent) error {
 	b.acks.close(a.PaneID)
 
 	if b.notifyChat(a.PaneID) == "" {
+		if b.tasks != nil {
+			return nil
+		}
 		return fmt.Errorf("%w: cannot tell you that %s is gone", ErrNoNotifyTarget, a.PaneID)
 	}
 

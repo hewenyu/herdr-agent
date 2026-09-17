@@ -189,6 +189,97 @@ func renderTasks(records []tasktools.Task) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+// Creation in the entry chat is a handoff to the task group. Read-only tools
+// used to select a project or verify creation do not turn that acknowledgment
+// into another execution update. Explicit query-only turns keep their normal
+// status rendering, as do group messages and other requested operations.
+func groundedCreationReply(calls []observation, snapshot []tasktools.Task) (string, bool) {
+	creating := false
+	for _, call := range calls {
+		switch call.name {
+		case "herdr_create":
+			creating = true
+		case "herdr_projects", "herdr_list", "herdr_get":
+		default:
+			return "", false
+		}
+	}
+	if !creating {
+		return "", false
+	}
+	latest := map[string]tasktools.Task{}
+	for _, r := range snapshot {
+		latest[r.ID] = r
+	}
+	for _, call := range calls {
+		if call.failed {
+			continue
+		}
+		switch call.name {
+		case "herdr_get":
+			var r tasktools.Task
+			if json.Unmarshal(call.result, &r) == nil && r.ID != "" {
+				latest[r.ID] = r
+			}
+		case "herdr_list":
+			var records []tasktools.Task
+			if json.Unmarshal(call.result, &records) == nil {
+				for _, r := range records {
+					latest[r.ID] = r
+				}
+			}
+		}
+	}
+	var lines []string
+	seen := map[string]bool{}
+	addLine := func(line string) {
+		if !seen[line] {
+			lines = append(lines, line)
+			seen[line] = true
+		}
+	}
+	for _, call := range calls {
+		if call.failed {
+			addLine("操作未确认：" + clip(call.problem, 350) + "。本轮未自动重发，请查询任务列表核对。")
+			continue
+		}
+		if call.name != "herdr_create" {
+			continue
+		}
+		var receipt struct {
+			Outcome  string         `json:"outcome"`
+			Replayed bool           `json:"replayed"`
+			Task     tasktools.Task `json:"task"`
+		}
+		if json.Unmarshal(call.result, &receipt) != nil || receipt.Outcome != "accepted" || receipt.Task.ID == "" {
+			addLine("任务创建结果尚未确认，请查询任务列表核对；本轮未自动重发。")
+			continue
+		}
+		if receipt.Replayed {
+			addLine("已读取此前操作回执，本次未重复创建。")
+		}
+		r := receipt.Task
+		if current, ok := latest[r.ID]; ok {
+			r = current
+		}
+		parts := []string{"任务已登记：" + clip(r.Title, 180), fmt.Sprintf("任务：%s · 项目：%s", r.ID, r.Project)}
+		if r.TaskURL != "" {
+			parts = append(parts, "飞书任务："+r.TaskURL)
+		}
+		if r.Status == tasks.Destroyed {
+			parts = append(parts, "该任务的执行会话与任务群已关闭；本次未创建新任务。")
+		} else if r.Status == tasks.Destroying {
+			parts = append(parts, "该任务的执行会话与任务群正在关闭；本次未创建新任务。")
+		} else if r.ChatURL != "" {
+			parts = append(parts, "任务群已创建："+r.ChatURL, "后续进展、确认和验收请在任务群处理。")
+		} else {
+			parts = append(parts, "请留意本应用的建群通知，其中提供任务群入口。后续进展、确认和验收请在任务群处理。")
+		}
+		addLine(strings.Join(parts, "\n"))
+	}
+	return strings.Join(lines, "\n\n"), true
+}
+
 func groundedReply(calls []observation, fallback []tasktools.Task, generated string) string {
 	if len(calls) == 0 {
 		if reply := conversationalReply(generated); reply != "" {
