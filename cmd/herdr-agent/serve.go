@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/hewenyu/herdr-agent/internal/agents"
+	"github.com/hewenyu/herdr-agent/internal/assistant"
 	"github.com/hewenyu/herdr-agent/internal/bridge"
 	"github.com/hewenyu/herdr-agent/internal/config"
 	"github.com/hewenyu/herdr-agent/internal/dedup"
@@ -18,8 +19,12 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/mirror"
 	"github.com/hewenyu/herdr-agent/internal/notify"
+	"github.com/hewenyu/herdr-agent/internal/projects"
+	"github.com/hewenyu/herdr-agent/internal/projectweb"
 	"github.com/hewenyu/herdr-agent/internal/routes"
 	"github.com/hewenyu/herdr-agent/internal/selection"
+	"github.com/hewenyu/herdr-agent/internal/tasks"
+	"github.com/hewenyu/herdr-agent/internal/tasktools"
 )
 
 // State files serve owns, all inside the state directory alongside
@@ -45,6 +50,8 @@ const (
 // without a unix socket, a Feishu app, or a signal.
 func cmdServe(ctx context.Context, d *deps, args []string) error {
 	fs := newFlags(d, "serve", "")
+	configListen := fs.String("config-listen", configurationAddress(d.Cfg), "local project configuration address (overrides ui.config_listen; loopback IP only)")
+	noConfigUI := fs.Bool("no-config-ui", false, "disable the local project configuration page")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -61,8 +68,15 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 	restore := setDefaultLogger(log)
 	defer restore()
 
-	s, err := buildServe(ctx, d, log, defaultServeHooks())
+	hooks := defaultServeHooks()
+	if !*noConfigUI {
+		hooks.configListen = *configListen
+	}
+	s, err := buildServe(ctx, d, log, hooks)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	defer func() {
@@ -79,8 +93,10 @@ func cmdServe(ctx context.Context, d *deps, args []string) error {
 // serveDeps is the running bridge: everything built, in the order it was built,
 // with the closers needed to take it down again.
 type serveDeps struct {
-	log      *slog.Logger
-	stateDir string
+	log           *slog.Logger
+	stateDir      string
+	projects      *projects.Catalog
+	configuration *serveConfiguration
 
 	lock      instanceLock
 	dedup     *dedup.FileStore
@@ -118,14 +134,16 @@ type instanceLock interface {
 
 // serveHooks are the seams of the startup sequence.
 //
-// Only the four collaborators that would otherwise touch a socket, a pid file
-// or a Feishu app are behind hooks. Everything else — config, the stores, the
+// Collaborators that touch a socket, a pid file or a Feishu app are behind
+// hooks. Everything else — config, the stores, the
 // registry, the doctor checks — runs for real in tests, because running it for
 // real is the only way the wiring is actually tested.
 type serveHooks struct {
-	lock       func(dir string, log *slog.Logger) (instanceLock, error)
-	newWatcher func(r mirror.PathResolver, log *slog.Logger) (mirror.Watcher, error)
-	newBot     func(cfg config.Config, log *slog.Logger) (lark.Bot, error)
+	configListen string
+	authorize    func(context.Context, string, config.Config, func(projectweb.AuthorizationStatus)) (config.Config, error)
+	lock         func(dir string, log *slog.Logger) (instanceLock, error)
+	newWatcher   func(r mirror.PathResolver, log *slog.Logger) (mirror.Watcher, error)
+	newBot       func(cfg config.Config, log *slog.Logger) (lark.Bot, error)
 	// newBridge takes the optional dependencies as well as Deps: bridge.Deps is
 	// frozen by contract and the selection store arrived after it, so it travels
 	// as an Option (bridge.NewWith).
@@ -134,6 +152,7 @@ type serveHooks struct {
 
 func defaultServeHooks() serveHooks {
 	return serveHooks{
+		authorize: ensureServeAuthorization,
 		lock: func(dir string, log *slog.Logger) (instanceLock, error) {
 			l, err := bridge.AcquireInstanceLock(dir, bridge.WithLockLogger(log))
 			if err != nil {
@@ -147,7 +166,7 @@ func defaultServeHooks() serveHooks {
 			return mirror.NewWatcher(r, mirror.WithLogger(log))
 		},
 		newBot: func(cfg config.Config, log *slog.Logger) (lark.Bot, error) {
-			return lark.New(cfg.Feishu.AppID, cfg.Feishu.AppSecret, lark.WithLogger(log))
+			return lark.New(cfg.Feishu.AppID, cfg.Feishu.AppSecret, lark.WithLogger(log), lark.WithTaskChats(cfg.Tasks.Enabled))
 		},
 		newBridge: bridge.NewWith,
 	}
@@ -163,9 +182,10 @@ func defaultServeHooks() serveHooks {
 //     disconnects anybody: the two split the user's events, invisibly from both
 //     ends, and the user calls it "Feishu is flaky". It has to die before it
 //     connects, because afterwards nothing reveals it;
-//  3. the startup checks, so a machine with no herdr never connects to Feishu
-//     at all;
-//  4. state, agent plumbing, the bot, the bridge.
+//  3. the local page and Feishu permission check; any required login finishes
+//     before constructing the bot with the current credentials;
+//  4. the herdr startup checks, then state, agent plumbing, the bot and bridge.
+//     A machine with no herdr never opens the Feishu WebSocket.
 //
 // Every failure after step 2 unwinds what has already been built, so a bridge
 // that refuses to start does not leave its pid file behind for the next one to
@@ -177,6 +197,12 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	}
 	cfg := d.Cfg
 	s := &serveDeps{log: log, stateDir: d.StateDir}
+	catalog, err := projects.Open(d.StateDir, cfg.Tasks)
+	if err != nil {
+		return nil, &startupError{step: "project configuration", err: err}
+	}
+	s.projects = catalog
+	cfg.Tasks = catalog.Snapshot()
 
 	// Logged BEFORE Validate, so that a configuration which is about to be
 	// rejected is still visible in the log next to the reason. Redacted() is
@@ -184,7 +210,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	// not as a prefix and not as a length (S2 §3.1).
 	log.Info("serve: starting", "state_dir", d.StateDir, "config", cfg.Redacted())
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateServeConfiguration(cfg, h.authorize != nil); err != nil {
 		return nil, &startupError{step: "configuration", err: err}
 	}
 	if d.Resolver == nil {
@@ -208,6 +234,43 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 	s.lock = lock
 	s.push("single-instance lock", lock.Release)
 	log.Info("serve: single-instance lock held", "path", lock.Path())
+	// A standalone configure process may have saved and exited between the
+	// initial validation and our lock acquisition. Take the authoritative
+	// snapshot under the lock before wiring shared runtime dependencies.
+	catalog, err = projects.Open(d.StateDir, cfg.Tasks)
+	if err != nil {
+		return nil, s.abort(&startupError{step: "project configuration", err: err})
+	}
+	s.projects = catalog
+	cfg.Tasks = catalog.Snapshot()
+	if err := validateServeConfiguration(cfg, h.authorize != nil); err != nil {
+		return nil, s.abort(&startupError{step: "configuration", err: err})
+	}
+
+	status := newServeAuthorizationState(h.authorize != nil)
+	startupCtx := ctx
+	if h.configListen != "" {
+		if err := s.startConfiguration(ctx, h.configListen, status.snapshot); err != nil {
+			return nil, s.abort(&startupError{step: "local project configuration", err: fmt.Errorf(
+				"%w; change [ui].config_listen in %s to a free loopback port and restart, or use serve --config-listen / --no-config-ui",
+				err, filepath.Join(d.StateDir, config.ConfigFileName))})
+		}
+		startupCtx = s.configuration.ctx
+	}
+	if h.authorize != nil {
+		cfg, err = h.authorize(startupCtx, d.StateDir, cfg, s.authorizationReporter(status, d.OpenURL))
+		if err != nil {
+			if s.configuration != nil && s.configuration.failure() != nil {
+				err = s.configuration.failure()
+			}
+			return nil, s.abort(&startupError{step: "feishu authorization", err: err})
+		}
+		// Configuration can be edited while the user follows the login link.
+		cfg.Tasks = catalog.Snapshot()
+		if err := cfg.Validate(); err != nil {
+			return nil, s.abort(&startupError{step: "configuration", err: err})
+		}
+	}
 
 	if err := checkStartup(ctx, d, log); err != nil {
 		return nil, s.abort(err)
@@ -261,12 +324,87 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, s.abort(&startupError{step: "transcript mirror", err: err})
 	}
 
-	// First contact with Feishu is Bot.Start, inside bridge.Run — long after
-	// the lock above.
+	// Permission checks and any credential refresh have finished under the
+	// instance lock. The one WebSocket connection starts later in bridge.Run.
 	if s.bot, err = h.newBot(cfg, log); err != nil {
 		return nil, s.abort(&startupError{step: "feishu bot", err: err})
 	}
 
+	bridgeOpts := []bridge.Option{bridge.WithSelection(sel)}
+	if cfg.Tasks.Enabled {
+		platform, ok := s.bot.(tasks.Platform)
+		if !ok {
+			return nil, s.abort(&startupError{step: "tasks", err: errors.New("bot does not support task management")})
+		}
+		lifecycle, ok := d.Client.(herdrapi.LifecycleClient)
+		if !ok {
+			return nil, s.abort(&startupError{step: "tasks", err: errors.New("herdr client does not support managed task sessions")})
+		}
+		store, err := tasks.Open(filepath.Join(d.StateDir, "tasks.json"))
+		if err != nil {
+			return nil, s.abort(&startupError{step: "task state", err: err})
+		}
+		manager, err := tasks.New(store, tasks.Options{
+			Config: cfg.Tasks, Projects: catalog, Platform: platform, Client: d.Client, Lifecycle: lifecycle,
+			PrepareProject: projects.EnsureRepository,
+			AllowedOwner: func(owner string) bool {
+				for _, allowed := range cfg.Feishu.AllowedOpenIDs {
+					if strings.TrimSpace(allowed) == owner {
+						return true
+					}
+				}
+				return false
+			},
+			Report: func(ctx context.Context, r tasks.Record) error {
+				chat := taskNotificationChat(r)
+				if chat == "" {
+					return nil
+				}
+				_, err := s.bot.Send(ctx, lark.Out{ChatID: chat, Text: tasks.Notice(r)})
+				return err
+			},
+			BeforeClose: func(ctx context.Context, r tasks.Record) error {
+				if r.ChatID == "" || r.ChatDeleted {
+					return nil
+				}
+				_, err := s.bot.Send(ctx, lark.Out{ChatID: r.ChatID, Text: taskClosingMessage(r)})
+				return err
+			},
+			Controller: d.Controller, Registry: s.registry,
+			Follow: func(pane string) error {
+				if s.watcher.Enabled(pane) {
+					return nil
+				}
+				return s.watcher.Enable(pane)
+			},
+			Announce: func(ctx context.Context, r tasks.Record) error {
+				return announceTaskGroup(ctx, s.bot, log, r)
+			},
+		})
+		if err != nil {
+			return nil, s.abort(&startupError{step: "task manager", err: err})
+		}
+		bridgeOpts = append(bridgeOpts, bridge.WithTasks(manager))
+		if cfg.AI.Enabled {
+			engine, err := assistant.NewEngine(cfg.AI)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI model", err: err})
+			}
+			toolBackend, err := tasktools.New(tasktools.Options{
+				OwnerID:   strings.TrimSpace(cfg.Feishu.AllowedOpenIDs[0]),
+				StatePath: filepath.Join(d.StateDir, "assistant-operations.json"),
+				Config:    cfg.Tasks, Projects: catalog, Manager: manager, Registry: s.registry, Controller: d.Controller,
+			})
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI task tools", err: err})
+			}
+			ai, err := assistant.New(engine, toolBackend, filepath.Join(d.StateDir, "conversations"), cfg.AI.Timeout)
+			if err != nil {
+				return nil, s.abort(&startupError{step: "AI conversations", err: err})
+			}
+			bridgeOpts = append(bridgeOpts, bridge.WithAssistant(ai))
+		}
+	}
 	s.bridge, err = h.newBridge(bridge.Deps{
 		Bot:            s.bot,
 		Registry:       s.registry,
@@ -286,11 +424,47 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		// Without this the bridge still routes — reply-to, then the single agent
 		// — but plain typing stops reaching an agent, which is the whole
 		// card-first interaction: typing is the cheapest thing a phone can do.
-		bridge.WithSelection(sel))
+		bridgeOpts...)
 	if err != nil {
 		return nil, s.abort(&startupError{step: "bridge", err: err})
 	}
+
 	return s, nil
+}
+
+// Keep task activity in its group. The entry chat only receives pre-group
+// failures; successful group creation has its own one-time entry receipt.
+func taskNotificationChat(r tasks.Record) string {
+	return tasks.NotificationChat(r)
+}
+
+func announceTaskGroup(ctx context.Context, bot lark.Bot, log *slog.Logger, r tasks.Record) error {
+	if r.ChatID != "" && !r.ChatDeleted {
+		if _, err := bot.Send(ctx, lark.Out{ChatID: r.ChatID, Text: taskWelcomeMessage(r)}); err != nil {
+			return err
+		}
+	}
+	if r.EntryChatID != "" && r.EntryChatID != r.ChatID {
+		_, err := bot.Send(ctx, lark.Out{ChatID: r.EntryChatID, Text: fmt.Sprintf("任务群已建立：%s\n进入任务群：%s\n后续需求、进度和验收请直接在群内沟通。", r.Project, tasks.ChatURL(r.ChatID))})
+		if err != nil {
+			// The group already received its welcome. An entry-chat receipt
+			// must not stall launch or repeat the welcome on every poll.
+			log.Warn("tasks: entry chat announcement failed; continuing in task group", "task", r.ID)
+		}
+	}
+	return nil
+}
+
+func taskWelcomeMessage(r tasks.Record) string {
+	return fmt.Sprintf("本群对应任务：%s\n项目：%s · %s\n飞书任务：%s\n\n请直接在本群补充要求、反馈问题或问“现在进度如何”，无需 @ 机器人。执行进展会发到本群。\n\n%s\n验收通过并确认关闭后，会同步任务完成、保存结果，再关闭执行会话并解散本群；代码和飞书任务保留。若只想标记完成，请说明“保留群”。", r.Title, r.Project, r.Agent, r.URL, tasks.GroupCloseHint)
+}
+
+func taskClosingMessage(r tasks.Record) string {
+	status := "已保存当前结果，正在关闭执行会话。"
+	if r.CloseRequested {
+		status = "已确认飞书任务完成并保存结果，正在结单。"
+	}
+	return fmt.Sprintf("%s\n任务：%s\n飞书任务及结果：%s\n代码保留在项目目录。本群将在数秒后解散，群聊天记录不会保留。", status, r.Title, r.URL)
 }
 
 // checkStartup runs the doctor checks and refuses to continue for exactly two
@@ -408,6 +582,9 @@ func (s *serveDeps) run(ctx context.Context) error {
 	tasks := []serveTask{
 		{"feishu bridge", s.bridge.Run},
 		{"agent registry", s.registry.Run},
+	}
+	if s.configuration != nil {
+		tasks = append(tasks, serveTask{"local project configuration", s.configuration.run})
 	}
 
 	// Buffered for every task, so a goroutine reporting its exit never blocks

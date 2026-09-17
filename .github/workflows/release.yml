@@ -120,6 +120,13 @@ jobs:
           (cd dist && sha256sum herdr-agent_*.tar.gz >SHA256SUMS)
           cat dist/SHA256SUMS
 
+      # Run the packaged Linux executable without the checkout or any frontend
+      # files before publishing. The page and API must work from the binary.
+      - name: verify the packaged configuration page
+        env:
+          VERSION: ${{ steps.v.outputs.tag }}
+        run: python3 .github/scripts/check-embedded-ui.py --archive "dist/herdr-agent_${VERSION}_linux_amd64.tar.gz"
+
       # Written with a quoted heredoc and a placeholder: an unquoted one would
       # run every `command` in backticks below as a command substitution.
       - name: write the release notes
@@ -136,6 +143,12 @@ jobs:
 
               ./herdr-agent setup    # register the Feishu app and prove it works end to end
               ./herdr-agent serve    # run the bridge, then message the bot /ls from your phone
+
+          The local project configuration page opens at http://127.0.0.1:18790/ while `serve`
+          runs. Its HTML, CSS and JavaScript are embedded in the Go binary; no Node.js runtime
+          or separate frontend files are needed. `./herdr-agent configure --open` runs the
+          configuration page on its own before starting the bridge. Task execution still
+          requires herdr and an installed, authenticated Codex or Claude Code CLI.
 
           `./herdr-agent doctor` checks this machine for the things that silently break the
           bridge if either of those does not do what you expected, and `./herdr-agent version`
@@ -172,7 +185,7 @@ jobs:
           | `herdr-agent___TAG___linux_arm64.tar.gz` | Linux, arm64 |
           | `herdr-agent___TAG___linux_amd64.tar.gz` | Linux, x86_64 |
 
-          Each archive holds the binary, README.md and LICENSE, and nothing else. The service
+          Each archive holds the binary, both READMEs and LICENSE, and nothing else. The service
           units are not in it: they live in the git repository, at
           https://github.com/hewenyu/herdr-agent/tree/__TAG__/deploy — Linux users want the
           systemd user unit `herdr-agent.service` there, plus `herdr-server.service`, because the

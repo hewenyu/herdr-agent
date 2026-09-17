@@ -984,6 +984,8 @@ func TestSetupFlagsParseInEitherOrder(t *testing.T) {
 		want setupFlags
 	}{
 		{"nothing", nil, setupFlags{}},
+		{"update permissions", []string{"--update-permissions"}, setupFlags{updatePermissions: true}},
+		{"update pinned app", []string{"--app", "cli_x1", "--update-permissions", "--yes"}, setupFlags{appID: "cli_x1", updatePermissions: true, yes: true}},
 		{"app then yes", []string{"--app", "cli_0123456789abcdef", "--yes"},
 			setupFlags{appID: "cli_0123456789abcdef", yes: true}},
 		{"yes then app", []string{"--yes", "--app", "cli_0123456789abcdef"},
@@ -1073,6 +1075,19 @@ func TestSetupRefusesAppAndReregisterTogether(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr(), "pick one") {
 		t.Errorf("the message does not say what to do about it:\n%s", h.stderr())
+	}
+}
+
+func TestSetupPermissionUpgradeRefusesReregistration(t *testing.T) {
+	h := newHarness(t)
+	f := &fakeSetupRunner{res: verifiedResult()}
+	h.withSetup(t, f)
+	err := dispatch(context.Background(), h.d, []string{"setup", "--update-permissions", "--reregister"})
+	if got := report(&h.errb, err); got != exitUsage {
+		t.Fatalf("exit = %d, want %d (err = %v)", got, exitUsage, err)
+	}
+	if f.builds() != 0 {
+		t.Fatal("conflicting update/create flags constructed the setup runner")
 	}
 }
 
@@ -1220,6 +1235,7 @@ func TestSetupHandsThePlanToTheFactory(t *testing.T) {
 		{name: "bare run on a pipe", args: []string{"setup"}, want: 1},
 		{name: "bare run at a terminal", args: []string{"setup"}, terminal: true, want: 2},
 		{name: "--app on a pipe", args: []string{"setup", "--app", "cli_x1"}, want: 2},
+		{name: "permission upgrade", args: []string{"setup", "--app", "cli_x1", "--update-permissions"}, want: 3},
 		{name: "--app at a terminal", args: []string{"setup", "--app", "cli_x1"}, terminal: true, want: 3},
 		{name: "--yes at a terminal", args: []string{"setup", "--yes"}, terminal: true, want: 1},
 	}

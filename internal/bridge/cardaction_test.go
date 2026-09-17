@@ -158,6 +158,9 @@ func TestAPressSendsTheKeyAndDisarmsTheCard(t *testing.T) {
 	if keys[0].Key != "1" {
 		t.Errorf("sent key %q, want %q", keys[0].Key, "1")
 	}
+	if !keys[0].Guard.MenuChoice {
+		t.Fatal("card choice lost its native menu confirmation behavior")
+	}
 
 	card := disarmedCard(t, h)
 	for _, want := range []string{
@@ -528,11 +531,23 @@ func TestAFailedCardUpdateIsReportedInText(t *testing.T) {
 		t.Fatalf("%d keys sent, want 1: the key went in before the card update failed", got)
 	}
 	text := lastText(t, h)
-	if !strings.Contains(text, "Sent") || !strings.Contains(text, a.PaneID) {
-		t.Errorf("the fallback message does not say what was sent where:\n%s", text)
+	if !strings.Contains(text, "Handled `1`") || !strings.Contains(text, a.PaneID) {
+		t.Errorf("the fallback message does not identify the handled choice and target:\n%s", text)
 	}
 	if !strings.Contains(text, "spent") {
 		t.Errorf("the fallback message does not warn that the drawn buttons are spent:\n%s", text)
+	}
+}
+
+func TestCardChoiceStillBlockedExplainsHowToGetAFreshCard(t *testing.T) {
+	h := newHarness(t)
+	a := blockedAgent()
+	h.reg.setAgents(a)
+	h.ctrl.keyResult = a
+	pressed(t, h, cardPress(t, a, "1"))
+	card := disarmedCard(t, h)
+	if !strings.Contains(card, "still waiting") || !strings.Contains(card, "/screen") {
+		t.Fatal("unchanged waiting state did not explain how to continue")
 	}
 }
 

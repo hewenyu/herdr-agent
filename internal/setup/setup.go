@@ -93,6 +93,13 @@ func WithReuseAppID(appID string) Option {
 	return func(r *Runner) { r.reuseAppID = strings.TrimSpace(appID) }
 }
 
+// WithPermissionUpgrade updates an existing app with the permissions required
+// by task sessions. It always opens that app's confirmation page, including
+// when its credentials are already saved. It cannot register a new app.
+func WithPermissionUpgrade(upgrade bool) Option {
+	return func(r *Runner) { r.permissionUpgrade = upgrade }
+}
+
 // acquireLock takes the bridge's single-instance lock. Behind a variable only
 // so tests can prove the refusal path without racing a real bridge.
 var acquireLock = func(dir string) (io.Closer, error) {
@@ -315,6 +322,7 @@ func (r *Runner) establish(ctx context.Context, rep *reporter, p plan) (Result, 
 	}
 
 	req := requestFor(p)
+	req.permissionUpgrade = r.permissionUpgrade
 
 	regCtx, cancel := context.WithTimeout(ctx, RegisterTimeout)
 	defer cancel()
@@ -327,6 +335,10 @@ func (r *Runner) establish(ctx context.Context, rep *reporter, p plan) (Result, 
 
 	res := Result{AppID: out.AppID, OpenID: out.OpenID, Origin: p.origin()}
 	if req.appID != "" && out.AppID != req.appID {
+		if req.permissionUpgrade {
+			return Result{Outcome: OutcomeFailed, AppID: req.appID}, credentials{}, console{},
+				fmt.Errorf("setup: permission update returned a different app than %s; existing credentials were not changed", req.appID)
+		}
 		// The page was opened for one app and came back with another. Whatever
 		// the human did on it, "updated <that app>" is no longer true, and the
 		// only honest thing left to say is what a page with no CreateOnly always

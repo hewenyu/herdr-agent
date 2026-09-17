@@ -327,7 +327,7 @@ func TestBuildResolvedGolden(t *testing.T) {
 		},
 		"body": map[string]any{
 			"elements": []any{
-				map[string]any{"tag": "markdown", "content": "**Sent** `1` to `w1:p1`"},
+				map[string]any{"tag": "markdown", "content": "**Handled** `1` for `w1:p1`"},
 				map[string]any{"tag": "markdown", "content": "**By** ou_a90a043a · **at** 2026-08-14 01:24:05 CST"},
 				map[string]any{"tag": "markdown", "content": "**Outcome** agent is working again"},
 				map[string]any{"tag": "markdown", "content": "_This card is spent: its buttons are gone and it can no longer send anything._"},
@@ -575,17 +575,17 @@ func TestBlockedCardWarnsBesideItsSelectButton(t *testing.T) {
 	}
 }
 
-// TestBuildBlockedWithoutOptionsAsksForProse: when nothing parses the card must
+// TestBuildBlockedWithoutOptionsExplainsLocalConfirmation: when nothing parses the card must
 // not invent buttons. It says so and points at the safe path, because prose to
 // a blocked agent is only safe when it goes through Say's esc-first route (G1).
-func TestBuildBlockedWithoutOptionsAsksForProse(t *testing.T) {
+func TestBuildBlockedWithoutOptionsExplainsLocalConfirmation(t *testing.T) {
 	js, err := BuildBlocked(blockedAgent(), dialogScreen(), nil, "n", issuedAt)
 	if err != nil {
 		t.Fatalf("BuildBlocked: %v", err)
 	}
 	card := decodeCard(t, js)
 	text := allText(card)
-	for _, want := range []string{"No numbered options", "reply to this message", "esc first"} {
+	for _, want := range []string{"No numbered options", "local herdr window", "continue automatically after confirmation", "Typing an approval in chat does not select"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("card does not mention %q:\n%s", want, text)
 		}

@@ -350,6 +350,11 @@ func (b *bridge) deliver(ctx context.Context, chatID, replyTo string, t aim, tex
 		b.log.Error("bridge: prose was not delivered", "pane", a.PaneID, "err", err)
 		return b.say(ctx, chatID, replyTo, a.PaneID, withNote(t.note, b.deliveryFailed(a, err)))
 	}
+	if b.tasks != nil && d.Acked {
+		if err := b.tasks.AcceptInput(a.PaneID, d.Verified); err != nil {
+			return err
+		}
+	}
 	return b.reportDelivery(ctx, chatID, replyTo, a, t.note, d)
 }
 

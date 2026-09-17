@@ -136,7 +136,9 @@ func (b *bridge) pressKey(ctx context.Context, a lark.Action, d cards.Decision) 
 	// agents.MaxGuardAge, and the agent is still blocked at the very state
 	// sequence the human was looking at. A press that fails any of them types
 	// nothing (G17).
-	next, err := b.deps.Controller.SendKey(ctx, d.Guard(), d.Key)
+	g := d.Guard()
+	g.MenuChoice = true
+	next, err := b.deps.Controller.SendKey(ctx, g, d.Key)
 	if err != nil {
 		b.log.Warn("bridge: a card press was refused; no key reached the agent",
 			"pane", d.Pane, "key", d.Key, "seq", d.Seq, "err", err)
@@ -144,6 +146,8 @@ func (b *bridge) pressKey(ctx context.Context, a lark.Action, d cards.Decision) 
 		return nil
 	}
 
+	b.log.Info("bridge: card choice handled", "pane", d.Pane, "choice", d.Key,
+		"seq", d.Seq, "next_status", next.Status, "message_id", a.MessageID)
 	b.resolveCard(ctx, a, next, d)
 	return nil
 }
@@ -151,6 +155,9 @@ func (b *bridge) pressKey(ctx context.Context, a lark.Action, d cards.Decision) 
 // resolveCard replaces an honoured card with the record of what it did.
 func (b *bridge) resolveCard(ctx context.Context, a lark.Action, next agents.Agent, d cards.Decision) {
 	outcome := fmt.Sprintf("%s is now %s", agentLabel(next), next.Status)
+	if next.Status == agents.StatusBlocked {
+		outcome += "; still waiting for input. Send /screen in the task group for a fresh card."
+	}
 	at := b.now()
 
 	card, err := cards.BuildResolved(next, d, a.Operator, outcome, at)
@@ -159,13 +166,13 @@ func (b *bridge) resolveCard(ctx context.Context, a lark.Action, next agents.Age
 		// to send. Only the record of it could not be drawn.
 		b.log.Error("bridge: could not build the resolved card", "pane", d.Pane, "err", err)
 		b.tellOperator(ctx, a, d.Pane, fmt.Sprintf(
-			"✅ Sent `%s` to %s — %s. (I could not redraw the card itself; its buttons are spent "+
+			"✅ Handled `%s` for %s — %s. (I could not redraw the card itself; its buttons are spent "+
 				"and pressing them again sends nothing.)", d.Key, d.Pane, outcome))
 		return
 	}
 
 	b.replaceCard(ctx, a, d.Pane, card, fmt.Sprintf(
-		"✅ Sent `%s` to %s at %s — %s.", d.Key, d.Pane, at.Format(cardStampLayout), outcome))
+		"✅ Handled `%s` for %s at %s — %s.", d.Key, d.Pane, at.Format(cardStampLayout), outcome))
 }
 
 // refuseCard replaces a card that was NOT acted on, and says why.

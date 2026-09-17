@@ -370,6 +370,7 @@ type Prompter interface {
 //	func WithPrompter(p Prompter) Option
 //	func WithAssumeYes(yes bool) Option
 //	func WithReuseAppID(appID string) Option
+//	func WithPermissionUpgrade(upgrade bool) Option
 //
 // Run must be idempotent and re-runnable, and it must handle every state of the
 // machine without a flag: credentials found anywhere the bridge loads them are
@@ -399,4 +400,7 @@ type Runner struct {
 	assumeYes bool
 	// reuseAppID pins the app to use. Empty means "work it out".
 	reuseAppID string
+	// permissionUpgrade reopens the confirmation page for an existing app to
+	// grant the optional task integration permissions, even with a saved secret.
+	permissionUpgrade bool
 }

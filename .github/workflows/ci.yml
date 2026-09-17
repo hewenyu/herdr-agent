@@ -3,7 +3,7 @@
 # Two jobs, and both of them have to keep working for the release workflow to be
 # worth anything:
 #
-#   test   build, vet, gofmt and the race detector on ubuntu-latest
+#   test   build, embedded UI smoke check, vet, gofmt and race detector
 #   cross  every target release.yml ships, compiled and proved to be that target
 #
 # Every action is pinned to a full commit SHA. A tag is a mutable pointer: the
@@ -51,6 +51,13 @@ jobs:
       - name: go build
         run: go build ./...
 
+      # Copy only the executable into an empty directory: a checkout must not
+      # accidentally supply the HTML, CSS or JavaScript that releases need.
+      - name: verify the embedded configuration page
+        run: |
+          go build -o "$RUNNER_TEMP/herdr-agent-ui" ./cmd/herdr-agent
+          python3 .github/scripts/check-embedded-ui.py --binary "$RUNNER_TEMP/herdr-agent-ui"
+
       - name: go vet
         run: go vet ./...
 
@@ -78,9 +85,10 @@ jobs:
       # there. The two places that could have had one do not: doctor's reader of
       # another process's environment shells out to `pgrep` and `ps eww` (G7),
       # but the tests exercise the parser against a captured sample string and
-      # never exec anything — `grep -rn exec.Command *_test.go` finds nothing in
-      # the whole module — and the darwin-only browser launcher is injected as a
-      # function on deps, so no test can reach the real one.
+      # do not inspect real process environments. Project tests use the runner's
+      # Git to verify initialization and existing-worktree preservation; they
+      # write only temporary repositories. The browser launcher is injected,
+      # so tests never open the real one.
       - name: go test -race
         run: go test -race ./...
 

@@ -425,9 +425,9 @@ func (c *controller) get(ctx context.Context, paneID string) (Agent, error) {
 
 // SendKey answers a menu.
 //
-// The key must be one of AllowedKeys. Anything else is rejected outright: this
-// package never escapes, translates or guesses at a key, because the failure
-// mode of guessing wrong is a keystroke executing something in a live agent.
+// The key must be one of AllowedKeys. Anything else is rejected outright;
+// raw keys stay literal. Numbered card choices may use a recognized native
+// confirmation sequence, checked against the current screen and guard.
 func (c *controller) SendKey(ctx context.Context, g Guard, key string) (Agent, error) {
 	cur, err := c.validateGuard(ctx, g, true)
 	if err != nil {
@@ -435,6 +435,23 @@ func (c *controller) SendKey(ctx context.Context, g Guard, key string) (Agent, e
 	}
 	if !slices.Contains(AllowedKeys, key) {
 		return cur, fmt.Errorf("agents: %q: %w", key, ErrKeyNotAllowed)
+	}
+	if g.MenuChoice && cur.Kind == "codex" && key == "1" {
+		raw, truncated, err := herdrapi.ReadFull(ctx, c.client, cur.PaneID, herdrapi.SourceDetection, readWholeBuffer)
+		if err != nil {
+			return cur, fmt.Errorf("agents: read menu before confirming %s: %w", cur.PaneID, err)
+		}
+		keys := []string{key}
+		if !truncated {
+			if confirm := codexTrustConfirmKeys(raw); confirm != nil {
+				keys = confirm
+			}
+		}
+		cur, err = c.validateGuard(ctx, g, true)
+		if err != nil {
+			return cur, err
+		}
+		return c.deliverKeys(ctx, cur, keys)
 	}
 	return c.deliverKey(ctx, cur, key)
 }
@@ -455,21 +472,25 @@ func (c *controller) Interrupt(ctx context.Context, g Guard) (Agent, error) {
 
 // deliverKey writes one key and reports the state it produced.
 func (c *controller) deliverKey(ctx context.Context, cur Agent, key string) (Agent, error) {
+	return c.deliverKeys(ctx, cur, []string{key})
+}
+
+func (c *controller) deliverKeys(ctx context.Context, cur Agent, keys []string) (Agent, error) {
 	// agent.send_keys, never pane.send_keys: herdr writes the whole key list in
 	// a single write, where pane.send_keys issues one syscall per key. Against
 	// a TUI that is reading a menu, a key split across writes is a key that can
 	// interleave with a repaint.
-	if err := c.client.AgentSendKeys(ctx, cur.PaneID, []string{key}); err != nil {
-		return cur, fmt.Errorf("agents: send key %q to %s: %w", key, cur.PaneID, err)
+	if err := c.client.AgentSendKeys(ctx, cur.PaneID, keys); err != nil {
+		return cur, fmt.Errorf("agents: send keys %q to %s: %w", keys, cur.PaneID, err)
 	}
 	if err := c.pause(ctx, c.settleDelay); err != nil {
-		return cur, fmt.Errorf("agents: key %q delivered to %s, then: %w", key, cur.PaneID, err)
+		return cur, fmt.Errorf("agents: keys %q delivered to %s, then: %w", keys, cur.PaneID, err)
 	}
 	next, err := c.get(ctx, cur.PaneID)
 	if err != nil {
 		// The key is already in the agent. Say so, so that nobody retries it.
-		return cur, fmt.Errorf("agents: key %q delivered to %s but reading its state back failed: %w",
-			key, cur.PaneID, err)
+		return cur, fmt.Errorf("agents: keys %q delivered to %s but reading its state back failed: %w",
+			keys, cur.PaneID, err)
 	}
 	return next, nil
 }
@@ -608,6 +629,9 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 	}
 
 	if cur.Status == StatusBlocked {
+		if g.RequireUnblocked {
+			return fail(StatusBlocked, fmt.Errorf("agents: %s is waiting for human approval: %w", paneID, ErrCannotUnblock))
+		}
 		if err := c.client.AgentSendKeys(ctx, paneID, []string{keyEscape}); err != nil {
 			return Delivery{FinalStatus: StatusBlocked},
 				fmt.Errorf("agents: escape %s before prompting: %w", paneID, err)
@@ -701,6 +725,9 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 	// it on screen, which the caller must show as "sent but not confirmed".
 	post, postRead := c.readLines(ctx, paneID)
 	d.Verified = verifyEcho(post, postRead, text, d.Queued, preImage)
+	if !d.Verified && d.Acked && d.Attempts > 0 {
+		d.Verified = verifyReceiptEcho(post, postRead, text, g.ReceiptMarker, d.Queued, preImage)
+	}
 
 	if d.Queued && postRead && screenShowsDialog(post) {
 		// The same disclosure from the screen instead of the status, because
@@ -766,8 +793,6 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 			}
 		}
 
-		d.Attempts = attempt
-
 		// The last look before the write, per attempt, as late as possible: one
 		// screen read and one status read, with nothing between them and the paste.
 		// Both are re-done per attempt because a retry runs seconds later and
@@ -795,6 +820,9 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 		if box.holdsText {
 			body = promptSeparator + text
 		}
+		// Count writes, not preflight refusals. Task startup can safely wait
+		// for an approval only when no prompt has been attempted at all.
+		d.Attempts = attempt
 		info, err := c.client.AgentPrompt(ctx, paneID, body, promptWaitFor(from))
 		if err == nil {
 			d.Acked = true

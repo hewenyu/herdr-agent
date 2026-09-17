@@ -56,6 +56,14 @@ type settings struct {
 	botOpenID string
 	http      larkcore.HttpClient
 	log       *slog.Logger
+	taskChats bool
+}
+
+// WithTaskChats permits unmentioned group messages to reach the bridge. The
+// bridge must restrict those messages to task chats bound to their owner;
+// enabling this option alone does not authorize any sender or chat.
+func WithTaskChats(enabled bool) Option {
+	return func(s *settings) { s.taskChats = enabled }
 }
 
 // WithLogLevel sets the SDK log level for both the ws client and the REST

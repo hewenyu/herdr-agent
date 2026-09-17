@@ -58,11 +58,12 @@ func cmdSetup(ctx context.Context, d *deps, args []string) error {
 	}
 
 	p := &termProgress{
-		out:     d.Out,
-		err:     d.Err,
-		envPath: filepath.Join(d.StateDir, config.DotEnvFileName),
-		cfgPath: filepath.Join(d.StateDir, config.ConfigFileName),
-		open:    d.OpenURL,
+		updatePermissions: f.updatePermissions,
+		out:               d.Out,
+		err:               d.Err,
+		envPath:           filepath.Join(d.StateDir, config.DotEnvFileName),
+		cfgPath:           filepath.Join(d.StateDir, config.ConfigFileName),
+		open:              d.OpenURL,
 	}
 	plan := setupPlanFor(d, f)
 	if plan.why != "" {
@@ -90,6 +91,7 @@ func cmdSetup(ctx context.Context, d *deps, args []string) error {
 // setupFlags is what the command line asked for: the three modes, plus the
 // switch that says nobody is watching.
 type setupFlags struct {
+	updatePermissions bool
 	// appID pins the app to use. Empty means "work it out", which on a machine
 	// with no credentials means the confirmation page.
 	appID string
@@ -105,7 +107,9 @@ type setupFlags struct {
 // permute), which makes "does --app still reach the flow when it comes last" a
 // property worth asserting directly rather than through a whole run.
 func parseSetupFlags(d *deps, args []string) (setupFlags, error) {
-	fs := newFlags(d, "setup", "[--app <app_id> | --reregister] [--yes]")
+	fs := newFlags(d, "setup", "[--app <app_id> | --reregister] [--update-permissions] [--yes]")
+	updatePermissions := fs.Bool("update-permissions", false,
+		"open a fresh confirmation URL to add task permissions to the existing app, even when its credentials are already saved")
 	appID := fs.String("app", "",
 		"reuse THIS app (cli_...) instead of registering one.\n"+
 			"When a file the bridge reads already holds its secret, nothing is opened at all.\n"+
@@ -133,7 +137,7 @@ func parseSetupFlags(d *deps, args []string) (setupFlags, error) {
 	if fs.NArg() > 0 {
 		return setupFlags{}, usagef("setup takes no arguments, got %q", fs.Arg(0))
 	}
-	f := setupFlags{appID: strings.TrimSpace(*appID), reregister: *reregister, yes: *yes}
+	f := setupFlags{appID: strings.TrimSpace(*appID), reregister: *reregister, yes: *yes, updatePermissions: *updatePermissions}
 	// Caller mistakes are answered before anything is built, locked or dialled.
 	if err := checkSetupFlags(f); err != nil {
 		return setupFlags{}, err
@@ -143,6 +147,9 @@ func parseSetupFlags(d *deps, args []string) (setupFlags, error) {
 
 // checkSetupFlags refuses the two flag combinations that cannot mean anything.
 func checkSetupFlags(f setupFlags) error {
+	if f.updatePermissions && f.reregister {
+		return usagef("setup: --update-permissions updates an existing app and cannot be used with --reregister")
+	}
 	if f.appID == "" {
 		return nil
 	}
@@ -166,6 +173,7 @@ func checkSetupFlags(f setupFlags) error {
 // as a list of opaque options: which app to pin, who can be asked a question,
 // and the sentence that has to be printed when the answer is nobody.
 type setupPlan struct {
+	updatePermissions bool
 	// reuseAppID pins the app. Empty means the flow works it out.
 	reuseAppID string
 	// prompter is nil when there is nobody to ask, which is a decision and not an
@@ -185,7 +193,7 @@ type setupPlan struct {
 // the first becomes an error. Not waiting again IS the safe answer to the second,
 // and the run takes it.
 func setupPlanFor(d *deps, f setupFlags) setupPlan {
-	p := setupPlan{reuseAppID: f.appID}
+	p := setupPlan{reuseAppID: f.appID, updatePermissions: f.updatePermissions}
 	if !f.yes {
 		p.prompter = newTermPrompter(d)
 	}
@@ -244,6 +252,9 @@ func (p setupPlan) options() []setup.Option {
 	}
 	if p.reuseAppID != "" {
 		opts = append(opts, setup.WithReuseAppID(p.reuseAppID))
+	}
+	if p.updatePermissions {
+		opts = append(opts, setup.WithPermissionUpgrade(true))
 	}
 	return opts
 }
@@ -407,8 +418,9 @@ func writeSteps(w io.Writer, steps []setup.Step) {
 // It holds no lock. The reporter inside internal/setup serialises every
 // callback, which is the only reason that is safe.
 type termProgress struct {
-	out io.Writer
-	err io.Writer
+	updatePermissions bool
+	out               io.Writer
+	err               io.Writer
 
 	// envPath is where the secret was written, used when the run does not say.
 	// The path and the mode are printed; the contents never are, not even a
@@ -468,6 +480,11 @@ func (p *termProgress) Verification(url string, expiresIn int) {
 	}
 	if expiresIn > 0 {
 		fmt.Fprintf(p.err, "  The link expires in %ds.\n", expiresIn)
+	}
+	if p.updatePermissions {
+		fmt.Fprintf(p.err, "  Confirm the update for the existing app to add task permissions: %s.\n", strings.Join(setup.TaskScopes, ", "))
+		fmt.Fprintln(p.err, "  This link targets the existing app; the returned app ID is checked before saving credentials.")
+		return
 	}
 	// Read while a stranger's URL is on screen: what the page asks for, why
 	// there is nothing to do afterwards, and what it will cost if you take the

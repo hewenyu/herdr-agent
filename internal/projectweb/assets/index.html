@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <meta name="color-scheme" content="light">
+  <title>项目配置 · herdr-agent</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="herdr-agent 项目配置"><span class="brand-icon" aria-hidden="true">h</span>herdr<span class="brand-light">-agent</span></a>
+    <span class="local-badge"><span class="dot"></span>本地配置</span>
+  </header>
+  <main class="shell">
+    <div class="page-heading">
+      <div><p class="eyebrow">YOUR WORKSPACE</p><h1>把项目交给 Agent</h1><p class="intro">关联项目目录，在飞书里用自然语言开始开发。</p></div>
+      <button id="add-project" type="button" class="primary"><span aria-hidden="true">＋</span> 添加项目</button>
+    </div>
+    <section id="feishu-authorization" class="authorization" aria-labelledby="authorization-title" data-state="checking">
+      <div class="authorization-copy"><div class="authorization-heading"><h2 id="authorization-title">飞书授权</h2><span id="authorization-state" class="authorization-state">正在检查</span></div><p id="authorization-message" role="status" aria-live="polite">正在读取飞书权限状态…</p><p id="authorization-scopes" class="authorization-scopes" hidden></p></div>
+      <a id="authorization-link" class="primary" target="_blank" rel="noopener noreferrer" hidden>登录飞书并更新权限</a>
+    </section>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section class="global-settings" aria-label="全局 Agent 设置"><label class="bypass-control"><input id="bypass-mode" type="checkbox" disabled><span><strong>Bypass 模式</strong><small>关闭 Agent 的审批与沙箱限制。保存后用于新启动的 Codex 和 Claude Code 会话。</small></span></label><span id="bypass-status">正在读取…</span></section>
+    <div class="workspace">
+      <aside class="project-sidebar" aria-label="已配置项目">
+        <div class="sidebar-heading"><h2>项目</h2><span id="project-count" class="count">0</span></div>
+        <nav id="project-list" class="project-list" aria-label="项目列表"><p class="loading">正在读取配置…</p></nav>
+        <div class="sidebar-note">一个项目可以关联多个文件夹。<br>Agent 会在同一会话中使用它们。</div>
+      </aside>
+      <section class="editor" aria-labelledby="editor-title">
+        <div class="editor-heading"><div><p id="editor-kicker" class="eyebrow">PROJECT SETTINGS</p><h2 id="editor-title">添加项目</h2></div><span class="step-label" id="saved-label" hidden>已配置</span></div>
+        <form id="project-form">
+          <fieldset id="form-fields" disabled>
+            <div id="creation-mode" class="mode-tabs" role="group" aria-label="添加方式">
+              <button id="mode-existing" type="button" class="mode-tab active" aria-pressed="true">关联已有目录</button>
+              <button id="mode-new" type="button" class="mode-tab" aria-pressed="false">创建新项目</button>
+            </div>
+            <div class="field"><label for="project-name">项目名称</label><input id="project-name" name="name" autocomplete="off" placeholder="例如：my-product" required maxlength="80"><p class="hint">在飞书中说“用这个项目开发”时使用的名称。</p></div>
+            <div class="field" id="directories-section">
+              <div class="field-heading"><label>项目文件夹</label><button type="button" class="text-button" id="add-directory">＋ 添加文件夹</button></div>
+              <p class="hint directory-hint">第一项是主目录，保存时自动初始化 Git，已有仓库保留。其他文件夹也会传给 Codex 或 Claude Code。</p>
+              <div id="directory-list" class="directory-list"></div>
+              <p class="hint">填写本机已有目录的绝对路径或 ~/ 路径。使用箭头调整主目录与顺序。</p>
+            </div>
+            <div id="new-directory-section" class="new-directory-box" hidden>
+              <span class="folder-symbol" aria-hidden="true">＋</span><div><strong>为新项目创建一个目录</strong><p id="new-directory-preview" class="path-preview"></p><p class="hint">创建目录并初始化 Git。创建后可继续关联其他文件夹。</p></div>
+            </div>
+            <div class="field"><label for="project-agent">开发 Agent</label><select id="project-agent" name="agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select><p class="hint">新任务默认使用这个 Agent。</p></div>
+            <label class="checkbox-row"><input id="make-default" type="checkbox"><span>设为默认项目<small>没有指定项目时，使用这个项目开始任务。</small></span></label>
+            <div class="save-note"><span aria-hidden="true">↗</span><p>配置保存在本机，保存后对新启动的会话生效。运行中的任务继续使用创建时的目录。</p></div>
+            <div class="form-actions"><button id="delete-project" type="button" class="danger-button" hidden>移除项目</button><span class="action-spacer"></span><button type="submit" id="save-project" class="primary">保存项目</button></div>
+          </fieldset>
+        </form>
+      </section>
+    </div>
+    <footer>herdr-agent <span>·</span> 项目目录留在本机，开发会话由本地 Agent 执行。</footer>
+  </main>
+  <dialog id="delete-dialog" aria-labelledby="delete-title"><h2 id="delete-title">移除项目配置？</h2><p>本地文件夹和已有任务会保留。之后仍可重新添加这个项目。</p><div class="dialog-actions"><button type="button" id="cancel-delete" class="secondary">取消</button><button type="button" id="confirm-delete" class="danger-primary">移除配置</button></div></dialog>
+</body>
+</html>

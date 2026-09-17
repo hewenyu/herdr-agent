@@ -11,6 +11,8 @@ type Config struct {
 	Herdr  Herdr  `toml:"herdr"`
 	UI     UI     `toml:"ui"`
 	Mirror Mirror `toml:"mirror"`
+	Tasks  Tasks  `toml:"tasks"`
+	AI     AI     `toml:"ai"`
 }
 
 type Feishu struct {
@@ -36,6 +38,7 @@ type Herdr struct {
 }
 
 type UI struct {
+	ConfigListen   string        `toml:"config_listen"`   // empty => 127.0.0.1:18790
 	MaxCols        int           `toml:"max_cols"`        // 0 => screen.DefaultMaxCols
 	TailLines      int           `toml:"tail_lines"`      // 0 => 18
 	NotifyCooldown time.Duration `toml:"notify_cooldown"` // 0 => 30s
@@ -48,12 +51,44 @@ type Mirror struct {
 	DefaultOn bool `toml:"default_on"`
 }
 
+// Tasks associates Feishu task projects with local directories. Disabled by
+// default, so existing installations do not create tasks or workspaces.
+type Tasks struct {
+	Enabled        bool               `toml:"enabled"`
+	Bypass         bool               `toml:"bypass"`
+	DefaultProject string             `toml:"default_project"`
+	PollInterval   time.Duration      `toml:"poll_interval"` // unset => 30s; must be positive when enabled
+	Projects       map[string]Project `toml:"projects"`
+}
+
+// Project is an ordered set of existing directories and its agent. The first
+// directory is the working directory. Path remains the legacy single-directory
+// setting; when Directories is set it is authoritative and Path mirrors its first
+// entry. Load expands ~/ and defaults an omitted Agent to codex.
+type Project struct {
+	Path        string   `toml:"path" json:"path"`
+	Directories []string `toml:"directories" json:"directories"`
+	Agent       string   `toml:"agent" json:"agent"`
+}
+
+// AI configures the model API used to interpret natural-language task requests
+// in the bot's entry chat. The bridge supplies authorized task tools.
+type AI struct {
+	Enabled  bool          `toml:"enabled"`
+	Provider string        `toml:"provider"`
+	Model    string        `toml:"model"`
+	BaseURL  string        `toml:"base_url"`
+	Timeout  time.Duration `toml:"timeout"`
+	// APIKey is read only from HERDR_AGENT_AI_API_KEY in the environment or .env.
+	APIKey string `toml:"-"`
+}
+
 // StateDir is where the bridge keeps dedup, routes and the pid file.
 // Everything in it is mode 0600.
 const StateDir = ".herdr-agent"
 
 // Load reads config.toml from dir (falling back to defaults for every unset
-// field) and the two credentials from the environment.
+// field) and credentials from the environment.
 //
 // Implementations must also provide, in load.go, exactly:
 //

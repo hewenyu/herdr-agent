@@ -35,6 +35,10 @@ const (
 	methodAgentSendKeys    = "agent.send_keys"
 	methodPaneGet          = "pane.get"
 	methodNotificationShow = "notification.show"
+	methodWorkspaceCreate  = "workspace.create"
+	methodWorkspaceList    = "workspace.list"
+	methodAgentStart       = "agent.start"
+	methodPaneClose        = "pane.close"
 )
 
 // allowedMethods enforces the whitelist at the transport boundary rather than
@@ -48,6 +52,15 @@ var allowedMethods = map[string]struct{}{
 	methodAgentSendKeys:    {},
 	methodPaneGet:          {},
 	methodNotificationShow: {},
+}
+
+// Lifecycle calls have a separate whitelist, so the ordinary control surface
+// cannot accidentally issue a create/start/close through call().
+var lifecycleMethods = map[string]struct{}{
+	methodWorkspaceCreate: {},
+	methodWorkspaceList:   {},
+	methodAgentStart:      {},
+	methodPaneClose:       {},
 }
 
 // ErrReadSourceForbidden rejects a read source this bridge refuses to use.
@@ -79,6 +92,8 @@ type socketClient struct {
 }
 
 var _ Client = (*socketClient)(nil)
+var _ LifecycleClient = (*socketClient)(nil)
+var _ ConfiguredLifecycleClient = (*socketClient)(nil)
 
 // New returns a Client for the herdr API socket.
 //
@@ -158,7 +173,15 @@ func (c *socketClient) call(ctx context.Context, method string, params, out any)
 // readTimeout is separate from c.timeout because some methods block herdr
 // server-side for a duration the caller chose: see AgentPrompt.
 func (c *socketClient) callTimeout(ctx context.Context, method string, params, out any, readTimeout time.Duration) error {
-	if _, ok := allowedMethods[method]; !ok {
+	return c.callWhitelisted(ctx, method, params, out, readTimeout, allowedMethods)
+}
+
+func (c *socketClient) callLifecycle(ctx context.Context, method string, params, out any) error {
+	return c.callWhitelisted(ctx, method, params, out, c.timeout, lifecycleMethods)
+}
+
+func (c *socketClient) callWhitelisted(ctx context.Context, method string, params, out any, readTimeout time.Duration, whitelist map[string]struct{}) error {
+	if _, ok := whitelist[method]; !ok {
 		return fmt.Errorf("herdrapi: method %q is not whitelisted", method)
 	}
 	line, id, err := c.encode(method, params)

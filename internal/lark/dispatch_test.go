@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
 
 // messagePayload builds the JSON Feishu actually pushes down the long
@@ -107,6 +109,71 @@ func TestInboundMessageReachesHandler(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no message reached the handler")
+	}
+}
+
+// Task chats must deliver plain text through the real SDK policy gate. Task
+// ownership and binding are enforced by the bridge after this adapter delivers
+// the message; with task chats disabled the SDK's mention requirement remains.
+func TestTaskChatMessagesWithoutMention(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			b, _ := newTestBot(t, WithTaskChats(enabled))
+			got := make(chan Msg, 3)
+			rejected := make(chan string, 1)
+			b.OnMessage(func(_ context.Context, m Msg) error {
+				got <- m
+				return nil
+			})
+			b.ch.OnReject(func(_ context.Context, event *types.RejectEvent) error {
+				rejected <- event.MessageID
+				return nil
+			})
+			dispatch := func(eventID, senderID, messageID, chatType, text string) {
+				t.Helper()
+				_, err := b.ws.EventHandler().Do(context.Background(), messagePayload(eventID, senderID, text,
+					map[string]string{"message_id": messageID, "chat_type": chatType}))
+				if err != nil {
+					t.Fatalf("dispatch: %v", err)
+				}
+			}
+			if enabled {
+				// The SDK resolves a different bot ID in this fixture, so the
+				// adapter's own echo filter must work for task groups too.
+				dispatch("evt-group-self", stubBotOpenID, "om_group_self", "group", "任务进展回写")
+			}
+			dispatch("evt-group-user", "ou_user", "om_group_user", "group", "现在任务进度怎么样了")
+			if enabled {
+				select {
+				case m := <-got:
+					if m.MessageID != "om_group_user" || m.Text != "现在任务进度怎么样了" || m.ChatType != ChatGroup || m.MentionedBot {
+						t.Fatalf("unexpected unmentioned task group message: %+v", m)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("plain task group message never reached the handler")
+				}
+			} else {
+				select {
+				case id := <-rejected:
+					if id != "om_group_user" {
+						t.Fatalf("rejected %q, want group message", id)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("plain group message should require a mention without task chats")
+				}
+			}
+			// Keep the DM entry available in both modes, and prove that no
+			// rejected group message or self echo reached the handler.
+			dispatch("evt-dm", "ou_user", "om_dm", "p2p", "有哪些项目")
+			select {
+			case m := <-got:
+				if m.MessageID != "om_dm" || m.ChatType != ChatP2P {
+					t.Fatalf("unexpected DM or leaked group message: %+v", m)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("DM never reached the handler")
+			}
+		})
 	}
 }
 

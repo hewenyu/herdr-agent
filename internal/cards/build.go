@@ -79,9 +79,10 @@ func BuildBlocked(a agents.Agent, s screen.Screen, opts []Option, nonce string, 
 	}
 	if len(opts) == 0 {
 		elements = append(elements, newMarkdown(
-			"**No numbered options could be read off this screen.** Press **Esc** to back "+
-				"out, or reply to this message in plain words — prose goes through the safe "+
-				"path (esc first), so it can never become an approval."))
+			"**No numbered options could be read off this screen.** Complete this choice in the "+
+				"local herdr window, or press **Esc** to back out. For an initial directory-trust "+
+				"prompt, the managed task will continue automatically after confirmation. "+
+				"Typing an approval in chat does not select an unrecognized menu option."))
 	}
 	elements = append(elements,
 		newColumnSet(buttons),
@@ -125,7 +126,7 @@ func BuildBlocked(a agents.Agent, s screen.Screen, opts []Option, nonce string, 
 func BuildResolved(a agents.Agent, d Decision, operator, outcome string, at time.Time) (string, error) {
 	outcome = fallback(outcome, "not reported")
 	elements := []any{
-		newMarkdown("**Sent** `%s` to `%s`", d.Key, d.Pane),
+		newMarkdown("**Handled** `%s` for `%s`", d.Key, d.Pane),
 		newMarkdown("**By** %s · **at** %s", fallback(operator, "an unknown operator"), at.Format(stampLayout)),
 		newMarkdown("**Outcome** %s", outcome),
 		newMarkdown("_This card is spent: its buttons are gone and it can no longer send anything._"),
