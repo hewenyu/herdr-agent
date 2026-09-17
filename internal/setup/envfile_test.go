@@ -13,6 +13,24 @@ import (
 
 var fixedNow = time.Date(2026, 8, 14, 10, 30, 0, 0, time.UTC)
 
+// An editor's UTF-8 BOM must not hide an existing app from setup while serve
+// reads it normally. Otherwise setup may replace a different app silently.
+func TestBOMCredentialsCannotBypassExistingAppProtection(t *testing.T) {
+	path := envFixture(t, "\ufeff"+config.EnvAppID+"=cli_existing\r\n"+config.EnvAppSecret+"=existing-secret\r\n")
+	before := readFile(t, path)
+	got, err := readCredentials(path)
+	if err != nil || got.AppID != "cli_existing" {
+		t.Errorf("existing app was not detected: %q, %v", got.AppID, err)
+	}
+	err = writeCredentials(path, credentials{AppID: testAppID, AppSecret: testSecret}, fixedNow, false)
+	if !errors.Is(err, ErrCredentialsExist) {
+		t.Errorf("writeCredentials = %v, want ErrCredentialsExist", err)
+	}
+	if after := readFile(t, path); after != before {
+		t.Error("existing credentials changed without explicit app replacement")
+	}
+}
+
 func envFixture(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

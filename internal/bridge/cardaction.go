@@ -140,6 +140,12 @@ func (b *bridge) pressKey(ctx context.Context, a lark.Action, d cards.Decision) 
 	g.MenuChoice = true
 	next, err := b.deps.Controller.SendKey(ctx, g, d.Key)
 	if err != nil {
+		if !keyDefinitelyRefused(err) {
+			b.log.Warn("bridge: card key outcome was not confirmed; the card remains spent",
+				"pane", d.Pane, "key", d.Key, "seq", d.Seq, "err", err)
+			b.unconfirmedCard(ctx, a, d)
+			return nil
+		}
 		b.log.Warn("bridge: a card press was refused; no key reached the agent",
 			"pane", d.Pane, "key", d.Key, "seq", d.Seq, "err", err)
 		b.refuseCard(ctx, a, d, cardRefusal(d, err))
@@ -150,6 +156,30 @@ func (b *bridge) pressKey(ctx context.Context, a lark.Action, d cards.Decision) 
 		"seq", d.Seq, "next_status", next.Status, "message_id", a.MessageID)
 	b.resolveCard(ctx, a, next, d)
 	return nil
+}
+
+// A post-write state read may itself return ErrPaneGone. The attempt marker
+// takes priority over guard sentinels so an already-accepted approval is never
+// described as refused. Unclassified errors are treated conservatively too.
+func keyDefinitelyRefused(err error) bool {
+	if errors.Is(err, agents.ErrInputUnconfirmed) {
+		return false
+	}
+	return errors.Is(err, agents.ErrNoLongerBlocked) || errors.Is(err, agents.ErrGuardStale) ||
+		errors.Is(err, agents.ErrPaneGone) || errors.Is(err, agents.ErrAgentReplaced) ||
+		errors.Is(err, agents.ErrKeyNotAllowed)
+}
+
+func (b *bridge) unconfirmedCard(ctx context.Context, a lark.Action, d cards.Decision) {
+	plain := fmt.Sprintf("⚠️ The result of `%s` for %s was not confirmed. The key may already have reached the agent. "+
+		"Do not repeat this operation until you inspect the current screen with /screen in the task group or /card %s. This card is spent.", d.Key, d.Pane, d.Pane)
+	card, err := cards.BuildUnconfirmed(d)
+	if err != nil {
+		b.log.Error("bridge: could not build the unconfirmed outcome card", "pane", d.Pane, "err", err)
+		b.tellOperator(ctx, a, d.Pane, plain)
+		return
+	}
+	b.replaceCard(ctx, a, d.Pane, card, plain)
 }
 
 // resolveCard replaces an honoured card with the record of what it did.

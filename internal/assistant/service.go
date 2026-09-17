@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/bridge"
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 	"github.com/hewenyu/herdr-agent/internal/tasktools"
 )
 
@@ -215,7 +215,7 @@ func (s *Service) Reply(ctx context.Context, in bridge.AssistantMessage) (string
 		if err == nil && name == "herdr_list" {
 			// The current user request determines list scope, even if the model
 			// requests all=true. Record and return the same filtered observation.
-			result = progressRecords(in.Text, result.([]tasktools.Task), false)
+			result = progressRecordsFromSnapshot(in.Text, result.([]tasktools.Task), snapshot, false)
 		}
 		if !found.ReadOnly {
 			if err != nil {
@@ -338,31 +338,6 @@ func writeSession(path string, s session) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".conversation-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(b); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("assistant: sync conversation: %w", err)
-	}
-	return nil
+	_, err = statefile.Write(path, b, 0600)
+	return err
 }

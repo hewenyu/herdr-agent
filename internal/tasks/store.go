@@ -11,6 +11,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 )
 
 type Status string
@@ -176,36 +178,12 @@ func (s *Store) Update(id string, fn func(*Record) error) (Record, error) {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return r, err
 	}
-	f, err := os.CreateTemp(dir, ".tasks-*")
-	if err != nil {
-		return r, err
+	committed, err := statefile.Write(s.path, data, 0600)
+	if committed {
+		// Rename committed the intent even if directory fsync then failed.
+		s.records = next
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return r, err
-	}
-	if err = os.Rename(tmp, s.path); err != nil {
-		return r, err
-	}
-	s.records = next
-	// Persist the rename as well as the bytes before allowing another side effect.
-	d, err := os.Open(dir)
-	if err != nil {
-		return r, err
-	}
-	defer d.Close()
-	if err = d.Sync(); err != nil {
-		return r, err
-	}
-	return r, nil
+	return r, err
 }
 
 func cloneRecord(r Record) Record {

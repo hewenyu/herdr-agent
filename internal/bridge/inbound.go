@@ -348,14 +348,14 @@ func (b *bridge) deliver(ctx context.Context, chatID, replyTo string, t aim, tex
 	d, err := b.deps.Controller.Say(ctx, b.guardFor(a), text)
 	if err != nil {
 		b.log.Error("bridge: prose was not delivered", "pane", a.PaneID, "err", err)
-		return b.say(ctx, chatID, replyTo, a.PaneID, withNote(t.note, b.deliveryFailed(a, err)))
+		return afterInputAttempt(b.say(ctx, chatID, replyTo, a.PaneID, withNote(t.note, b.deliveryFailed(a, err))))
 	}
 	if b.tasks != nil && d.Acked {
 		if err := b.tasks.AcceptInput(a.PaneID, d.Verified); err != nil {
-			return err
+			return afterInputAttempt(err)
 		}
 	}
-	return b.reportDelivery(ctx, chatID, replyTo, a, t.note, d)
+	return afterInputAttempt(b.reportDelivery(ctx, chatID, replyTo, a, t.note, d))
 }
 
 // withNote puts the routing explanation above the delivery report, so the first
@@ -545,14 +545,19 @@ func (b *bridge) commandStop(ctx context.Context, m lark.Msg, paneID string) err
 
 	next, err := b.deps.Controller.Interrupt(ctx, b.guardFor(a))
 	if err != nil {
+		if errors.Is(err, agents.ErrInputUnconfirmed) {
+			b.log.Warn("bridge: esc outcome was not confirmed", "pane", paneID, "err", err)
+			return afterInputAttempt(b.reply(ctx, m, paneID, fmt.Sprintf("⚠️ The result of esc for %s was not confirmed. "+
+				"It may already have interrupted the agent. Check the current screen before repeating the operation.", agentLabel(a))))
+		}
 		b.log.Error("bridge: esc was not delivered", "pane", paneID, "err", err)
-		return b.reply(ctx, m, paneID, fmt.Sprintf("❌ Could not send esc to %s: %v", agentLabel(a), err))
+		return afterInputAttempt(b.reply(ctx, m, paneID, fmt.Sprintf("❌ Could not send esc to %s: %v", agentLabel(a), err)))
 	}
 
 	// Nothing to add about held-back messages: the bridge holds none. Anything
 	// the user typed is already in the agent, which is what makes esc the escape
 	// hatch rather than half of one — see deliver.
-	return b.reply(ctx, m, paneID, fmt.Sprintf("⎋ esc sent to %s. It is now %s.", agentLabel(a), next.Status))
+	return afterInputAttempt(b.reply(ctx, m, paneID, fmt.Sprintf("⎋ esc sent to %s. It is now %s.", agentLabel(a), next.Status)))
 }
 
 // commandCard is /card <pane>: push that pane's current screen as a card.

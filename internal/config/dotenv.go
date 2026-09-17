@@ -6,7 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/hewenyu/herdr-agent/internal/envfile"
 )
 
 // applyCredentials fills credential fields from the process
@@ -62,51 +63,7 @@ func loadDotEnv(dir string) (map[string]string, error) {
 	return merged, nil
 }
 
-// findRepoRoot walks up from start looking for a module or git checkout root.
-func findRepoRoot(start string) (string, bool) {
-	dir := filepath.Clean(start)
-	for {
-		for _, marker := range []string{"go.mod", ".git"} {
-			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-				return dir, true
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
-}
+// findRepoRoot and parseDotEnv share setup's credential discovery rules.
+func findRepoRoot(start string) (string, bool) { return envfile.RepoRoot(start) }
 
-// parseDotEnv reads the deliberately small format described in S2 §3.1:
-// KEY=VALUE, whole-line # comments, no `export`, no quoting.
-//
-// Values are taken literally after the first '=', so a '#' inside a secret is
-// part of the secret and a quote character stays in the value. Anything
-// cleverer would risk silently mangling a credential, which fails much later
-// and much less obviously than a wrong-looking .env.
-func parseDotEnv(data string) map[string]string {
-	out := make(map[string]string)
-	data = strings.TrimPrefix(data, "\ufeff") // editor-written BOM
-
-	for _, line := range strings.Split(data, "\n") {
-		// A CRLF file would otherwise hide a \r at the end of every secret.
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		// Skips `export FOO=bar`: the format has no export keyword, and storing
-		// it under the key "export FOO" would look like it had worked.
-		if key == "" || strings.ContainsAny(key, " \t") {
-			continue
-		}
-		out[key] = strings.TrimSpace(value)
-	}
-	return out
-}
+func parseDotEnv(data string) map[string]string { return envfile.Parse(data) }

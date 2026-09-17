@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/hewenyu/herdr-agent/internal/config"
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 )
 
 const FileName = "projects.json"
@@ -270,32 +271,11 @@ func (c *Catalog) save(next config.Tasks) (committed bool, err error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return false, err
 	}
-	f, err := os.CreateTemp(dir, ".projects-*")
-	if err != nil {
-		return false, err
+	committed, err = statefile.Write(c.path, append(data, '\n'), 0600)
+	if committed {
+		c.tasks = next
 	}
-	temporary := f.Name()
-	defer os.Remove(temporary)
-	if _, err = f.Write(append(data, '\n')); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := os.Rename(temporary, c.path); err != nil {
-		return false, err
-	}
-	c.tasks = next
-	d, err := os.Open(dir)
-	if err != nil {
-		return true, err
-	}
-	defer d.Close()
-	return true, d.Sync()
+	return committed, err
 }
 
 func cloneProject(project config.Project) config.Project {

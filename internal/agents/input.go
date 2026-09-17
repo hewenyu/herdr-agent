@@ -24,6 +24,12 @@ import (
 // the truth about where the agent ended up.
 const SettleDelay = 3 * time.Second
 
+// ErrInputUnconfirmed means a key write was attempted but its resulting state
+// could not be confirmed. It also wraps the underlying error, which may be
+// ErrPaneGone after an already-delivered approval. Callers must not describe it
+// as a refusal before input or automatically repeat the key.
+var ErrInputUnconfirmed = errors.New("key input outcome was not confirmed")
+
 const (
 	// settlePollInterval is how often waitSettle re-reads agent.get.
 	settlePollInterval = 250 * time.Millisecond
@@ -481,16 +487,16 @@ func (c *controller) deliverKeys(ctx context.Context, cur Agent, keys []string) 
 	// a TUI that is reading a menu, a key split across writes is a key that can
 	// interleave with a repaint.
 	if err := c.client.AgentSendKeys(ctx, cur.PaneID, keys); err != nil {
-		return cur, fmt.Errorf("agents: send keys %q to %s: %w", keys, cur.PaneID, err)
+		return cur, fmt.Errorf("%w: agents: send keys %q to %s: %w", ErrInputUnconfirmed, keys, cur.PaneID, err)
 	}
 	if err := c.pause(ctx, c.settleDelay); err != nil {
-		return cur, fmt.Errorf("agents: keys %q delivered to %s, then: %w", keys, cur.PaneID, err)
+		return cur, fmt.Errorf("%w: agents: keys %q delivered to %s, then: %w", ErrInputUnconfirmed, keys, cur.PaneID, err)
 	}
 	next, err := c.get(ctx, cur.PaneID)
 	if err != nil {
 		// The key is already in the agent. Say so, so that nobody retries it.
-		return cur, fmt.Errorf("agents: keys %q delivered to %s but reading its state back failed: %w",
-			keys, cur.PaneID, err)
+		return cur, fmt.Errorf("%w: agents: keys %q delivered to %s but reading its state back failed: %w",
+			ErrInputUnconfirmed, keys, cur.PaneID, err)
 	}
 	return next, nil
 }
@@ -686,7 +692,7 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 			fmt.Errorf("agents: %s is %s, not accepting prose: %w", paneID, cur.Status, ErrAgentBusy))
 	}
 
-	d, preImage, err := c.deliverPrompt(ctx, paneID, text, cur.Status)
+	d, preImage, err := c.deliverPrompt(ctx, g, text, cur.Status)
 	d.Escaped = escaped
 	if err != nil {
 		// Not fail(): d carries the attempt count, which is exactly what the
@@ -762,7 +768,8 @@ func (c *controller) Say(ctx context.Context, g Guard, text string) (Delivery, e
 // It returns the input box as it stood immediately before the paste that was
 // accepted, because that is the only thing that can tell a fresh copy of the
 // message from one that was already sitting there (verifyEcho).
-func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, before Status) (Delivery, boxProbe, error) {
+func (c *controller) deliverPrompt(ctx context.Context, g Guard, text string, before Status) (Delivery, boxProbe, error) {
+	paneID := g.PaneID
 	d := Delivery{FinalStatus: before}
 	from := before
 	var box boxProbe
@@ -806,7 +813,7 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 		if attempt > 1 {
 			accepts = Status.Settled
 		}
-		probe, atWrite, err := c.preflight(ctx, paneID, from, accepts)
+		probe, atWrite, err := c.preflight(ctx, g, from, accepts)
 		if err != nil {
 			d.FinalStatus = atWrite
 			return d, box, err
@@ -865,7 +872,8 @@ func (c *controller) deliverPrompt(ctx context.Context, paneID, text string, bef
 // after the paste, we can neither see nor cancel it, and a working agent can put
 // up a dialog inside that window. That residual exposure is bounded, narrowed
 // here, and disclosed in Delivery.MayHaveAnsweredADialog — not eliminated.
-func (c *controller) preflight(ctx context.Context, paneID string, from Status, accepts func(Status) bool) (boxProbe, Status, error) {
+func (c *controller) preflight(ctx context.Context, g Guard, from Status, accepts func(Status) bool) (boxProbe, Status, error) {
+	paneID := g.PaneID
 	probe := c.probeBox(ctx, paneID)
 	if probe.dialog {
 		// Wraps both sentinels: ErrDialogOnScreen names what was seen, and
@@ -874,13 +882,18 @@ func (c *controller) preflight(ctx context.Context, paneID string, from Status, 
 		return probe, from, fmt.Errorf("agents: %s has a permission dialog on screen, not pasting prose at it: %w: %w",
 			paneID, ErrDialogOnScreen, ErrCannotUnblock)
 	}
-	cur, err := c.get(ctx, paneID)
+	// Settling and retry backoff may outlive the agent originally validated by
+	// Say. Reuse the full guard at the final read so a changed kind, name-based
+	// target fallback, or expired decision cannot authorize this paste.
+	cur, err := c.validateGuard(ctx, g, false)
 	if err != nil {
 		// Not "assume it is still fine": the observation this call exists to
 		// refresh is the one that authorises writing into a live TUI.
 		return probe, from, err
 	}
 	switch {
+	case cur.LaunchPend:
+		return probe, cur.Status, fmt.Errorf("agents: %s started launching before the paste: %w", paneID, ErrAgentBusy)
 	case cur.Status == StatusBlocked:
 		// No second esc. Say already sent one if the agent was blocked when it
 		// started, and another might answer a different dialog behind the first.

@@ -129,15 +129,9 @@ tail_lines = 18
 # (pane, state_seq) is pushed once, ever. Default "30s".
 notify_cooldown = "30s"
 
-# How many messages may queue for one busy agent.
-#
-# Prose is never delivered to a `working` agent; it waits until the agent is
-# idle. If the agent comes back `blocked` instead, the queued line is NOT sent —
-# it was written for the old context, and prose reaching a blocked agent is an
-# approval (G1) — you get a card to decide again.
-#
-# Trade-off: a longer queue means more of what you typed eventually lands, but
-# it lands further from the situation you typed it about. Default 5.
+# Legacy compatibility field; accepted but no longer used.
+# Prose uses the agent's own input handling; this application does not keep
+# a deferred message queue. Changing this value does not enable or size a queue.
 queue_limit = 5
 
 [mirror]

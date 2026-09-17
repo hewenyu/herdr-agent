@@ -311,7 +311,6 @@ func TestARefusedPressTypesNothingAndStillDisarms(t *testing.T) {
 		{"pane closed", agents.ErrPaneGone, "no longer exists"},
 		{"different agent now", agents.ErrAgentReplaced, "different agent"},
 		{"key not allowed", agents.ErrKeyNotAllowed, "not a key this bridge will send"},
-		{"herdr unreachable", errors.New("dial unix /tmp/herdr.sock: connection refused"), "would not take the key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

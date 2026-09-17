@@ -155,13 +155,29 @@ func BuildExpired(d Decision, reason string) (string, error) {
 		newMarkdown("_Nothing reached the agent. Ask again with a fresh card (`/card %s`) if you still want this._", d.Pane),
 		newMarkdown("%s", provenance(d)),
 	}
+	return buildDecisionNotice(d, "no key was sent", fmt.Sprintf("ignored · %s · %s", d.Pane, reason), elements)
+}
+
+// BuildUnconfirmed disarms a key whose outcome is unknown without implying
+// that the approval was rejected before any bytes reached the agent.
+func BuildUnconfirmed(d Decision) (string, error) {
+	elements := []any{
+		newMarkdown("**The result of `%s` for `%s` was not confirmed.**", d.Key, d.Pane),
+		newMarkdown("The key may already have reached the agent, including approving its current question."),
+		newMarkdown("_Do not repeat this operation until you inspect the current screen with `/screen` in the task group or `/card %s`. This card is spent._", d.Pane),
+		newMarkdown("%s", provenance(d)),
+	}
+	return buildDecisionNotice(d, "result not confirmed", fmt.Sprintf("not confirmed · %s", d.Pane), elements)
+}
+
+func buildDecisionNotice(d Decision, subtitle, summary string, elements []any) (string, error) {
 	return render(card{
 		Schema: schemaVersion,
 		Config: cardConfig{
 			UpdateMulti: true,
-			Summary:     &cardSummary{Content: truncate(fmt.Sprintf("ignored · %s · %s", d.Pane, reason), maxSummary)},
+			Summary:     &cardSummary{Content: truncate(summary, maxSummary)},
 		},
-		Header: newHeader(expiredHeadline(d), "no key was sent", templateExpired),
+		Header: newHeader(expiredHeadline(d), subtitle, templateExpired),
 		Body:   cardBody{Elements: elements},
 	}, "expired")
 }

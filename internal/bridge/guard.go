@@ -2,10 +2,26 @@ package bridge
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hewenyu/herdr-agent/internal/dedup"
 	"github.com/hewenyu/herdr-agent/internal/lark"
 )
+
+// attemptedInputError preserves a failed receipt without allowing the inbound
+// event to repeat a terminal operation. Even a failed Controller call can have
+// written bytes before its response was lost; a later chat write cannot prove
+// that replay is safe. A new user message remains a separate, actionable event.
+type attemptedInputError struct{ error }
+
+func (e attemptedInputError) Unwrap() error { return e.error }
+
+func afterInputAttempt(err error) error {
+	if err == nil {
+		return nil
+	}
+	return attemptedInputError{err}
+}
 
 // inboundEvent is everything the guard needs about an inbound Feishu event,
 // independent of which entry point it arrived through.
@@ -73,8 +89,9 @@ func actionEvent(a lark.Action) inboundEvent {
 // it is a command injected a second time into a live coding agent — a build
 // re-run, or a permission dialog re-answered.
 //
-// And when fn fails, the mark is removed again, so the redelivery gets a real
-// second chance instead of being swallowed as "already seen". (For messages
+// When fn fails before terminal input was attempted, the mark is removed so a
+// redelivery can retry. After an input attempt, a failed receipt must retain the
+// mark: retrying the whole handler could repeat a prompt or interrupt. (For messages
 // that second chance never comes — the SDK acknowledges a message event before
 // the handler runs and discards its result, see lark.handleMessage — but the
 // dedup contract asks for Unmark on failure and the two entry points must not
@@ -104,6 +121,12 @@ func (b *bridge) guard(ctx context.Context, ev inboundEvent, fn func(context.Con
 
 	err := fn(ctx)
 	if err != nil {
+		var attempted attemptedInputError
+		if errors.As(err, &attempted) {
+			b.log.Error("bridge: terminal input was attempted; keeping the event marked despite a follow-up failure",
+				"kind", ev.Kind, "ns", ev.NS, "event_id", ev.EventID, "err", err)
+			return err
+		}
 		b.deps.Dedup.Unmark(ev.NS, ev.EventID)
 		b.log.Error("bridge: handler failed; the event was un-marked so a redelivery can retry it",
 			"kind", ev.Kind, "ns", ev.NS, "event_id", ev.EventID, "err", err)

@@ -82,27 +82,13 @@ func taskHistoryRequested(text string) bool {
 
 var explicitAllQuery = regexp.MustCompile(`(^|[^a-z])all($|[^a-z])`)
 
-func activeTasks(records []tasktools.Task) []tasktools.Task {
-	active := make([]tasktools.Task, 0, len(records))
-	for _, r := range records {
-		if r.Status != tasks.Completed && r.Status != tasks.Destroyed {
-			active = append(active, r)
-		}
-	}
-	return active
-}
-
 func progressOnly(text string, records []tasktools.Task) bool {
 	query := compactQuery(text)
 	// Resolve a named task/project before recognizing a bounded status question.
 	// Any remaining implementation request keeps the message on the AI path.
-	for _, record := range records {
-		for _, name := range []string{record.ID, record.Project, record.Title} {
-			if len([]rune(name)) >= 2 {
-				query = strings.ReplaceAll(query, compactQuery(name), "任务")
-			}
-		}
-	}
+	_, query = matchingTaskReferences(query, records, true)
+	_, query = matchingTaskReferences(query, records, false)
+	query = strings.ReplaceAll(query, "\x00", "任务")
 	for _, prefix := range []string{"麻烦你", "麻烦", "请你", "请", "帮我", "帮忙", "你能", "能不能"} {
 		query = strings.TrimPrefix(query, prefix)
 	}
@@ -126,37 +112,74 @@ func progressOnly(text string, records []tasktools.Task) bool {
 }
 
 func progressRecords(text string, records []tasktools.Task, group bool) []tasktools.Task {
+	return progressRecordsFromSnapshot(text, records, records, group)
+}
+
+// Resolve references against the complete snapshot before applying the active
+// task filter. An empty result for a named project must not become an overview
+// of unrelated projects, including when a list tool returns only active tasks.
+func progressRecordsFromSnapshot(text string, records, snapshot []tasktools.Task, group bool) []tasktools.Task {
 	if group {
 		return records
 	}
 	query := compactQuery(text)
-	var identified []tasktools.Task
-	for _, r := range records {
-		if len(r.ID) >= 2 && strings.Contains(query, compactQuery(r.ID)) {
-			identified = append(identified, r)
-		}
-	}
+	identified, _ := matchingTaskReferences(query, snapshot, true)
 	// An explicit task ID asks about that one record, even after it has ended.
 	// Ordinary overviews and project references still default to active tasks.
-	if len(identified) > 0 {
-		return identified
+	explicitID := len(identified) > 0
+	if !explicitID {
+		identified, _ = matchingTaskReferences(query, snapshot, false)
 	}
-	if !taskHistoryRequested(text) {
-		records = activeTasks(records)
-	}
-	var named []tasktools.Task
+	history := explicitID || taskHistoryRequested(text)
+	selected := make([]tasktools.Task, 0, len(records))
 	for _, r := range records {
-		for _, name := range []string{r.ID, r.Project, r.Title} {
-			if len([]rune(name)) >= 2 && strings.Contains(query, compactQuery(name)) {
-				named = append(named, r)
-				break
+		if len(identified) > 0 && !identified[r.ID] {
+			continue
+		}
+		if history || r.Status != tasks.Completed && r.Status != tasks.Destroyed {
+			selected = append(selected, r)
+		}
+	}
+	return selected
+}
+
+func matchingTaskReferences(query string, records []tasktools.Task, idsOnly bool) (map[string]bool, string) {
+	names := map[string][]string{}
+	for _, r := range records {
+		references := []string{r.Project, r.Title}
+		if idsOnly {
+			references = []string{r.ID}
+		}
+		for _, reference := range references {
+			name := compactQuery(reference)
+			if len([]rune(name)) >= 2 && strings.Contains(query, name) {
+				names[name] = append(names[name], r.ID)
 			}
 		}
 	}
-	if len(named) > 0 {
-		return named
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
 	}
-	return records
+	// Consume longer names first so "api-web" does not also select "api".
+	// A separate mention of "api" still matches after consuming "api-web".
+	sort.Slice(ordered, func(i, j int) bool {
+		if len(ordered[i]) != len(ordered[j]) {
+			return len(ordered[i]) > len(ordered[j])
+		}
+		return ordered[i] < ordered[j]
+	})
+	matched := map[string]bool{}
+	for _, name := range ordered {
+		if !strings.Contains(query, name) {
+			continue
+		}
+		for _, id := range names[name] {
+			matched[id] = true
+		}
+		query = strings.ReplaceAll(query, name, "\x00")
+	}
+	return matched, query
 }
 
 func renderTasks(records []tasktools.Task) string {

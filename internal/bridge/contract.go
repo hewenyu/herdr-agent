@@ -109,8 +109,9 @@ type Bridge interface {
 //     Default deny; unauthorized events are logged at WARN and dropped with
 //     no reply. Enforced at every entry point, not just the happy path.
 //  2. deduplication — dedup.Store on EventID, before any side effect. When
-//     the handler subsequently returns an error, Unmark so Feishu's retry gets
-//     a real second chance (G14).
+//     the handler fails before a terminal operation is attempted, Unmark so
+//     Feishu's retry gets a second chance (G14). Keep the mark after an input
+//     attempt even if its receipt or bookkeeping fails: replay could type twice.
 //  3. the action itself.
 //
 // Card actions additionally require, in this exact order (S2 §3.6):

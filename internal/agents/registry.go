@@ -220,6 +220,7 @@ func (r *registry) reconcile(list []herdrapi.AgentInfo) {
 	var out []Transition
 
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	for id, a := range fresh {
 		prev, known := r.agents[id]
 		switch {
@@ -239,10 +240,11 @@ func (r *registry) reconcile(list []herdrapi.AgentInfo) {
 		out = append(out, r.goneTransition(prev, now))
 	}
 	r.agents = fresh
-	r.mu.Unlock()
 
 	// Map iteration order is random; sort so that one poll's transitions reach
-	// every subscriber in the same order they reach the next one.
+	// every subscriber in the same order they reach the next one. Publish under
+	// the snapshot lock so a new subscriber cannot replay a newer snapshot and
+	// then receive transitions from this earlier poll.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Agent.PaneID != out[j].Agent.PaneID {
 			return out[i].Agent.PaneID < out[j].Agent.PaneID
@@ -250,7 +252,7 @@ func (r *registry) reconcile(list []herdrapi.AgentInfo) {
 		return out[i].To < out[j].To
 	})
 	for _, t := range out {
-		r.publish(t)
+		r.publishLocked(t)
 	}
 }
 
@@ -317,16 +319,26 @@ func (r *registry) Get(paneID string) (Agent, bool) {
 	return a.clone(), true
 }
 
-// Subscribe returns a buffered channel of transitions. A subscriber that falls
-// behind loses events rather than blocking the poller; the channel is closed
-// when Run returns, and Subscribe after that returns an already-closed channel.
+// Subscribe atomically replays the current agents before registering for new
+// transitions. Startup order cannot hide an already-blocked or finished agent.
+// A subscriber that falls behind loses subsequent events rather than blocking
+// the poller; the channel is closed when Run returns.
 func (r *registry) Subscribe() <-chan Transition {
-	ch := make(chan Transition, r.subBuf)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	ch := make(chan Transition, len(r.agents)+r.subBuf)
 	if r.closed {
 		close(ch)
 		return ch
+	}
+	panes := make([]string, 0, len(r.agents))
+	for pane := range r.agents {
+		panes = append(panes, pane)
+	}
+	sort.Strings(panes)
+	for _, pane := range panes {
+		a := r.agents[pane].clone()
+		ch <- Transition{Agent: a, From: StatusUnknown, To: a.Status, Seq: a.StateSeq, At: a.SeenAt}
 	}
 	r.subs = append(r.subs, ch)
 	return ch
@@ -344,9 +356,9 @@ func (r *registry) setDegraded(v bool) {
 	r.degraded = v
 }
 
-func (r *registry) publish(t Transition) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+// publishLocked performs only nonblocking channel writes. The caller holds
+// r.mu, keeping publication ordered with snapshots and channel closure.
+func (r *registry) publishLocked(t Transition) {
 	if r.closed {
 		return
 	}

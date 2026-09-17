@@ -3,9 +3,10 @@ package tasktools
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 )
 
 // An intent is durable before any effect. An interrupted call is never replayed:
@@ -68,33 +69,10 @@ func (j *journal) put(key string, op operation) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".assistant-operations-*")
-	if err != nil {
-		return err
+	committed, err := statefile.Write(j.path, b, 0600)
+	if committed {
+		// Keep the durable intent visible even when directory fsync fails.
+		j.ops = next
 	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(b); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), j.path); err != nil {
-		return err
-	}
-	// Once rename succeeds, fail closed in memory even if directory sync fails.
-	j.ops = next
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("assistant: sync operation directory: %w", err)
-	}
-	return nil
+	return err
 }

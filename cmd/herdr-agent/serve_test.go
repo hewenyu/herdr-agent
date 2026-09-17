@@ -212,8 +212,8 @@ func TestServeOpensTheSelectionStoreAndHandsItToTheBridge(t *testing.T) {
 	if s.selection == nil {
 		t.Fatal("no selection store was opened")
 	}
-	if !slices.Equal(p.bridgeOpts, []int{1}) {
-		t.Errorf("bridge built with %v options, want exactly one (the selection store)", p.bridgeOpts)
+	if !slices.Equal(p.bridgeOpts, []int{2}) {
+		t.Errorf("bridge built with %v options, want selection and notification cooldown", p.bridgeOpts)
 	}
 	if _, err := os.Stat(filepath.Join(h.d.StateDir, selectionFileName)); err != nil {
 		t.Errorf("%s was not created in the state directory: %v", selectionFileName, err)

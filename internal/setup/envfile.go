@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/hewenyu/herdr-agent/internal/config"
+	"github.com/hewenyu/herdr-agent/internal/envfile"
 )
 
 // credentials are the two values that live in the .env file and nowhere else.
@@ -63,27 +62,8 @@ var repoEnvCredentials = func() (credentials, string) {
 	return c, path
 }
 
-// findRepoRoot walks up from start looking for a module or git checkout root.
-//
-// A deliberate duplicate of config.findRepoRoot (dotenv.go), which is
-// unexported. The two must agree on which directory is "the repository root",
-// so the markers and their order are copied exactly; disagreeing would make
-// setup miss the very file the bridge is loading.
-func findRepoRoot(start string) (string, bool) {
-	dir := filepath.Clean(start)
-	for {
-		for _, marker := range []string{"go.mod", ".git"} {
-			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-				return dir, true
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
-}
+// findRepoRoot shares the bridge's credential discovery rules.
+func findRepoRoot(start string) (string, bool) { return envfile.RepoRoot(start) }
 
 // readCredentials returns the credentials currently in path. A missing file is
 // not an error: it is the first run.
@@ -106,7 +86,7 @@ func readEnvLines(path string) (lines []string, exists bool, err error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("setup: read %s: %w", path, err)
 	}
-	return splitLines(string(data)), true, nil
+	return splitLines(envfile.WithoutBOM(string(data))), true, nil
 }
 
 // writeCredentials merges the two credentials into path, preserving everything
@@ -212,27 +192,7 @@ func envValues(lines []string) map[string]string {
 	return out
 }
 
-// parseEnvLine mirrors config.parseDotEnv line by line: KEY=VALUE, whole-line
-// '#' comments, no `export`, value taken literally after the first '='.
-//
-// It is a deliberate duplicate of an unexported parser rather than a shared
-// one, and the duplication is pinned by a test that writes a file here and
-// reads it back through config.Load. Anything cleverer than that parser —
-// unquoting, comment stripping — would mangle a secret that happens to contain
-// the punctuation in question, and the failure would show up as a Feishu
-// authentication error days later.
+// parseEnvLine uses the same literal credential parser as config.Load.
 func parseEnvLine(line string) (key, value string, ok bool) {
-	line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-	if line == "" || strings.HasPrefix(line, "#") {
-		return "", "", false
-	}
-	key, value, ok = strings.Cut(line, "=")
-	if !ok {
-		return "", "", false
-	}
-	key = strings.TrimSpace(key)
-	if key == "" || strings.ContainsAny(key, " \t") {
-		return "", "", false
-	}
-	return key, strings.TrimSpace(value), true
+	return envfile.ParseLine(line)
 }

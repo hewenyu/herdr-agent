@@ -75,7 +75,8 @@ type Registry interface {
 	Run(ctx context.Context) error
 	Snapshot() []Agent
 	Get(paneID string) (Agent, bool)
-	// Subscribe returns a channel of transitions. Slow consumers drop events
+	// Subscribe first replays the current snapshot as transitions from unknown,
+	// then streams new transitions in order. Slow consumers drop new events
 	// rather than blocking the poller; the channel is closed when Run returns.
 	Subscribe() <-chan Transition
 	// Degraded reports whether the last poll failed (herdr server down).
