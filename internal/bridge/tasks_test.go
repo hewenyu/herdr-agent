@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -410,12 +411,17 @@ func TestTaskModeSuppressesAutomaticMessagesWithoutALiveTaskGroup(t *testing.T) 
 			a := taskAgent(r)
 			h.reg.setAgents(a)
 			ctx := context.Background()
-			for _, push := range []func() error{
+			for i, push := range []func() error{
 				func() error { return h.b.PushBlocked(ctx, a, permissionDialog()) },
 				func() error { return h.b.PushDone(ctx, a, permissionDialog()) },
 				func() error { return h.b.PushGone(ctx, a) },
 			} {
-				if err := push(); err != nil {
+				err := push()
+				if i == 0 && (kind == "unmanaged" || kind == "before-group") {
+					if !errors.Is(err, ErrNoNotifyTarget) {
+						t.Fatalf("unbound startup approval must remain retryable: %v", err)
+					}
+				} else if err != nil {
 					t.Fatalf("intentional suppression would trigger retries: %v", err)
 				}
 			}
@@ -429,6 +435,39 @@ func TestTaskModeSuppressesAutomaticMessagesWithoutALiveTaskGroup(t *testing.T) 
 				t.Fatal("direct input was promised an automatic reply with no task group")
 			}
 		})
+	}
+}
+
+func TestTaskStartupApprovalRetriesAfterPaneBinding(t *testing.T) {
+	h := newHarness(t)
+	r := taskBinding("starting", "oc_starting", testPane)
+	a := taskAgent(r)
+	a.Status, a.StateSeq = agents.StatusBlocked, 3
+	r.PaneID, r.Status, r.Started, r.PromptSent = "", tasks.Starting, false, false
+	_, store := attachTaskManager(t, h, r)
+	h.reg.setAgents(a)
+	ctx := context.Background()
+	if err := h.b.PushBlocked(ctx, a, permissionDialog()); !errors.Is(err, ErrNoNotifyTarget) {
+		t.Fatalf("approval before binding must retry: %v", err)
+	}
+	if len(h.bot.sends()) != 0 {
+		t.Fatal("unbound approval leaked to another chat")
+	}
+	if _, err := store.Update(r.ID, func(current *tasks.Record) error {
+		current.PaneID, current.Started = a.PaneID, true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.b.PushBlocked(ctx, a, permissionDialog()); err != nil {
+		t.Fatal(err)
+	}
+	sends := h.bot.sends()
+	if len(sends) != 1 || sends[0].Out.ChatID != r.ChatID || sends[0].Out.Card == "" {
+		t.Fatalf("bound startup approval not delivered to task group: %+v", sends)
+	}
+	if len(h.ctrl.sentKeys()) != 0 || len(h.ctrl.said()) != 0 {
+		t.Fatal("delivering an approval request must not answer it")
 	}
 }
 

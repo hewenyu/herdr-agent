@@ -370,8 +370,9 @@ func (m *Manager) report(ctx context.Context, id string) {
 }
 
 func (m *Manager) reconcile(ctx context.Context, id string) error {
-	// Publish startup and progress once the task group exists. Before that, only
-	// provisioning failures reach the entry chat; the creation reply is separate.
+	// Publish actionable state changes in the task group. The welcome already
+	// acknowledges normal startup; before the group exists, only failures reach
+	// the entry chat, where the creation reply is separate.
 	m.report(ctx, id)
 	defer m.report(ctx, id)
 	r, _ := m.store.Get(id)

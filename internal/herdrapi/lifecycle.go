@@ -112,7 +112,7 @@ func (c *socketClient) AgentStartWithOptions(ctx context.Context, paneID, kind, 
 	if err := c.startAgentWhenShellReady(ctx, paneID, params, &out); err != nil {
 		return AgentInfo{}, err
 	}
-	agent := out.Agent
+	agent := c.codexStartupState(ctx, out.Agent)
 	if len(args) > 0 && (len(out.Argv) != len(args)+1 || !slices.Equal(out.Argv[1:], args)) {
 		return agent, &APIError{Code: CodeAgentOptionsUnconfirmed, Message: "herdr did not confirm the requested startup arguments; task must not be submitted"}
 	}

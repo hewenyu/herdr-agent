@@ -410,9 +410,20 @@ func TestManagerOwnerIsolation(t *testing.T) {
 func TestManagerWaitsForStartupApprovalBeforeInitialPrompt(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
 	h.lifecycle.startupStatus = "blocked"
+	client := h.manager.opts.Client.(*herdrapi.RecordingClient)
+	client.OnAgentGet = func(_ context.Context, pane string) (herdrapi.AgentInfo, error) {
+		a, err := h.lifecycle.agent(pane)
+		if a.AgentStatus == "blocked" {
+			// A startup helper's process cwd is not the directory shown by
+			// Codex's pending trust menu. Wait for approval before checking it.
+			helperDir := "/home/yueban/.codex"
+			a.ForegroundCwd = &helperDir
+		}
+		return a, err
+	}
 	r := h.create(t, "blocked-start")
 	r = h.reconcile(t, r.ID, 2)
-	if r.Status != Blocked || r.PromptSent || len(h.controller.says) != 0 {
+	if r.Status != Blocked || r.Error != "" || r.PromptSent || len(h.controller.says) != 0 {
 		t.Fatalf("startup approval was bypassed: %+v, calls %v", r, h.log.snapshot())
 	}
 	remote, _ := h.platform.GetTask(context.Background(), r.GUID)

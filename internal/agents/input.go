@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/hewenyu/herdr-agent/internal/codexui"
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 	"github.com/hewenyu/herdr-agent/internal/screen"
 )
@@ -443,7 +444,7 @@ func (c *controller) SendKey(ctx context.Context, g Guard, key string) (Agent, e
 		return cur, fmt.Errorf("agents: %q: %w", key, ErrKeyNotAllowed)
 	}
 	if g.MenuChoice && cur.Kind == "codex" && key == "1" {
-		raw, truncated, err := herdrapi.ReadFull(ctx, c.client, cur.PaneID, herdrapi.SourceDetection, readWholeBuffer)
+		raw, truncated, err := herdrapi.ReadFull(ctx, c.client, cur.PaneID, herdrapi.SourceVisible, readWholeBuffer)
 		if err != nil {
 			return cur, fmt.Errorf("agents: read menu before confirming %s: %w", cur.PaneID, err)
 		}
@@ -1021,6 +1022,9 @@ func (c *controller) readLines(ctx context.Context, paneID string) ([]string, bo
 // lines; that costs a refusal, and the alternative costs an approval nobody
 // typed (G1).
 func screenShowsDialog(lines []string) bool {
+	if _, ok := codexui.ParseTrustScreen(strings.Join(lines, "\n")); ok {
+		return true
+	}
 	var b strings.Builder
 	for _, line := range lines {
 		b.WriteString(normalizeEcho(line))

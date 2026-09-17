@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hewenyu/herdr-agent/internal/codexui"
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 )
 
@@ -74,6 +75,24 @@ func (e *extractor) Dialog(paneID string) (Screen, error) {
 	s := buildScreen(lines, cropped, c.maxWidth)
 	s.Rows = e.rows(paneID)
 	return s, nil
+}
+
+// CodexTrustDialog is an optional startup read used when Codex's trust menu
+// was recognized from the visible viewport rather than herdr's detection
+// buffer. Validate the complete raw screen before cropping for the phone.
+func (e *extractor) CodexTrustDialog(paneID string) (Screen, bool, error) {
+	raw, truncated, err := herdrapi.ReadFull(e.ctx(), e.client, paneID, herdrapi.SourceVisible, wholeBuffer)
+	if err != nil {
+		return Screen{}, false, fmt.Errorf("screen: read Codex trust dialog of %s: %w", paneID, err)
+	}
+	if _, ok := codexui.ParseTrustScreen(raw); truncated || !ok {
+		return Screen{}, false, nil
+	}
+	c := cleanLines(raw, e.maxCols)
+	lines, cropped := c.window(0)
+	s := buildScreen(lines, cropped, c.maxWidth)
+	s.Rows = e.rows(paneID)
+	return s, true, nil
 }
 
 // Tail reads the visible viewport and keeps its last n non-blank lines. n <= 0

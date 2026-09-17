@@ -83,6 +83,9 @@ func (c *socketClient) AgentList(ctx context.Context) ([]AgentInfo, error) {
 	if err := c.call(ctx, methodAgentList, nil, &out); err != nil {
 		return nil, err
 	}
+	for i := range out.Agents {
+		out.Agents[i] = c.codexStartupState(ctx, out.Agents[i])
+	}
 	return out.Agents, nil
 }
 
@@ -91,7 +94,7 @@ func (c *socketClient) AgentGet(ctx context.Context, target string) (AgentInfo, 
 	if err := c.call(ctx, methodAgentGet, agentTargetParams{Target: target}, &out); err != nil {
 		return AgentInfo{}, err
 	}
-	return out.Agent, nil
+	return c.codexStartupState(ctx, out.Agent), nil
 }
 
 // AgentRead returns terminal text for target, discarding herdr's truncation

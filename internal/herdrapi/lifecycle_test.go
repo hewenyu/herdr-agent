@@ -79,6 +79,9 @@ func lifecycleAgentServer(t *testing.T, polledAgents ...string) *fakeServer {
 		if err := json.Unmarshal([]byte(req), &request); err != nil {
 			t.Error(err)
 		}
+		if request.Method == "agent.read" {
+			return fmt.Sprintf(`{"id":%q,"result":{"type":"pane_read","read":{"text":"› Ask Codex anything","truncated":false}}}`, request.ID), true
+		}
 		agent := pendingLifecycleAgent
 		resultType := "agent_started"
 		if request.Method == "agent.get" {
@@ -101,7 +104,7 @@ func TestAgentStartWaitsForInteractiveReadiness(t *testing.T) {
 	if err != nil || !agent.InteractiveReady || agent.LaunchPending {
 		t.Fatalf("start = %+v, %v", agent, err)
 	}
-	reqs := srv.requests()
+	reqs := startupControlRequests(t, srv)
 	if len(reqs) != 3 {
 		t.Fatalf("requests = %v; must wait past merely idle startup", reqs)
 	}
@@ -137,6 +140,13 @@ func TestAgentStartWithOptionsPassesNativeArguments(t *testing.T) {
 						wantArgs = append(wantArgs, "--add-dir", directories[0], "--add-dir", directories[1])
 					}
 					srv := newFakeServer(t, func(line string) (string, bool) {
+						var request wireRequest
+						if err := json.Unmarshal([]byte(line), &request); err != nil {
+							t.Error(err)
+						}
+						if request.Method == "agent.read" {
+							return fmt.Sprintf(`{"id":%q,"result":{"type":"pane_read","read":{"text":"› Ask Codex anything","truncated":false}}}`, request.ID), true
+						}
 						argv, err := json.Marshal(append([]string{kind}, wantArgs...))
 						if err != nil {
 							t.Error(err)
@@ -147,7 +157,7 @@ func TestAgentStartWithOptionsPassesNativeArguments(t *testing.T) {
 					if err != nil || !agent.InteractiveReady {
 						t.Fatalf("start = %+v, %v", agent, err)
 					}
-					requests := srv.requests()
+					requests := startupControlRequests(t, srv)
 					if len(requests) != 1 {
 						t.Fatalf("requests = %v; startup must not send prompt or approval keys", requests)
 					}
@@ -213,6 +223,13 @@ func TestAgentStartWithOptionsRequiresServerConfirmation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newFakeServer(t, func(line string) (string, bool) {
+				var request wireRequest
+				if err := json.Unmarshal([]byte(line), &request); err != nil {
+					t.Error(err)
+				}
+				if request.Method == "agent.read" {
+					return fmt.Sprintf(`{"id":%q,"result":{"type":"pane_read","read":{"text":"","truncated":false}}}`, request.ID), true
+				}
 				argv, _ := json.Marshal(tc.argv)
 				return fmt.Sprintf(`{"id":%q,"result":{"type":"agent_started","argv":%s,"agent":%s}}`, idOf(line), argv, pendingLifecycleAgent), true
 			})
@@ -220,7 +237,7 @@ func TestAgentStartWithOptionsRequiresServerConfirmation(t *testing.T) {
 			if !IsCode(err, CodeAgentOptionsUnconfirmed) || agent.TerminalID != "term-1" {
 				t.Fatalf("unconfirmed launch must preserve owned agent and error: agent=%+v, err=%v", agent, err)
 			}
-			if len(srv.requests()) != 1 {
+			if len(startupControlRequests(t, srv)) != 1 {
 				t.Fatalf("unconfirmed launch must not be retried or receive input: %v", srv.requests())
 			}
 		})
@@ -235,7 +252,7 @@ func TestAgentStartReturnsBlockedForApprovalWithoutSubmittingTask(t *testing.T) 
 	if err != nil || agent.AgentStatus != "blocked" {
 		t.Fatalf("start = %+v, %v", agent, err)
 	}
-	if len(srv.requests()) != 2 {
+	if len(startupControlRequests(t, srv)) != 2 {
 		t.Fatalf("blocked startup must stop polling and send no approval: %v", srv.requests())
 	}
 }
@@ -286,6 +303,8 @@ func TestAgentStartWaitsForNewWorkspaceShell(t *testing.T) {
 			return fmt.Sprintf(`{"id":%q,"result":{"type":"agent_started","agent":{"pane_id":"w8:p1","terminal_id":"term-1","name":"task-42","agent":"codex","agent_status":"idle","interactive_ready":true}}}`, req.ID), true
 		case "pane.get":
 			return fmt.Sprintf(`{"id":%q,"result":{"type":"pane_info","pane":{"pane_id":"w8:p1","terminal_id":"term-1"}}}`, req.ID), true
+		case "agent.read":
+			return fmt.Sprintf(`{"id":%q,"result":{"type":"pane_read","read":{"text":"› Ask Codex anything","truncated":false}}}`, req.ID), true
 		default:
 			t.Errorf("unexpected method while waiting for shell: %s", req.Method)
 			return "", false
