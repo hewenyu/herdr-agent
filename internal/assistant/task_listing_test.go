@@ -156,3 +156,68 @@ func TestCurrentScopeIsNotMistakenForHistory(t *testing.T) {
 		}
 	}
 }
+
+func TestNamedEndedProjectDoesNotFallBackToUnrelatedActiveTasks(t *testing.T) {
+	for _, status := range []tasks.Status{tasks.Completed, tasks.Destroyed} {
+		for _, text := range []string{"archived-project 任务进度如何", "请汇总 archived-project 的执行细节"} {
+			t.Run(string(status)+"/"+text, func(t *testing.T) {
+				h := newServiceHarness(t)
+				h.manager.records["old-task-record"] = tasks.Record{
+					ID: "old-task-record", OwnerID: "alice", Project: "archived-project", Title: "ARCHIVED_TASK", Status: status,
+				}
+				e := &serviceTestEngine{run: func(ctx context.Context, history []Message, _ []tasktools.Tool, call ToolCall) (string, error) {
+					if strings.Contains(history[0].Content, "alice-private-task") {
+						t.Fatal("named project query supplied an unrelated task to the model")
+					}
+					for _, raw := range []string{`{}`, `{"all":true}`} {
+						result, err := call(ctx, "herdr_list", json.RawMessage(raw))
+						if err != nil {
+							return "", err
+						}
+						if listed := result.([]tasktools.Task); len(listed) != 0 {
+							t.Fatalf("named project query returned unrelated or ended tasks: %+v", listed)
+						}
+					}
+					return inventedStatus, nil
+				}}
+				answer := serviceReply(t, h.service(t, e), serviceMessage("alice", "entry", "scoped-query", text))
+				if strings.Contains(answer, "alice-private-task") || strings.Contains(answer, "ARCHIVED_TASK") || !strings.Contains(answer, "没有正在进行的任务") {
+					t.Fatalf("named project query was broadened: %s", answer)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskReferencesPreferCompleteNamesAndPreserveSeparateMentions(t *testing.T) {
+	records := []tasktools.Task{
+		{ID: "task-short", Project: "api", Title: "Short project", Status: tasks.Running},
+		{ID: "task-long", Project: "api-web", Title: "Long project", Status: tasks.Running},
+		{ID: "task-ended", Project: "archive", Title: "Ended task", Status: tasks.Completed},
+	}
+	for _, tc := range []struct {
+		query string
+		ids   string
+	}{
+		{"api-web 进度如何", "task-long"},
+		{"api 和 api-web 进度如何", "task-short,task-long"},
+		{"查看 archive 历史任务", "task-ended"},
+		{"archive 进度如何", ""},
+		{"task-ended 进度如何", "task-ended"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			var ids []string
+			for _, task := range progressRecords(tc.query, records, false) {
+				ids = append(ids, task.ID)
+			}
+			if got := strings.Join(ids, ","); got != tc.ids {
+				t.Fatalf("task selection = %q; want %q", got, tc.ids)
+			}
+		})
+	}
+	for _, ordered := range [][]tasktools.Task{records, {records[2], records[1], records[0]}} {
+		if !progressOnly("api-web 进度如何", ordered) {
+			t.Fatal("overlapping project names sent a bounded progress question to the model")
+		}
+	}
+}

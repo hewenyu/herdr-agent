@@ -1,6 +1,10 @@
 package bridge
 
-import "github.com/hewenyu/herdr-agent/internal/selection"
+import (
+	"time"
+
+	"github.com/hewenyu/herdr-agent/internal/selection"
+)
 
 // Option is an optional dependency of the bridge.
 //
@@ -11,6 +15,16 @@ import "github.com/hewenyu/herdr-agent/internal/selection"
 // is degraded but safe. Those are two different kinds of dependency and putting
 // the second one behind an Option keeps the distinction visible.
 type Option func(*bridge)
+
+// WithNotifyCooldown sets the minimum interval between proactive notifications
+// about a pane. Values <= 0 leave notify.DefaultCooldown in effect.
+func WithNotifyCooldown(d time.Duration) Option {
+	return func(b *bridge) {
+		if d > 0 {
+			b.notifyCooldown = d
+		}
+	}
+}
 
 // WithSelection gives the bridge the store that remembers which agent a chat is
 // currently talking to.

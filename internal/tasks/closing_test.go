@@ -170,6 +170,23 @@ func TestManagerCompletionWithoutClosePreservesSession(t *testing.T) {
 	}
 }
 
+func TestManagerRetryCannotCloseCompletedRetainedSession(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	r := h.reconcile(t, h.create(t, "complete-retry").ID, 1)
+	if _, err := h.manager.Request(r.OwnerID, r.ID, "complete"); err != nil {
+		t.Fatal(err)
+	}
+	r = h.reconcile(t, r.ID, 1)
+	_, retryErr := h.manager.Request(r.OwnerID, r.ID, "retry")
+	if retryErr == nil || !strings.Contains(retryErr.Error(), "重开") {
+		t.Errorf("retry should require reopening the completed task: %v", retryErr)
+	}
+	r = h.reconcile(t, r.ID, 1)
+	if r.Status != Completed || r.CloseRequested || len(h.lifecycle.closed) != 0 || len(h.platform.deleted) != 0 {
+		t.Fatalf("retry converted retained completion into destructive closure: %+v", r)
+	}
+}
+
 func TestManagerNewPanelCompletionClosesPreviouslyRetainedSession(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
 	r := h.reconcile(t, h.create(t, "complete-new-panel").ID, 1)

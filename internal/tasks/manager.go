@@ -210,6 +210,9 @@ func (m *Manager) Request(owner, id, action string) (Record, error) {
 			if r.CloseRequested {
 				return errors.New("任务正在结单，系统会重试同步；如需继续开发，请先重开任务")
 			}
+			if r.Status == Completed {
+				return errors.New("任务已完成；如需继续开发，请先重开任务")
+			}
 			if r.Pending != "" {
 				return fmt.Errorf("%s 操作结果未确认，为避免重复创建或重复执行，不能自动重试；请检查资源后销毁已绑定会话或重新发出指令", r.Pending)
 			}
@@ -398,7 +401,7 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 	// the requested launch behavior during recovery.
 	if r.Pending == "agent" && r.PaneID != "" && len(r.Directories) <= 1 && !r.Bypass {
 		a, getErr := m.opts.Client.AgentGet(ctx, r.PaneID)
-		if getErr == nil && a.Agent != nil && *a.Agent == r.Agent && a.WorkspaceID == r.WorkspaceID && a.Name != nil && *a.Name == r.ID {
+		if getErr == nil && a.PaneID == r.PaneID && a.Agent != nil && *a.Agent == r.Agent && a.WorkspaceID == r.WorkspaceID && a.Name != nil && *a.Name == r.ID {
 			_, err := m.change(id, func(r *Record) {
 				r.Started = true
 				r.Pending = ""
@@ -507,9 +510,17 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 	}
 	a, err := m.opts.Client.AgentGet(ctx, r.PaneID)
 	if err != nil {
-		return m.fail(id, "读取 agent: "+err.Error(), false)
+		var apiErr *herdrapi.APIError
+		if errors.As(err, &apiErr) {
+			return m.fail(id, "读取 agent: "+err.Error(), false)
+		}
+		// A transport failure in a read cannot make a launch or prompt
+		// ambiguous. Keep retrying the bound pane after herdr reconnects;
+		// persisting Error here would permanently stop reconciliation.
+		reportErr := m.Observe(r.PaneID, Attention, "暂时无法读取 agent 状态，系统将自动重试："+clip(err.Error(), 500), "")
+		return errors.Join(fmt.Errorf("读取 agent: %w", err), reportErr)
 	}
-	if a.Agent == nil || *a.Agent != r.Agent || a.WorkspaceID != r.WorkspaceID {
+	if a.PaneID != r.PaneID || a.Agent == nil || *a.Agent != r.Agent || a.WorkspaceID != r.WorkspaceID {
 		return m.fail(id, "任务窗口中的 agent 或工作区已改变，已停止自动输入", false)
 	}
 	if a.AgentSession != nil && a.AgentSession.Value != r.SessionID {

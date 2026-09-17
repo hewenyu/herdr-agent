@@ -18,7 +18,6 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 	"github.com/hewenyu/herdr-agent/internal/lark"
 	"github.com/hewenyu/herdr-agent/internal/mirror"
-	"github.com/hewenyu/herdr-agent/internal/notify"
 	"github.com/hewenyu/herdr-agent/internal/projects"
 	"github.com/hewenyu/herdr-agent/internal/projectweb"
 	"github.com/hewenyu/herdr-agent/internal/routes"
@@ -219,13 +218,6 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, &startupError{step: "transcript resolver", err: errors.New(
 			"no home directory, so no agent transcript can be located")}
 	}
-	if cfg.UI.NotifyCooldown != notify.DefaultCooldown {
-		// bridge.Deps has no field for it and the contract is frozen, so the
-		// notifier runs on its default. Saying so beats a knob that silently
-		// does nothing.
-		log.Warn("serve: ui.notify_cooldown is not wired through to the notifier; using the default",
-			"configured", cfg.UI.NotifyCooldown, "effective", notify.DefaultCooldown)
-	}
 
 	lock, err := h.lock(d.StateDir, log)
 	if err != nil {
@@ -310,9 +302,8 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, s.abort(&startupError{step: "agent registry", err: err})
 	}
 	if cfg.Mirror.DefaultOn {
-		// Subscribed here rather than in run(): the registry announces every
-		// agent it already sees on its first poll, and a subscription taken
-		// after Run has started can miss that batch entirely.
+		// Own this subscription before launching mirror workers. Subscribe
+		// also replays the current snapshot if the registry is already live.
 		s.transitions = s.registry.Subscribe()
 	}
 
@@ -330,7 +321,7 @@ func buildServe(ctx context.Context, d *deps, log *slog.Logger, h serveHooks) (*
 		return nil, s.abort(&startupError{step: "feishu bot", err: err})
 	}
 
-	bridgeOpts := []bridge.Option{bridge.WithSelection(sel)}
+	bridgeOpts := []bridge.Option{bridge.WithSelection(sel), bridge.WithNotifyCooldown(cfg.UI.NotifyCooldown)}
 	if cfg.Tasks.Enabled {
 		platform, ok := s.bot.(tasks.Platform)
 		if !ok {
@@ -568,17 +559,9 @@ func (s *serveDeps) run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// The consumers are started before the producer, and it is the registry
-	// that is the producer.
-	//
-	// A registry poll only publishes what CHANGED, and an agent seen for the
-	// first time is announced exactly once (agents/registry.go). A subscriber
-	// that joins after that first poll therefore never hears about a pane that
-	// was already blocked when the bridge started — and a pane sitting at a
-	// permission dialog generates no further transition to catch up on. The
-	// bridge subscribes on the goroutines bridge.Run spawns, so launching it
-	// first is all this layer can do about it; the residual window is one
-	// goroutine scheduling against one agent.list round trip.
+	// Goroutine scheduling does not establish consumer/producer ordering.
+	// Registry.Subscribe atomically replays its current snapshot, so a
+	// notifier starting after the first poll still sees existing blocked agents.
 	tasks := []serveTask{
 		{"feishu bridge", s.bridge.Run},
 		{"agent registry", s.registry.Run},

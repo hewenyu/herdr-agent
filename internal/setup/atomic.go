@@ -1,10 +1,11 @@
 package setup
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 )
 
 // joinPath is filepath.Join, named so that the state-directory layout reads in
@@ -34,56 +35,11 @@ func joinLines(lines []string) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
-// writeFileAtomic writes data to path via tmp + fsync + rename, so a crash
-// mid-write leaves either the previous file or the new one.
-//
-// This matters more here than anywhere else in the bridge: the file being
-// written is the only copy of a secret Feishu will never show again, and a
-// half-written .env is indistinguishable from a wrong one.
-func writeFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("setup: create temp file in %s: %w", dir, err)
+// writeFileAtomic retains setup's best-effort directory sync policy.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	committed, err := statefile.Write(path, data, mode)
+	if committed {
+		return nil
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		if err != nil {
-			tmp.Close()
-			os.Remove(tmpName)
-		}
-	}()
-
-	// Explicit even though CreateTemp already uses 0600: the mode is a
-	// requirement of these files, not an inherited default.
-	if err = tmp.Chmod(mode); err != nil {
-		return fmt.Errorf("setup: chmod %s: %w", tmpName, err)
-	}
-	if _, err = tmp.Write(data); err != nil {
-		return fmt.Errorf("setup: write %s: %w", tmpName, err)
-	}
-	// Rename is atomic with respect to the directory entry only; without this
-	// the new name can point at unwritten blocks after a power loss.
-	if err = tmp.Sync(); err != nil {
-		return fmt.Errorf("setup: fsync %s: %w", tmpName, err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("setup: close %s: %w", tmpName, err)
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("setup: rename %s -> %s: %w", tmpName, path, err)
-	}
-	syncDir(dir)
-	return nil
-}
-
-// syncDir persists the rename itself. Best effort: not every filesystem allows
-// fsync on a directory, and failing there must not fail an otherwise good write.
-func syncDir(dir string) {
-	d, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	defer d.Close()
-	_ = d.Sync()
+	return err
 }

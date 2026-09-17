@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+
+	"github.com/hewenyu/herdr-agent/internal/statefile"
 )
 
 // fileVersion guards against reading a layout written by a future build. A
@@ -81,53 +82,12 @@ func (s *FileStore) persistLocked() (err error) {
 	return nil
 }
 
-// writeFileAtomic writes data to path via tmp + fsync + rename so a crash
-// mid-write leaves either the old file or the new one, never a half file that
-// would be discarded at boot.
-func writeFileAtomic(path string, data []byte) (err error) {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("dedup: create temp file in %s: %w", dir, err)
+// writeFileAtomic preserves the cache stores' best-effort directory sync policy.
+// The common writer still reports every failure before the atomic replacement.
+func writeFileAtomic(path string, data []byte) error {
+	committed, err := statefile.Write(path, data, fileMode)
+	if committed {
+		return nil
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		if err != nil {
-			tmp.Close()
-			os.Remove(tmpName)
-		}
-	}()
-
-	// Explicit, even though CreateTemp already uses 0600: the mode is a
-	// requirement of this file, not an inherited default.
-	if err = tmp.Chmod(fileMode); err != nil {
-		return fmt.Errorf("dedup: chmod %s: %w", tmpName, err)
-	}
-	if _, err = tmp.Write(data); err != nil {
-		return fmt.Errorf("dedup: write %s: %w", tmpName, err)
-	}
-	// Rename is atomic with respect to the directory entry only; without this
-	// the new name can point at unwritten blocks after a power loss.
-	if err = tmp.Sync(); err != nil {
-		return fmt.Errorf("dedup: fsync %s: %w", tmpName, err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("dedup: close %s: %w", tmpName, err)
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("dedup: rename %s -> %s: %w", tmpName, path, err)
-	}
-	syncDir(dir)
-	return nil
-}
-
-// syncDir persists the rename itself. Best effort: not every filesystem allows
-// fsync on a directory, and failing there must not fail an otherwise good write.
-func syncDir(dir string) {
-	d, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	defer d.Close()
-	_ = d.Sync()
+	return err
 }

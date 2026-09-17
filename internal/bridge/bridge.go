@@ -53,7 +53,8 @@ type bridge struct {
 	log       *slog.Logger
 
 	// notifier turns registry transitions into Push* calls on this same object.
-	notifier notify.Notifier
+	notifier       notify.Notifier
+	notifyCooldown time.Duration
 
 	// sel remembers which agent each chat is talking to, so that plain typing
 	// reaches it. Optional: nil means the bridge routes exactly as it did before
@@ -129,6 +130,9 @@ func newBridge(d Deps, opts ...Option) (*bridge, error) {
 	// built here rather than passed in: the two halves are the same component
 	// seen from either side.
 	notifyOpts := []notify.Option{notify.WithClock(d.Now)}
+	if b.notifyCooldown > 0 {
+		notifyOpts = append(notifyOpts, notify.WithCooldown(b.notifyCooldown))
+	}
 	if d.TailLines > 0 {
 		notifyOpts = append(notifyOpts, notify.WithTailLines(d.TailLines))
 	}

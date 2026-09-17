@@ -406,7 +406,7 @@ func TestAFailedAcknowledgementDoesNotSilenceTheMessagesBehindIt(t *testing.T) {
 	// this is exactly one lost write.
 	h.bot.failNext(failing(lark.ErrRateLimited))
 	if err := h.b.handleMessage(context.Background(), inbound("first")); err == nil {
-		t.Fatal("handleMessage hid a failed acknowledgement; guard() needs the error to unmark the event (G14)")
+		t.Fatal("handleMessage hid a failed acknowledgement; the failure must remain diagnosable without replaying terminal input")
 	}
 	if got := len(chatReceived(h)); got != 0 {
 		t.Fatalf("%d acknowledgements actually reached the chat, want 0", got)
