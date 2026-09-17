@@ -204,30 +204,32 @@ func NotificationChat(r Record) string {
 	return ""
 }
 
-// Notice is a compact lifecycle/progress summary. The notifier separately
-// mirrors full agent replies, so this message never repeats the transcript.
+// Notice is a compact lifecycle/progress summary. The welcome carries the task
+// requirements and acknowledges startup; individual provisioning steps remain
+// available in the task description without producing extra group messages.
 func Notice(r Record) string {
 	if r.Status == Destroyed {
-		return "会话清理结果：" + r.Title + "\n" + r.Detail + "\n" + r.Error + "\n代码和飞书任务记录保留。\n" + r.URL
+		return "会话清理结果：" + r.Project + "\n" + r.Detail + "\n" + r.Error + "\n代码和飞书任务记录保留。\n" + r.URL
 	}
 	if r.Error != "" {
-		return "任务需要处理：" + r.Title + "\n" + r.Error + "\n编号：" + r.ID + "\n用 /tasks 查看进展。"
+		return "任务需要处理：" + r.Project + "\n" + r.Error + "\n编号：" + r.ID + "\n用 /tasks 查看进展。"
 	}
 	if r.SyncError != "" {
-		return "任务同步失败：" + r.Title + "\n" + r.SyncError + "\n编号：" + r.ID + "\n系统将重试同步，可用 /tasks 查看状态。"
+		return "任务同步失败：" + r.Project + "\n" + r.SyncError + "\n编号：" + r.ID + "\n系统将重试同步，可用 /tasks 查看状态。"
 	}
-	if r.ID == "" {
+	if r.ID == "" || r.Status == Queued || r.Status == Starting {
 		return ""
 	}
 	detail := clip(r.Detail, 500)
 	switch r.Status {
-	case Queued:
-		detail = "已收到任务，正在准备飞书任务和专属任务群。"
 	case Review:
 		detail += "\n请直接在本群继续反馈。" + GroupCloseHint
 	case Blocked:
 		if !r.PromptSent {
-			detail += "\n请查看本群的启动确认卡片；若没有可选按钮，在本机 herdr 对应窗口完成首次目录信任。确认后会自动发送任务。"
+			// The approval card contains the live dialog. Registry observations
+			// and startup polling can alternate its screen text with a summary;
+			// neither should turn the same pending confirmation into a new notice.
+			detail = "执行会话正在等待启动确认。\n请查看本群的启动确认卡片；若没有可选按钮，在本机 herdr 对应窗口完成首次目录信任。确认后会自动发送任务。"
 		} else {
 			detail += "\n请在本群查看 agent 的问题或审批卡片并处理。"
 		}
@@ -238,5 +240,5 @@ func Notice(r Record) string {
 			detail = "任务已完成。当前会话保留；可在本群要求重开，或明确结单关闭会话。"
 		}
 	}
-	return noticePrefix(r.Status) + r.Title + "\n" + detail
+	return noticePrefix(r.Status) + detail
 }

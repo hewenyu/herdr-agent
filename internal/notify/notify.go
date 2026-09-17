@@ -388,9 +388,9 @@ func (n *notifier) deliver(ctx context.Context, t agents.Transition) bool {
 	var err error
 	switch t.To {
 	case agents.StatusBlocked:
-		// Dialog reads herdr's detection buffer, the same snapshot its detector
-		// saw, so the card and herdr cannot disagree about what is on screen.
-		err = n.sink.PushBlocked(ctx, a, n.dialog(a.PaneID))
+		// Use the same source as status detection: Codex's startup trust
+		// fallback uses the visible viewport; ordinary dialogs use detection.
+		err = n.sink.PushBlocked(ctx, a, n.dialog(a))
 	case agents.StatusDone:
 		err = n.sink.PushDone(ctx, a, n.tail(a.PaneID))
 	case agents.StatusGone:
@@ -426,7 +426,19 @@ func (n *notifier) deliver(ctx context.Context, t agents.Transition) bool {
 // card builder already has to degrade to "Esc only, reply in prose" when it
 // cannot parse options off the screen (S2 §3.7), and an empty screen lands in
 // exactly that path.
-func (n *notifier) dialog(pane string) screen.Screen {
+func (n *notifier) dialog(a agents.Agent) screen.Screen {
+	pane := a.PaneID
+	if a.Kind == "codex" && (a.SessionRef == nil || !a.Interactive || a.LaunchPend) {
+		if ex, ok := n.ex.(interface {
+			CodexTrustDialog(string) (screen.Screen, bool, error)
+		}); ok {
+			if s, found, err := ex.CodexTrustDialog(pane); err != nil {
+				n.log.Warn("notify: cannot read Codex startup dialog", "pane", pane, "err", err)
+			} else if found {
+				return s
+			}
+		}
+	}
 	s, err := n.ex.Dialog(pane)
 	if err != nil {
 		n.log.Warn("notify: cannot read dialog, pushing without it", "pane", pane, "err", err)

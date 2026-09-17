@@ -36,14 +36,21 @@ func (b *bridge) PushBlocked(ctx context.Context, a agents.Agent, dialog screen.
 	// (see bursts.close) — the next message they send is acknowledged again.
 	b.acks.close(a.PaneID)
 
-	if b.notifyChat(a.PaneID) == "" {
+	chatID := b.notifyChat(a.PaneID)
+	if chatID == "" {
 		if b.tasks != nil {
-			return nil
+			if r, bound := b.tasks.ByPane(a.PaneID); bound && (!b.tasks.OwnerAllowed(r.OwnerID) || r.ChatDeleted || r.Status == tasks.Destroying || r.Status == tasks.Destroyed) {
+				return nil
+			}
+			// The registry can see the new agent before the task manager saves
+			// its pane binding. Reporting success would consume the notifier's
+			// only blocked transition, leaving a startup trust dialog stranded.
+			// Keep it retryable until the task's notification route is available.
 		}
 		return fmt.Errorf("%w: cannot tell you that %s is waiting", ErrNoNotifyTarget, a.PaneID)
 	}
 	// Unprompted, so it goes to the configured chat and replies to nothing.
-	return b.pushBlockedTo(ctx, cardTarget{ChatID: b.notifyChat(a.PaneID)}, a, dialog)
+	return b.pushBlockedTo(ctx, cardTarget{ChatID: chatID}, a, dialog)
 }
 
 // cardTarget is where a blocked card goes.

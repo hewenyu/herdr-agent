@@ -10,7 +10,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 )
 
-func TestManagerReportsStartupBeforeLaunchingAndDeduplicatesAfterRestart(t *testing.T) {
+func TestManagerReportsRunningOnceAfterQuietStartupAndDeduplicatesAfterRestart(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
 	var reports []Record
 	h.manager.opts.Report = func(_ context.Context, r Record) error {
@@ -19,22 +19,16 @@ func TestManagerReportsStartupBeforeLaunchingAndDeduplicatesAfterRestart(t *test
 		return nil
 	}
 	h.lifecycle.workspaceCreated = func() {
-		groupReported := false
-		for _, r := range reports {
-			if r.ChatID == "" || NotificationChat(r) != r.ChatID {
-				t.Error("normal provisioning progress escaped the task group")
-			}
-			if r.ChatID != "" && r.Status == Starting {
-				groupReported = true
-			}
-		}
-		if !groupReported {
-			t.Error("task group received no startup progress before creating its agent")
+		if len(reports) != 0 {
+			t.Errorf("normal provisioning duplicated the group welcome: %+v", reports)
 		}
 	}
 	r := h.reconcile(t, h.create(t, "early-progress").ID, 1)
-	if reports[len(reports)-1].Status != Running || r.ReportedAt.IsZero() || r.ReportedNotice != Notice(r) {
+	if len(reports) != 1 || reports[0].Status != Running || NotificationChat(reports[0]) != r.ChatID || r.ReportedAt.IsZero() || r.ReportedNotice != Notice(r) {
 		t.Fatalf("initial running report not checkpointed: %+v / %+v", r, reports)
+	}
+	if strings.Contains(Notice(r), r.Title) {
+		t.Fatal("progress repeated the full task requirements from the welcome")
 	}
 	h.lifecycle.setAgent(r.PaneID, func(a *herdrapi.AgentInfo) {
 		a.AgentStatus = "working"
@@ -83,6 +77,44 @@ func TestManagerRateLimitsRunningProgressButReportsTransitionsImmediately(t *tes
 	h.reconcile(t, r.ID, 1)
 	if last := reports[len(reports)-1]; last.Status != Review || !strings.Contains(Notice(last), "本群") || !strings.Contains(Notice(last), "验收") {
 		t.Fatalf("completed agent turn did not invite acceptance in its group: %+v", last)
+	}
+}
+
+func TestManagerStartupBlockerScreenChangesDoNotRepeatNoticeOrHideErrors(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	r := h.create(t, "stable-startup-blocker")
+	var reports []string
+	h.manager.opts.Report = func(_ context.Context, r Record) error {
+		reports = append(reports, Notice(r))
+		return nil
+	}
+	updateAndReport := func(fn func(*Record)) {
+		t.Helper()
+		if _, err := h.store.Update(r.ID, func(r *Record) error { fn(r); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		h.manager.report(context.Background(), r.ID)
+	}
+	updateAndReport(func(r *Record) {
+		r.Status, r.ChatID = Blocked, "task-group"
+		r.Detail = "Welcome to Codex\nDo you trust the contents of this directory?\n1. Yes, continue\n2. No, quit"
+	})
+	if len(reports) != 1 || strings.Contains(reports[0], "Welcome to Codex") || !strings.Contains(reports[0], "启动确认卡片") {
+		t.Fatalf("startup blocker did not use a compact actionable notice: %v", reports)
+	}
+	updateAndReport(func(r *Record) { r.Detail = "等待你的输入或审批" })
+	h.restart(t)
+	updateAndReport(func(r *Record) { r.Detail = "Do you trust the contents of this directory?" })
+	if len(reports) != 1 {
+		t.Fatalf("screen and polling summaries repeated the same startup blocker: %v", reports)
+	}
+	updateAndReport(func(r *Record) { r.Error = "启动会话失去连接" })
+	if len(reports) != 2 || !strings.Contains(reports[1], "启动会话失去连接") {
+		t.Fatalf("stable startup notice hid an execution error: %v", reports)
+	}
+	updateAndReport(func(r *Record) { r.Error = ""; r.SyncError = "飞书任务同步失败" })
+	if len(reports) != 3 || !strings.Contains(reports[2], "飞书任务同步失败") {
+		t.Fatalf("stable startup notice hid a synchronization error: %v", reports)
 	}
 }
 

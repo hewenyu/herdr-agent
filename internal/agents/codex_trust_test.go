@@ -113,3 +113,30 @@ func TestCodexTrustNeedsACompleteReadableMenu(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexTrustConfirmationReadsVisibleMenuWithWelcomeBanner(t *testing.T) {
+	h := newInputHarness(t, &fakePane{kind: "codex", status: StatusBlocked, seq: 3})
+	h.client.OnAgentReadFull = func(_ context.Context, _ string, src herdrapi.ReadSource, _ int) (string, bool, error) {
+		if src != herdrapi.SourceVisible {
+			t.Fatalf("confirmation read source = %q, want visible", src)
+		}
+		return "  ,*=*.~**+\n\n  Welcome to Codex, OpenAI's command-line coding agent\n\n" + codexTrustScreen, false, nil
+	}
+	g := h.guard()
+	g.MenuChoice = true
+	if _, err := h.ctrl.SendKey(context.Background(), g, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(h.pane.sentKeys(), []string{"enter"}) {
+		t.Fatalf("confirmation keys = %v, want enter", h.pane.sentKeys())
+	}
+}
+
+func TestCodexTrustOnScreenVetoesPromptDespiteIdleStatus(t *testing.T) {
+	h := newInputHarness(t, &fakePane{kind: "codex", status: StatusIdle, seq: 3, screen: codexTrustScreen})
+	d, err := h.ctrl.Say(context.Background(), h.guard(), "create the requested animation")
+	if !errors.Is(err, ErrDialogOnScreen) || d.Acked || d.Attempts != 0 {
+		t.Fatalf("delivery = %+v, err = %v; want refused before any input", d, err)
+	}
+	h.assertNoInput()
+}
