@@ -111,8 +111,8 @@ func TestAssistantFailureDoesNotLeakOrFallThrough(t *testing.T) {
 			if calls != 1 || len(h.ctrl.said()) != 0 || len(store.List()) != 0 {
 				t.Fatal("assistant failure retried or escaped to task/terminal routing")
 			}
-			if lastText(t, h) != assistantUnavailable || strings.Contains(logs.String(), secret) {
-				t.Fatalf("assistant failure exposed provider data: reply=%q logs=%q", lastText(t, h), logs.String())
+			if len(h.bot.sends()) != 0 || strings.Contains(logs.String(), secret) {
+				t.Fatalf("assistant failure fabricated a reply or exposed provider data: sends=%+v logs=%q", h.bot.sends(), logs.String())
 			}
 			if !strings.Contains(logs.String(), "kind="+tc.kind) {
 				t.Fatalf("missing safe failure category in logs: %s", logs.String())
@@ -191,8 +191,8 @@ func TestTaskGroupAssistantFailureDoesNotSendTerminalInput(t *testing.T) {
 		return "", errors.New("provider unavailable")
 	}))(h.b)
 	sendTaskMessage(t, h, taskInbound(r, "验收通过，可以结单"))
-	if len(h.ctrl.said()) != 0 || !strings.Contains(lastText(t, h), "/tasks") {
-		t.Fatal("failed group operation fell through or omitted status recovery")
+	if len(h.ctrl.said()) != 0 || len(h.bot.sends()) != 0 {
+		t.Fatal("failed group operation fell through or generated a substitute reply")
 	}
 }
 
@@ -254,6 +254,36 @@ func TestAssistantEmptyMessageDoesNotFallThrough(t *testing.T) {
 	sendTaskMessage(t, h, inbound(" \n\t"))
 	if len(h.ctrl.said()) != 0 || len(h.bot.sends()) != 0 {
 		t.Fatal("empty assistant input reached the terminal or sent a reply")
+	}
+}
+
+func TestNaturalLanguageClosureUsesModelInsteadOfCommandParser(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		for _, input := range []string{"关闭项目", "已完成，关闭本项目", "确认关闭"} {
+			t.Run(fmt.Sprintf("group=%v/%s", group, input), func(t *testing.T) {
+				h := newHarness(t)
+				r := taskBinding("owned", "oc_task", testPane)
+				_, store := attachTaskManager(t, h, r)
+				calls := 0
+				const answer = "我需要结合刚才的要求确认关闭范围。"
+				WithAssistant(assistantFunc(func(_ context.Context, got AssistantMessage) (string, error) {
+					calls++
+					if got.Text != input || group && got.TaskID != r.ID || !group && got.TaskID != "" {
+						t.Fatalf("natural closure lost its scope: %+v", got)
+					}
+					return answer, nil
+				}))(h.b)
+				m := inbound(input)
+				if group {
+					m = taskInbound(r, input)
+				}
+				sendTaskMessage(t, h, m)
+				current, _ := store.Get(r.ID)
+				if calls != 1 || lastText(t, h) != answer || current.CloseRequested || current.CompletionRequest != "" || len(h.ctrl.said()) != 0 {
+					t.Fatal("natural closure bypassed the model or performed an unselected operation")
+				}
+			})
+		}
 	}
 }
 

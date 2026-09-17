@@ -16,7 +16,7 @@ func TestCodexFixtureGolden(t *testing.T) {
 	checkGolden(t, turns, []string{
 		`8 user at=2026-08-13T15:43:48.974Z tools=[] text="Run the shell command 'ls -la' in the current directory and tell me how many files there are."`,
 		`11 assistant at=2026-08-13T15:43:54.333Z tools=[] text="I’ll inspect the current directory and count regular files, excluding directories and the ` + "`.`/`..`" + ` entries."`,
-		`12 assistant at=2026-08-13T15:43:55.270Z tools=[exec(ls -la)] text=""`,
+		`12 assistant at=2026-08-13T15:43:55.270Z tools=[exec_command(ls -la)] text=""`,
 		`17 assistant at=2026-08-13T15:44:01.930Z tools=[] text="There are **2 files**: ` + "`a.md`" + ` and ` + "`from-phone.txt`" + `."`,
 	})
 	assertPlain(t, turns)
@@ -125,12 +125,12 @@ func TestCodexRecords(t *testing.T) {
 		{
 			name: "custom_tool_call collapses the exec script",
 			line: `{` + ts + `,"ordinal":12,"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","status":"completed","call_id":"c1","input":"const r = await tools.exec_command({\"cmd\":\"ls -la\",\"workdir\":\"/tmp\",\"yield_time_ms\":10000});\ntext(r.output);\n"}}`,
-			want: `12 assistant ` + at + ` tools=[exec(ls -la)] text=""`,
+			want: `12 assistant ` + at + ` tools=[exec_command(ls -la)] text=""`,
 		},
 		{
 			name: "quotes inside the command survive the scan",
 			line: `{` + ts + `,"ordinal":12,"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"await tools.exec_command({\"cmd\":\"echo \\\"hi there\\\"\"});"}}`,
-			want: `12 assistant ` + at + ` tools=[exec(echo "hi there")] text=""`,
+			want: `12 assistant ` + at + ` tools=[exec_command(echo "hi there")] text=""`,
 		},
 		{
 			name: "tool input that is a plain object",
@@ -138,9 +138,9 @@ func TestCodexRecords(t *testing.T) {
 			want: `12 assistant ` + at + ` tools=[apply_patch(/tmp/a.md)] text=""`,
 		},
 		{
-			name: "tool input with no recognisable argument falls back to its first line",
+			name: "unknown freeform tool input does not expose its script",
 			line: `{` + ts + `,"ordinal":12,"type":"response_item","payload":{"type":"custom_tool_call","name":"mystery","input":"do_something(42)\nand_more()"}}`,
-			want: `12 assistant ` + at + ` tools=[mystery(do_something(42))] text=""`,
+			want: `12 assistant ` + at + ` tools=[mystery] text=""`,
 		},
 		{
 			name: "tool output is not mirrored",

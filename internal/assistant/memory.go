@@ -42,8 +42,8 @@ func memoryContext(summary string) string {
 // memoryPrepare never mutates its inputs. The caller commits the returned
 // summary and retained messages together only after successful preparation.
 // On any failure the complete original history is returned for a safe retry.
-// messages includes the current user input; its older assistant text must first
-// be sanitized by modelHistory, just as it is for the ordinary model request.
+// messages includes the current user input and the same complete conversation
+// used for ordinary model calls, with failed turns marked by modelHistory.
 func memoryPrepare(ctx context.Context, engine Engine, oldSummary string, messages []Message, fixedCost, contextTokens int) (string, []Message, error) {
 	fail := func(err error) (string, []Message, error) { return oldSummary, messages, err }
 	if err := ctx.Err(); err != nil {

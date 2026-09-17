@@ -231,6 +231,16 @@ func (m *Manager) Request(owner, id, action string) (Record, error) {
 	return r, err
 }
 func (m *Manager) Observe(pane string, status Status, detail, result string) error {
+	return m.observe(pane, status, detail, result, false)
+}
+
+// ObserveProgress stores transcript content without treating it as a lifecycle
+// signal. A delayed assistant record must not reopen a finished or blocked turn.
+func (m *Manager) ObserveProgress(pane, detail, result string) error {
+	return m.observe(pane, Running, detail, result, true)
+}
+
+func (m *Manager) observe(pane string, status Status, detail, result string, progressOnly bool) error {
 	r, ok := m.ByPane(pane)
 	if !ok {
 		return nil
@@ -243,8 +253,14 @@ func (m *Manager) Observe(pane string, status Status, detail, result string) err
 		if !r.PromptSent && status == Review {
 			return nil
 		}
+		if progressOnly && r.Status != Running {
+			return nil
+		}
 		if r.Status != status || (detail != "" && r.Detail != detail) || (result != "" && r.Result != result) {
 			changed = true
+			if status == Review && r.Status != Review {
+				r.ReviewVersion++
+			}
 			r.Status = status
 			if detail != "" {
 				r.Detail = clip(detail, 2000)
@@ -351,7 +367,8 @@ func (m *Manager) report(ctx context.Context, id string) {
 	}
 	notice := Notice(r)
 	chat := NotificationChat(r)
-	if chat == "" || notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID) {
+	sameReview := r.Status != Review || r.ReviewVersion == r.ReportedReviewVersion
+	if chat == "" || notice == "" || (notice == r.ReportedNotice && chat == r.ReportedChatID && sameReview) {
 		return
 	}
 	// Only incremental running progress is throttled. State changes, blockers,
@@ -364,7 +381,13 @@ func (m *Manager) report(ctx context.Context, id string) {
 		slog.Warn("tasks: report failed", "task", id, "err", err)
 		return
 	}
-	if _, err := m.change(id, func(r *Record) { r.ReportedNotice = notice; r.ReportedChatID = chat; r.ReportedAt = time.Now() }); err != nil {
+	reviewVersion := r.ReviewVersion
+	if _, err := m.change(id, func(r *Record) {
+		r.ReportedNotice = notice
+		r.ReportedChatID = chat
+		r.ReportedAt = time.Now()
+		r.ReportedReviewVersion = reviewVersion
+	}); err != nil {
 		slog.Warn("tasks: report checkpoint failed", "task", id, "err", err)
 	}
 }
@@ -587,7 +610,7 @@ func (m *Manager) reconcile(ctx context.Context, id string) error {
 		}
 		return m.Observe(r.PaneID, Blocked, "等待你的输入或审批", "")
 	case "idle", "done":
-		return m.Observe(r.PaneID, Review, "本轮已结束；请查看回复并验收或补充要求", "")
+		return m.Observe(r.PaneID, Review, ReviewDetail, "")
 	default:
 		return m.Observe(r.PaneID, Attention, "无法识别 agent 状态", "")
 	}

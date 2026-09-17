@@ -204,6 +204,9 @@ func NotificationChat(r Record) string {
 	return ""
 }
 
+// ReviewDetail is shared by runtime observers and the task-group notice.
+const ReviewDetail = "本轮已结束；请查看回复并验收或补充要求"
+
 // Notice is a compact lifecycle/progress summary. The welcome carries the task
 // requirements and acknowledges startup; individual provisioning steps remain
 // available in the task description without producing extra group messages.
@@ -223,7 +226,7 @@ func Notice(r Record) string {
 	detail := clip(r.Detail, 500)
 	switch r.Status {
 	case Review:
-		detail += "\n请直接在本群继续反馈。" + GroupCloseHint
+		detail = ReviewDetail + "\n请直接在本群继续反馈。" + GroupCloseHint
 	case Blocked:
 		if !r.PromptSent {
 			// The approval card contains the live dialog. Registry observations

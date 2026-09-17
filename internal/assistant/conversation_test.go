@@ -28,7 +28,11 @@ func TestNaturalConversationPreservesQuestionsAndSuggestions(t *testing.T) {
 		"验收通过才会关闭群。",
 		"你是否已完成验收？",
 	} {
-		if got := groundedReply(nil, nil, text); got != text {
+		h := newServiceHarness(t)
+		e := &serviceTestEngine{run: func(context.Context, []Message, []tasktools.Tool, ToolCall) (string, error) {
+			return text, nil
+		}}
+		if got := serviceReply(t, h.service(t, e), serviceMessage("alice", "entry", "discuss", "先讨论方案")); got != text {
 			t.Fatalf("natural conversation changed: %q => %q", text, got)
 		}
 	}
@@ -241,10 +245,13 @@ func TestCompactionAndProviderFailuresPreserveHistoryBeforeEffects(t *testing.T)
 			if providerFailure {
 				s.memoryProvider = &recordingMemory{err: errors.New("private provider credential")}
 			}
-			answer := serviceReply(t, s, serviceMessage("alice", "entry", "retryable", "继续讨论"))
+			answer, err := s.Reply(context.Background(), serviceMessage("alice", "entry", "retryable", "继续讨论"))
 			after, _ := os.ReadFile(path)
-			if string(before) != string(after) || len(h.manager.created()) != 0 || len(h.manager.requests) != 0 || !strings.Contains(answer, "本轮未执行任务操作") || strings.Contains(answer, "private") {
-				t.Fatal("memory failure changed history, exposed detail or operated tasks")
+			if err == nil || answer != "" || strings.Contains(err.Error(), "private") {
+				t.Fatalf("memory failure became a reply or exposed provider detail: answer=%q err=%v", answer, err)
+			}
+			if string(before) != string(after) || len(h.manager.created()) != 0 || len(h.manager.requests) != 0 {
+				t.Fatal("memory failure changed history or operated tasks")
 			}
 		})
 	}
@@ -314,8 +321,8 @@ func TestMemoryStoreAndCheckpointFailureRemainRetryable(t *testing.T) {
 				if err := os.Rename(path+".backup", path); err != nil {
 					t.Fatal(err)
 				}
-			} else if err != nil || !strings.Contains(answer, "记忆服务暂时不可用") {
-				t.Fatalf("store error was not reported safely: %s %v", answer, err)
+			} else if !errors.Is(err, errMemoryProvider) || answer != "" {
+				t.Fatalf("store failure produced a substitute reply: %q %v", answer, err)
 			}
 			after, _ := os.ReadFile(path)
 			if string(before) != string(after) || actions != 0 {
@@ -331,7 +338,7 @@ func TestMemoryStoreAndCheckpointFailureRemainRetryable(t *testing.T) {
 	}
 }
 
-func TestMidTurnBudgetFailureReturnsReceiptAndDoesNotRepeatCreation(t *testing.T) {
+func TestMidTurnBudgetFailureKeepsReceiptWithoutReplyOrRepeatedCreation(t *testing.T) {
 	h := newServiceHarness(t)
 	e := &serviceTestEngine{run: func(ctx context.Context, _ []Message, _ []tasktools.Tool, call ToolCall) (string, error) {
 		_, err := call(ctx, "herdr_create", json.RawMessage(`{"project":"project","text":"build SVG"}`))
@@ -340,14 +347,59 @@ func TestMidTurnBudgetFailureReturnsReceiptAndDoesNotRepeatCreation(t *testing.T
 		}
 		return "", ErrContextBudget
 	}}
-	s := h.service(t, e)
 	in := serviceMessage("alice", "entry", "budget", "创建一个任务")
-	answer := serviceReply(t, s, in)
-	if !strings.Contains(answer, "任务已登记") || !strings.Contains(answer, "上下文预算") {
-		t.Fatalf("successful effect hidden by budget failure: %s", answer)
+	answer, err := h.service(t, e).Reply(context.Background(), in)
+	if !errors.Is(err, ErrContextBudget) || answer != "" {
+		t.Fatalf("budget failure produced a fabricated receipt reply: answer=%q err=%v", answer, err)
 	}
-	serviceReply(t, h.service(t, e), in)
-	if len(h.manager.created()) != 1 || len(e.calls()) != 1 {
-		t.Fatal("budget failure replayed a side effect")
+	state, err := readSession(onlySessionFile(t, h), "alice", "entry", "")
+	if err != nil || !state.Receipts[in.MessageID].Failed || len(h.manager.created()) != 1 {
+		t.Fatalf("budget failure lost its failed checkpoint or registered task: %v", err)
+	}
+	afterRestart := &serviceTestEngine{run: func(ctx context.Context, history []Message, _ []tasktools.Tool, call ToolCall) (string, error) {
+		if !strings.Contains(history[len(history)-2].Content, "可能已登记") {
+			t.Fatal("recovery model was not told about previously executed tools")
+		}
+		result, err := call(ctx, "herdr_get", json.RawMessage(`{"task_id":"created-1"}`))
+		if err != nil {
+			return "", err
+		}
+		if current := result.(tasktools.Task); current.ID != "created-1" || current.Title != "build SVG" {
+			t.Fatalf("recovery query lost successful operation: %+v", current)
+		}
+		return "已查询到此前登记的 SVG 任务。", nil
+	}}
+	restarted := h.service(t, afterRestart)
+	if got, err := restarted.Reply(context.Background(), in); !errors.Is(err, errInterrupted) || got != "" || len(afterRestart.calls()) != 0 {
+		t.Fatal("duplicate budget failure replayed a side effect or returned a substitute reply")
+	}
+	if got := serviceReply(t, restarted, serviceMessage("alice", "entry", "recover", "现在实际登记了吗")); got != "已查询到此前登记的 SVG 任务。" || len(h.manager.created()) != 1 {
+		t.Fatal("fresh model query could not recover the earlier successful operation")
+	}
+}
+
+func TestRestartPreservesAllVisibleDialogueAndLegacyReceipts(t *testing.T) {
+	for _, kind := range []string{"", "dialogue", "receipt"} {
+		t.Run("kind="+kind, func(t *testing.T) {
+			h := newServiceHarness(t)
+			serviceReply(t, h.service(t, &serviceTestEngine{}), serviceMessage("alice", "entry", "first", "讨论创建任务"))
+			path := onlySessionFile(t, h)
+			state, err := readSession(path, "alice", "entry", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			const visible = "  任务已登记：pelican-bike，状态：执行中。\n文件名建议使用 index.html。\n"
+			state.Messages[len(state.Messages)-1] = Message{Role: "assistant", Kind: kind, Content: visible}
+			if err := writeSession(path, state); err != nil {
+				t.Fatal(err)
+			}
+			e := &serviceTestEngine{run: func(_ context.Context, history []Message, _ []tasktools.Tool, _ ToolCall) (string, error) {
+				if got := history[len(history)-2]; got.Content != visible || got.Role != "assistant" {
+					t.Fatalf("visible historical text was removed or rewritten: %+v", got)
+				}
+				return "这次的需求我已理解。", nil
+			}}
+			serviceReply(t, h.service(t, e), serviceMessage("alice", "entry", "next", "换一个新项目做宇宙飞船动画"))
+		})
 	}
 }

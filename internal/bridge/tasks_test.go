@@ -143,7 +143,7 @@ func TestTaskGroupCloseCommandConfirmsBeforeRequestingCleanup(t *testing.T) {
 					t.Errorf("missing confirmation detail %q", want)
 				}
 			}
-			m = taskInbound(r, "确认关闭")
+			m = taskInbound(r, "/确认关闭")
 			m.EventID, m.MessageID = "close-confirmation-event", "close-confirmation-message"
 			sendTaskMessage(t, h, m)
 			current, _ = store.Get(r.ID)
@@ -171,7 +171,7 @@ func TestTaskGroupHelpWorksAfterAgentIsGone(t *testing.T) {
 
 func TestGroupCloseCommandsCannotSelectATaskOutsideItsGroup(t *testing.T) {
 	for _, chatType := range []string{lark.ChatP2P, lark.ChatGroup} {
-		for _, input := range []string{"/关闭项目", "确认关闭"} {
+		for _, input := range []string{"/关闭项目", "/确认关闭"} {
 			t.Run(chatType+input, func(t *testing.T) {
 				h := newHarness(t)
 				r := taskBinding("owned", "oc_task", testPane)

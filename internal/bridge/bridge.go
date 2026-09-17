@@ -74,6 +74,10 @@ type bridge struct {
 	// — see pickerIndex.
 	pickers *pickerIndex
 
+	// deliveries coordinates transcript mirroring and completion notifications
+	// for each pane. Different panes can still publish concurrently.
+	deliveries sync.Map // pane ID -> *paneDelivery
+
 	// newNonce mints the single-use token a card's buttons carry (G17). A field
 	// so tests can make a card's identity predictable.
 	newNonce func() (string, error)

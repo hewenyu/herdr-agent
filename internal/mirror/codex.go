@@ -52,11 +52,12 @@ type codexRecord struct {
 }
 
 type codexPayload struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content []codexBlock    `json:"content"`
-	Name    string          `json:"name"`
-	Input   json.RawMessage `json:"input"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Content   []codexBlock    `json:"content"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type codexBlock struct {
@@ -117,18 +118,22 @@ func (p *codexParser) responseItem(rec codexRecord, seq uint64) (Turn, bool) {
 	switch pl.Type {
 	case "message":
 		return p.message(pl, at, seq)
-	case "custom_tool_call":
+	case "custom_tool_call", "function_call":
 		// Codex logs the call as its own record, after the assistant message
 		// that introduced it. A tailer cannot amend a turn it has already
 		// published, so the call becomes an assistant turn carrying only the
 		// summary.
+		input := pl.Input
+		if pl.Type == "function_call" {
+			input = pl.Arguments
+		}
 		return Turn{
 			Role:      roleAssistant,
-			ToolCalls: []string{toolSummary(pl.Name, p.toolArg(pl.Input, seq))},
+			ToolCalls: p.toolCalls(pl.Name, input, seq),
 			At:        at,
 			Seq:       seq,
 		}, true
-	case "custom_tool_call_output", "reasoning":
+	case "custom_tool_call_output", "function_call_output", "reasoning":
 		// Output is the payload the phone is being spared; reasoning was never
 		// shown to the user.
 		return Turn{}, false
@@ -179,18 +184,12 @@ func (p *codexParser) message(pl codexPayload, at time.Time, seq uint64) (Turn, 
 	}, true
 }
 
-// toolArg pulls the identifying argument out of a custom_tool_call input.
-//
-// The input is not a tool payload but a snippet of the script Codex runs, e.g.
-//
-//	const r = await tools.exec_command({"cmd":"ls -la","workdir":"..."});
-//
-// so the object is decoded when it is one and scanned for a known key when it
-// is not. Failing both, the first line of the script is still more useful to a
-// human than nothing.
-func (p *codexParser) toolArg(raw json.RawMessage, seq uint64) string {
+// toolCalls shows identifying arguments, never the orchestration script or
+// arbitrary freeform payload. Unsupported input still has a useful tool name.
+func (p *codexParser) toolCalls(name string, raw json.RawMessage, seq uint64) []string {
+	bare := []string{toolSummary(name, "")}
 	if len(raw) == 0 {
-		return ""
+		return bare
 	}
 	var script string
 	if err := json.Unmarshal(raw, &script); err != nil {
@@ -198,21 +197,22 @@ func (p *codexParser) toolArg(raw json.RawMessage, seq uint64) string {
 		var obj map[string]any
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			p.log.Debug("mirror: unreadable codex tool input", "seq", seq, "err", err)
-			return ""
+			return bare
 		}
-		return pickToolArg(obj)
+		return []string{toolSummary(name, codexObjectArg(name, obj))}
 	}
 	if obj := decodeObject(script); obj != nil {
-		if arg := pickToolArg(obj); arg != "" {
-			return arg
-		}
+		return []string{toolSummary(name, codexObjectArg(name, obj))}
 	}
-	for _, key := range toolArgKeys {
-		if v, ok := jsonStringField(script, key); ok && v != "" {
-			return v
+	switch name {
+	case "exec", "functions.exec":
+		if calls := codexScriptCalls(script); len(calls) > 0 {
+			return calls
 		}
+	case "apply_patch", "functions.apply_patch":
+		return []string{toolSummary(name, patchFiles(script))}
 	}
-	return firstLine(script)
+	return bare
 }
 
 func decodeObject(s string) map[string]any {
@@ -223,62 +223,9 @@ func decodeObject(s string) map[string]any {
 	return obj
 }
 
-// jsonStringField finds `"key": "value"` anywhere in s and returns the decoded
-// value. It is a scanner rather than a regexp so that escapes inside the value
-// — a quoted argument in a shell command, most often — are handled by the JSON
-// decoder instead of guessed at.
-func jsonStringField(s, key string) (string, bool) {
-	needle := `"` + key + `"`
-	for i := 0; ; {
-		j := strings.Index(s[i:], needle)
-		if j < 0 {
-			return "", false
-		}
-		k := i + j + len(needle)
-		i = k
-		k = skipSpace(s, k)
-		if k >= len(s) || s[k] != ':' {
-			continue
-		}
-		k = skipSpace(s, k+1)
-		if k >= len(s) || s[k] != '"' {
-			continue
-		}
-		if v, ok := scanJSONString(s[k:]); ok {
-			return v, true
-		}
-	}
-}
-
 func skipSpace(s string, i int) int {
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
 		i++
 	}
 	return i
-}
-
-// scanJSONString decodes the JSON string literal starting at s[0] == '"'.
-func scanJSONString(s string) (string, bool) {
-	for i := 1; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
-			i++
-		case '"':
-			var v string
-			if err := json.Unmarshal([]byte(s[:i+1]), &v); err != nil {
-				return "", false
-			}
-			return v, true
-		}
-	}
-	return "", false
-}
-
-func firstLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return line
-		}
-	}
-	return ""
 }

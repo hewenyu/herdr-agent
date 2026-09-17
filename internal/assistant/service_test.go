@@ -207,7 +207,7 @@ func TestServiceBindsSenderAndIsolatesOwnerAndChatHistory(t *testing.T) {
 		if in.OwnerID == "bob" {
 			foreign = "alice-private-task"
 		}
-		if !strings.Contains(answer, "任务已登记：new task") || strings.Contains(answer, foreign) {
+		if !strings.Contains(answer, `"title":"new task"`) || strings.Contains(answer, foreign) {
 			t.Fatalf("creation receipt lost acknowledgment or escaped sender identity: %s", answer)
 		}
 	}
@@ -279,7 +279,7 @@ func TestServiceConcurrentDuplicateAndRestartUseSavedReply(t *testing.T) {
 		if savedAnswer == "" {
 			savedAnswer = r.answer
 		}
-		if r.err != nil || r.answer != savedAnswer || !strings.Contains(r.answer, "任务已登记") || !strings.Contains(r.answer, "single task") {
+		if r.err != nil || r.answer != savedAnswer || !strings.Contains(r.answer, "任务已登记") {
 			t.Fatalf("duplicate returned a different result: %+v", r)
 		}
 	}

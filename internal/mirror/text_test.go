@@ -121,57 +121,6 @@ func TestPickToolArg(t *testing.T) {
 	}
 }
 
-func TestJSONStringField(t *testing.T) {
-	tests := []struct {
-		name, in, key, want string
-		ok                  bool
-	}{
-		{
-			name: "inside a script",
-			in:   `const r = await tools.exec_command({"cmd":"ls -la","workdir":"/tmp"});`,
-			key:  "cmd", want: "ls -la", ok: true,
-		},
-		{
-			name: "escaped quotes decode",
-			in:   `({"cmd":"echo \"hi\" > f"})`,
-			key:  "cmd", want: `echo "hi" > f`, ok: true,
-		},
-		{
-			name: "escaped newline decodes",
-			in:   `({"cmd":"a\nb"})`,
-			key:  "cmd", want: "a\nb", ok: true,
-		},
-		{
-			name: "key with a longer prefix does not match",
-			in:   `({"parsed_cmd":"ls"})`,
-			key:  "cmd", ok: false,
-		},
-		{
-			name: "non-string value is not a match",
-			in:   `({"cmd":42,"other":1})`,
-			key:  "cmd", ok: false,
-		},
-		{
-			name: "second occurrence wins when the first is not a value",
-			in:   `("cmd" is the key) {"cmd": "ls"}`,
-			key:  "cmd", want: "ls", ok: true,
-		},
-		{
-			name: "absent",
-			in:   `({"workdir":"/tmp"})`,
-			key:  "cmd", ok: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := jsonStringField(tt.in, tt.key)
-			if ok != tt.ok || got != tt.want {
-				t.Errorf("jsonStringField(%q, %q) = %q, %v; want %q, %v", tt.in, tt.key, got, ok, tt.want, tt.ok)
-			}
-		})
-	}
-}
-
 func TestIsInjectedContext(t *testing.T) {
 	tests := []struct {
 		name string

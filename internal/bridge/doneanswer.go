@@ -62,6 +62,11 @@ const (
 // shows completions nobody typed (G4), and a reader who took that for the
 // agent's own words would be reading text no agent produced.
 func (b *bridge) doneAnswer(a agents.Agent, tail screen.Screen) cards.Answer {
+	answer, _ := b.doneAnswerRecord(a, tail)
+	return answer
+}
+
+func (b *bridge) doneAnswerRecord(a agents.Agent, tail screen.Screen) (cards.Answer, *mirror.Turn) {
 	path, ok := b.deps.Resolver.Resolve(a)
 	if !ok {
 		// Normal, not a failure: claude publishes a session id only once its
@@ -70,7 +75,7 @@ func (b *bridge) doneAnswer(a agents.Agent, tail screen.Screen) cards.Answer {
 		// session spends its first minutes here, so this is not a warning.
 		b.log.Debug("bridge: finished agent has no transcript yet; showing the screen instead",
 			"pane", a.PaneID, "kind", a.Kind)
-		return screenAnswer(tail)
+		return screenAnswer(tail), nil
 	}
 
 	turns, err := mirror.LastTurns(path, a.Kind, doneTurns)
@@ -80,7 +85,7 @@ func (b *bridge) doneAnswer(a agents.Agent, tail screen.Screen) cards.Answer {
 		// otherwise only see that their cards permanently show a terminal.
 		b.log.Warn("bridge: could not read a finished agent's transcript; showing the screen instead",
 			"pane", a.PaneID, "kind", a.Kind, "path", path, "err", err)
-		return screenAnswer(tail)
+		return screenAnswer(tail), nil
 	}
 
 	i := lastAssistantTurn(turns)
@@ -90,7 +95,7 @@ func (b *bridge) doneAnswer(a agents.Agent, tail screen.Screen) cards.Answer {
 		// entirely inside metadata records. There is nothing to quote.
 		b.log.Debug("bridge: no assistant turn in the sampled transcript; showing the screen instead",
 			"pane", a.PaneID, "path", path, "turns", len(turns))
-		return screenAnswer(tail)
+		return screenAnswer(tail), nil
 	}
 
 	text, truncated := truncateCells(turns[i].Text, doneAnswerCells)
@@ -107,7 +112,7 @@ func (b *bridge) doneAnswer(a agents.Agent, tail screen.Screen) cards.Answer {
 		// with the rest of the detail.
 		Tools:     turns[i].ToolCalls,
 		Truncated: truncated,
-	}
+	}, &turns[i]
 }
 
 // closeFence re-closes a code fence that the cut landed inside.

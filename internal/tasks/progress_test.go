@@ -10,6 +10,66 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/herdrapi"
 )
 
+func TestReviewNoticeIsStableAcrossObserversAndReappearsForANewTurn(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	r := h.reconcile(t, h.create(t, "review-observers").ID, 1)
+	var reports []string
+	h.manager.opts.Report = func(_ context.Context, r Record) error {
+		reports = append(reports, Notice(r))
+		return nil
+	}
+	observe := func(status Status, detail, result string) {
+		t.Helper()
+		if err := h.manager.Observe(r.PaneID, status, detail, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, detail := range []string{ReviewDetail, "本轮已结束，等待验收或下一步指令", ReviewDetail} {
+		observe(Review, detail, "结果")
+		h.manager.report(context.Background(), r.ID)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("same completed turn produced %d notices: %v", len(reports), reports)
+	}
+	h.restart(t)
+	h.manager.report(context.Background(), r.ID)
+	if len(reports) != 1 {
+		t.Fatal("restart repeated the completion notice")
+	}
+	// Even a turn that finishes before its running progress gets reported must
+	// get a new review notification; text equality is not execution identity.
+	observe(Running, "继续执行", "")
+	observe(Review, ReviewDetail, "同一结果")
+	h.manager.report(context.Background(), r.ID)
+	if len(reports) != 2 {
+		t.Fatalf("new execution did not produce a review notice: %v", reports)
+	}
+}
+
+func TestTranscriptProgressOnlyUpdatesAnActivelyRunningTask(t *testing.T) {
+	h := newTaskTestHarness(t, "codex")
+	r := h.reconcile(t, h.create(t, "late-transcript").ID, 1)
+	if err := h.manager.ObserveProgress(r.PaneID, "正在写入文件", "进展摘要"); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := h.store.Get(r.ID)
+	if updated.Detail != "正在写入文件" || updated.Result != "进展摘要" {
+		t.Fatalf("running progress was lost: %+v", updated)
+	}
+	for _, status := range []Status{Review, Blocked, Attention} {
+		if err := h.manager.Observe(r.PaneID, status, "生命周期说明", "最终结果"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.manager.ObserveProgress(r.PaneID, "迟到进展", "旧结果"); err != nil {
+			t.Fatal(err)
+		}
+		updated, _ := h.store.Get(r.ID)
+		if updated.Status != status || updated.Detail != "生命周期说明" || updated.Result != "最终结果" {
+			t.Fatalf("late progress replaced %s: %+v", status, updated)
+		}
+	}
+}
+
 func TestManagerReportsRunningOnceAfterQuietStartupAndDeduplicatesAfterRestart(t *testing.T) {
 	h := newTaskTestHarness(t, "codex")
 	var reports []Record

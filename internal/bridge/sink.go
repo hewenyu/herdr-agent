@@ -140,6 +140,9 @@ func (b *bridge) blockedFallback(ctx context.Context, to cardTarget, a agents.Ag
 // and must keep doing so. The screen is still one tap away here, behind the
 // card's Screen button, which is where the detail belongs.
 func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Screen) error {
+	delivery := b.paneDelivery(a.PaneID)
+	delivery.mu.Lock()
+	defer delivery.mu.Unlock()
 	// The settle reply. A burst of messages produces exactly one of these — the
 	// agent goes working once and finishes once, and the notifier coalesces
 	// anything closer together than its cooldown — which is why the deliveries
@@ -157,8 +160,43 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	// Resolved once and kept: every way this can fail from here on still owes
 	// the user the answer, and re-reading the transcript to say so would sample
 	// a file the agent may already have moved on in.
-	ans := b.doneAnswer(a, tail)
-	b.taskObserve(a, tasks.Review, "本轮已结束，等待验收或下一步指令", ans.Text)
+	ans, record := b.doneAnswerRecord(a, tail)
+	result := ans.Text
+	if record != nil {
+		result = record.Text
+	}
+	b.taskObserve(a, tasks.Review, tasks.ReviewDetail, result)
+	var id deliveryID
+	var coordinated bool
+	if record != nil {
+		id, coordinated = b.deliveryID(a, *record)
+		if stream, mirrored := delivery.records[id]; coordinated && mirrored {
+			if stream == nil {
+				return nil
+			}
+			// Append can buffer its last chunk. Confirm the answer reached the
+			// existing message before suppressing the completion fallback.
+			err := stream.s.Flush(ctx)
+			delivery.finishStream(stream, err == nil)
+			if err == nil {
+				return nil
+			}
+			b.log.Warn("bridge: mirror flush failed; sending completion fallback", "pane", a.PaneID, "err", err)
+		}
+	}
+	remember := func(err error) error {
+		if err == nil && coordinated {
+			delivery.remember(id, nil)
+		}
+		return err
+	}
+	if record != nil && ans.Truncated && b.taskDeliveryEnabled(a) {
+		// A later full mirror record may be suppressed after this delivery.
+		// Send the whole task result through the splitting post path instead
+		// of treating a card excerpt as delivery of the complete answer.
+		ans.Text, ans.Truncated = record.Text, false
+		return remember(b.donePost(ctx, a, ans, tail, ""))
+	}
 
 	// No nonce is minted. Both of this card's buttons are inert — Select aims
 	// the chat at the agent, Screen re-reads it, neither can put a byte into the
@@ -168,7 +206,7 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 	card, err := cards.BuildDone(a, ans, "", b.now())
 	if err != nil {
 		b.log.Error("bridge: could not build the finished card", "pane", a.PaneID, "err", err)
-		return b.donePost(ctx, a, ans, tail, "")
+		return remember(b.donePost(ctx, a, ans, tail, ""))
 	}
 
 	if _, err := b.send(ctx, outgoing{
@@ -183,9 +221,9 @@ func (b *bridge) PushDone(ctx context.Context, a agents.Agent, tail screen.Scree
 		// transition to try again on.
 		b.log.Error("bridge: finished card was not delivered; falling back to plain text",
 			"pane", a.PaneID, "err", err)
-		return b.donePost(ctx, a, ans, tail, "the card could not be delivered")
+		return remember(b.donePost(ctx, a, ans, tail, "the card could not be delivered"))
 	}
-	return nil
+	return remember(nil)
 }
 
 // donePost is the finished notification without the card, and it carries the
