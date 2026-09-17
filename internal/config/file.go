@@ -21,13 +21,21 @@ import (
 // the model API key can come from TOML; Feishu credentials retain their own
 // setup/environment flow.
 type fileConfig struct {
+	Memory struct {
+		Provider string                        `toml:"provider"`
+		BaseURL  string                        `toml:"base_url"`
+		APIKey   string                        `toml:"api_key"`
+		Timeout  tomlDuration                  `toml:"timeout"`
+		Users    map[string]fileMemoryProvider `toml:"users"`
+	} `toml:"memory"`
 	AI struct {
-		Enabled  bool         `toml:"enabled"`
-		Provider string       `toml:"provider"`
-		Model    string       `toml:"model"`
-		BaseURL  string       `toml:"base_url"`
-		APIKey   string       `toml:"api_key"`
-		Timeout  tomlDuration `toml:"timeout"`
+		Enabled       bool         `toml:"enabled"`
+		Provider      string       `toml:"provider"`
+		Model         string       `toml:"model"`
+		BaseURL       string       `toml:"base_url"`
+		APIKey        string       `toml:"api_key"`
+		Timeout       tomlDuration `toml:"timeout"`
+		ContextTokens int          `toml:"context_tokens"`
 	} `toml:"ai"`
 	Feishu struct {
 		AllowedOpenIDs []string `toml:"allowed_open_ids"`
@@ -55,6 +63,13 @@ type fileConfig struct {
 		PollInterval   tomlDuration       `toml:"poll_interval"`
 		Projects       map[string]Project `toml:"projects"`
 	} `toml:"tasks"`
+}
+
+type fileMemoryProvider struct {
+	Provider string       `toml:"provider"`
+	BaseURL  string       `toml:"base_url"`
+	APIKey   string       `toml:"api_key"`
+	Timeout  tomlDuration `toml:"timeout"`
 }
 
 // tomlDuration decodes `poll_interval = "1s"`. TOML has no duration type and
@@ -97,6 +112,12 @@ func applyFile(cfg *Config, path string) error {
 		AI struct {
 			APIKey string `toml:"api_key"`
 		} `toml:"ai"`
+		Memory struct {
+			APIKey string `toml:"api_key"`
+			Users  map[string]struct {
+				APIKey string `toml:"api_key"`
+			} `toml:"users"`
+		} `toml:"memory"`
 	}
 	if err == nil {
 		err = md.PrimitiveDecode(raw, &credentials)
@@ -104,20 +125,27 @@ func applyFile(cfg *Config, path string) error {
 	if err != nil {
 		// Invalid syntax or a non-string key prevents reliable extraction. Keep
 		// the location, but not a parser message which may quote the credential.
-		message := fmt.Sprintf("parse %s: invalid TOML; check syntax and use a quoted string for ai.api_key", path)
+		message := fmt.Sprintf("parse %s: invalid TOML; check syntax and use quoted strings for API keys (ai.api_key and memory.api_key)", path)
 		var parseErr toml.ParseError
 		if errors.As(err, &parseErr) {
-			message = fmt.Sprintf("parse %s at line %d: invalid TOML; check syntax and use a quoted string for ai.api_key", path, parseErr.Position.Line)
+			message = fmt.Sprintf("parse %s at line %d: invalid TOML; check syntax and use quoted strings for API keys (ai.api_key and memory.api_key)", path, parseErr.Position.Line)
 		}
 		return &redactedError{cause: err, text: message}
 	}
 	cfg.AI.APIKey = credentials.AI.APIKey
+	cfg.Memory.APIKey = credentials.Memory.APIKey
+	if credentials.Memory.Users != nil {
+		cfg.Memory.Users = make(map[string]MemoryProvider, len(credentials.Memory.Users))
+		for owner, credential := range credentials.Memory.Users {
+			cfg.Memory.Users[owner] = MemoryProvider{APIKey: credential.APIKey}
+		}
+	}
 	var fc fileConfig
 	err = md.PrimitiveDecode(raw, &fc)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	if err := rejectUnknownKeys(path, md); err != nil {
+	if err := rejectUnknownKeys(path, md, cfg.scrub); err != nil {
 		return err
 	}
 
@@ -201,8 +229,28 @@ func applyFile(cfg *Config, path string) error {
 	if md.IsDefined("ai", "timeout") {
 		cfg.AI.Timeout = time.Duration(fc.AI.Timeout)
 	}
+	if md.IsDefined("ai", "context_tokens") {
+		cfg.AI.ContextTokens = fc.AI.ContextTokens
+	}
 	cfg.AI.Model = fc.AI.Model
 	cfg.AI.BaseURL = fc.AI.BaseURL
+	if md.IsDefined("memory", "provider") {
+		cfg.Memory.Provider = fc.Memory.Provider
+	}
+	if md.IsDefined("memory", "timeout") {
+		cfg.Memory.Timeout = time.Duration(fc.Memory.Timeout)
+	}
+	cfg.Memory.BaseURL = fc.Memory.BaseURL
+	for owner, provider := range fc.Memory.Users {
+		value := MemoryProvider{Provider: DefaultMemoryProvider, Timeout: DefaultMemoryTimeout, BaseURL: provider.BaseURL, APIKey: provider.APIKey}
+		if md.IsDefined("memory", "users", owner, "provider") {
+			value.Provider = provider.Provider
+		}
+		if md.IsDefined("memory", "users", owner, "timeout") {
+			value.Timeout = time.Duration(provider.Timeout)
+		}
+		cfg.Memory.Users[owner] = value
+	}
 	return nil
 }
 
@@ -234,7 +282,7 @@ func expandTilde(path string) string {
 // `allowed_open_id` (singular) would leave the operator believing they are on
 // the allowlist when they are not; silently ignoring an app_secret written
 // here would leave them believing the bridge is configured when it is not.
-func rejectUnknownKeys(path string, md toml.MetaData) error {
+func rejectUnknownKeys(path string, md toml.MetaData, scrubValue func(string) string) error {
 	undecoded := md.Undecoded()
 	if len(undecoded) == 0 {
 		return nil
@@ -247,7 +295,11 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 		case "feishu.app_id", "feishu.app_secret":
 			credential = true
 		}
-		keys = append(keys, s)
+		redacted := append(toml.Key(nil), k...)
+		for i, component := range redacted {
+			redacted[i] = scrubValue(component)
+		}
+		keys = append(keys, redacted.String())
 	}
 	sort.Strings(keys)
 

@@ -423,6 +423,7 @@ model = "your-provider-model-id"
 base_url = "https://your-model-service.example/v1"
 api_key = "your-model-service-api-key"
 timeout = "2m"
+context_tokens = 50000
 ```
 
 `provider` supports only `openai-responses` (default) or `anthropic-messages`. Supply
@@ -431,6 +432,16 @@ to `/responses`, or `https://api.anthropic.com/v1` for Anthropic requests to `/m
 must support tool calling. The base URL must not contain credentials, query parameters or fragments.
 Use HTTPS; HTTP is accepted only for loopback hosts such as `http://127.0.0.1:8080/v1`.
 The timeout must be positive and no longer than `10m`; its default is `2m`.
+
+`context_tokens` is the input context limit and automatic compaction threshold, defaulting to
+`50000` and accepting `16384..1048576`. The estimate conservatively counts UTF-8/JSON bytes and
+message/tool overhead, including instructions, task snapshots, conversation, tool definitions and
+tool results. At or above the threshold, Eino summarizes older context and retains recent exchanges.
+Allow another
+`4096` tokens for model output within your model's actual context window; this setting does not
+increase that window. History is no longer silently discarded after a fixed 40 messages. If
+compaction fails, the bridge retains the existing history and reports the failure. Responses marked
+incomplete or truncated by the model are not accepted as successful summaries.
 
 Put your model API key directly in `api_key` in the same `[ai]` section, then restart
 `herdr-agent serve`. On a new computer, no model key environment variable or repository checkout is
@@ -450,6 +461,9 @@ In the bot's **entry private chat**, ask naturally:
 - “Create a new project named demo-api and build a health-check endpoint.”
 - “How are my tasks going?”
 
+The entry chat supports requirements discussion, clarifications, task creation and overviews.
+Ordinary replies and clarification questions preserve their natural wording. A reply such as
+“call it pelican-bike-svg” continues the preceding project-name question, including after a restart.
 The entry chat receives a short creation acknowledgment and the task group link when available.
 It does not receive duplicate execution updates, permission cards or review notices. Continue
 implementation feedback, progress queries and acceptance in the corresponding task group.
@@ -470,6 +484,37 @@ Each new task has a Feishu task record and a private task group. The group assis
 to that task: progress reads its current record, feedback goes to its Codex/Claude agent, and explicit
 acceptance with closure completes the task and closes its session. Negations and future conditions
 are not acceptance. Startup confirmations and permission cards also stay in the group.
+
+Conversation memory is isolated by user, chat and bound task. Summaries preserve requirements,
+negations and unresolved questions; they are not new authorization or evidence of current progress.
+Both the entry chat and task groups use the same conversation and compaction mechanism.
+
+Summary storage and recall are configured separately from the model API. The default `file` provider
+stores conversation summaries under `~/.herdr-agent/memory/`. An `http` provider can use a service
+implementing the scoped Recall/Store/Forget protocol. For example, keep local storage globally and
+override one user's provider in `config.toml`:
+
+```toml
+[memory]
+provider = "file"
+timeout = "10s"
+
+[memory.users."ou_REPLACE_WITH_YOUR_OPEN_ID"]
+provider = "http"
+base_url = "https://memory.example.com/api"
+api_key = "your-storage-service-key"
+timeout = "10s"
+```
+
+Each user override is complete and does not inherit the global endpoint or key. Storage keys are
+read only from TOML. Remote HTTP providers require HTTPS and an API key; loopback HTTP without a
+key is allowed. The timeout must be positive and at most `2m`. Provider failure never silently
+switches storage. Recent original dialogue, local checkpoints, archives and operation/message receipts
+remain local even with HTTP memory. After a provider change, the next turn using conversation memory synchronizes
+the summary from the local checkpoint to the new store; it does not migrate original dialogue or
+copy/delete the old provider's data. External services must implement this project's HTTP protocol.
+See [conversation memory](docs/conversation-memory.md) for the protocol, retained
+state and failure boundaries.
 
 Progress and operation acknowledgments are rendered from actual records and tool receipts. Old AI
 replies are not evidence of execution. Replies distinguish agent claims from verified facts and show
@@ -735,8 +780,11 @@ confirmation page — or naming it with `--app cli_…` — is worth the extra s
 project directories live separately under `~/herder-agent-code/`.
 `tasks.json` persists task/group/workspace/pane bindings and lifecycle progress for restart recovery.
 With AI enabled, `assistant-operations.json` persists tool receipts and `conversations/` holds
-conversation and message receipts isolated by user and chat, with mode 0600. The model receives
-the latest 20 complete conversation turns and queries task tools for current progress.
+conversation checkpoints and message receipts isolated by user and chat, with mode 0600. The
+default memory provider stores summaries under `memory/`; an optional HTTP provider does not move
+recent original dialogue, local checkpoints, archives or receipts. Older model context is summarized
+automatically
+at the configured input threshold, while current progress still comes from task tools.
 Ordinary mirror switches remain in memory and reset to `mirror.default_on`; managed task sessions
 restore their own transcript following from the stored bindings. The app secret exists only in `.env` (mode 0600) or the process
 environment, is never logged, and `config.toml` has no field that could hold it. Nothing rotates the

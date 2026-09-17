@@ -117,7 +117,7 @@ func TestAIValidation(t *testing.T) {
 		c.Tasks.Enabled = true
 		c.Tasks.DefaultProject = "repo"
 		c.Tasks.Projects = map[string]Project{"repo": {Path: repo, Agent: "codex"}}
-		c.AI = AI{Enabled: true, Provider: DefaultAIProvider, Model: "test-model", BaseURL: "https://models.example/v1", Timeout: DefaultAITimeout, APIKey: testAIAPIKey}
+		c.AI = AI{Enabled: true, Provider: DefaultAIProvider, Model: "test-model", BaseURL: "https://models.example/v1", Timeout: DefaultAITimeout, APIKey: testAIAPIKey, ContextTokens: DefaultAIContextTokens}
 		return c
 	}
 	tests := []struct {
@@ -138,6 +138,12 @@ func TestAIValidation(t *testing.T) {
 		{"negative timeout", func(c *Config) { c.AI.Timeout = -time.Second }, ErrAITimeout},
 		{"excess timeout", func(c *Config) { c.AI.Timeout = 10*time.Minute + time.Second }, ErrAITimeout},
 		{"maximum timeout", func(c *Config) { c.AI.Timeout = 10 * time.Minute }, nil},
+		{"zero context budget", func(c *Config) { c.AI.ContextTokens = 0 }, ErrAIContextTokens},
+		{"negative context budget", func(c *Config) { c.AI.ContextTokens = -1 }, ErrAIContextTokens},
+		{"small context budget", func(c *Config) { c.AI.ContextTokens = MinAIContextTokens - 1 }, ErrAIContextTokens},
+		{"minimum context budget", func(c *Config) { c.AI.ContextTokens = MinAIContextTokens }, nil},
+		{"maximum context budget", func(c *Config) { c.AI.ContextTokens = MaxAIContextTokens }, nil},
+		{"excess context budget", func(c *Config) { c.AI.ContextTokens = MaxAIContextTokens + 1 }, ErrAIContextTokens},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

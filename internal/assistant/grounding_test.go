@@ -119,8 +119,8 @@ func TestProgressRecognitionDoesNotSwallowFeedbackOrAcceptance(t *testing.T) {
 	}
 	for _, tc := range []struct{ answer, want string }{
 		{"你好，可以在这里创建任务或查询进度。", "你好"},
-		{"你希望在哪个项目创建任务？", "你希望使用哪个项目"},
-		{"请提供需要修改的具体行为和预期结果。", "请补充这次需要完成的具体目标"},
+		{"你希望在哪个项目创建任务？", "你希望在哪个项目创建任务？"},
+		{"请提供需要修改的具体行为和预期结果。", "请提供需要修改的具体行为和预期结果。"},
 	} {
 		if got := groundedReply(nil, nil, tc.answer); !strings.Contains(got, tc.want) {
 			t.Fatalf("ordinary greeting or clarification was discarded: %q => %q", tc.answer, got)

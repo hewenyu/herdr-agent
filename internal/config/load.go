@@ -40,6 +40,11 @@ const (
 	DefaultTaskAgent        = "codex"
 	DefaultAIProvider       = "openai-responses"
 	DefaultAITimeout        = 2 * time.Minute
+	DefaultAIContextTokens  = 50000
+	MinAIContextTokens      = 16384
+	MaxAIContextTokens      = 1048576
+	DefaultMemoryProvider   = "file"
+	DefaultMemoryTimeout    = 10 * time.Second
 )
 
 // Validation failures, exported so callers can react to a specific one
@@ -78,7 +83,8 @@ func Default() Config {
 		},
 		Mirror: Mirror{DefaultOn: false},
 		Tasks:  Tasks{PollInterval: DefaultTaskPollInterval, Bypass: true},
-		AI:     AI{Provider: DefaultAIProvider, Timeout: DefaultAITimeout},
+		AI:     AI{Provider: DefaultAIProvider, Timeout: DefaultAITimeout, ContextTokens: DefaultAIContextTokens},
+		Memory: Memory{Provider: DefaultMemoryProvider, Timeout: DefaultMemoryTimeout},
 	}
 }
 
@@ -173,6 +179,7 @@ func (c Config) Validate() error {
 		nonNegativeInt("ui.queue_limit", c.UI.QueueLimit),
 		c.validateTasks(),
 		c.validateAI(),
+		c.validateMemory(),
 	)
 
 	return errors.Join(errs...)
