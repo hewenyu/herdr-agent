@@ -24,7 +24,6 @@ const (
 
 	EnvAppID     = "FEISHU_APP_ID"
 	EnvAppSecret = "FEISHU_APP_SECRET"
-	EnvAIAPIKey  = "HERDR_AGENT_AI_API_KEY"
 )
 
 // Defaults for unset fields. Legacy Herdr and UI settings also use these for
@@ -83,8 +82,8 @@ func Default() Config {
 	}
 }
 
-// Load reads <dir>/config.toml over Default() and takes credentials
-// from the environment, falling back to .env files (see DotEnvFileName).
+// Load reads <dir>/config.toml over Default(), including ai.api_key. Feishu
+// credentials come from the environment, falling back to .env files.
 //
 // A missing config.toml is not an error. The returned Config is not validated;
 // call Validate.

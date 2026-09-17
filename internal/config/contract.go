@@ -79,8 +79,8 @@ type AI struct {
 	Model    string        `toml:"model"`
 	BaseURL  string        `toml:"base_url"`
 	Timeout  time.Duration `toml:"timeout"`
-	// APIKey is read only from HERDR_AGENT_AI_API_KEY in the environment or .env.
-	APIKey string `toml:"-"`
+	// APIKey is read only from [ai].api_key in config.toml and is always redacted.
+	APIKey string `toml:"api_key"`
 }
 
 // StateDir is where the bridge keeps dedup, routes and the pid file.
@@ -88,7 +88,8 @@ type AI struct {
 const StateDir = ".herdr-agent"
 
 // Load reads config.toml from dir (falling back to defaults for every unset
-// field) and credentials from the environment.
+// field), including the model API key. Feishu credentials come from the
+// environment or .env.
 //
 // Implementations must also provide, in load.go, exactly:
 //

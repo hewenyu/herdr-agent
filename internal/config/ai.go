@@ -14,7 +14,7 @@ var (
 	ErrAIModel    = errors.New("ai.model is required when AI is enabled")
 	ErrAIBaseURL  = errors.New("ai.base_url must be an HTTP(S) URL without credentials, query or fragment; HTTP is allowed only on loopback hosts")
 	ErrAITimeout  = errors.New("ai.timeout must be positive and no longer than 10m")
-	ErrAIAPIKey   = errors.New("HERDR_AGENT_AI_API_KEY is required when AI is enabled")
+	ErrAIAPIKey   = errors.New("ai.api_key in config.toml is required when AI is enabled")
 )
 
 func (c Config) validateAI() error {

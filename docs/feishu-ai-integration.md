@@ -34,7 +34,7 @@ Pi 的相关框架包使用 TypeScript；当前实现采用纯 Go，保留自然
 
 1. 启用任务管理，确认当前用户在本项目允许名单中。在本机配置页面设置项目名、一个或多个目录及默认 Codex 或 Claude，也可以稍后明确要求 AI 创建新项目。
 2. 启用 AI 入口，设置模型服务的协议、API base URL、模型名称及请求超时。选用支持工具调用的模型。
-3. 将模型服务的 key 写入环境变量或本项目 `.env` 的 `HERDR_AGENT_AI_API_KEY`，然后重启 `herdr-agent serve`。模型 key 和飞书 App Secret 分别使用各自的配置字段。
+3. 将模型服务的 key 直接写入 `~/.herdr-agent/config.toml` 已有 `[ai]` 段的 `api_key`，然后重启 `herdr-agent serve`。新电脑无需设置模型密钥环境变量或克隆仓库。模型 key 只从 TOML 读取；不再读取环境变量或 `.env` 中的 `HERDR_AGENT_AI_API_KEY`，老用户需将 key 迁移到 TOML。飞书凭据仍使用原有 `setup` / `.env` 流程。配置示例见上述 README；`v0.2.2` 不支持 TOML `api_key`，需使用包含此修改的二进制。
 4. 启动时程序自动核对飞书应用权限；如本地页面提示补授权，点击当前链接登录确认，等待程序核验生效后自动继续。
 5. 打开本项目机器人的私聊创建任务或查询总览，再进入对应任务群沟通实现细节、询问进度和验收结单。
 
@@ -87,7 +87,7 @@ config_listen = "127.0.0.1:18791"
 
 首次保存后，完整项目列表、默认项目和 Bypass 开关写入 `~/.herdr-agent/projects.json`，文件权限 0600。
 这个文件是后续项目配置来源，TOML 项目表只负责初始导入；`tasks.enabled` 与轮询间隔仍由 TOML 控制。
-项目变更不需要重启。页面不编辑模型 API key，模型配置仍使用 `[ai]` 和 `HERDR_AGENT_AI_API_KEY`。
+项目变更不需要重启。页面不编辑模型 API key；模型配置和密钥均在 TOML 的 `[ai]` 段维护，修改后重启服务。
 
 “在已有项目里新建任务”只使用配置目录。“新建一个 demo-api 项目，实现健康检查接口”才允许 AI 通过
 `herdr_create` 的 `new_project=true` 显式创建 `~/herder-agent-code/demo-api/`，并登记为可复用项目。

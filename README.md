@@ -138,8 +138,8 @@ server will use two different sockets. Both are commented, with fixes, at the to
 `deploy/com.hewenyu.herdr-server.plist`.
 
 Every knob lives in `~/.herdr-agent/config.toml`, and `deploy/config.example.toml` documents each one
-with its default and the trade-off it makes. Credentials are not among them: that file has no field
-for a secret, so one cannot end up there by accident. The two basic chat settings are
+with its default and the trade-off it makes. Model credentials use `[ai].api_key` in that file.
+Feishu credentials still come from `setup` / `.env`; there is no TOML field for the Feishu app secret. The two basic chat settings are
 `feishu.allowed_open_ids` (mandatory) and `feishu.notify_chat_id` (the proactive push destination when task management is disabled; empty
 means no pushes). With task management enabled, only managed task groups receive execution
 notifications; unrelated local agents do not push to the entry chat, even if this setting is filled.
@@ -320,7 +320,7 @@ by the new-project operation. Deleting project configuration preserves its files
 Each task gets its own **herdr workspace and pane**, but uses the configured directories directly.
 Two tasks using the same folder share its working files. Configure separate existing Git worktrees
 when concurrent edits need isolation. Chat messages choose project names and cannot supply arbitrary
-local paths. Model API credentials are still configured through TOML/environment as described below;
+local paths. Model API credentials are configured in TOML as described below;
 the local page manages projects and Bypass.
 
 Task management requires the following **in addition to** the basic chat permissions from setup:
@@ -407,7 +407,8 @@ The Go AI entry point uses [Eino](docs/ai-framework.md) to interpret messages to
 management tools. Configure your own model API, model name and key. It uses the existing Feishu app,
 project-to-directory mappings, and Codex/Claude environment described above.
 
-Enable `[tasks]` and configure your projects, then add to `~/.herdr-agent/config.toml`:
+Enable `[tasks]` and configure your projects, then edit the existing `[ai]` section in
+`~/.herdr-agent/config.toml` (add it only if absent):
 
 ```toml
 [ai]
@@ -415,6 +416,7 @@ enabled = true
 provider = "openai-responses"
 model = "your-provider-model-id"
 base_url = "https://your-model-service.example/v1"
+api_key = "your-model-service-api-key"
 timeout = "2m"
 ```
 
@@ -425,16 +427,16 @@ must support tool calling. The base URL must not contain credentials, query para
 Use HTTPS; HTTP is accepted only for loopback hosts such as `http://127.0.0.1:8080/v1`.
 The timeout must be positive and no longer than `10m`; its default is `2m`.
 
-Put your model API key in `~/.herdr-agent/.env`, then restart `herdr-agent serve`:
+Put your model API key directly in `api_key` in the same `[ai]` section, then restart
+`herdr-agent serve`. On a new computer, no model key environment variable or repository checkout is
+needed. The key is read only from TOML: `HERDR_AGENT_AI_API_KEY` in the environment or `.env` is no
+longer used. Existing installations must move their model key to `[ai].api_key` before restarting.
+Protect the file with `chmod 600 ~/.herdr-agent/config.toml` and redact `api_key` when sharing it.
 
-```dotenv
-HERDR_AGENT_AI_API_KEY=your-model-service-api-key
-```
-
-The key is read only from the environment or `.env`, never from `config.toml`. The process environment
-takes precedence, including when explicitly empty. This key belongs to your chosen model service;
-the Feishu app still uses its existing `FEISHU_APP_ID` and `FEISHU_APP_SECRET`. The entry point runs
-inside the Go service without an additional JavaScript runtime.
+TOML `api_key` requires a binary containing this change; `v0.2.2` does not support the field.
+This key belongs to your chosen model service; Feishu credentials still use the existing `setup` /
+`.env` flow with `FEISHU_APP_ID` and `FEISHU_APP_SECRET`. The entry point runs inside the Go service
+without an additional JavaScript runtime.
 
 In the bot's **entry private chat**, ask naturally:
 

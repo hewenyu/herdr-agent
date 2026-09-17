@@ -10,7 +10,7 @@ import (
 	"github.com/hewenyu/herdr-agent/internal/envfile"
 )
 
-// applyCredentials fills credential fields from the process
+// applyCredentials fills Feishu credential fields from the process
 // environment, falling back to .env files.
 func applyCredentials(cfg *Config, dir string) error {
 	dotenv, err := loadDotEnv(dir)
@@ -19,7 +19,6 @@ func applyCredentials(cfg *Config, dir string) error {
 	}
 	cfg.Feishu.AppID = lookupEnv(EnvAppID, dotenv)
 	cfg.Feishu.AppSecret = lookupEnv(EnvAppSecret, dotenv)
-	cfg.AI.APIKey = lookupEnv(EnvAIAPIKey, dotenv)
 	return nil
 }
 

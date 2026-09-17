@@ -122,7 +122,7 @@ Linux 上它什么都不写，只把复制和启用的步骤打印出来，其�
 `deploy/com.hewenyu.herdr-server.plist` 顶部都有注释和解法。
 
 所有开关都在 `~/.herdr-agent/config.toml`，`deploy/config.example.toml` 逐条写了默认值和它做的取舍。
-凭据不在里面 —— 那个文件压根没有放密钥的字段，想误存都存不进去。基本聊天配置常用两项：
+模型密钥使用该文件的 `[ai].api_key`。飞书凭据仍通过 `setup` / `.env` 配置，TOML 没有飞书 App Secret 字段。基本聊天配置常用两项：
 `feishu.allowed_open_ids`（必填）和 `feishu.notify_chat_id`（留空时，任务功能之外的 agent 不主动
 推送；仅在未启用任务管理时使用）。启用任务管理后，只向对应任务群推送执行通知，
 即使填写了此项，也不会把无关本地 agent 的通知推到入口私聊。
@@ -272,7 +272,7 @@ Bypass 开关。此后项目配置以该文件为准，TOML 仅作为初始项�
 
 每个任务创建独立的 **herdr workspace 和 pane**，直接使用配置的目录。多个任务使用同一目录时会共享
 文件；需要隔离并发修改时，可先准备不同的 Git worktree 再配置。聊天通过项目名称选择目录，不接受任意
-本地路径。页面管理项目与 Bypass；模型 API、模型名和 key 仍按下文通过配置文件和环境变量设置。
+本地路径。页面管理项目与 Bypass；模型 API、模型名和 key 按下文通过 TOML 配置。
 
 在现有应用的基本聊天权限之外，还需要增加以下权限：
 
@@ -343,7 +343,8 @@ Bypass 开关。此后项目配置以该文件为准，TOML 仅作为初始项�
 本项目基于 [Eino](docs/ai-framework.md) 的 Go AI 入口让你直接私聊现有飞书机器人，由模型理解需求并调用受控的任务工具。配置你自己的
 模型 API、模型名和 key 即可；飞书应用、项目到多个目录的映射，以及 Codex/Claude 执行环境沿用上节配置。
 
-先启用 `[tasks]` 并配置项目，在 `~/.herdr-agent/config.toml` 增加：
+先启用 `[tasks]` 并配置项目，在 `~/.herdr-agent/config.toml` 已有的 `[ai]` 段中填写
+（不存在时才新增，避免重复定义）：
 
 ```toml
 [ai]
@@ -351,6 +352,7 @@ enabled = true
 provider = "openai-responses"
 model = "你的服务支持的模型ID"
 base_url = "https://你的模型服务/v1"
+api_key = "你的模型服务API密钥"
 timeout = "2m"
 ```
 
@@ -360,14 +362,13 @@ timeout = "2m"
 不能包含用户名、密码、查询参数或片段，要求 HTTPS；仅本机 loopback 地址允许 HTTP，例如
 `http://127.0.0.1:8080/v1`。`timeout` 必须大于零且不超过 `10m`，默认 `2m`。
 
-将模型服务的 key 写入 `~/.herdr-agent/.env`，然后重启 `herdr-agent serve`：
+将模型服务的 key 直接写入同一个 `[ai]` 段的 `api_key`，然后重启 `herdr-agent serve`。
+新电脑无需设置模型密钥环境变量，也无需克隆仓库。模型 key 只从 TOML 读取，不再读取环境变量或
+`.env` 中的 `HERDR_AGENT_AI_API_KEY`；老用户需要将模型 key 迁移到 `[ai].api_key` 后再重启。
+执行 `chmod 600 ~/.herdr-agent/config.toml` 限制文件访问，共享配置时隐去 `api_key`。
 
-```dotenv
-HERDR_AGENT_AI_API_KEY=你的模型服务API密钥
-```
-
-key 只从环境变量或 `.env` 读取，不能写进 `config.toml`。进程环境优先于 `.env`，包括显式设置为空
-的情况。该 key 用于你选择的模型服务，飞书应用仍使用已有的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。
+TOML `api_key` 需要包含本次修改的二进制，`v0.2.2` 尚不支持该字段。该 key 用于你选择的模型服务；
+飞书凭据仍沿用 `setup` / `.env` 流程中的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。
 整个入口在 Go 服务中运行，无需额外 JavaScript 运行时。
 
 在机器人**入口私聊**中直接说：

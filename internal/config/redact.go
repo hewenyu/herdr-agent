@@ -18,8 +18,8 @@ const (
 	unsetValue = "<unset>"
 	autoValue  = "<auto>"
 
-	// minScrubLen is the shortest secret worth pattern-matching for. Scrubbing
-	// a one- or two-character string out of the whole line would corrupt it.
+	// minScrubLen is the shortest secret worth matching as an unquoted
+	// substring. Scrubbing a one-character string from a whole line corrupts it.
 	minScrubLen = 8
 )
 
@@ -239,9 +239,18 @@ func (e *redactedError) Unwrap() error { return e.cause }
 // field: notify_chat_id and the allowlist are printed verbatim, and a
 // misconfiguration must not turn into a leak.
 func scrub(s, secret string) string {
+	if secret == "" {
+		return s
+	}
+	// TOML credentials can contain quotes or backslashes. Parser diagnostics
+	// escape these with %q, so the raw value alone would miss the leaked key.
+	// Exact quoted values are safe to replace even for a short credential.
+	quoted := strconv.Quote(secret)
+	s = strings.ReplaceAll(s, quoted, strconv.Quote(RedactedSecret))
 	if len(secret) < minScrubLen {
 		return s
 	}
+	s = strings.ReplaceAll(s, quoted[1:len(quoted)-1], RedactedSecret)
 	return strings.ReplaceAll(s, secret, RedactedSecret)
 }
 

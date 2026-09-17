@@ -17,15 +17,16 @@ import (
 //
 // It exists for two reasons. First, durations are written as strings ("1s")
 // while Config uses time.Duration, which is an int64 and cannot decode a
-// string on its own. Second, Feishu.AppID/AppSecret and AI.APIKey have no field here,
-// which makes it structurally impossible for config.toml to supply a
-// credential — a `toml:"-"` tag would be a convention, this is a guarantee.
+// string on its own. Second, Feishu.AppID/AppSecret have no field here, so only
+// the model API key can come from TOML; Feishu credentials retain their own
+// setup/environment flow.
 type fileConfig struct {
 	AI struct {
 		Enabled  bool         `toml:"enabled"`
 		Provider string       `toml:"provider"`
 		Model    string       `toml:"model"`
 		BaseURL  string       `toml:"base_url"`
+		APIKey   string       `toml:"api_key"`
 		Timeout  tomlDuration `toml:"timeout"`
 	} `toml:"ai"`
 	Feishu struct {
@@ -87,8 +88,32 @@ func applyFile(cfg *Config, path string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
+	// Parse once, then read the key before decoding durations or other fields.
+	// Their diagnostics can echo an accidentally pasted key, even when that
+	// field appears before api_key in the file.
+	var raw toml.Primitive
+	md, err := toml.Decode(string(data), &raw)
+	var credentials struct {
+		AI struct {
+			APIKey string `toml:"api_key"`
+		} `toml:"ai"`
+	}
+	if err == nil {
+		err = md.PrimitiveDecode(raw, &credentials)
+	}
+	if err != nil {
+		// Invalid syntax or a non-string key prevents reliable extraction. Keep
+		// the location, but not a parser message which may quote the credential.
+		message := fmt.Sprintf("parse %s: invalid TOML; check syntax and use a quoted string for ai.api_key", path)
+		var parseErr toml.ParseError
+		if errors.As(err, &parseErr) {
+			message = fmt.Sprintf("parse %s at line %d: invalid TOML; check syntax and use a quoted string for ai.api_key", path, parseErr.Position.Line)
+		}
+		return &redactedError{cause: err, text: message}
+	}
+	cfg.AI.APIKey = credentials.AI.APIKey
 	var fc fileConfig
-	md, err := toml.Decode(string(data), &fc)
+	err = md.PrimitiveDecode(raw, &fc)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -219,7 +244,7 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 	for _, k := range undecoded {
 		s := k.String()
 		switch s {
-		case "feishu.app_id", "feishu.app_secret", "ai.api_key":
+		case "feishu.app_id", "feishu.app_secret":
 			credential = true
 		}
 		keys = append(keys, s)
@@ -228,8 +253,8 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 
 	msg := fmt.Sprintf("%s: unknown key(s): %s", path, strings.Join(keys, ", "))
 	if credential {
-		msg += fmt.Sprintf("; credentials are read from %s / %s / %s in the environment or .env only, never from %s",
-			EnvAppID, EnvAppSecret, EnvAIAPIKey, ConfigFileName)
+		msg += fmt.Sprintf("; Feishu credentials are read from %s / %s in the environment or .env only, never from %s",
+			EnvAppID, EnvAppSecret, ConfigFileName)
 	}
 	return errors.New(msg)
 }

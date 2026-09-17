@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,10 @@ import (
 // Exercise the configured serve wiring, Eino's real Responses adapter, the
 // actual task query tool, and the Feishu reply path without external services.
 func TestServeNaturalLanguageQueriesActualConfiguredProjects(t *testing.T) {
+	// A fresh installation has no repository .env. An obsolete process-level
+	// key must not override the model credential saved in config.toml.
+	t.Chdir(t.TempDir())
+	t.Setenv("HERDR_AGENT_AI_API_KEY", "obsolete-environment-key")
 	h, hooks, p := newServeHarness(t)
 	enableServeTasks(t, h)
 	h.d.Client = &taskServeClient{RecordingClient: h.rc}
@@ -47,7 +53,22 @@ func TestServeNaturalLanguageQueriesActualConfiguredProjects(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "resp_test", "object": "response", "created_at": 1, "status": "completed", "model": "test-model", "output": output, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}})
 	}))
 	defer provider.Close()
-	h.d.Cfg.AI = config.AI{Enabled: true, Provider: "openai-responses", Model: "test-model", BaseURL: provider.URL + "/v1", APIKey: "test-model-key", Timeout: time.Minute}
+	modelConfig := `[ai]
+enabled = true
+provider = "openai-responses"
+model = "test-model"
+base_url = "` + provider.URL + `/v1"
+api_key = "test-model-key"
+timeout = "1m"
+`
+	if err := os.WriteFile(filepath.Join(h.d.StateDir, config.ConfigFileName), []byte(modelConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(h.d.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.d.Cfg.AI = loaded.AI
 	bot := taskBotForServe(p)
 	hooks.newBot = func(config.Config, *slog.Logger) (lark.Bot, error) { return bot, nil }
 	ctx, cancel := context.WithCancel(context.Background())
