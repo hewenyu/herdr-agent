@@ -3,29 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="csrf-token" content="__CSRF_TOKEN__">
   <meta name="color-scheme" content="light">
-  <title>herdr · 调度工作台</title>
+  <title>herdr · 会话记录</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <div class="shell">
-    <aside class="rail">
-      <a class="brand" href="/" aria-label="herdr 工作台"><span class="brand-mark">h</span><span>herdr<span class="brand-caption">调度工作台</span></span></a>
-      <div class="rail-label">工作空间</div>
-      <nav id="navigation" aria-label="主导航"></nav>
-      <div class="rail-note"><span class="live-dot"></span>本机运行<br><span>pi 调度 · herdr 托管执行</span></div>
-    </aside>
-    <main>
-      <header class="topbar"><div><div class="eyebrow">YOUR LOCAL WORKSPACE</div><h1 id="page-title">会话</h1></div><span id="connection" class="connection">正在连接</span></header>
-      <section id="identity" aria-label="本机管理身份"></section>
-      <section id="authorization" aria-label="连接与授权状态"></section>
-      <div id="feedback" role="status" aria-live="polite"></div>
-      <section id="content" aria-label="工作台内容"><div class="empty">正在读取本机状态…</div></section>
-      <footer>需求讨论与实际开发由 Claude / Codex 参与完成。</footer>
-    </main>
-  </div>
-  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">h</span><div><span class="eyebrow">HERDR</span><h1>会话记录</h1></div></div>
+      <div class="connection-area"><span class="badge">仅查看</span><span id="connection" class="subtle" role="status">正在读取记录</span></div>
+    </header>
+    <p class="intro">查看飞书中的调度对话与处理记录。任务和会话操作请在飞书中完成。</p>
+    <section id="filters" class="filters" aria-label="浏览范围"></section>
+    <div id="feedback" role="status" aria-live="polite"></div>
+    <section id="content" aria-label="会话记录"><div class="empty">正在读取会话历史…</div></section>
+    <footer>pi 调度 · herdr 托管 Claude / Codex</footer>
+  </main>
 </body>
 </html>

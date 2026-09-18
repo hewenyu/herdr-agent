@@ -1,15 +1,7 @@
-import type {
-  AgentScreen,
-  Catalog,
-  Participant,
-  Session,
-  StoredMessage,
-  Task,
-} from "../core/types.js";
+import type { Catalog, Participant, Session, StoredMessage, Task } from "../core/types.js";
 
 export interface WebBackend {
-  snapshot(): unknown;
-  dispatch(action: string, input: Record<string, unknown>): Promise<unknown>;
+  history(ownerId?: string): WebState;
   subscribe(listener: () => void): () => void;
 }
 
@@ -22,6 +14,15 @@ export interface WebState {
   sessions?: Session[];
   activeSessionId?: string;
   messages?: StoredMessage[];
+  participantNames?: Record<string, string>;
+  records?: Array<{
+    id: string;
+    sessionId: string;
+    kind: string;
+    createdAt?: string;
+    state?: string;
+    data: unknown;
+  }>;
   tasks?: Task[];
   participants?: Participant[];
   authorization?: { status: string; message?: string; url?: string };
@@ -44,35 +45,4 @@ export interface WebState {
   };
 }
 
-export interface WebActionResult {
-  id?: string;
-  text?: string;
-  role?: StoredMessage["role"];
-  createdAt?: string;
-  delivery?: StoredMessage["delivery"];
-  deliveryIds?: string[];
-  generation?: number;
-  source?: string;
-  screen?: AgentScreen;
-  approval?: { nonce: string; options?: Array<{ key: string; label: string }> };
-  detail?: string;
-  message?: string;
-  status?: string;
-  sessionId?: string;
-}
-
-/**
- * Action contract consumed by the application facade:
- * identity.select {ownerId}: select only a configured allowed identity for local management.
- * Owner-scoped actions may include expectedOwnerId to reject stale browser identity state.
- * project.save {name,directories,agent}; project.delete/default {name}; catalog.bypass {bypass}
- * session.create {name}; session.select/archive/clear {id}; session.rename {id,name}
- * chat.send {sessionId,text}; task.create TaskCreateInput + {sessionId}
- * task.action {id,action}; participant.send {taskId,participantId,text}
- * participant.interrupt/screen {taskId,participantId}; interrupt with participantId="all" affects all.
- * participant.answer {taskId,nonce,key}; session.restore {id}; chat.ack {messageId,sessionId}
- * participant.add {taskId,kind,name?,role?}; participant.remove {taskId,participantId}
- * config.ai {provider,enabled,baseUrl,model,apiKey?}; saved key is never returned to the browser.
- * Destructive authorization and actor ownership remain the facade's responsibility.
- */
 export type WebAssets = Record<"index.html" | "styles.css" | "app.js", string | Uint8Array>;

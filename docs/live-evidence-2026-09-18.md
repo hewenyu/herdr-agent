@@ -397,3 +397,16 @@ E17群完成答复提前概括“已完成收尾”，实际群尚未解散。`r
 
 
 E18实际部署证据 `.cache/live/e18-deployment.json`（03:51:22 UTC）：源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。独立SEA smoke通过，飞书连接及授权ready，herdr原PID39037未重启；[同提交CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)的macOS arm64、Linux x64/arm64全部通过check与SEA。部署成功不替代上述生产收尾回复重验。此次没有为提示验证重建已清理的群或执行器，整体逐项目标继续active。后续文档HEAD不是新的二进制stamp。
+
+
+## E19：用户纠正入口范围，停止 Web 业务验收
+
+2026-09-18 用户明确：真实业务全部在飞书发生，Web 页面只做会话记录。网页允许本地浏览和筛选已有历史；不得改变 active pi session 或服务端业务身份，不得发消息、创建任务/项目、审批、清理资源、修改配置，也不提供命令或清空入口。飞书主私聊 exact `/clear` 继续由程序机械轮转，成功后仅回复 `CLEAR_NEW_SESSION_OK`；群内不执行轮转。
+
+这项纠正覆盖此前 Web 管理、聊天、配置与业务表单设计。E01–E18 中原 Web/API 输入、响应、浏览器观察、真实产物及资源清理事实原样保留；其 R-P/R-F 只说明当时检查的路径，不得重新解释为飞书用户入口通过。尤其 E17 B 的任务群完成指令有真实飞书入站，而 A 的应用 close、C 的 Web API complete 只提供当时清理事实，不能合并算作三个飞书完成入口样本。旧 Web `/clear`、ACK、身份选择及表单验证不再扩展为产品验收；新只读 Web 按现场矩阵 WR01–WR09 独立补验。
+
+本轮 E19 仅从 Web 创建了单 Claude 父讨论；未继续通过 Web 创建子开发任务。主执行者通过旧本地 API 执行明确的 `complete keepGroup:false/keepExecution:false` 维护清理，见 `.cache/live/e19-scope-cleanup.json`；飞书界面完成指令未发送、没有对应入站，不能计作飞书完成入口通过。2026-09-18 04:23:40 UTC 独立只读回读 `.cache/live/e19-cleanup-readback.json` 确认该任务 `task_0648cdc3f204628e1c75747cff3916eb` 已 `destroyed`、参与者 `gone`、close/delete-group 回执均 done；远端任务 `04195708-2537-42e8-9279-f78969200b57` 的 completedAt 为 `1789704969000`，群 `oc_b4919a668669c22a09f68373f4f4cda2` 已 dissolved，准确窗口 `w1H:p1` 返回 `pane_not_found`。该群 6 条 outbox 均 delivered，无待发送；专用 Web session 已归档、旧 Web 选择已恢复。11 项清理检查通过，仅证明本次维护结果，不替代业务验收，也不刷新 E17 十二任务快照。回读脚本最初误要求清理后状态为 completed；对照 `closeTask` 的 destroyed 终态修正判定，原始判定与修正原因均保留，未重读或修改生产资源。
+
+E19 另保留模型决策 R-F：原始要求只有“讨论后等待我验收，不自动完成或关闭”，没有要求验收完成后留群，但 `.cache/live/e19-parent.json` 的 `task_create` 调用明确传入 `keepGroup:true`，落库为 `groupRetentionSource:explicit`。等待验收只约束完成时机，不能据此推断完成后的资源保留策略。提示与工具说明正在补强，尚无针对该修正的真实模型复验；维护清理成功不覆盖此 R-F。新的飞书业务验收须从实际用户私聊/群内交互发起，逐项核对入站、工具与操作回执、原生执行、群内展示及远端事实。
+
+本文仅追加范围与当时状态说明，不宣称只读 Web 改造、测试、构建或部署已经完成；后续结果必须另记对应提交和证据。

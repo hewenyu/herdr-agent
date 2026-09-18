@@ -49,7 +49,7 @@ export async function handleMessage(
     fail("invalid_scope", "会话已归档，未执行旧会话的排队请求。");
   if (clearCommand) {
     if (actor.taskId || message.chatType !== "private") {
-      await reply(context, message, "/clear 仅用于主入口私聊或 Web 聊天。");
+      await reply(context, message, "/clear 仅用于主入口私聊。");
       return;
     }
     const answer = await context.sessions.rotateEntry(actor, { signal: context.signal });
@@ -129,11 +129,7 @@ export async function handleMessage(
       await reply(context, message, `任务已登记：${created.id}。启动与群入口稍后同步。`);
       return;
     }
-    await reply(
-      context,
-      message,
-      "pi 尚未启用。使用 /new <项目> [codex|claude] <要求>、/tasks，或在本地 Web 管理任务。",
-    );
+    await reply(context, message, "pi 尚未启用。使用 /new <项目> [codex|claude] <要求>、/tasks。");
     return;
   }
   context.store.set("legacy_chats", stableId(message.ownerId, message.chatId), {

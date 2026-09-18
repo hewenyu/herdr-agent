@@ -22,6 +22,7 @@ import { Approvals } from "./approvals.js";
 import type { ApplicationContext } from "./context.js";
 import { DirectoryTrust } from "./directory-trust.js";
 import { canDeleteTaskGroup } from "./group-delivery.js";
+import { historySnapshot } from "./history.js";
 import { Inbox, type InboxRecord } from "./inbox.js";
 import { LegacyBridge } from "./legacy.js";
 import { createLogger } from "./logger.js";
@@ -151,6 +152,9 @@ export class Application implements ApplicationContext {
 
   snapshot(): Record<string, unknown> {
     return snapshot(this);
+  }
+  history(ownerId?: string) {
+    return historySnapshot(this, ownerId);
   }
   dispatch(action: string, input: Record<string, unknown>): Promise<unknown> {
     if (this.signal.aborted)
@@ -324,14 +328,17 @@ export class Application implements ApplicationContext {
     const actor = this.actor(task, outputId);
     const chatId = this.outputChat(task);
     const delivered = !!chatId && !chatId.startsWith("web:");
-    if (delivered) await this.outbox.send(chatId as string, text, outputId);
+    const legacyDelivery = delivered
+      ? this.outbox.legacyDeliveredToChat(chatId as string, text, outputId)
+      : undefined;
+    if (delivered && !legacyDelivery) await this.outbox.send(chatId as string, text, outputId);
     this.sessions.recordExternal(actor, {
       id: outputId,
       text,
       participantId: participant.id,
       source: "herdr",
       pendingDelivery: !delivered,
-      deliveredAt: delivered ? new Date().toISOString() : undefined,
+      deliveredAt: delivered ? (legacyDelivery?.updatedAt ?? new Date().toISOString()) : undefined,
     });
     this.changed();
   }
@@ -396,13 +403,19 @@ export class Application implements ApplicationContext {
     }
     if (decision.notify && decision.text) {
       const delivered = !!chatId && !chatId.startsWith("web:");
-      if (delivered) await this.outbox.send(chatId as string, decision.text, `notice:${signature}`);
+      const legacyDelivery = delivered
+        ? this.outbox.legacyDeliveredToChat(chatId as string, decision.text, `notice:${signature}`)
+        : undefined;
+      if (delivered && !legacyDelivery)
+        await this.outbox.send(chatId as string, decision.text, `notice:${signature}`);
       this.sessions.recordExternal(actor, {
         id: `notice-visible:${signature}`,
         text: decision.text,
         source: "lifecycle",
         pendingDelivery: !delivered,
-        deliveredAt: delivered ? new Date().toISOString() : undefined,
+        deliveredAt: delivered
+          ? (legacyDelivery?.updatedAt ?? new Date().toISOString())
+          : undefined,
       });
       if (kind === "progress") recordProgressNotice(this.store, task.id);
     }

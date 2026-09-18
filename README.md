@@ -2,9 +2,11 @@
 
 [中文说明](README.zh-CN.md)
 
-A personal orchestration tool built with **Node, TypeScript and pi**. Use Feishu or the local Web interface to manage projects, tasks, participants and multiple pi sessions. **herdr continues to host Claude/Codex and their native sessions.**
+A personal orchestration tool built with **Node, TypeScript and pi**. Use Feishu private messages and task groups to manage projects, tasks, participants and multiple pi sessions. The local Web interface is only for reading conversation history. **herdr continues to host Claude/Codex and their native sessions.**
 
 pi handles this tool's business: arranging work, routing messages, querying state and managing lifecycles. Claude/Codex handle your project's requirements, design, implementation, tests and reviews. With AI enabled, the model decides ordinary conversational responses and tool calls. The exact `/clear` session command runs directly without a model. The application enforces identity, scope, human approval and durable receipts.
+
+**Scope correction, 2026-09-18:** Web may browse and filter existing conversation records locally. It must not change the active pi session, send messages, create tasks or projects, approve or clean up resources, edit configuration, or accept commands. The implementation and verification of this correction are in progress; earlier Web/API business tests remain historical evidence and do not establish a Feishu business flow.
 
 ## Build and run
 
@@ -21,7 +23,7 @@ npm run smoke
 
 `check` runs the 1000-line-per-file limit, strict TypeScript, Biome formatting/lint and tests. `build` produces `dist/herdr-agent.cjs` with embedded Web assets. `binary` uses Node SEA to produce `dist/herdr-agent`, including the Node runtime and native flock extension. End users need neither Node nor `node_modules` or separate frontend files.
 
-Build natively for each target: macOS arm64, Linux x64 and Linux arm64. A macOS executable is not a Linux executable. `smoke` copies only the binary to a fresh temporary directory and verifies help, version, native locking, SQLite, embedded Web resources, state API and CSRF. It also exercises the embedded pi loop against local Responses/Anthropic fixtures and verifies Web delivery acknowledgement. It uses temporary state and does not connect to real Feishu or herdr. Current platform evidence is recorded in [acceptance](docs/acceptance.md); macOS ad-hoc signing is not notarization.
+Build natively for each target: macOS arm64, Linux x64 and Linux arm64. A macOS executable is not a Linux executable. `smoke` copies only the binary to a fresh temporary directory and verifies help, version, native locking, SQLite, embedded Web resources, read-only history and rejection of Web writes. Isolated Feishu adapter events are queued before startup; the copied SEA executes the bundled pi loop against local Responses and Anthropic protocol fixtures. Reading history never acknowledges delivery; without a Feishu connection, the reply remains undelivered. This is packaging coverage, with no real Feishu, herdr or model service. Current platform evidence is recorded in [acceptance](docs/acceptance.md); macOS ad-hoc signing is not notarization.
 
 For source development: `npm run dev -- help`. Use the built program to verify embedded Web assets. The examples below assume the executable is on PATH; otherwise replace `herdr-agent` with `./dist/herdr-agent`.
 
@@ -31,31 +33,30 @@ Copy [config.example.toml](deploy/config.example.toml) to `~/.herdr-agent/config
 
 ```sh
 herdr-agent setup
-herdr-agent configure --listen 127.0.0.1:0 --open
 herdr-agent serve --open
 ```
 
-Run configure and serve separately: they share the state lock. Setup reuses an existing app when possible, saves credentials and the verified owner, and requires both a private message and the matching card callback for complete verification. Stop serve before running setup. Use `setup --app cli_EXISTING_APP` to resolve an ambiguous app and `setup --update-permissions` to grant required scopes. Creating a replacement app requires `setup --reregister --yes`.
+Setup reuses an existing app when possible, saves credentials and the verified owner, and requires both a private message and the matching card callback for complete verification. Stop serve before running setup. Use `setup --app cli_EXISTING_APP` to resolve an ambiguous app and `setup --update-permissions` to grant required scopes. Creating a replacement app requires `setup --reregister --yes`.
 
 The current CLI supports mainland Feishu apps; it refuses to save a Lark registration as a working configuration. Set `[ai]` provider/model/base_url/api_key and `enabled=true` to use pi; tasks must also be enabled. Supported model protocols are OpenAI Responses and Anthropic Messages. Model configuration changes require a restart.
 
 Feishu credentials come from process environment, then state `.env`, then repository `.env`. Files use literal `KEY=VALUE`: quotes, hashes and embedded equals signs are literal, and shell `export` syntax is unsupported. Model and memory keys come from TOML. Keep credential files private.
 
-When authorization is missing, serve keeps the local Web interface available. Its URL is printed on startup; port 0 selects an available port. Only literal loopback IPs are accepted. `configure` runs local management without a Feishu connection. For an explicitly local task, turn off both cloud-group and cloud-task creation; unavailable connectivity never silently removes requested cloud resources. This is a single-user, single-machine tool, not a remotely authenticated multi-tenant Web service.
+The local page is a conversation-history viewer, not a configuration or task-management fallback when Feishu is unavailable. Its URL is printed on startup; port 0 selects an available port. Only literal loopback IPs are accepted. Edit local installation settings through the documented configuration files and CLI; initiate business operations in Feishu. `configure --listen 127.0.0.1:0 --open` remains available to start the local history page without a Feishu connection. Its HTTP interface has no configuration or business writes. The command still opens and migrates local state and can process already queued work through the existing scheduler; the read-only guarantee applies to browsing, not to every effect of starting the service. This is a single-user, single-machine tool, not a remotely authenticated multi-tenant Web service.
 
 For supervised operation, review the launchd/systemd user templates and installer in [deploy](deploy/). Use the correct account and paths. Stopping the bridge does not automatically destroy herdr-managed tasks.
 
 ## Workflow and commands
 
-Ask pi to start a requirements discussion with Claude and Codex, arrange implementation and review, or return to a previous orchestration session. One Feishu bot labels participant output; Claude and Codex are not separate Feishu accounts.
+In Feishu, ask pi to start a requirements discussion with Claude and Codex, arrange implementation and review, or return to a previous orchestration session. One Feishu bot labels participant output; Claude and Codex are not separate Feishu accounts.
 
 Multi-participant discussions default to at most four rounds and 30 minutes. Participant IDs distinguish multiple instances of the same model. Normal text never serves as a permission-menu approval. Unknown delivery or mutation outcomes are retained for inspection rather than automatically retried.
 
 New tasks dissolve their group after confirmed completion by default; explicitly request `keepGroup: true` to retain it. `review` never triggers dissolution. Explicit retention remains effective. Legacy default or unproven retention is resolved to deletion when completion or closure begins; active historical tasks are not rewritten in bulk. `complete`, including manual Feishu completion, closes the corresponding execution resources through herdr and applies the group policy. Any group dissolution also closes its managed executors. Explicit `keepExecution: true` on completion is an exception and requires `keepGroup: true` for tasks with a group; `close` confirms completion before execution cleanup; `destroy` cleans up without accepting the task; `reopen` applies to completed tasks whose resources remain. Session archiving is independent. Shared project directories are the default. Explicit worktree mode isolates only the first directory; additional directories remain shared, and task closure does not delete code or worktrees.
 
-The everyday CLI is `serve / setup / configure / doctor / version / help`. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
+The everyday CLI is `serve / setup / configure / doctor / version / help`; `configure` now opens the local conversation-history page, with no Web management controls. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
 
-Send `/clear` in the main private conversation or Web chat to archive the current pi session and select a new one. Only after the transaction succeeds does the program reply `CLEAR_NEW_SESSION_OK`. This works with AI disabled or unavailable, preserves history and tasks, and leaves herdr sessions intact. Groups reject the command. Matching uses only the actual message body, with surrounding whitespace removed; quoted text, `/CLEAR`, `/clear now` and mentions of `/clear` do not trigger it. The Web clear button separately resets context within the same session.
+Send `/clear` in the main Feishu private conversation to archive the current pi session and select a new one. Only after the transaction succeeds does the program reply `CLEAR_NEW_SESSION_OK`. This works with AI disabled or unavailable, preserves history and tasks, and leaves herdr sessions intact. Groups reject the command. Matching uses only the actual message body, with surrounding whitespace removed; quoted text, `/CLEAR`, `/clear now` and mentions of `/clear` do not trigger it. Web has no chat box, `/clear` entry point or clear/reset button. Browsing another history record never changes the active Feishu session.
 
 With AI enabled, other conversational text, including slash syntax, goes to the model. With AI disabled, task-mode compatibility commands remain available. With tasks disabled, the existing-agent bridge retains `/ls /card /say /stop /mirror /close`; its `/close` only clears selection and never destroys a task. See `help` for exact CLI options.
 
@@ -71,13 +72,13 @@ herdr-agent migrate --state-dir /absolute/state
 herdr-agent serve --state-dir /absolute/state
 ```
 
-Migration validates old JSON, backs up original files under `backups/`, then imports tasks, native resource references, visible conversations and replay-prevention receipts into SQLite transactionally. Old files remain unchanged. `serve` and `configure` run the same idempotent migration automatically. Corrupt sources, conflicting new facts or changed previously imported sources refuse overwrite. Interrupted operations remain unresolved; old tools and historical replies are not replayed.
+Migration validates old JSON, backs up original files under `backups/`, then imports tasks, native resource references, visible conversations and replay-prevention receipts into SQLite transactionally. Old files remain unchanged. The service startup performs the same idempotent migration; explicit maintenance uses `migrate`. Corrupt sources, conflicting new facts or changed previously imported sources refuse overwrite. Interrupted operations remain unresolved; old tools and historical replies are not replayed.
 
-New state is stored in `state.sqlite` with WAL/SHM. TOML and legacy `projects.json` seed the catalog; subsequent Web project edits write SQLite. There is no automatic reverse migration. Before rollback, stop the new service, preserve the database and backups, and reconcile resources created or removed since migration. Restoring old JSON alone does not restore external state.
+New state is stored in `state.sqlite` with WAL/SHM. TOML and legacy `projects.json` seed the catalog; subsequent project changes initiated in Feishu write SQLite. There is no automatic reverse migration. Before rollback, stop the new service, preserve the database and backups, and reconcile resources created or removed since migration. Restoring old JSON alone does not restore external state.
 
 ## Evidence and scope
 
-Tests cover the real pi loop with protocol fixtures, SQLite/flock/Git, Feishu SDK dispatch, migration, delivery receipts and standalone packaging. They do not prove a live end-to-end flow through a production Feishu tenant, real model and real herdr. Supported inputs are text and text inside rich posts; image understanding, speech transcription and artifact hosting are outside the first release.
+Tests cover the real pi loop with protocol fixtures, SQLite/flock/Git, Feishu SDK dispatch, migration, delivery receipts and standalone packaging. Business acceptance requires actual Feishu user ingress and group interactions, matched with model/tool receipts, herdr execution and independent readbacks. Direct Web/API actions and fixtures cannot substitute for this route. Read-only Web browsing is verified separately. Supported inputs are text and text inside rich posts; image understanding, speech transcription and artifact hosting are outside the first release.
 
 - [Current business scenarios, command choices and gaps](docs/current-business-scenarios.md)
 - [Current design and D01–D16 decisions](docs/node-pi-design.md)

@@ -1,148 +1,189 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { test } from "node:test";
-import { Application } from "../../src/app/application.js";
-import type { Session, StoredMessage, Task } from "../../src/core/types.js";
-import { Store } from "../../src/storage/store.js";
+import type { StoredMessage } from "../../src/core/types.js";
 import type { WebState } from "../../src/web/contracts.js";
 import { startWeb } from "../../src/web/index.js";
-import { deferred, logger, setup } from "./helpers.js";
+import { deferred, setup } from "./helpers.js";
 
-test("local HTTP identity selection persists and scopes sessions, history, tasks and acknowledgements", async () => {
+test("browsing an empty history never creates an entry session or selection", async () => {
+  const h = setup();
+  try {
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(h.app.history().sessions, []);
+      assert.deepEqual(h.app.history().messages, []);
+      assert.deepEqual(h.store.entries("sessions"), []);
+      assert.deepEqual(h.store.entries("session_selection"), []);
+      assert.deepEqual(h.store.entries("web_selection"), []);
+    }
+    assert.equal(h.engine.calls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("tool history orders rounds by time and preserves each round's call/result sequence", async () => {
+  const h = setup();
+  try {
+    const session = h.app.sessions.create("owner");
+    for (const [id, time, name] of [
+      ["a-later", "2026-09-18T02:00:00Z", "later"],
+      ["z-earlier", "2026-09-18T01:00:00Z", "earlier"],
+    ]) {
+      h.store.set("pi_checkpoints", id as string, {
+        sessionId: session.id,
+        updatedAt: time,
+        messages: Array.from({ length: 12 }, (_, index) => ({
+          role: "toolResult",
+          toolCallId: `${name}-${index}`,
+          toolName: `${name}-${index}`,
+          content: [],
+          isError: false,
+        })),
+      });
+    }
+    assert.deepEqual(
+      h.app.history().records?.map((record) => (record.data as { name: string }).name),
+      ["earlier", "later"].flatMap((name) =>
+        Array.from({ length: 12 }, (_, index) => `${name}-${index}`),
+      ),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("HTTP record browsing isolates identities and never changes sessions or delivery", async () => {
   const h = setup(true, false);
   h.config.feishu.allowedOpenIds = ["owner", "owner-second"];
+  const first = h.app.sessions.create("owner", { name: "第一身份" });
+  const archived = h.app.sessions.create("owner", { name: "已归档" });
+  h.app.sessions.archive("owner", archived.id);
+  const second = h.app.sessions.create("owner-second", { name: "第二身份" });
+  const makeMessage = (sessionId: string, id: string, text: string): StoredMessage => ({
+    id,
+    sessionId,
+    text,
+    role: "assistant",
+    source: "feishu",
+    createdAt: new Date().toISOString(),
+    delivery: "sending",
+    deliveryIds: [],
+    generation: 0,
+  });
+  const firstReply = makeMessage(first.id, "first-message", "第一身份正文");
+  for (const m of [
+    firstReply,
+    makeMessage(archived.id, "archived-message", "旧历史"),
+    makeMessage(second.id, "second-message", "第二身份正文"),
+  ])
+    h.store.set("messages", m.id, m);
+  h.store.set("web_identity", "selected", "owner-second");
+  h.store.set("web_selection", "owner", second.id);
+  h.config.ai.apiKey = "test-model-secret";
+  h.store.set("pi_checkpoints", "first-turn", {
+    sessionId: first.id,
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "task_get",
+            arguments: { id: "task", apiKey: "different-secret" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "task_get",
+        isError: false,
+        content: [{ type: "text", text: "test-model-secret" }],
+      },
+    ],
+  });
+  h.store.set("pi_checkpoints", "second-turn", {
+    sessionId: second.id,
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-other",
+            name: "task_get",
+            arguments: { id: "private-other-task" },
+          },
+        ],
+      },
+    ],
+  });
+  const namespaces = [
+    "sessions",
+    "messages",
+    "pi_checkpoints",
+    "web_identity",
+    "web_selection",
+    "session_selection",
+    "turns",
+    "outbox",
+  ];
+  const saved = () => namespaces.map((namespace) => [namespace, h.store.entries(namespace)]);
+  const before = saved();
   const web = await startWeb({
     listen: "127.0.0.1:0",
     backend: h.app,
-    assets: { "index.html": "__CSRF_TOKEN__", "app.js": "", "styles.css": "" },
+    assets: { "index.html": "history", "app.js": "", "styles.css": "" },
   });
-  const csrf = await (await fetch(web.url)).text();
-  const state = async () => (await (await fetch(`${web.url}/api/state`)).json()) as WebState;
-  const action = async (name: string, input: Record<string, unknown>, success = true) => {
-    const response = await fetch(`${web.url}/api/actions`, {
-      method: "POST",
-      headers: { Origin: web.url, "X-CSRF-Token": csrf, "Content-Type": "application/json" },
-      body: JSON.stringify({ action: name, input }),
-    });
-    const body = (await response.json()) as {
-      ok: boolean;
-      result: Record<string, unknown>;
-      error?: { code: string };
-    };
-    assert.equal(body.ok, success, JSON.stringify(body));
-    assert.equal(response.ok, success);
-    return body;
+  const state = async (ownerId?: string) => {
+    const response = await fetch(
+      `${web.url}/api/state${ownerId === undefined ? "" : `?ownerId=${encodeURIComponent(ownerId)}`}`,
+    );
+    assert.equal(response.status, 200);
+    return (await response.json()) as WebState;
   };
-  const makeTask = async (title: string) =>
-    (
-      await action("task.create", {
-        kind: "discussion",
-        title,
-        requirements: title,
-        participants: [{ kind: "codex" }],
-        createGroup: false,
-        createRemoteTask: false,
-      })
-    ).result as unknown as Task;
   try {
-    assert.equal((await state()).activeOwnerId, "owner");
-    const first = (await action("session.create", { name: "第一身份会话" }))
-      .result as unknown as Session;
-    const firstReply = (await action("chat.send", { text: "第一身份正文", requestId: "first" }))
-      .result as unknown as StoredMessage;
-    const firstTask = await makeTask("第一身份任务");
-    await action("identity.select", { ownerId: "owner-second" });
-    let snapshot = await state();
-    assert.equal(snapshot.activeOwnerId, "owner-second");
-    assert.equal(snapshot.tasks?.length, 0);
-    assert.equal(snapshot.messages?.length, 0);
-    assert.ok(snapshot.sessions?.every((item) => item.ownerId === "owner-second"));
-    assert.equal(
-      snapshot.identities?.find((item) => item.id === "owner")?.sessionCount,
-      h.app.sessions.list("owner", { archived: true }).length,
-    );
-
-    const second = (await action("session.create", { name: "第二身份会话" }))
-      .result as unknown as Session;
-    await action("chat.send", {
-      text: "第二身份正文",
-      requestId: "second",
-      expectedOwnerId: "owner-second",
-    });
-    const secondTask = await makeTask("第二身份任务");
-    for (const [name, input] of [
-      ["session.select", { id: first.id }],
-      ["session.history", { id: first.id }],
-      ["session.rename", { id: first.id, name: "非法修改" }],
-      ["task.get", { id: firstTask.id }],
-      ["task.action", { id: firstTask.id, action: "pause" }],
-      ["chat.ack", { sessionId: first.id, messageId: firstReply.id }],
-      ["session.create", { name: "过期身份", expectedOwnerId: "owner" }],
-      ["session.create", { name: "冒充身份", ownerId: "owner" }],
-      ["identity.select", { ownerId: "not-allowed" }],
-    ] as Array<[string, Record<string, unknown>]>)
-      await action(name, input, false);
-    snapshot = await state();
-    assert.equal(snapshot.activeOwnerId, "owner-second");
-    assert.equal(snapshot.activeSessionId, second.id);
+    const one = await state();
+    assert.equal(one.activeOwnerId, "owner");
+    assert.equal(one.activeSessionId, undefined);
+    assert.deepEqual(new Set(one.sessions?.map((x) => x.id)), new Set([first.id, archived.id]));
     assert.deepEqual(
-      snapshot.tasks?.map((item) => item.id),
-      [secondTask.id],
+      new Set(one.messages?.map((x) => x.text)),
+      new Set(["第一身份正文", "旧历史"]),
     );
-    assert.ok(snapshot.messages?.some((message) => message.text === "第二身份正文"));
-    assert.ok(snapshot.messages?.every((message) => message.sessionId === second.id));
-    assert.equal(h.app.sessions.get("owner", first.id).name, "第一身份会话");
+    assert.equal(one.records?.length, 2);
+    assert.ok(!JSON.stringify(one).includes("test-model-secret"));
+    assert.ok(!JSON.stringify(one).includes("different-secret"));
+    assert.ok(!JSON.stringify(one).includes("private-other-task"));
+    for (const field of ["tasks", "participants", "catalog", "projects", "model", "config"])
+      assert.equal(Object.hasOwn(one, field), false, field);
+    const two = await state("owner-second");
+    assert.deepEqual(
+      two.sessions?.map((x) => x.id),
+      [second.id],
+    );
+    assert.deepEqual(
+      two.messages?.map((x) => x.text),
+      ["第二身份正文"],
+    );
+    assert.equal(two.records?.length, 1);
+    assert.deepEqual(await state("owner"), one);
+    assert.equal((await fetch(`${web.url}/api/state?ownerId=stranger`)).status, 403);
+    assert.equal((await fetch(`${web.url}/api/state?ownerId=`)).status, 403);
+    assert.deepEqual(saved(), before);
     assert.equal(h.store.get<StoredMessage>("messages", firstReply.id)?.delivery, "sending");
-
-    await action("identity.select", { ownerId: "owner" });
-    snapshot = await state();
-    assert.equal(snapshot.activeSessionId, first.id);
-    assert.deepEqual(
-      snapshot.tasks?.map((item) => item.id),
-      [firstTask.id],
-    );
-    await action("chat.ack", {
-      sessionId: first.id,
-      messageId: firstReply.id,
-      expectedOwnerId: "owner",
-    });
-    assert.equal(h.store.get<StoredMessage>("messages", firstReply.id)?.delivery, "delivered");
-    await action("identity.select", { ownerId: "owner-second" });
-
-    const reopened = new Store(join(h.directory, "state.sqlite"));
-    const restarted = new Application({
-      config: h.config,
-      store: reopened,
-      engine: h.engine,
-      herdr: h.herdr,
-      logger,
-    });
-    try {
-      const restored = restarted.snapshot() as WebState;
-      assert.equal(restored.activeOwnerId, "owner-second");
-      assert.equal(restored.activeSessionId, second.id);
-    } finally {
-      await restarted.shutdown();
-      reopened.close();
-    }
-
+    assert.equal(h.engine.calls.length, 0);
     h.config.feishu.allowedOpenIds = ["owner"];
-    snapshot = await state();
-    assert.equal(snapshot.activeOwnerId, "owner");
-    assert.equal(snapshot.activeSessionId, first.id);
-    assert.equal(h.store.get("web_identity", "selected"), undefined);
-    await action("identity.select", { ownerId: "owner-second" }, false);
-    h.store.set("web_identity", "selected", { invalid: "owner-second" });
+    assert.equal((await fetch(`${web.url}/api/state?ownerId=owner-second`)).status, 403);
     assert.equal((await state()).activeOwnerId, "owner");
-    h.store.set("web_selection", "owner", second.id);
-    assert.ok((await state()).sessions?.every((session) => session.ownerId === "owner"));
-    assert.notEqual((await state()).activeSessionId, second.id);
+    assert.deepEqual(saved(), before);
     h.config.feishu.allowedOpenIds = [];
-    snapshot = await state();
-    assert.equal(snapshot.activeOwnerId, undefined);
-    assert.deepEqual(snapshot.sessions, []);
-    assert.deepEqual(snapshot.tasks, []);
-    await action("session.create", { name: "无授权" }, false);
+    const empty = await state();
+    assert.deepEqual(empty.sessions, []);
+    assert.deepEqual(empty.messages, []);
+    assert.deepEqual(empty.records, []);
+    assert.deepEqual(saved(), before);
   } finally {
     await web.close();
     await h.close();

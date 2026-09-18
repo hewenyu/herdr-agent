@@ -2,9 +2,17 @@
 
 日期：2026-09-18。本文对照 [需求盘点](node-pi-refactor-requirements.md) 的 B01–B18 / N01–N07；默认产品选择见 [设计](node-pi-design.md)，目标状态见 [refactor-goal.md](refactor-goal.md)。表格中的“已测”指离线自动化，不表示在真实飞书、herdr 或模型服务上完成端到端验收。
 
-## 最新整改与现场证据
+## 当前范围纠正
 
-最新进展（E18）：运行源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建时间 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。format/check（345项测试）、SEA smoke及[同提交三平台CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)通过；03:51回读飞书连接/授权ready，herdr PID39037保持。收尾阶段提示修正已部署，真实模型受控回执单样本通过，尚不称生产收尾回复重验；旧R-F保留。主入口无模型机械 `/clear` 语义不变。E17新增3任务及此前9任务均已确认资源清理，整体目标active。后续文档提交不冒充重新构建。
+2026-09-18 最新范围纠正：真实业务全部从飞书私聊或任务群发起，Web 仅只读查看会话记录。网页可本地浏览、筛选历史，不改 active pi session 或服务端业务身份，不发消息、不建任务/项目、不审批/清理、不修改配置，无命令入口。当前正在整改实现；旧 Web/API 业务证据保留，但不得算作飞书业务入口通过。
+
+业务通过必须同时对应真实飞书用户入站或群内交互、模型/工具和操作回执、herdr/远端资源事实及实际回读。旧 Web/API 创建、发送、切换、审批或清理只能作为历史实现与底层结果证据，不补足飞书入口。W01–W29 的业务扩展撤销，新的只读 Web 验收见矩阵 WR01–WR09。此处没有声称新边界已实现或测试通过。
+
+E19 仅通过 Web 创建了单 Claude 父讨论，未继续 Web 子开发。旧本地 API 维护清理后的独立回读已确认该任务 destroyed、远端完成、群解散、准确窗口不存在、群 outbox 无待发送，专用 Web session 已归档并恢复旧选择（`.cache/live/e19-cleanup-readback.json`，11 项通过）。该新增资源单独记账，不能计作真实飞书入口通过，也不能套用 E17 快照。“等待验收”被模型误转为 keepGroup:true 的 R-F 仍未通过真实模型复验。
+
+## 历史整改与现场证据
+
+E18 已部署版本记录（不含本次只读 Web 整改）：运行源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建时间 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。format/check（345项测试）、SEA smoke及[同提交三平台CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)通过；03:51回读飞书连接/授权ready，herdr PID39037保持。收尾阶段提示修正已部署，真实模型受控回执单样本通过，尚不称生产收尾回复重验；旧R-F保留。主入口无模型机械 `/clear` 语义不变。E17新增3任务及此前9任务均已确认资源清理，整体目标active。后续文档提交不冒充重新构建。
 
 E17 部署与验收记录：`.cache/live/e17-deployment.json` 固定运行源码 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`、PID `32000`、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`。format、check（345项测试）、SEA smoke 及[三平台 CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613)全部通过；飞书连接及授权 ready，herdr 原进程保留。
 
@@ -34,6 +42,8 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 
 ## B：既有业务
 
+本表保留代码与历史自动化依据；其中 Web/API 写路径已撤销，不继续作为当前验收任务，相关业务改从飞书验证。已完成的旧浏览器测试不是新只读页面验收。
+
 | 场景 | 新实现与行为 | 自动化依据 / 实际覆盖 | 未覆盖的现场部分 |
 | --- | --- | --- | --- |
 | B01 安装授权 | `cli/setup.ts`、`onboarding/`；选对应用，保存凭据，消息和精确 nonce 卡片往返 | `tests/cli/run.test.ts` 复用/冲突/部分成功退出码；`tests/onboarding/` 权限、取消、超时、同应用与卡片身份 | 飞书租户真实注册、发布、收到私聊并点击 |
@@ -51,15 +61,17 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 | B13 验收关闭 | close 先确认完成，再通知/结果事实与受管资源清理；外部勾选完成也收尾 | `tests/tasks/lifecycle.test.ts` 远端完成确认前不清理、外部完成、保留群策略、关闭前保存未轮询最终结果（含 agent 已退出的原生记录）；`tests/app/presentation.test.ts` 最终结果/关闭通知不受进度冷却影响；`tests/app/workflows.test.ts` 通知只读权限 | 通知模型选择与飞书群可见效果 |
 | B14 销毁重开 | destroy 不自动验收；destroyed 不可重开，代码保留 | `tests/tasks/lifecycle.test.ts` 销毁临时拒绝恢复、结束任务边界；`tests/projects/catalog.test.ts` 文件保留 | 关闭后资源实际状态人工核对 |
 | B15 失败恢复 | `storage/operations.ts`、`app/inbox.ts`、`outbox.ts`、任务恢复；未知写操作冻结，旧participant独立ID归属及retry事务 | `tests/storage/store.test.ts` ledger/回滚；`tests/app/conversations.test.ts` 输入去重/部分投递；任务测试覆盖重启和未知响应；`tests/tasks/migrated-operations.test.ts`、group-recovery对应旧participant回执与未决错误保留 | 进程硬断电、磁盘满、长期网络抖动未做混沌测试 |
-| B16 会话记忆 | pi 多 session、私聊自动压缩；主入口 exact /clear 不调模型，事务归档旧 session 并新建选中，成功后仅 CLEAR_NEW_SESSION_OK；AI 关闭也可用；Web 按钮仍为代数 clear | 新增 `tests/app/clear-command.test.ts` 对应 AI 开/关及模型不可用、去重、旧队列拒绝、引用与非精确正文、群拒绝、事务回滚、未知投递恢复；E15 离线回归通过；`session-tools.test.ts` 另覆盖 Web 省略 sessionId 的同 requestId 并发去重。既有 `tests/runtime/entry-reset.test.ts` 对应模型工具延迟切换；`sessions.test.ts`、`memory.test.ts`、`migration/conversations.test.ts` 对应持久化、压缩及迁移 | E15 已独立验证真实私聊直接命令/精确送达和 Web 显示后 ACK/归档历史；故障组合仅离线通过，外部 memory 服务 SLA 仍须核验 |
+| B16 会话记忆 | pi 多 session、私聊自动压缩；飞书主入口 exact /clear 不调模型，事务归档旧 session 并新建选中，成功后仅 CLEAR_NEW_SESSION_OK；AI 关闭也可用；Web 无命令或清空入口 | 新增 `tests/app/clear-command.test.ts` 对应 AI 开/关及模型不可用、去重、旧队列拒绝、引用与非精确正文、群拒绝、事务回滚、未知投递恢复；E15 离线回归通过；`session-tools.test.ts` 另覆盖 Web 省略 sessionId 的同 requestId 并发去重。既有 `tests/runtime/entry-reset.test.ts` 对应模型工具延迟切换；`sessions.test.ts`、`memory.test.ts`、`migration/conversations.test.ts` 对应持久化、压缩及迁移 | E15 已独立验证真实私聊直接命令/精确送达和 Web 显示后 ACK/归档历史；故障组合仅离线通过，外部 memory 服务 SLA 仍须核验 |
 | B17 已有 agent 桥 | `app/legacy.ts` 只在 tasks 关闭时启用；选择/回复绑定/镜像/解除选择 | `tests/app/legacy.test.ts` 回复优先于选中、迁移绑定核验、解除后不复活、notify_chat 基线；herdr control 与 migration 测试覆盖底层 | 旧卡片完整恢复不应推定；必须重新核对目标 |
 | B18 长期部署升级 | `cli/service.ts`、flock/SQLite、SEA、deploy 与 CI；停止服务不杀全部 agent | 锁/存储/迁移测试；`tests/tasks/lifecycle.test.ts` 停机等待已提交结果、不启动后续 agent/任务、不关闭 herdr；`scripts/smoke.ts` 空目录独立运行 | E17迁移8项为4 R-local-copy/4 O，同提交三平台CI已通过；完整生产回退、Linux真实宿主、服务管理器重启和长期保留增长仍未全验 |
 
 ## N：新增业务
 
+本节操作均要求飞书入口；旧 Web/fake backend 证据只说明当时底层实现，不构成当前飞书链路通过。
+
 | 场景 | 实现与默认行为 | 证据与边界 |
 | --- | --- | --- |
-| N01 工具总览 | pi `tasks_list/task_get` 查询事实，Web 显式查看 | `tests/app/workflows.test.ts`、`tests/runtime/engine.test.ts`；不能仅凭历史摘要报告实时完成 |
+| N01 工具总览 | 飞书中 pi `tasks_list/task_get` 查询事实；Web 只读会话记录 | `tests/app/workflows.test.ts`、`tests/runtime/engine.test.ts`；不能仅凭历史摘要报告实时完成 |
 | N02 单人需求讨论 | discussion 任务，Claude/Codex 按专用提示处理业务；可无项目 | `tasks/create.ts`、`prompts.ts` 与任务流程测试；无项目使用独立目录，提示约束不等于文件系统沙箱 |
 | N03 双参与者群讨论 | 一个机器人署名，多实例 ID，有界轮转 | `tests/tasks/discussion.test.ts` 逐轮、预算、不可用暂停、未知 relay 不重放；`tests/app/workflows.test.ts` 同名拒绝歧义；`tests/cli/integration.test.ts` 真实 pi/Web、fake herdr 双参与者轮转与结果 ACK。未做真实双 CLI 群聊验收 |
 | N04 讨论后开发/评审 | 新关联任务 `parentTaskId`，要求快照，执行任务参与者串行；显式 worktree | `tests/tasks/lifecycle.test.ts` 验证冻结 parentContext 背景且本次用户要求优先，`tests/projects/catalog.test.ts` 验证 worktree；完整“业务结论→用户确认→实现→评审”需真实模型行为验收，不由字段存在推定 |
@@ -69,7 +81,7 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 
 ## AI 核心边界专门验收
 
-`tests/app/conversations.test.ts` 的既有证据验证普通斜杠文本和不支持的内容进入模型上下文，模型失败不触发传统命令或终端原文投递。最新明确例外是实际正文 `text.trim() === '/clear'`：主入口私聊/Web聊天直接轮转，群聊确定性简短拒绝，AI 关闭或模型不可用时也不调用模型。引用、`/CLEAR`、`／clear`、`/clear now` 和正文中提到命令不能触发轮转。`tests/app/clear-command.test.ts` 对应这些边界并已在 E15 离线回归通过，不能将离线或旧模型工具证据写成新命令已通过现场验收。
+`tests/app/conversations.test.ts` 的既有证据验证普通斜杠文本和不支持的内容进入模型上下文，模型失败不触发传统命令或终端原文投递。最新明确例外是实际正文 `text.trim() === '/clear'`：飞书主入口私聊直接轮转，群内不轮转且进入处理流程时明确拒绝；Web 无命令入口，AI 关闭或模型不可用时也不调用模型。引用、`/CLEAR`、`／clear`、`/clear now` 和正文中提到命令不能触发轮转。`tests/app/clear-command.test.ts` 对应这些边界并已在 E15 离线回归通过，不能将离线或旧模型工具证据写成新命令已通过现场验收。
 
 `tests/runtime/engine.test.ts` 使用真实 pi 循环验证参数、可信 actor、工具前检查点、未知写操作后只读限制和工具次数上限。通知只读工具由 runtime 测试验证，不能把 agent 输出转成用户权限。
 
@@ -87,7 +99,7 @@ npm run smoke
 npm audit
 ```
 
-`check` 包含单文件 1000 行限制、严格 TypeScript、Biome lint/格式和全部测试。修改后需重新验证受影响证据。`npm run binary` 已从最终源码重建应用及 SEA，并通过 `npm run smoke`；不能用较早构建的烟测代替最终交付。
+`check` 包含单文件 1000 行限制、严格 TypeScript、Biome lint/格式和全部测试。修改后需重新验证受影响证据。此前 `npm run binary` 与 `npm run smoke` 的通过属于对应历史提交；本次只读 Web 改造尚需从最终源码重新构建和验证，不能用旧烟测替代新交付。
 
 依赖审计曾定位到开发依赖 `tsx@4.21.0 → esbuild@0.27.7` 的 low 公告 [GHSA-g7r4-m6w7-qqqr](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr)（Windows 开发服务器文件访问）。集成已将 tsx 升级为 4.23.13 并更新锁文件，最终已执行 `npm audit`，报告 0 项漏洞。
 

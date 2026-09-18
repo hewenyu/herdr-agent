@@ -75,3 +75,8 @@ CLI 章节原来的“本轮执行与真实状态均 U”已经过期，应引�
 ### E17 修复后的真实专用 pane
 
 源码 `a6018ec`、运行 PID32000、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505` 已包含宽度诊断修复。`.cache/live/cli-e17-r2-native.json`（03:30:17 UTC）仅核验本轮 B 任务 `w1F:p1`：agent.get/read 与 pane process-info 证实原生名称、专用目录、Bypass／add-dir 启动参数及 working 状态；短内容估算 54 列正确返回 unknown。此为真实受管 pane 的专用读取，不是全部 doctor 或 debug CLI 入口重跑，也没有读取 PTY 实际 columns；原 C12/C13 缺口按入口保留。
+
+
+## E19 之后的范围纠正
+
+用户已明确 Web 只用于会话记录，业务从飞书发起。本文旧 C05 `configure` 页面、配置写入及 Web/API 业务检查保留为当时事实，不再作为当前产品入口或飞书业务通过证据；旧 Web 管理流程退出范围，不能把原 `configure` 的调度/写配置行为称为只读查看。安装维护仍通过 CLI/本地配置处理。新的只读 Web 验收见现场矩阵 WR01–WR09，当前不凭文档更新宣称实现或检查通过。

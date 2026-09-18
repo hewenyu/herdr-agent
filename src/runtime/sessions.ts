@@ -131,7 +131,7 @@ export class SessionService {
           session.taskId ||
           (actor.source !== "web" && !(actor.source === "feishu" && actor.chatType === "private"))
         )
-          throw new OperationError("clear_scope", "/clear 仅用于主入口私聊或 Web 聊天。");
+          throw new OperationError("clear_scope", "/clear 仅用于主入口私聊。");
         if (options.signal?.aborted) throw new OperationError("cancelled", "本轮会话已取消。");
         // Bind command identity independently of the current selection: a Web retry
         // may omit sessionId after the first request already selected its replacement.

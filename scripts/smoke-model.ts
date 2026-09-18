@@ -2,9 +2,59 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { Application } from "../src/app/application.js";
+import type { InboxRecord } from "../src/app/inbox.js";
+import { loadConfig } from "../src/config/load.js";
+import type { StoredMessage } from "../src/core/types.js";
+import { HerdrRuntime } from "../src/herdr/runtime.js";
+import { Store } from "../src/storage/store.js";
 
 const reply = "本机打包调度检查完成。";
+const prompt = "报告本机调度状态。SEA_INBOX_FIXTURE";
+const ownerId = "ou_packaging_test";
 type Provider = "openai-responses" | "anthropic-messages";
+
+/** Persist an offline adapter fixture; only the copied SEA may execute its queued pi turn. */
+async function enqueueFixture(stateDir: string, directory: string): Promise<string> {
+  const config = loadConfig({ stateDir, home: directory, cwd: directory, env: {} });
+  const store = new Store(join(stateDir, "state.sqlite"));
+  const app = new Application({
+    config,
+    store,
+    herdr: new HerdrRuntime(config.herdr),
+    engine: {
+      contextTokens: config.ai.contextTokens,
+      async run() {
+        throw new Error("Fixture setup must not execute a model");
+      },
+      async summarize() {
+        throw new Error("Fixture setup must not execute a model");
+      },
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  try {
+    await app.handlers().message({
+      source: "feishu",
+      ownerId,
+      chatId: "oc_packaging_fixture",
+      chatType: "private",
+      mentionedBot: false,
+      eventId: "evt_packaging_fixture",
+      messageId: "om_packaging_fixture",
+      text: prompt,
+    });
+    const queued = store.get<InboxRecord>("inbox", "message:om_packaging_fixture");
+    assert.equal(queued?.state, "queued");
+    assert.ok(queued?.actor?.sessionId);
+    assert.deepEqual(store.list("messages"), []);
+    return queued.actor.sessionId;
+  } finally {
+    await app.shutdown();
+    store.close();
+  }
+}
 
 function events(provider: Provider): unknown[] {
   if (provider === "openai-responses")
@@ -104,6 +154,7 @@ export async function smokeModels(
       assert.equal(body.model, "packaging-test");
       assert.equal(body.stream, true);
       assert.ok(body.tools.length > 0, "pi must supply the actual scheduling tools");
+      assert.ok(JSON.stringify(body).includes(prompt), "SDK request must contain the queued input");
       calls.push(provider);
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const event of events(provider)) {
@@ -132,7 +183,7 @@ export async function smokeModels(
         join(stateDir, "config.toml"),
         `
 [feishu]
-allowed_open_ids = ["ou_packaging_test"]
+allowed_open_ids = ["${ownerId}"]
 [tasks]
 enabled = true
 [herdr]
@@ -147,42 +198,36 @@ timeout = "10s"
 `,
         { mode: 0o600 },
       );
+      const sessionId = await enqueueFixture(stateDir, executableDirectory);
       await run(stateDir, async (origin) => {
-        const page = await fetch(origin, { signal: AbortSignal.timeout(5_000) });
-        const token = (await page.text()).match(/name="csrf-token" content="([a-f0-9]+)"/)?.[1];
-        assert.ok(token);
-        const action = async (name: string, input: Record<string, unknown>) => {
-          const response = await fetch(`${origin}/api/actions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Origin: origin, "X-CSRF-Token": token },
-            body: JSON.stringify({ action: name, input }),
-            signal: AbortSignal.timeout(15_000),
+        const history = async () => {
+          const response = await fetch(`${origin}/api/state?ownerId=${ownerId}`, {
+            signal: AbortSignal.timeout(5_000),
           });
-          const body = (await response.json()) as {
-            ok: boolean;
-            result: { id: string; sessionId: string; text: string };
-            error?: unknown;
-          };
-          assert.equal(
-            response.status,
-            200,
-            `${provider}: ${JSON.stringify(body)}; fixture: ${errors.map(String).join("; ")}`,
-          );
-          assert.ok(body.ok);
-          return body.result;
+          assert.equal(response.status, 200, `${provider}: history unavailable`);
+          return (await response.json()) as { messages: StoredMessage[] };
         };
-        const session = await action("session.create", { name: `SEA ${provider}` });
-        const message = await action("chat.send", {
-          sessionId: session.id,
-          text: "报告本机调度状态。",
-        });
-        assert.equal(message.text, reply);
-        await action("chat.ack", { sessionId: session.id, messageId: message.id });
-        const state = await fetch(`${origin}/api/state`, { signal: AbortSignal.timeout(5_000) });
-        const snapshot = (await state.json()) as { messages: { id: string; delivery: string }[] };
-        assert.equal(
-          snapshot.messages.find((entry) => entry.id === message.id)?.delivery,
-          "delivered",
+        let message: StoredMessage | undefined;
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          const snapshot = await history();
+          message = snapshot.messages.find(
+            (entry) =>
+              entry.sessionId === sessionId && entry.source === "pi" && entry.text === reply,
+          );
+          if (message?.delivery === "retryable") break;
+          await delay(25);
+        }
+        assert.ok(
+          message,
+          `${provider}: queued SEA pi reply missing; ${errors.map(String).join("; ")}`,
+        );
+        assert.equal(message.delivery, "retryable", "No Feishu platform means no delivery ACK");
+        assert.deepEqual(message.deliveryIds, []);
+        assert.deepEqual(
+          (await history()).messages.find((entry) => entry.id === message.id),
+          message,
+          "Browsing history must not acknowledge the unsent reply",
         );
       });
     }

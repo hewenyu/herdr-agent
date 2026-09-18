@@ -16,9 +16,9 @@ export async function createTask(
   if (!config.tasks.enabled) fail("tasks_disabled", "任务管理尚未启用。");
   if (!actor.messageId || !actor.sessionId || !actor.chatId)
     fail("task_identity", "任务来源身份不完整。");
-  if (actor.taskId) fail("task_scope", "任务群不能创建其他任务，请回主入口或 Web 创建。");
+  if (actor.taskId) fail("task_scope", "任务群不能创建其他任务，请回飞书主入口创建。");
   if (records.byChat(actor.chatId))
-    fail("task_scope", "任务群不能创建其他任务，请回主入口或 Web 创建。");
+    fail("task_scope", "任务群不能创建其他任务，请回飞书主入口创建。");
   if (!input.requirements.trim() || !input.title.trim())
     fail("task_requirements", "请填写任务名称和完整要求。");
   if (!["discussion", "development", "review", "test"].includes(input.kind))

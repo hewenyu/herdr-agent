@@ -136,7 +136,7 @@ for (const enabled of [true, false]) {
         assert.deepEqual(h.app.sessions.list("owner", { archived: true }), before);
         assert.deepEqual(
           h.platform.texts.map((entry) => entry.text),
-          ["/clear 仅用于主入口私聊或 Web 聊天。"],
+          ["/clear 仅用于主入口私聊。"],
         );
         assert.equal(h.store.get<InboxRecord>("inbox", "message:group-clear")?.state, "done");
         assert.equal(h.engine.calls.length, 0);

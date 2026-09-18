@@ -203,7 +203,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "session_clear",
-      "用户以自然语言明确要求开启全新主入口上下文时调用。单独发送/clear由程序直接处理，无需模型或此工具；引用或讨论命令不等于执行授权。飞书主机器人私聊或Web主入口聊天：本轮回复持久后归档旧pi session并创建、选中新session；旧历史/回执保留，未执行的旧会话排队消息拒绝，不改投新会话；群聊禁止。真实返回scheduled:true、mode:new_session和confirmation后，仅原样回复confirmation；程序在切换事务持久成功后送达。未调用、失败或未确认不得回复成功。Web显式清空按钮另行重置当前session代数。自动压缩无需调用此工具，任务和herdr执行session不变。",
+      "用户以自然语言明确要求开启全新主入口上下文时调用。单独发送/clear由程序直接处理，无需模型或此工具；引用或讨论命令不等于执行授权。飞书主机器人私聊：本轮回复持久后归档旧pi session并创建、选中新session；旧历史/回执保留，未执行的旧会话排队消息拒绝，不改投新会话；群聊禁止。真实返回scheduled:true、mode:new_session和confirmation后，仅原样回复confirmation；程序在切换事务持久成功后送达。未调用、失败或未确认不得回复成功。Web仅展示会话记录，不提供操作入口。自动压缩无需调用此工具，任务和herdr执行session不变。",
       false,
       {},
       [],
@@ -249,7 +249,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
           },
         },
         directoryMode: { type: "string", enum: ["shared", "worktree"] },
-        keepGroup: { type: "boolean", description: "明确保留完成后的群时为true；默认按配置解散" },
+        keepGroup: {
+          type: "boolean",
+          description:
+            "仅明确要求验收完成后仍保留群时为true；等待验收/不自动完成不构成保留群要求，默认解散",
+        },
         createGroup: { type: "boolean" },
         createRemoteTask: { type: "boolean" },
         discussion: {

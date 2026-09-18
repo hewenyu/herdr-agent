@@ -82,7 +82,7 @@ export class Approvals {
       if (latest.publication === "sending" || latest.publication === "uncertain") {
         throw new OperationError(
           "card_uncertain",
-          "审批卡片发送结果未知；可从 Web 查看现场。",
+          "审批卡片发送结果未知，请核对飞书群中的原卡片。",
           "unknown",
         );
       }

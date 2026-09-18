@@ -72,10 +72,10 @@ export async function service(
       if (args.open) await openBrowser(deps, web.url);
     }
     if (args.command === "configure") {
-      app.authorization = { status: "offline", message: "本机管理模式；飞书连接未启动。" };
+      app.authorization = { status: "offline", message: "本机记录查看模式；飞书连接未启动。" };
       app.runtime = recoveryError
-        ? { status: "configuration_required", message: `${recoveryError} 请保存修正后重启。` }
-        : { status: "ready", message: "本机配置与任务管理已启动。" };
+        ? { status: "configuration_required", message: `${recoveryError} 请修改本地配置后重启。` }
+        : { status: "ready", message: "本机会话记录页已启动。" };
       app.changed();
       if (!recoveryError) startTicks();
     } else {

@@ -50,7 +50,7 @@ async function ready(child: ChildProcess): Promise<string> {
   });
 }
 
-/** Exercise only the copied executable, with no checkout, credentials, herdr or network services. */
+/** Run the copied executable without a checkout, credentials, herdr or external services. */
 export async function smokeBinary(binary: string, expectedVersion?: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "herdr-agent-smoke-"));
   let child: ChildProcess | undefined;
@@ -116,18 +116,26 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     }
     const page = await fetch(origin, { signal: AbortSignal.timeout(5_000) });
     const html = await page.text();
-    assert.ok(!html.includes("__CSRF_TOKEN__"), "CSRF template was not replaced");
+    assert.ok(!html.includes("csrf-token"), "Read-only history must not expose action tokens");
     assert.match(page.headers.get("content-security-policy") ?? "", /script-src 'self'/);
     const state = await fetch(`${origin}/api/state`, { signal: AbortSignal.timeout(5_000) });
     assert.equal(state.status, 200);
-    assert.equal(typeof (await state.json()), "object");
+    const before = (await state.json()) as { sessions?: unknown[]; messages?: unknown[] };
+    assert.equal(typeof before, "object");
     const forbidden = await fetch(`${origin}/api/actions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: origin },
       body: JSON.stringify({ action: "session.create", input: { name: "must not execute" } }),
       signal: AbortSignal.timeout(5_000),
     });
-    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.status, 405);
+    const after = (await (
+      await fetch(`${origin}/api/state`, {
+        signal: AbortSignal.timeout(5_000),
+      })
+    ).json()) as typeof before;
+    assert.deepEqual(after.sessions, before.sessions);
+    assert.deepEqual(after.messages, before.messages);
     await stop(child);
     child = undefined;
     await smokeModels(directory, async (modelState, inspect) => {
@@ -145,7 +153,7 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
       child = undefined;
     });
     process.stdout.write(
-      `SEA smoke passed: ${stamp.version}; help, version, native lock, embedded Web, state, CSRF, pi/OpenAI/Anthropic/ACK\n`,
+      `SEA smoke passed: ${stamp.version}; help, version, native lock, read-only Web, rejected actions, offline inbox, pi/OpenAI/Anthropic, no browser ACK\n`,
     );
   } finally {
     if (child) await stop(child);

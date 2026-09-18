@@ -153,7 +153,7 @@ export const HELP = `herdr-agent — pi 调度与 herdr 托管的 Claude / Codex
 
   serve       启动飞书服务与本机 Web（默认命令）
   setup       复用或注册飞书应用，验证消息与卡片回调
-  configure   启动本机配置与任务管理 Web
+  configure   启动本机会话记录页（不连接飞书）
   doctor      只读检查配置、herdr、执行器与飞书权限
   migrate     导入旧版状态；--dry-run 仅预览
   version     显示构建版本

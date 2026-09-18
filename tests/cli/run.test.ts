@@ -39,8 +39,7 @@ function harness() {
       action: async () => {},
       taskChanged: async () => {},
     }),
-    snapshot: () => ({}),
-    dispatch: async () => ({}),
+    history: () => ({}),
     subscribe: () => () => {},
     changed() {
       if (app.authorization.status === "setup_required") queueMicrotask(() => control.abort());
