@@ -66,6 +66,8 @@ herdr-agent serve --config-listen 127.0.0.1:18790
 herdr-agent doctor --json
 ```
 
+已有应用启用任务功能时，需在飞书开发者后台配置事件订阅方式，添加 `task.task.update_user_access_v2` 并发布应用版本，才能让手动完成任务的事件送达服务。逐任务调用 API 订阅不能替代后台事件配置与应用发布；setup 的 scope 检查不检查后台事件订阅。
+
 `configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机会话记录页；网页及 HTTP 接口没有业务或配置写入口。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
 
 飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型 key 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。

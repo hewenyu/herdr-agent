@@ -12,10 +12,14 @@ export const taskScopes = [
   "im:chat:read",
   "im:message.group_msg",
 ];
-export const events = ["im.message.receive_v1", "im.chat.disbanded_v1"];
+export const events = [
+  "im.message.receive_v1",
+  "im.chat.disbanded_v1",
+  "task.task.update_user_access_v2",
+];
 export const callbacks = ["card.action.trigger"];
 export function requiredEvents(tasks = true): string[] {
-  return tasks ? events : events.filter((event) => event !== "im.chat.disbanded_v1");
+  return tasks ? events : ["im.message.receive_v1"];
 }
 export function requiredScopes(tasks = true): string[] {
   return [...baseScopes, ...(tasks ? taskScopes : [])];

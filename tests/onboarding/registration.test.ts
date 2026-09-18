@@ -48,6 +48,11 @@ test("registration builds SDK-compatible addons and follows Lark switch only to 
     gunzipSync(Buffer.from(url.searchParams.get("addons") ?? "", "base64url")).toString(),
   );
   assert.ok(addons.scopes.tenant.includes("task:task:write"));
+  assert.deepEqual(addons.events.items.tenant, [
+    "im.message.receive_v1",
+    "im.chat.disbanded_v1",
+    "task.task.update_user_access_v2",
+  ]);
   assert.deepEqual(addons.callbacks.items, ["card.action.trigger"]);
   assert.deepEqual(statuses, ["domain_switched"]);
   assert.deepEqual(result, {
@@ -56,6 +61,35 @@ test("registration builds SDK-compatible addons and follows Lark switch only to 
     openId: "owner",
     brand: "lark",
   });
+});
+
+test("registration requests task and group events only when tasks are enabled", async () => {
+  for (const tasks of [true, false]) {
+    let shown = "";
+    await registerApp({
+      tasks,
+      onURL: ({ url }) => {
+        shown = url;
+      },
+      fetch: async (_url, init) =>
+        response(
+          String(init?.body).includes("action=begin")
+            ? begin
+            : { client_id: "cli_new", client_secret: "test-secret" },
+        ),
+    });
+    const addons = JSON.parse(
+      gunzipSync(
+        Buffer.from(new URL(shown).searchParams.get("addons") ?? "", "base64url"),
+      ).toString(),
+    );
+    assert.deepEqual(
+      addons.events.items.tenant,
+      tasks
+        ? ["im.message.receive_v1", "im.chat.disbanded_v1", "task.task.update_user_access_v2"]
+        : ["im.message.receive_v1"],
+    );
+  }
 });
 
 test("target conflict and unsafe confirmation links fail without unauthorized network or callbacks", async () => {
