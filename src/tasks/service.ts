@@ -112,7 +112,7 @@ export class TaskService {
         const participant = previous
           ? this.context.store.get<Participant>("participants", previous.participantId)
           : undefined;
-        if (previous && participant && ["idle", "done"].includes(participant.status)) {
+        if (previous && participant && ["idle", "done", "removed"].includes(participant.status)) {
           await relayDiscussion(
             this.context,
             task,
@@ -121,6 +121,29 @@ export class TaskService {
             previous.text,
             true,
           );
+        } else if (!previous) {
+          const roster = this.records.participants(task);
+          const departed = roster.findIndex(
+            (entry) => entry.id === task.discussion.activeParticipant && entry.status === "removed",
+          );
+          if (departed >= 0) {
+            const next = [...roster.slice(departed + 1), ...roster.slice(0, departed + 1)].find(
+              (entry) => entry.status !== "removed",
+            );
+            if (next) {
+              await sendParticipant(
+                this.context,
+                task,
+                next,
+                "用户已恢复讨论。请根据本任务要求完成本轮发言；目前没有已保存的参与者反馈。",
+                `${task.id}:relay:resume:${actor.messageId}:initial:${next.id}`,
+              );
+              task.discussion.nextParticipant = roster
+                .filter((entry) => entry.status !== "removed")
+                .findIndex((entry) => entry.id === next.id);
+              this.records.save(task);
+            }
+          }
         }
       }
       this.context.hooks.changed?.(task);

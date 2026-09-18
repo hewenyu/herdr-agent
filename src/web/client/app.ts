@@ -113,18 +113,27 @@ async function acknowledge(
     },
     () => {
       if (version !== identityVersion) return;
-      feedback(
-        `回复已显示，但送达确认尚未保存。消息 ID：${messageId}。请重试确认，不要重发原消息。`,
-        true,
-      );
+      const message = "回复尚未确认显示。请查看回复后重试确认，不要重发原消息。";
+      const area = node("#feedback");
+      if (area.querySelector("[data-delivery-message-id]"))
+        area.append(el("div", "notice error", message));
+      else feedback(message, true);
       node("#feedback").append(
         button(
           "重试送达确认",
-          () => acknowledge(messageId, sessionId, undefined, false, ownerId, version),
+          () => acknowledge(messageId, sessionId, undefined, quiet, ownerId, version),
           "small",
         ),
       );
     },
+    () =>
+      [...document.querySelectorAll<HTMLElement>("[data-delivery-message-id]")].some(
+        (bubble) =>
+          bubble.dataset.deliveryMessageId === messageId &&
+          bubble.dataset.deliverySessionId === sessionId &&
+          bubble.isConnected &&
+          bubble.getClientRects().length > 0,
+      ),
   );
 }
 
@@ -147,6 +156,51 @@ const action: Action = async (name, input) => {
     if (name === "session.archive") activeSession = "";
     if (result.sessionId) activeSession = result.sessionId;
     if (name === "chat.send" && result.id && result.sessionId && typeof result.text === "string") {
+      // A model-requested reset may have archived the reply's session before
+      // the HTTP response arrives. Read that transition before choosing a view.
+      const latest = await fetchState();
+      if (version !== identityVersion) return undefined;
+      if (latest.activeOwnerId !== ownerId) {
+        await refresh(true);
+        return undefined;
+      }
+      current = latest;
+      if (current.sessions?.find((session) => session.id === result.sessionId)?.archived) {
+        const replyId = result.id;
+        const originSessionId = result.sessionId;
+        const replyText = result.text;
+        activeSession = current.activeSessionId ?? "";
+        archived = false;
+        currentTab = "sessions";
+        await acknowledge(
+          replyId,
+          originSessionId,
+          () => {
+            render();
+            const receipt = el("article", "message assistant");
+            receipt.dataset.deliveryMessageId = replyId;
+            receipt.dataset.deliverySessionId = originSessionId;
+            receipt.append(
+              el("span", "message-label", "已归档会话的回复"),
+              document.createTextNode(replyText),
+            );
+            node("#feedback").replaceChildren(
+              receipt,
+              button(
+                "查看归档会话",
+                async () => {
+                  activeSession = originSessionId;
+                  archived = true;
+                  await action("session.history", { id: originSessionId });
+                },
+                "small",
+              ),
+            );
+          },
+          true,
+        );
+        return result;
+      }
       // Rendering the returned payload precedes acknowledgement; HTTP success alone is not delivery.
       current.messages = [
         ...(current.messages ?? []).filter((message) => message.id !== result.id),

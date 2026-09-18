@@ -1,6 +1,10 @@
 import type { Participant, Task } from "../core/types.js";
 
-export function participantPrompt(task: Task, participant: Participant): string {
+export function participantPrompt(
+  task: Task,
+  participant: Participant,
+  arrangement?: string,
+): string {
   const role = participant.role || (task.kind === "discussion" ? "需求讨论参与者" : "任务执行者");
   const lines = [
     `你是 herdr-agent 任务 ${task.id} 的参与者 ${participant.name}（${participant.kind}）。`,
@@ -36,9 +40,9 @@ export function participantPrompt(task: Task, participant: Participant): string 
     "\n用户要求：",
     task.requirements,
     "\n回复结束不代表用户已验收。需要权限或澄清时明确指出，不能自称已得到用户批准。",
-    "\n投递标识（无需复述）：",
-    participant.initialReceipt,
   );
+  if (arrangement !== undefined) lines.push("\n本轮安排：", arrangement);
+  lines.push("\n投递标识（无需复述）：", participant.initialReceipt);
   return lines.join("\n");
 }
 

@@ -53,3 +53,23 @@ test("failed rendering cannot acknowledge an unseen reply", async () => {
   );
   assert.equal(acknowledged, false);
 });
+
+test("a render that switched to a replacement session cannot acknowledge the hidden old reply", async () => {
+  const order: string[] = [];
+  const visible = new Set<string>();
+  const result = await displayThenAcknowledge(
+    () => {
+      visible.add("new-session-empty");
+      order.push("render replacement");
+    },
+    async () => {
+      order.push("ack old reply");
+    },
+    () => {
+      order.push("offer display and retry");
+    },
+    () => visible.has("old-session-reply"),
+  );
+  assert.equal(result, false);
+  assert.deepEqual(order, ["render replacement", "offer display and retry"]);
+});

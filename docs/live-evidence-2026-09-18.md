@@ -141,3 +141,15 @@ CLI 逐入口的旧构建实测见 [CLI 证据](live-cli-evidence-2026-09-18.md)
 | 关联评审与测试：`.cache/live/related-review-test.json`，01:11 UTC | review 任务 `task_1a332…` 保存父讨论的要求、Claude 发言及参与者快照，Codex `w18:p1` 输出明确未执行验收；test 任务 `task_d65e…` 的 Codex `w19:p1` 实际执行只读 Python 断言，工具回执 exit_code=0，项目文件 hash 未变。两任务结果均在群观察到，均停在 review | **R-P：本次父讨论快照→评审及独立只读测试。** 关联评审不是父讨论已达成共识，也不是用户已验收；不代替讨论→开发、worktree、完整恢复或浏览器表单操作验收 |
 
 双人讨论继续记 **R-F/待修复复验**：Claude 输出现已恢复，但第二参与者首次转交缺少 receipt，随后状态为 unknown。正在以原 user 正文与 fingerprint 匹配进行只读确认和安全恢复；缺少确认前不得重发，也不能把双方进程 done、单方输出、关联评审或上述 263 项测试当作完整轮转通过。E09/E10 的历史失败与探针边界保留。
+
+## E12：只读恢复、明确保留与 Web ACK 新失败（待后续复验）
+
+当前运行 `29a7715f89921ea5c5d47ebe98a67b1bb0b0bc1c`，PID `95378`，macOS arm64 SEA SHA256 `bcb0653ed711afd36af2141606254900ab0e59409e6de01403393f7c6f5cd602`，运行版本由恢复后证据再次读取。主验收报告 273 项测试、SEA 烟测，以及该提交 [三平台 CI 35294941364](https://github.com/hewenyu/herdr-agent/actions/runs/35294941364) 均通过；这些结论不扩张到尚未部署的修复。
+
+- **原 B uncertain 只读恢复 R-P。** `.cache/live/discussion-recovery-before.json`（01:19 UTC）与 `discussion-recovery-after.json`（01:21 UTC）表明同一个 relay operation 从 uncertain 变为 done，实际结果为 delivered/verified、attempts=1，明确“未重新投递”。原生 user 记录数仍为 2，receiptCount 仍为 1，输入 SHA256 始终为 `cd5098640234a50b5b3930fbd03b0cf4ec2c77b741a33ce2ef5bbf2e9e18c5ae`。Codex `initialSent` 从 false 恢复为 true，采集到输出，群内只有一条对应输出 `om_x100b65fd513c94a8b3e09156edff673`。讨论仍 paused、rounds=0；这证明恢复未重发，不证明从零开始的完整轮转已无缺陷。
+- **R2 一轮讨论结果及有界停止 R-P，首次确认缺陷保留。** `.cache/live/r2-discussion-round.json`（01:26 UTC）固定运行 29a7715：Claude `w16:p1` 与 Codex `w17:p1` 各有唯一 native 输入、零原生工具调用、各一条群输出，实际 rounds=1/maxRounds=1、paused=true。双方围绕需求发言并等待验收。但首次 resume 返回 delivery_unconfirmed，之后由原生输入只读恢复为 verified/delivered、attempts=1、未重发。不能将最终一轮完成写成首发同步确认无缺陷；末尾 receipt 修复仍待部署复验。
+- **明确 complete 同时保留群和执行器 R-P。** `.cache/live/discussion-keep-both.json`（01:22 UTC）：原 B 任务 completed、remoteCompletedAt 非零、keepGroup=true、closeRequested=false；群实际 normal，`w13:p1` 和 `w14:p1` 两个 panes 均保留。验收器最初误将状态 normal 当成 active，随后只读修正核对，没有重复完成操作。此为明确保留例外，不改变默认收尾。
+- **独立 test 默认最终收尾 R-P。** `.cache/live/related-test-cleanup.json`（01:17 UTC）对 E11 的 test 任务只读核验七项检查全部为 true：远端完成、群解散、herdr close 回执 done、所有群消息 delivered、消息确认早于删群、close 确认早于删群、delete 回执 done。任务本地 destroyed，`w19:p1` 及该任务受管 panes 已不存在，无 error/syncError。该记录早于本次部署，不作为 29a7715 新执行收尾的证据；“七项”是七个检查，不是七个任务。
+- **真实浏览器 Web clear 整体 R-F，部分步骤通过。** `.cache/live/web-clear-browser.json`（01:21–01:22 UTC）使用真实 Chromium、现运行服务和真实模型，无响应替身。归档旧 session、选择空的新 session、后续输入隔离、新回复实际显示后 ACK、归档历史实际渲染均通过；390px 检查无横向溢出、pageErrors 为空。但 clear 回复仍属于旧 session，尚无可见 DOM 节点时程序尝试 chat.ack，`visibleBeforeRequest=false`，验收器阻止该 ACK；回复仍 sending。必须保留 status=FAIL，不能用其它回复可见、API 200 或会话切换成功改成整体通过。
+
+本轮待复验项：主验收另发现 R2 的首次 relay 仍先 unconfirmed 后只读恢复，原因是 receipt 放在本轮安排之前，而既有 verifyReceipt 要求正文末尾。正在修复末尾 receipt 及旧格式兼容；Web ACK 可见性和移除参与者后的 resume 也在修复。此处仅记录发现及待验证方向，尚未部署，不能提前标修复通过。E09/E11 的旧失败及本轮 Web R-F 均保留，后续复验须有独立记录。

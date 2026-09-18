@@ -28,7 +28,7 @@ export async function sendParticipant(
       fail("participant_busy", "同一执行任务按参与者串行工作，请等待当前参与者结束。");
   }
   const initial = !participant.initialSent;
-  const prompt = initial ? `${participantPrompt(task, participant)}\n\n本轮安排：\n${text}` : text;
+  const prompt = initial ? participantPrompt(task, participant, text) : text;
   const delivery = await context.operations.run(
     operationId,
     { participant: participant.id, text },
@@ -71,22 +71,31 @@ export async function relayDiscussion(
   text: string,
   newCycle = false,
 ): Promise<void> {
+  const roster = context.records.participants(task);
+  const departedActive = newCycle
+    ? roster.find(
+        (entry) => entry.id === task.discussion.activeParticipant && entry.status === "removed",
+      )
+    : undefined;
   if (
     task.kind !== "discussion" ||
     task.discussion.mode !== "round_robin" ||
     task.discussion.paused ||
-    task.discussion.activeParticipant !== participant.id ||
+    (task.discussion.activeParticipant !== participant.id && !departedActive) ||
     ["completed", "destroying", "destroyed", "paused"].includes(task.status)
   )
     return;
-  const participants = context.records
-    .participants(task)
-    .filter((entry) => entry.status !== "removed");
-  if (participants.length < 2) return;
-  const index = participants.findIndex((entry) => entry.id === participant.id);
-  const nextIndex = (index + 1) % participants.length;
-  const next = participants[nextIndex];
+  const participants = roster.filter((entry) => entry.status !== "removed");
+  if (participants.length < 2 && !departedActive) return;
+  // A removed participant keeps its historical position. Explicit resume advances
+  // after that position while retaining the actual source of the quoted output.
+  const index = roster.findIndex((entry) => entry.id === (departedActive ?? participant).id);
+  if (index < 0) return;
+  const next = [...roster.slice(index + 1), ...roster.slice(0, index + 1)].find(
+    (entry) => entry.status !== "removed",
+  );
   if (!next) return;
+  const nextIndex = participants.findIndex((entry) => entry.id === next.id);
   if (["gone", "unknown", "blocked"].includes(next.status) || next.error) {
     task.discussion.paused = true;
     task.status = "attention";

@@ -3,8 +3,13 @@ export async function displayThenAcknowledge(
   display: () => void,
   acknowledge: () => Promise<void>,
   unconfirmed: () => void,
+  isVisible: () => boolean = () => true,
 ): Promise<boolean> {
   display();
+  if (!isVisible()) {
+    unconfirmed();
+    return false;
+  }
   try {
     await acknowledge();
     return true;

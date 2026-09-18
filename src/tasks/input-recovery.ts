@@ -34,12 +34,18 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
     if (!input) continue;
     const prefix = participantPrompt(task, participant);
     const initialFingerprint = stableId(canonical({ receipt: participant.initialReceipt }));
-    const arrangedPrefix = `${prefix}\n\n本轮安排：\n`;
-    const fingerprint = input.startsWith(arrangedPrefix)
-      ? stableId(
-          canonical({ participant: participant.id, text: input.slice(arrangedPrefix.length) }),
-        )
-      : undefined;
+    const legacyPrefix = `${prefix}\n\n本轮安排：\n`;
+    const receiptSuffix = `\n\n投递标识（无需复述）：\n${participant.initialReceipt}`;
+    const arrangedPrefix = `${prefix.slice(0, -receiptSuffix.length)}\n\n本轮安排：\n`;
+    const arrangement = input.startsWith(legacyPrefix)
+      ? input.slice(legacyPrefix.length)
+      : input.startsWith(arrangedPrefix) && input.endsWith(receiptSuffix)
+        ? input.slice(arrangedPrefix.length, -receiptSuffix.length)
+        : undefined;
+    const fingerprint =
+      arrangement === undefined
+        ? undefined
+        : stableId(canonical({ participant: participant.id, text: arrangement }));
     const matches = operations.filter(([id, operation]) =>
       id === `${participant.id}:initial`
         ? input === prefix && operation.fingerprint === initialFingerprint
