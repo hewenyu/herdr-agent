@@ -60,6 +60,38 @@ test("one slow pi session does not block independent conversations; same chat st
   }
 });
 
+test("later application ticks admit a new conversation while an earlier tick is still draining", async () => {
+  const h = setup();
+  const started = deferred();
+  const fastStarted = deferred();
+  const release = deferred();
+  try {
+    h.engine.handler = async (input) => {
+      if (input.prompt === "slow") {
+        started.resolve();
+        await release.promise;
+      }
+      if (input.prompt === "fast") fastStarted.resolve();
+      return { text: input.prompt, messages: [] };
+    };
+    await h.app.handlers().message(message("slow-tick", "slow", "slow-chat"));
+    const firstTick = h.app.tick();
+    await started.promise;
+    await h.app.handlers().message(message("fast-tick", "fast", "fast-chat"));
+    const secondTick = h.app.tick();
+    await fastStarted.promise;
+    assert.deepEqual(
+      h.engine.calls.map((call) => call.prompt),
+      ["slow", "fast"],
+    );
+    release.resolve();
+    await Promise.all([firstTick, secondTick]);
+  } finally {
+    release.resolve();
+    await h.close();
+  }
+});
+
 test("Web reply only becomes visible context after scoped rendering acknowledgement", async () => {
   const h = setup();
   try {
