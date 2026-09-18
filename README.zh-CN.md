@@ -12,15 +12,15 @@
 
 ## 发布与验收状态
 
-当前最新公开版本是 [v0.3.10](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.10)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.10`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
+当前最新公开版本是 [v0.3.11](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.11)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.11`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
 
-PR #35 增加了第一人称未来业务承诺护栏及回归测试，并与之前的工具事实检查一起包含在公开版本 `v0.3.10`。合并后的源码为 `master@6637e80`；Release 和 npm 包均由该提交构建。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。当前运行的本机二进制应通过 `version --json` 核对；若 stamp 为 `dev/unknown`，只能作为开发证据，不能当作发布版本或提交匹配证明。
+PR #35 和 PR #37 增加了第一人称未来业务承诺及写证据护栏和回归测试，并与之前的工具事实检查一起包含在公开版本 `v0.3.11`。合并后的源码为 `master@2a5bbd0`；Release 和 npm 包均由该提交构建。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。当前运行的本机二进制应通过 `version --json` 核对；若 stamp 为 `dev/unknown`，只能作为开发证据，不能当作发布版本或提交匹配证明。
 
 重启后的实例和 `doctor --json` 检查均正常，当前没有活动的 herdr 托管参与者。当前真实入口复验 marker `LIVE-001-R3-20260918` 尚未在飞书和状态回读中观察到，且没有发送端证据，因此无法确认对应任务、群、参与者或 outbox 状态；它仍是待完成的现场验收项，不能判定为已完成。没有持久化 marker 不能证明入口已经成功或失败。
 
 Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herdr 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herdr 和外部状态回读，才能把某个场景视为已验收。
 
-当前工具事实护栏修正前的源码基线通过了 422 项检查。本 checkout 的 `npm run check` 通过 439 项测试。v0.3.10 Release Action 已重新构建并 smoke 测试 macOS arm64、Linux x64 和 Linux arm64，发布三个可选原生包，并验证全局 npm 安装。此前的本地二进制已通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
+当前工具事实护栏修正前的源码基线通过了 422 项检查。本 checkout 的 `npm run check` 通过 440 项测试。v0.3.11 Release Action 已重新构建并 smoke 测试 macOS arm64、Linux x64 和 Linux arm64，发布三个可选原生包，并验证全局 npm 安装。此前的本地二进制已通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
 
 ## 运行前置
 

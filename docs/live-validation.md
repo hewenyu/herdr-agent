@@ -2,9 +2,9 @@
 
 更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
-2026-09-19 当前源码检查：本 checkout 的 `master` HEAD 为 `6637e80`；`npm run check` 通过 439/439 项（单文件行数、typecheck、Biome lint 和测试）。这只是当前源码与离线检查基线，没有新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
+2026-09-19 当前源码检查：本 checkout 的 `master` HEAD 为 `2a5bbd0`；`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是当前源码与离线检查基线，没有新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
-2026-09-19 当前本机重启：提交 `4b0307d9b3019296308792656d0244d0ae3fc410` 构建的 macOS arm64 SEA `0.3.10-dev` 已重启，PID `95185`，SHA256 `68b0e86d8d150f38d51412e10afc85f695c927fa205fcac2e1b9ca7326d24e72`，构建时间 `2026-09-19T00:00:00Z`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 只证明本机开发构建与合并提交历史匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.10 的三平台 Release Action 和 npm 安装验证已另行完成。
+2026-09-19 当前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
 
 2026-09-18 历史运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新当时的现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
 
