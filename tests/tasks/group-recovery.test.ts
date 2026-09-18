@@ -191,6 +191,59 @@ test("external dissolution never upgrades a definitely unexecuted delete", async
   }
 });
 
+for (const state of ["pending", "uncertain", "done"] as const) {
+  test(`group recovery respects ${state} operations owned by a migrated participant`, async () => {
+    const h = setup();
+    try {
+      let dissolved = false;
+      Object.assign(h.platform, {
+        getGroupStatus: async () => (dissolved ? "dissolved" : "normal"),
+      });
+      const task = await h.service.create(actor, discussion);
+      const participant = h.service.records.participants(task)[0];
+      assert.ok(participant);
+      // Imported participant IDs are independent of the owning task ID.
+      participant.id = `legacy_p_${stableId(task.id)}`;
+      task.participantIds = [participant.id];
+      h.service.records.saveParticipant(participant);
+      h.service.records.save(task);
+      h.herdr.delivery = { status: "unconfirmed", acked: false, verified: false, attempts: 1 };
+      await h.service.reconcile(task.id);
+      const initialId = `${participant.id}:initial`;
+      const initial = h.store.get<OperationReceipt>("operations", initialId);
+      assert.equal(initial?.state, "uncertain");
+      assert.equal(h.service.records.participants(task)[0]?.error, undefined);
+      const saved = { ...initial, state };
+      h.store.set("operations", initialId, saved);
+      h.platform.deleteGroup = async () => {
+        h.platform.deletions++;
+        dissolved = true;
+        throw new OperationError("lost_delete_ack", "删除成功但回执丢失", "unknown");
+      };
+      await h.service.action({ ...actor, messageId: "destroy" }, task.id, "destroy");
+      await h.service.reconcile(task.id);
+      const id = `${task.id}:delete-group`;
+      const deletion = h.store.get<OperationReceipt>("operations", id);
+      assert.equal(deletion?.state, "uncertain");
+      assert.equal(h.service.get(actor, task.id).error, deletion?.error?.message);
+      h.service.stop();
+      const restored = new TaskService(h.options);
+      await restored.reconcile(task.id);
+      const current = restored.get(actor, task.id);
+      assert.equal(current.status, "destroyed");
+      assert.equal(current.groupDeleted, true);
+      assert.equal(current.error, state === "done" ? undefined : deletion?.error?.message);
+      assert.equal(h.store.get<OperationReceipt>("operations", id)?.state, "done");
+      assert.deepEqual(h.store.get("operations", initialId), saved);
+      assert.equal(h.herdr.sends.length, 1);
+      assert.equal(h.herdr.closes, 1);
+      assert.equal(h.platform.deletions, 1);
+    } finally {
+      h.close();
+    }
+  });
+}
+
 test("cached groupDeleted without a fresh GET cannot confirm an uncertain receipt", async () => {
   const h = setup();
   try {

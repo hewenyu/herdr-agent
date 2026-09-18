@@ -2,6 +2,7 @@ import { canonical, now, stableId } from "../core/ids.js";
 import type { Delivery, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { ownsTaskOperation } from "./operation-scope.js";
 import { participantPrompt } from "./prompts.js";
 
 /** Resolve only a unique initial delivery proved by native user input; never send again. */
@@ -91,7 +92,7 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
         .entries<OperationReceipt>("operations")
         .some(
           ([key, entry]) =>
-            key.startsWith(`${task.id}:`) && ["pending", "uncertain"].includes(entry.state),
+            ownsTaskOperation(task, key) && ["pending", "uncertain"].includes(entry.state),
         );
       if (!unknown) task.pending = undefined;
       context.records.save(task);

@@ -15,6 +15,7 @@ import {
   type TaskActionOptions,
 } from "./lifecycle.js";
 import { observeTask } from "./observe.js";
+import { ownsTaskOperation } from "./operation-scope.js";
 import { TaskOperations } from "./operations.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
@@ -363,7 +364,7 @@ export class TaskService {
           .entries<OperationReceipt>("operations")
           .some(
             ([key, receipt]) =>
-              key.startsWith(`${task.id}:`) && ["pending", "uncertain"].includes(receipt.state),
+              ownsTaskOperation(task, key) && ["pending", "uncertain"].includes(receipt.state),
           );
         if (
           uncertain ||

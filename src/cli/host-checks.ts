@@ -169,8 +169,7 @@ export async function paneWidths(herdr: HerdrPort, signal: AbortSignal): Promise
   try {
     const agents = await herdr.list(signal);
     if (!agents.length) return { name, status: "pass", message: "没有运行中的 agent，无需测量。" };
-    let narrow = false,
-      unknown = false;
+    let unknown = false;
     const details: string[] = [];
     for (const agent of agents) {
       if (!agent.kind) {
@@ -190,7 +189,8 @@ export async function paneWidths(herdr: HerdrPort, signal: AbortSignal): Promise
             .split("\n")
             .map((line) => [...line].reduce((width, char) => width + characterWidth(char), 0)),
         );
-        if (cols <= 60) narrow = true;
+        // Short visible text cannot establish the terminal's actual column count.
+        if (cols <= 60) unknown = true;
         details.push(`${agent.paneId} 最长内容行约 ${cols} 列`);
       } catch {
         unknown = true;
@@ -199,8 +199,8 @@ export async function paneWidths(herdr: HerdrPort, signal: AbortSignal): Promise
     }
     return {
       name,
-      status: narrow ? "fail" : unknown ? "unknown" : "pass",
-      message: `${details.join("；")}。测量的是可见内容宽度。${narrow ? "请在宽窗口中打开 herdr 并访问该 pane，窄终端可能影响阻塞识别。" : ""}`,
+      status: unknown ? "unknown" : "pass",
+      message: `${details.join("；")}。未读取终端实际列数。${unknown ? "短内容、空屏幕或不可读内容不足以判断终端是否超过 60 列。" : "各 pane 的可见内容宽度估算下界均超过 60 列。"}`,
     };
   } catch {
     return { name, status: "unknown", message: "无法读取 herdr agent 列表，未测量终端宽度。" };

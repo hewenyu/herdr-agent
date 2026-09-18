@@ -92,17 +92,24 @@ export class HerdrTransport {
       const decode = () => {
         try {
           const response = object(parseExactJson(Buffer.concat(chunks, bytes).toString("utf8")));
+          if (response.id !== id) {
+            finish(new OperationError("invalid_response", "herdr 响应 ID 不匹配。", outcome()));
+            return;
+          }
           if (response.error) {
             const error = object(response.error);
             const code = string(error.code) || "herdr_error";
+            // herdr validates names and global name conflicts before starting the terminal.
+            const refusedStart =
+              method === "agent.start" && ["invalid_agent_name", "agent_name_taken"].includes(code);
             finish(
               new OperationError(
                 code,
                 string(error.message) || "herdr 拒绝请求。",
-                definiteRefusals.has(code) ? "not_executed" : outcome(),
+                definiteRefusals.has(code) || refusedStart ? "not_executed" : outcome(),
               ),
             );
-          } else if (response.id !== id || !("result" in response)) {
+          } else if (!("result" in response)) {
             finish(
               new OperationError("invalid_response", "herdr 响应 ID 或结果不匹配。", outcome()),
             );

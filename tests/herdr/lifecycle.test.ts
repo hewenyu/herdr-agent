@@ -107,6 +107,18 @@ test("only definitive busy refusal is retried; unknown start is not replayed", a
     /timeout/,
   );
   assert.equal(unknown.calls.length, 1);
+  for (const code of ["agent_pane_busy", "agent_name_taken"]) {
+    const unconfirmed = new FakeTransport();
+    unconfirmed.failures = [new OperationError(code, "unconfirmed refusal", "unknown")];
+    await assert.rejects(
+      startAgent(new HerdrClient(unconfirmed), "w1:p1", "claude", "participant-1", {
+        directories: [],
+        bypass: false,
+      }),
+      { code, outcome: "unknown" },
+    );
+    assert.equal(unconfirmed.calls.length, 1, "unknown results cannot authorize another start");
+  }
 });
 
 test("unconfirmed startup argv and changed owner cannot receive a task", async () => {

@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { OperationError } from "../core/errors.js";
+import { stableId } from "../core/ids.js";
 import type { AgentKind, AgentSnapshot } from "../core/types.js";
 import type { HerdrClient } from "./client.js";
 import { object, string } from "./protocol.js";
@@ -62,6 +63,9 @@ export async function startAgent(
 ): Promise<AgentSnapshot> {
   if (!paneId || !name || !["claude", "codex"].includes(kind))
     throw new OperationError("invalid_params", "agent 启动参数不完整。");
+  // Display names remain on participants; herdr names obey its global CLI-safe grammar.
+  const scopedName = `agent-${stableId(paneId, name).slice(0, 26)}`;
+  let nativeName = /^[a-z][a-z0-9_-]{0,31}$/.test(name) ? name : scopedName;
   const args = await startupArgs(kind, options.directories, options.bypass);
   const signal = deadline(30_000, options.signal);
   let shellTerminal: string | undefined;
@@ -77,14 +81,26 @@ export async function startAgent(
       result = object(
         await client.transport.call(
           "agent.start",
-          { pane_id: paneId, kind, name, ...(args.length ? { args } : {}), timeout_ms: 30_000 },
+          {
+            pane_id: paneId,
+            kind,
+            name: nativeName,
+            ...(args.length ? { args } : {}),
+            timeout_ms: 30_000,
+          },
           signal,
           Math.max(32_000, client.transport.timeoutMs),
         ),
       );
       break;
     } catch (error) {
-      if (!(error instanceof OperationError) || error.code !== "agent_pane_busy") throw error;
+      if (!(error instanceof OperationError) || error.outcome !== "not_executed") throw error;
+      // Only herdr's pre-start duplicate-name refusal authorizes changing this name.
+      if (error.code === "agent_name_taken" && nativeName !== scopedName) {
+        nativeName = scopedName;
+        continue;
+      }
+      if (error.code !== "agent_pane_busy") throw error;
       const pane = await client.pane(paneId, signal);
       if (pane.pane_id !== paneId || pane.agent || !string(pane.terminal_id)) throw error;
       if (shellTerminal && shellTerminal !== pane.terminal_id) throw error;
@@ -112,7 +128,7 @@ export async function startAgent(
     if (
       agent.paneId !== paneId ||
       agent.terminalId !== terminalId ||
-      agent.name !== name ||
+      agent.name !== nativeName ||
       (agent.kind && agent.kind !== kind)
     ) {
       throw new OperationError("target_changed", "启动的 agent 已不属于原执行位置。", "unknown");
