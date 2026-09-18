@@ -46,7 +46,7 @@ See [Releases](https://github.com/hewenyu/herdr-agent/releases/latest) for the l
 
 A pushed `v*` tag triggers three native builds and smoke tests, verifies the complete npm distribution with an offline global install, publishes the platform packages and then the entry package, and creates the GitHub Release. Publishing uses `TOKEN` from the GitHub environment `NPM`. No manual workflow download option is required. See [release operations](docs/releasing.md) for versioning and recovery.
 
-Full live acceptance remains in progress. Automated checks and packaging smoke tests do not establish that every real Feishu, model and herdr scenario works. [Live validation](docs/live-validation.md) records passed, partial, untested and failed cases; [E24](docs/live-evidence-e24-retained-group.md) records the latest retained-group cleanup and notification component checks. Those component checks do not replace real user ingress through Feishu.
+Full live acceptance remains in progress. Automated checks and packaging smoke tests do not establish that every real Feishu, model and herdr scenario works. [Live validation](docs/live-validation.md) records passed, partial, untested and failed cases; [E24](docs/live-evidence-e24-retained-group.md) records retained-group cleanup and notification component checks, while [E25](docs/live-evidence-e25-transport-legacy.md) records Feishu transport recovery and legacy-route validation. Those component checks do not replace real user ingress through Feishu.
 
 ## Build and run
 
