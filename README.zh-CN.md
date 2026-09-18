@@ -33,7 +33,7 @@ myrix serve
 
 npm 安装需要 Node >=18 来运行薄启动器，实际业务执行对应平台的独立二进制。保留 optional dependencies；没有下载代码的安装脚本。兼容 `herdr-agent` 命令，现有状态目录仍为 `~/.herdr-agent`。无需 Node 的安装方式是从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包。
 
-Release Action 仅在发布步骤使用 GitHub environment `NPM` 的 `TOKEN`。三平台从公共 npm 安装精确版本，并核对两个命令、版本号和提交号后，才创建 GitHub Release。失败恢复见[发布说明](docs/releasing.md)。
+Release Action 仅在发布步骤使用 GitHub environment `NPM` 的 `TOKEN`。它会在发布前用离线全局安装校验完整 npm 分发，然后创建 GitHub Release；npm 将新版本暴露到公共 registry 可能需要几分钟。失败恢复见[发布说明](docs/releasing.md)。
 
 ## 从源码构建
 

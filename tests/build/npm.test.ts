@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +14,6 @@ import {
   type Target,
   targets,
 } from "../../scripts/npm/config.js";
-import { verifyRegistry } from "../../scripts/npm/download.js";
 import { command, extract, offlineEnvironment } from "../../scripts/npm/io.js";
 import {
   type Distribution,
@@ -393,114 +391,4 @@ test("publication confirmation retries while npm registry metadata propagates", 
     published,
     input.packages.map((item) => item.name),
   );
-});
-
-test("public registry installation retries are bounded, contain no token, and require the exact commit", async () => {
-  const commit = "a".repeat(40);
-  const aliases = new Set<string>();
-  let installs = 0;
-  const run = (file: string, args: string[], _cwd?: string, env?: NodeJS.ProcessEnv) => {
-    assert.equal(env?.NODE_AUTH_TOKEN, undefined);
-    assert.equal(env?.NPM_TOKEN, undefined);
-    if (file === "npm") {
-      installs++;
-      assert.ok(args.includes("--ignore-scripts"));
-      assert.ok(args.includes(`${defaultPackageName}@0.3.0`));
-      if (installs === 1) throw new Error("registry propagation pending");
-      return "installed";
-    }
-    aliases.add(file.slice(file.lastIndexOf("/") + 1));
-    if (args[0] === "version") return JSON.stringify({ version: "v0.3.0", commit });
-    return args[0] === "help" ? "setup serve" : "v0.3.0";
-  };
-  await verifyRegistry("v0.3.0", defaultPackageName, commit, { run, pause: async () => {} });
-  assert.equal(installs, 2);
-  assert.deepEqual(aliases, new Set(["myrix", "herdr-agent"]));
-  await assert.rejects(
-    verifyRegistry("v0.3.0", defaultPackageName, "b".repeat(40), {
-      run,
-      pause: async () => {},
-    }),
-    /commit mismatch/,
-  );
-  let failures = 0;
-  await assert.rejects(
-    verifyRegistry("v0.3.0", defaultPackageName, commit, {
-      run() {
-        failures++;
-        throw new Error("registry unavailable");
-      },
-      pause: async () => {},
-    }),
-    /registry unavailable/,
-  );
-  assert.equal(failures, 3);
-});
-
-test("npm install success with a missing optional binary or broken alias cleans the prefix and retries validation", async () => {
-  const commit = "a".repeat(40);
-  for (const failure of ["missing-native", "second-alias-help"]) {
-    let installs = 0;
-    let prefix = "";
-    let pauses = 0;
-    const verified = new Set<string>();
-    await verifyRegistry("v0.3.0", defaultPackageName, commit, {
-      run(file, args) {
-        if (file === "npm") {
-          installs++;
-          prefix = args[args.indexOf("--prefix") + 1] ?? "";
-          assert.ok(prefix);
-          assert.equal(existsSync(prefix), false, "A retry must discard the partial installation");
-          mkdirSync(prefix);
-          writeFileSync(join(prefix, "partial-native"), "old optional dependency state");
-          return "npm exits zero even when an optional platform package was skipped";
-        }
-        if (installs === 1 && failure === "missing-native")
-          throw new Error("missing native package");
-        if (
-          installs === 1 &&
-          failure === "second-alias-help" &&
-          file.endsWith("/herdr-agent") &&
-          args[0] === "help"
-        )
-          return "invalid help output";
-        if (installs === 2) verified.add(`${file.slice(file.lastIndexOf("/") + 1)}:${args[0]}`);
-        if (args[0] === "version") return JSON.stringify({ version: "0.3.0", commit });
-        return args[0] === "help" ? "setup serve" : "0.3.0";
-      },
-      async pause() {
-        pauses++;
-        assert.equal(existsSync(prefix), false);
-      },
-    });
-    assert.equal(installs, 2);
-    assert.equal(pauses, 1);
-    assert.equal(verified.size, 6, "Both aliases must pass all three checks after reinstalling");
-    assert.equal(existsSync(prefix), false, "Final temporary prefix must be removed");
-  }
-});
-
-test("three successful npm installs with a persistently missing optional binary never pass", async () => {
-  let installs = 0;
-  let aliasAttempts = 0;
-  let pauses = 0;
-  await assert.rejects(
-    verifyRegistry("v0.3.0", defaultPackageName, "a".repeat(40), {
-      run(file) {
-        if (file === "npm") {
-          installs++;
-          return "installed";
-        }
-        aliasAttempts++;
-        throw new Error("optional native package is still unavailable");
-      },
-      async pause() {
-        pauses++;
-      },
-    }),
-    /optional native package is still unavailable/,
-  );
-  assert.equal(installs, 3);
-  assert.equal(aliasAttempts, 3);
-  assert.equal(pauses, 2);
 });

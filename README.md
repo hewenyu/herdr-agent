@@ -21,7 +21,7 @@ myrix serve
 
 npm installation needs Node >=18 for its small launcher and selects the matching bundled executable. Keep optional dependencies enabled; no install script downloads code. `herdr-agent` remains a command alias, and the existing state directory stays `~/.herdr-agent`. To run without Node, download the matching binary archive from [Releases](https://github.com/hewenyu/herdr-agent/releases).
 
-The release workflow uses the `TOKEN` secret in GitHub environment `NPM` only for publishing. It installs the exact published version on all three native runners and verifies both command aliases, version and commit before publishing the GitHub Release. See [release operations](docs/releasing.md) for recovery.
+The release workflow uses the `TOKEN` secret in GitHub environment `NPM` only for publishing. It assembles and verifies the complete npm distribution with an offline global install before publishing the GitHub Release. npm may take a few minutes to expose a newly published version through its public registry. See [release operations](docs/releasing.md) for recovery.
 
 ## Build and run
 

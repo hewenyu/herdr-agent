@@ -1,5 +1,4 @@
 import { defaultPackageName, packageName, releaseVersion } from "./npm/config.js";
-import { verifyRegistry } from "./npm/download.js";
 import { prepareDistribution } from "./npm/prepare.js";
 import { publishDistribution } from "./npm/publish.js";
 import { verifyDistribution } from "./npm/verify.js";
@@ -7,7 +6,7 @@ import { verifyDistribution } from "./npm/verify.js";
 const [command, tag, input, output] = process.argv.slice(2);
 if (!command || command === "--help") {
   process.stdout.write(
-    "Usage: node --import tsx scripts/npm.ts <validate|prepare|verify|publish|download> <vSEMVER> [archives-or-packages-dir|commit] [output-dir]\nNPM_PACKAGE_NAME defaults to @yuebanlaosiji/myrix; prepare is offline, verify installs locally offline, download checks public registry installation, only publish writes to npm.\n",
+    "Usage: node --import tsx scripts/npm.ts <validate|prepare|verify|publish> <vSEMVER> [archives-or-packages-dir] [output-dir]\nNPM_PACKAGE_NAME defaults to @yuebanlaosiji/myrix; prepare and verify are offline, only publish writes to npm.\n",
   );
 } else {
   if (!tag) throw new Error("A release tag is required");
@@ -28,11 +27,6 @@ if (!command || command === "--help") {
     const published = await publishDistribution(input, tag, name);
     process.stdout.write(
       `Published ${published.length} packages; identical existing versions were skipped\n`,
-    );
-  } else if (command === "download" && input) {
-    await verifyRegistry(tag, name, input);
-    process.stdout.write(
-      `Public npm install and both aliases verified: ${name}@${releaseVersion(tag).version}, ${process.platform}/${process.arch}, ${input}\n`,
     );
   } else throw new Error("Invalid npm distribution command or arguments; use --help");
 }

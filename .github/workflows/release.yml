@@ -102,47 +102,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
         run: node --import tsx scripts/npm.ts publish "$RELEASE_TAG" build/npm
-  npm-verify:
-    name: Download npm · ${{ matrix.target }}
-    needs: npm-publish
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: darwin_arm64
-            platform: darwin
-            arch: arm64
-          - runner: ubuntu-24.04-arm
-            target: linux_arm64
-            platform: linux
-            arch: arm64
-          - runner: ubuntu-22.04
-            target: linux_amd64
-            platform: linux
-            arch: x64
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    env:
-      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@yuebanlaosiji/myrix' }}
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_COMMIT: ${{ github.sha }}
-      EXPECTED_PLATFORM: ${{ matrix.platform }}
-      EXPECTED_ARCH: ${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
-        with:
-          node-version: 24.13.0
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - name: Install exact version from public npm and execute both aliases
-        run: |
-          node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
-          node --import tsx scripts/npm.ts download "$RELEASE_TAG" "$RELEASE_COMMIT"
   publish:
-    needs: [build, npm-publish, npm-verify]
+    needs: [build, npm-publish]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -173,7 +134,7 @@ jobs:
 
           Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
 
-          All three native targets also install the exact published npm version into an isolated prefix, execute both command aliases, and verify the build version and commit before this GitHub release is published.
+          The npm distribution is assembled and verified with an offline global install before publication. npm may take a few minutes to expose a newly published version through its public registry.
 
           Verify downloads with `sha256sum --ignore-missing -c SHA256SUMS` (Linux) or `shasum -a 256 --ignore-missing -c SHA256SUMS` (macOS).
 
