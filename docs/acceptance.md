@@ -2,6 +2,8 @@
 
 日期：2026-09-18。本文对照 [需求盘点](node-pi-refactor-requirements.md) 的 B01–B18 / N01–N07；默认产品选择见 [设计](node-pi-design.md)，目标状态见 [refactor-goal.md](refactor-goal.md)。业务表格中的“已测”指离线自动化，不表示在真实飞书、herdr 或模型服务上完成端到端验收；下文另明确标注只读 Web 的真实 Chrome/HTTP 检查和版本边界。
 
+当前运行检查（2026-09-18）：`master`/`origin/master` 为 `e7e8b3e`；macOS arm64 SEA 版本 `0.3.6`，构建提交 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`。服务 `/api/state` 的 runtime 和 Feishu authorization 均为 `ready`。状态库 23 个任务均已销毁、177 个 outbox 全部送达，28 个已知测试群经真实 Feishu GET 均为 `dissolved`。该检查只证明当前运行实例和测试资源清理，不把服务 ready、资源为空或离线测试扩大为 B/N 全场景通过。
+
 2026-09-18 E20追加：0ccfff2已部署，format/check 378项及SEA smoke通过，飞书连接/授权ready；真实父讨论→关联Codex开发→父完成而子资源保留已有证据。390×728窄屏历史浏览及刷新后Console限定检查已完成，原首次短输出超长失败保留、群内修订60字符通过。详见[本轮独立记录](live-evidence-e20-release.md)，后续b53终态描述修复已通过386项检查、SEA及真实子完成/原生手动完成回读；16专用任务群及20个执行器均已确认清理。正式发布结果另记。
 
 2026-09-18 E22追加：提交 `57736d9` 修复后续 tick 无法接纳新 inbox lane 的竞态，`npm run check` 通过 422 项测试，SEA build/smoke 通过。当前 macOS arm64 二进制重启后，真实飞书创建讨论任务 `LIVE-RACE-20260918-R2`，Codex 回复 `LIVE_RACE_R2_OK`；用户手动确认完成后，Codex/herdr 关闭、任务销毁和群解散均已回读。该条只覆盖一条真实讨论与默认收尾链路，不能替代其余场景验收。
