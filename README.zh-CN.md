@@ -12,7 +12,7 @@
 
 ## 发布与验收状态
 
-当前最新公开版本是 [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6)。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.6`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
+当前最新公开版本是 [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.6`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
 
 Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herder 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herder 和外部状态回读，才能把某个场景视为已验收。
 
@@ -39,7 +39,7 @@ myrix setup
 myrix serve
 ```
 
-npm 安装需要 Node >=18 来运行薄启动器，实际业务执行对应平台的独立二进制。保留 optional dependencies；没有下载代码的安装脚本。兼容 `herdr-agent` 命令，现有状态目录仍为 `~/.herdr-agent`。无需 Node 的安装方式是从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包。
+npm 安装需要 Node >=18 来运行薄启动器，实际业务执行对应平台的独立二进制。请安装 **`@yuebanlaosiji/myrix`**，不要直接安装平台包。`@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-arm64` 和 `@yuebanlaosiji/myrix-linux-x64` 是 npm 自动选择的实现依赖，为当前平台提供原生可执行文件，虽然会单独发布但不作为用户入口。保留 optional dependencies；没有下载代码的安装脚本。兼容 `herdr-agent` 命令，现有状态目录仍为 `~/.herdr-agent`。无需 Node 的安装方式是从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包。
 
 Release Action 仅在发布步骤使用 GitHub environment `NPM` 的 `TOKEN`。它会在发布前用离线全局安装校验完整 npm 分发，然后创建 GitHub Release；npm 将新版本暴露到公共 registry 可能需要几分钟。失败恢复见[发布说明](docs/releasing.md)。
 
