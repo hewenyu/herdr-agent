@@ -2,13 +2,13 @@
 
 [English](README.md)
 
-用 pi 调度本工具的项目、任务、参与者和多个会话，通过 **herdr 托管的 Claude/Codex** 讨论需求、开发、测试和评审。真实业务在飞书私聊和任务群内发生，本机 Web 只用于查看会话记录。
+用 pi 调度本工具的项目、任务、参与者和多个会话，通过 **herdr 托管的 Claude/Codex** 讨论需求、开发、测试和评审。真实业务在飞书私聊和任务群内发生；本机 Web 用于查看会话记录，也用于维护本地项目、模型连接和 Bypass 等配置。
 
 **pi 只做 herdr-agent 的业务调度。** 用户项目的需求讨论和实际开发交给 Claude/Codex；它们的原生 session 由 herdr 管理。AI 开启时，模型决定普通业务沟通和工具调用，程序提供工具、身份与状态约束。exact `/clear` 是直接执行、不调用模型的会话命令。
 
 后端、前端均为 TypeScript，使用 Node SEA 一体打包。普通用户运行可执行文件，无需另装 Node 或放置前端资源。设计与取舍见 [实施设计](docs/node-pi-design.md)，实际验证范围见 [验收证据](docs/acceptance.md)。
 
-**2026-09-18 范围纠正：** Web 只允许在本地浏览、筛选已有会话历史，不改变 active pi session，不发消息、不创建任务或项目、不审批或清理资源、不修改配置，也不提供命令入口。只读实现已部署，HTTP 写入口拒绝和桌面浏览无业务副作用已实测；完整边界按验收矩阵记录。旧 Web/API 业务证据保留，但不能证明飞书业务入口通过。
+**2026-09-18 范围纠正：** Web 只维护本机配置和浏览会话记录。可以配置本地项目（支持多目录，首目录保存时自动确保 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不能发消息、创建任务、管理参与者、审批、清理资源或操作 pi session。飞书仍是所有业务交互入口；配置写入口受 loopback、Origin、Host 和 CSRF 保护。
 
 ## 运行前置
 
@@ -18,7 +18,7 @@
 - 使用 pi 时配置支持工具调用的 OpenAI Responses 或 Anthropic Messages 模型服务。
 - 目标平台：macOS arm64、Linux x64/arm64。使用对应平台的原生构建；不能把 macOS 包复制到 Linux 使用。原生 flock 扩展仍依赖兼容的系统 C++ 运行库。
 
-这是单人单机工具。本机页面只监听 loopback IP，允许按已有授权范围筛选会话记录；筛选不能改变服务端业务身份或飞书活跃会话。这不是远程 Web 登录或多租户管理。
+这是单人单机工具。本机页面只监听 loopback IP，允许按已有授权范围筛选会话记录和维护本机配置；筛选不能改变服务端业务身份或飞书活跃会话。这不是远程 Web 登录或多租户管理。
 
 ## 安装
 
@@ -56,8 +56,8 @@ npm run smoke
 
 1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（默认 `~/.herdr-agent/config.toml`），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
 2. 运行 `herdr-agent setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
-3. 在本地配置文件设置 `[ai]` 的 `enabled/provider/model/base_url/api_key`，AI 要求任务功能启用；启用时必须显式填写 `base_url`，留空不采用供应商默认端点。配置修改后重启。业务项目登记通过飞书提出，不通过网页表单。
-4. 运行 `herdr-agent serve --open`，打开日志打印的本机地址。Web 仅用于查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
+3. 可在 Web 的“项目配置”页登记项目目录、设置默认项目和 Bypass；第一个目录是主目录，保存时自动检查并初始化 Git，附加目录按顺序传递给 Claude/Codex。模型连接也可在 Web 的“模型设置”页保存；启用时必须显式填写 `base_url`，配置修改后重启。任务、讨论和审批仍通过飞书提出。
+4. 运行 `herdr-agent serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
 
 ```sh
 herdr-agent setup --app cli_EXISTING_APP
@@ -68,7 +68,7 @@ herdr-agent doctor --json
 
 已有应用启用任务功能时，需在飞书开发者后台配置事件订阅方式，添加 `task.task.update_user_access_v2` 并发布应用版本，才能让手动完成任务的事件送达服务。逐任务调用 API 订阅不能替代后台事件配置与应用发布；setup 的 scope 检查不检查后台事件订阅。
 
-`configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机会话记录页；网页及 HTTP 接口没有业务或配置写入口。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
+`configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机会话记录页；网页及 HTTP 接口只开放受保护的本机配置写入口，不开放业务操作。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
 
 飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型 key 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
 
@@ -86,7 +86,7 @@ herdr-agent doctor --json
 
 AI 开启时，其余聊天文本由模型理解，包括斜杠形式。关闭 AI 后仍保留任务模式的 `/new /tasks /projects /task /screen /stop` 等兼容入口；关闭 tasks 后可以用 `/ls /card /say /stop /mirror /close` 接管已有 agent。旧桥 `/close` 仅解除选择，不销毁任务。
 
-日常 CLI 为 `serve / setup / configure / doctor / version / help`；`configure` 现用于本机会话记录页，旧 Web 管理控件已移除，维护入口为 `migrate` 与只读 `debug ls|screen|transcript`。旧顶层 `key / say / watch / dialog / tail` 等已退出，终端输入通过飞书参与者调度，普通审批在飞书群内由用户选择。`help` 列出有效参数。退出码：0 成功、1 失败、2 用法错误、3 setup 凭据已保存但验证未完成、130 取消；旧 Go 的所有退出码并非逐项兼容。
+日常 CLI 为 `serve / setup / configure / doctor / version / help`；`configure` 现用于本地配置和会话记录页，旧 Web 业务管理控件已移除，维护入口为 `migrate` 与只读 `debug ls|screen|transcript`。旧顶层 `key / say / watch / dialog / tail` 等已退出，终端输入通过飞书参与者调度，普通审批在飞书群内由用户选择。`help` 列出有效参数。退出码：0 成功、1 失败、2 用法错误、3 setup 凭据已保存但验证未完成、130 取消；旧 Go 的所有退出码并非逐项兼容。
 
 ## 升级与旧数据
 
@@ -104,7 +104,7 @@ herdr-agent serve --state-dir /absolute/state
 
 ## 验证边界
 
-自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。只读 Web 历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
+自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
 
 [当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。所有 B/N 场景、尚待核对项目和部署证据见 [acceptance.md](docs/acceptance.md)。
 

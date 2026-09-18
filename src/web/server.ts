@@ -1,9 +1,10 @@
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { OperationError, safeError } from "../core/errors.js";
 import type { WebAssets, WebBackend } from "./contracts.js";
-import { parseListen, verifyRequest } from "./security.js";
+import { parseListen, readBody, verifyRequest, verifyWriteRequest } from "./security.js";
 
 export interface WebOptions {
   listen: string;
@@ -15,6 +16,17 @@ const contentTypes = {
   "styles.css": "text/css; charset=utf-8",
   "app.js": "text/javascript; charset=utf-8",
 };
+
+/** Web is a local configuration surface; business workflows remain in Feishu. */
+export const WEB_CONFIGURATION_ACTIONS = new Set([
+  "identity.select",
+  "project.save",
+  "project.create",
+  "project.delete",
+  "project.default",
+  "catalog.bypass",
+  "config.ai",
+]);
 
 async function developmentAssets(): Promise<WebAssets> {
   const root = new URL("./assets/", import.meta.url);
@@ -58,6 +70,7 @@ export async function startWeb(
 ): Promise<{ url: string; close(): Promise<void> }> {
   const address = parseListen(options.listen);
   const assets = options.assets ?? (await developmentAssets());
+  const csrf = randomBytes(32).toString("hex");
   const subscribers = new Set<ServerResponse>();
   let origin = "";
   let closed = false;
@@ -66,14 +79,6 @@ export async function startWeb(
     try {
       verifyRequest(request, origin);
       const target = new URL(request.url ?? "/", origin);
-      if (request.method !== "GET") {
-        response.setHeader("Allow", "GET");
-        json(response, 405, {
-          ok: false,
-          error: { code: "read_only", message: "Web 仅供查看会话记录。", outcome: "not_executed" },
-        });
-        return;
-      }
       if (request.method === "GET" && target.pathname === "/api/state") {
         json(
           response,
@@ -93,11 +98,54 @@ export async function startWeb(
         response.on("close", () => subscribers.delete(response));
         return;
       }
+      if (request.method === "POST" && target.pathname === "/api/actions") {
+        verifyWriteRequest(request, origin, csrf);
+        const body = await readBody(request);
+        if (
+          typeof body.action !== "string" ||
+          !/^[a-z]+\.[a-z]+$/.test(body.action) ||
+          !body.input ||
+          typeof body.input !== "object" ||
+          Array.isArray(body.input)
+        ) {
+          throw new OperationError("invalid_action", "操作名称或参数无效。");
+        }
+        if (!WEB_CONFIGURATION_ACTIONS.has(body.action)) {
+          throw new OperationError(
+            "web_action_forbidden",
+            "任务、聊天、审批和 pi 会话操作必须在飞书中完成。",
+          );
+        }
+        if (!options.backend.dispatch)
+          throw new OperationError("web_unavailable", "当前服务未提供配置写入能力。");
+        const result = await options.backend.dispatch(
+          body.action,
+          body.input as Record<string, unknown>,
+        );
+        json(response, 200, { ok: true, result: result ?? null });
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, POST");
+        json(response, 405, {
+          ok: false,
+          error: {
+            code: "method_not_allowed",
+            message: "请求方法不支持。",
+            outcome: "not_executed",
+          },
+        });
+        return;
+      }
       const name = target.pathname === "/" ? "index.html" : target.pathname.slice(1);
       if (request.method === "GET" && Object.hasOwn(contentTypes, name)) {
         const key = name as keyof WebAssets;
         response.writeHead(200, { "Content-Type": contentTypes[key] });
-        response.end(assets[key]);
+        const content =
+          key === "index.html"
+            ? Buffer.from(assets[key]).toString("utf8").replaceAll("__CSRF_TOKEN__", csrf)
+            : assets[key];
+        response.end(content);
         return;
       }
       json(response, 404, {

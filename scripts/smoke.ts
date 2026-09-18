@@ -116,7 +116,8 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     }
     const page = await fetch(origin, { signal: AbortSignal.timeout(5_000) });
     const html = await page.text();
-    assert.ok(!html.includes("csrf-token"), "Read-only history must not expose action tokens");
+    const csrf = html.match(/name="csrf-token" content="([a-f0-9]{64})"/)?.[1];
+    assert.ok(csrf, "Configuration page must expose a per-process CSRF token");
     assert.match(page.headers.get("content-security-policy") ?? "", /script-src 'self'/);
     const state = await fetch(`${origin}/api/state`, { signal: AbortSignal.timeout(5_000) });
     assert.equal(state.status, 200);
@@ -128,7 +129,21 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
       body: JSON.stringify({ action: "session.create", input: { name: "must not execute" } }),
       signal: AbortSignal.timeout(5_000),
     });
-    assert.equal(forbidden.status, 405);
+    assert.equal(forbidden.status, 403);
+    const config = await fetch(`${origin}/api/actions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: origin,
+        "X-CSRF-Token": csrf,
+      },
+      body: JSON.stringify({
+        action: "config.ai",
+        input: { enabled: false, provider: "openai-responses", model: "smoke" },
+      }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    assert.equal(config.status, 200);
     const after = (await (
       await fetch(`${origin}/api/state`, {
         signal: AbortSignal.timeout(5_000),
@@ -153,7 +168,7 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
       child = undefined;
     });
     process.stdout.write(
-      `SEA smoke passed: ${stamp.version}; help, version, native lock, read-only Web, rejected actions, offline inbox, pi/OpenAI/Anthropic, no browser ACK\n`,
+      `SEA smoke passed: ${stamp.version}; help, version, native lock, Web config/history, rejected business actions, offline inbox, pi/OpenAI/Anthropic, no browser ACK\n`,
     );
   } finally {
     if (child) await stop(child);

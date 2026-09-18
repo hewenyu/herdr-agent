@@ -1,13 +1,17 @@
 import type { WebState } from "../contracts.js";
-import { state as fetchState } from "./api.js";
+import { type Action, dispatch, state as fetchState } from "./api.js";
 import { button, el, select, time } from "./dom.js";
+import { renderProjects, renderSettings } from "./projects.js";
 import { type RecordTab, renderSessions, type SessionFilter } from "./sessions.js";
+
+type Page = "sessions" | "projects" | "settings";
 
 let current: WebState = {};
 let selectedOwner = "";
 let selectedSession = "";
 let filter: SessionFilter = "all";
 let tab: RecordTab = "messages";
+let page: Page = "sessions";
 let requestVersion = 0;
 let refreshing = false;
 let refreshPending = false;
@@ -30,27 +34,31 @@ const status = select(
   ],
   filter,
 );
-const refreshButton = button("刷新记录", refresh);
+const refreshButton = button("刷新记录", () => void refresh());
 node("#filters").replaceChildren(identity.wrapper, status.wrapper, refreshButton);
-identity.input.disabled = true;
-identity.input.addEventListener("change", () => {
-  selectedOwner = identity.input.value;
-  selectedSession = "";
-  requestVersion++;
-  current = { identities: current.identities, sessions: [], messages: [], records: [] };
-  node("#feedback").textContent = "";
-  render();
-  void refresh();
-});
-identity.input.addEventListener("blur", () => syncIdentity());
+identity.input.addEventListener("change", () => void switchIdentity(identity.input.value));
 status.input.addEventListener("change", () => {
   filter = status.input.value as SessionFilter;
   render();
 });
 
-function syncIdentity() {
-  // Native select menus must retain their node and options while focused.
-  if (document.activeElement === identity.input) return;
+async function switchIdentity(ownerId: string): Promise<void> {
+  if (!ownerId || ownerId === selectedOwner) return;
+  try {
+    await dispatch("identity.select", { ownerId });
+    selectedOwner = ownerId;
+    selectedSession = "";
+    requestVersion++;
+    await refresh();
+  } catch (error) {
+    node("#feedback").replaceChildren(
+      el("p", "notice", error instanceof Error ? error.message : "身份切换未完成。"),
+    );
+    await refresh();
+  }
+}
+
+function syncIdentity(): void {
   const identities = current.identities ?? [];
   const signature = JSON.stringify(identities);
   if (identityOptions !== signature) {
@@ -63,11 +71,51 @@ function syncIdentity() {
     );
     identityOptions = signature;
   }
-  identity.input.value = selectedOwner;
+  identity.input.value = selectedOwner || current.activeOwnerId || identities[0]?.id || "";
   identity.input.disabled = !identities.length;
 }
 
-function render() {
+function renderNavigation(): void {
+  const navigation = node("#navigation");
+  navigation.replaceChildren();
+  for (const [key, label] of [
+    ["sessions", "会话记录"],
+    ["projects", "项目配置"],
+    ["settings", "模型设置"],
+  ] as const) {
+    navigation.append(
+      button(
+        label,
+        () => {
+          page = key;
+          render();
+        },
+        page === key ? "selected" : "",
+      ),
+    );
+  }
+  node("#page-title").textContent =
+    page === "sessions" ? "会话记录" : page === "projects" ? "项目配置" : "模型设置";
+  node("#filters").style.display = page === "sessions" ? "" : "none";
+}
+
+function feedback(message: string, error = false): void {
+  node("#feedback").replaceChildren(el("div", `notice ${error ? "error" : "good"}`, message));
+}
+
+const configAction: Action = async (name, input) => {
+  try {
+    const result = await dispatch(name, input);
+    await refresh();
+    feedback(name === "config.ai" ? "模型配置已保存，重启服务后生效。" : "配置已保存。");
+    return result;
+  } catch (error) {
+    feedback(error instanceof Error ? error.message : "配置未完成，请核对输入。", true);
+    return undefined;
+  }
+};
+
+function render(): void {
   const oldHistory = document.querySelector<HTMLElement>(".history");
   const previousSession = oldHistory?.dataset.sessionId;
   const scroll = oldHistory?.scrollTop ?? 0;
@@ -77,7 +125,16 @@ function render() {
     ),
   );
   syncIdentity();
+  renderNavigation();
   rendered = true;
+  if (page === "projects") {
+    node("#content").replaceChildren(renderProjects(current, configAction));
+    return;
+  }
+  if (page === "settings") {
+    node("#content").replaceChildren(renderSettings(current, configAction));
+    return;
+  }
   const visible = (current.sessions ?? []).filter(
     (session) => filter === "all" || session.archived === (filter === "archived"),
   );
@@ -112,29 +169,29 @@ async function refresh(): Promise<void> {
   }
   refreshing = true;
   refreshButton.disabled = true;
-  let changed = false;
   const version = requestVersion;
   const owner = selectedOwner;
   try {
     const next = await fetchState(owner || undefined);
     if (version !== requestVersion) return;
     const nextOwner = owner || next.activeOwnerId || next.identities?.[0]?.id || "";
-    changed =
+    const changed =
       !rendered || nextOwner !== selectedOwner || JSON.stringify(next) !== JSON.stringify(current);
     current = next;
     selectedOwner = nextOwner;
     node("#connection").textContent = `已更新 ${time(new Date().toISOString())}`;
     node("#feedback").replaceChildren();
+    if (changed) render();
   } catch (error) {
-    if (version !== requestVersion) return;
-    node("#connection").textContent = "连接暂不可用";
-    node("#feedback").replaceChildren(
-      el("p", "notice", error instanceof Error ? error.message : "读取记录失败，请刷新。"),
-    );
+    if (version === requestVersion) {
+      node("#connection").textContent = "连接暂不可用";
+      node("#feedback").replaceChildren(
+        el("p", "notice", error instanceof Error ? error.message : "读取记录失败，请刷新。"),
+      );
+    }
   } finally {
     refreshing = false;
     refreshButton.disabled = false;
-    if (version === requestVersion && changed) render();
     if (refreshPending) {
       refreshPending = false;
       void refresh();

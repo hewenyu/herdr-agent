@@ -1,10 +1,10 @@
 # Node + pi 实施设计
 
-日期：2026-09-18。本文记录当前目标设计；最新 Web 范围纠正尚在实现和验收，不把设计要求写成已经完成。[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
+日期：2026-09-18。本文记录当前目标设计；Web 配置边界已纳入实现，完整现场验收仍按矩阵记录，不把局部通过写成整体完成。[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
 
-2026-09-18 最新范围纠正：**真实业务全部从飞书私聊或任务群发起，Web 仅为只读会话记录页。** 网页可以本地浏览、筛选既有历史，不能改变 active pi session 或服务端业务身份，不能发消息、创建任务/项目、审批、清理资源或修改配置，也没有命令入口。旧 Web 管理与聊天设计退出当前范围；旧 Web/API 证据保留，但不计作飞书业务入口通过。相应实现和新验收尚在整改，本段不是完成声明。
+2026-09-18 Web 边界：**真实业务全部从飞书私聊或任务群发起。** Web 可浏览和筛选会话记录，并维护本机项目（有序多目录，首目录保存时自动 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不能发消息、创建任务/项目执行流程、管理参与者、审批、清理资源或操作 pi session。旧 Web 业务管理与聊天设计退出范围；配置写入仅通过受保护的配置 action。
 
-2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。飞书主入口私聊的 exact `/clear` 由程序直接执行，不调用模型，AI 关闭或模型不可用时也可用。程序在一个事务中归档旧 pi session、创建并选中新 pi session，提交成功后只回复 `CLEAR_NEW_SESSION_OK`；失败不得送成功。旧历史和回执保留，已接收排队消息保留旧绑定并因归档拒绝执行，不改投新会话；后续消息进入新 session。群聊不执行轮转；进入处理流程的群消息给出确定性简短拒绝，普通非任务群无 @ 仍按路由忽略。Web 不提供聊天、命令、清空和活跃会话切换；只读查看不改变 session、任务或 herdr 资源。以上为最新实现约束，新版本现场验收状态见 [现场矩阵](live-validation.md)，旧模型驱动证据不代替新方案验收。
+2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。飞书主入口私聊的 exact `/clear` 由程序直接执行，不调用模型，AI 关闭或模型不可用时也可用。程序在一个事务中归档旧 pi session、创建并选中新 pi session，提交成功后只回复 `CLEAR_NEW_SESSION_OK`；失败不得送成功。旧历史和回执保留，已接收排队消息保留旧绑定并因归档拒绝执行，不改投新会话；后续消息进入新 session。群聊不执行轮转；进入处理流程的群消息给出确定性简短拒绝，普通非任务群无 @ 仍按路由忽略。Web 不提供聊天、命令、清空和活跃会话切换；配置页不改变 session、任务或 herdr 资源。以上为最新实现约束，新版本现场验收状态见 [现场矩阵](live-validation.md)，旧模型驱动证据不代替新方案验收。
 
 ## 核心职责
 
@@ -43,14 +43,14 @@ flowchart LR
 | D05 | 讨论转执行建立关联的新任务 | `parentTaskId` 关联原讨论，`parentContext` 冻结创建时的要求、结果和参与者反馈，`requirements` 保存本次用户要求。快照只作背景，本次要求优先；指定参与者形成业务结论，pi 只传递，不把讨论终结当作开发授权 |
 | D06 | 默认 shared；显式可选 task 级 Git worktree | 同一执行任务内参与者串行投递；worktree 只隔离项目首目录，其余附加目录仍共享。跨任务 shared 可并行改同文件；关闭任务不删除代码/worktree |
 | D07 | 新任务默认 `group_retention=delete`，completed 确认后自动解散群；明确 `retain` 或每任务 `keepGroup:true` 保留 | review 不收尾；complete/飞书手动完成默认通过herdr关闭执行器并解散群，群任何原因解散都清对应执行资源。明确保留keepExecution仅complete支持，有群任务必须同时keepGroup:true；destroy不自动验收。新任务记录 groupRetentionSource（explicit/default），Go 导入标记 legacy；旧来源未知任务在明确完成/关闭/销毁或外部完成时采用默认解散，历史 task_actions 的显式保留证据优先。已完成旧任务仅凭明确 keepExecution:true 回执保留执行现场；不会批量改写仍活跃的旧任务 |
-| D08 | 飞书承接业务交互，保留关闭 AI 的飞书任务操作及关闭 tasks 的旧桥模式；Web 仅查看会话记录 | Web 浏览和筛选不写 active session、业务身份、历史或回执；网页及其 API 均无业务/配置写入口，不能仅隐藏按钮 |
+| D08 | 飞书承接业务交互，保留关闭 AI 的飞书任务操作及关闭 tasks 的旧桥模式；Web 维护本机项目/模型/Bypass 等配置并查看会话记录，不承接业务操作 | Web 浏览和筛选不写 active session、历史或回执；配置 action 只写本机配置，业务 action 均拒绝，不能仅隐藏按钮 |
 | D09 | Node >=24.13；TypeScript；`@earendil-works/pi-agent-core` / `pi-ai` 0.85.1 | 使用真实 pi 工具循环和两种模型 API 适配；业务 session、工具回执、投递回执由本项目持久化，不假设 SDK 自带群协作或事务 |
 | D10 | Node SEA 可执行文件，嵌 Node 运行时、服务代码、Web HTML/CSS/JS 和 flock 原生扩展 | 目标 macOS arm64、Linux x64/arm64，各平台原生构建；系统浏览器打开本机页面。herdr、已认证 Claude/Codex、Git 仍是外部依赖 |
 | D11 | OpenAI Responses / Anthropic Messages；自定义版本根 URL；file/HTTP 摘要存储 | 模型/记忆 key 来自 TOML；飞书凭据来自 env。`file` 兼容配置名对应新版 SQLite 本地存储。HTTP scope 使用 `chat_id=pi:<sessionId>` 隔离 pi session |
 | D12 | Go JSON 校验后备份并事务导入 SQLite；不修改旧源文件 | 未完成任务保持资源绑定；旧可见历史和摘要导入，归档隔离；旧操作/事件/通知回执保留，不重新执行工具或广播旧结果 |
 | D13 | 单任务 1–8 个参与者，允许同种模型多个实例、增员和退出 | 每位有独立 participant ID/资源引用；明确 ID 或唯一名称选择。退出关闭本任务受管 pane；跨任务复用原生实例不自动进行 |
 | D14 | 文本与富文本中的文字、链接；文本结果与审批卡片 | 不提供图片理解、附件下载、语音转写、飞书文档写作或制品托管管线。富文本中的资源 key 不作为正文指令 |
-| D15 | 单人单机、本地 herdr、loopback Web | 白名单和 owner 隔离是操作边界；Web 按允许身份范围只读查看记录，身份/会话筛选仅为本地视图状态，不能持久改变服务端业务选择；不是多用户登录系统。国内飞书是当前接入范围；Lark 注册结果不会保存为可用配置 |
+| D15 | 单人单机、本地 herdr、loopback Web | 白名单和 owner 隔离是操作边界；Web 按允许身份范围查看记录并维护本机配置，身份/会话筛选仅为本地视图状态，不能持久改变服务端业务选择；不是多用户登录系统。国内飞书是当前接入范围；Lark 注册结果不会保存为可用配置 |
 | D16 | 默认每批同时对账 4 个任务；讨论轮数/时间有上限，pi 单轮最多 12 次工具调用 | 这不是活跃 agent 总量或费用硬上限。暂停不杀进程；中断单独执行；完成或暂停仍观察迟到输出，不恢复轮转。任务 progress 通知按 notify_cooldown 合并最新状态；审批、最终结果、关闭前通知不受该冷却限制。历史/回执暂不自动过期清理 |
 
 ## 数据和恢复
@@ -86,7 +86,7 @@ CLI 取得共享 POSIX flock；服务启动执行同一幂等迁移。`configure
 
 命令匹配只检查实际消息正文的 `text.trim() === '/clear'`，不检查拼接后的引用内容；前后空白可忽略，`/CLEAR`、`／clear`、`/clear now` 和正文中提到 `/clear` 均不是该命令。它仅在飞书主入口私聊直接执行，在群内不执行轮转，AI 关闭时也可用。Web 不接收命令。AI 开启时，其余聊天文字及斜杠文本交给 pi。关闭 AI 后，任务模式保留 `/new`、`/tasks`、`/projects`、`/task ...`、`/screen`、`/stop` 等兼容操作；旧 `/new` 仍创建任务。关闭 tasks 时保留旧桥 `/ls /card /say /stop /mirror /close`；此处 `/close` 只解除选择，绝不升级成销毁任务。具体 CLI 选项以 `help` 为准。
 
-Web 仅提供会话列表和记录阅读，可以本地选择查看对象、筛选历史、查看归档记录和刷新。不能创建/重命名/归档/恢复/清空会话，不能切换 active session，不提供任务、项目、模型配置、终端屏幕控制或审批入口。服务端同样拒绝旧 Web 业务写请求，包括合法来源发出的旧 action；只监听明确 loopback IP并保留请求来源校验，不开放远程登录。配置通过本地安装维护流程处理，不借 Web 恢复写入口。`ui.max_cols/tail_lines` 只裁剪屏幕展示，不修改 Guard、阻塞检测或原始屏幕。停止 Web/服务不会自动销毁所有编码资源。
+Web 提供会话列表、记录阅读、本机项目配置和模型设置。项目支持多个有序目录，保存时由现有 catalog 逻辑检查目录并确保主目录 Git 初始化；配置 action 只能修改 identity、project、catalog.bypass 和 config.ai。Web 不能创建/重命名/归档/恢复/清空会话，不能切换 active session，不提供任务、参与者、审批、终端屏幕或清理入口。服务端拒绝其它 action，并通过 loopback、Host、Origin 和 CSRF 校验保护写请求。`ui.max_cols/tail_lines` 只裁剪屏幕展示，不修改 Guard、阻塞检测或原始屏幕。停止 Web/服务不会自动销毁所有编码资源。
 
 ## 实现边界与待现场验证
 

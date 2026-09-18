@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { StoredMessage } from "../../src/core/types.js";
 import type { WebState } from "../../src/web/contracts.js";
@@ -156,8 +158,13 @@ test("HTTP record browsing isolates identities and never changes sessions or del
     assert.ok(!JSON.stringify(one).includes("test-model-secret"));
     assert.ok(!JSON.stringify(one).includes("different-secret"));
     assert.ok(!JSON.stringify(one).includes("private-other-task"));
-    for (const field of ["tasks", "participants", "catalog", "projects", "model", "config"])
+    for (const field of ["tasks", "participants"])
       assert.equal(Object.hasOwn(one, field), false, field);
+    assert.ok(one.catalog);
+    assert.deepEqual(one.projects, one.catalog?.projects);
+    assert.equal(one.model?.keyConfigured, true);
+    assert.equal(one.config?.ai?.apiKeyConfigured, true);
+    assert.equal(Object.hasOwn(one.model ?? {}, "apiKey"), false);
     const two = await state("owner-second");
     assert.deepEqual(
       two.sessions?.map((x) => x.id),
@@ -184,6 +191,57 @@ test("HTTP record browsing isolates identities and never changes sessions or del
     assert.deepEqual(empty.messages, []);
     assert.deepEqual(empty.records, []);
     assert.deepEqual(saved(), before);
+  } finally {
+    await web.close();
+    await h.close();
+  }
+});
+
+test("Web configuration saves ordered project directories and rejects business actions", async () => {
+  const h = setup(false, false);
+  const primary = join(h.directory, "web-primary");
+  const extra = join(h.directory, "web-extra");
+  await mkdir(primary);
+  await mkdir(extra);
+  const web = await startWeb({
+    listen: "127.0.0.1:0",
+    backend: h.app,
+    assets: {
+      "index.html": '<meta name="csrf-token" content="__CSRF_TOKEN__">',
+      "app.js": "",
+      "styles.css": "",
+    },
+  });
+  try {
+    const html = await (await fetch(web.url)).text();
+    const csrf = html.match(/content="([a-f0-9]{64})"/)?.[1];
+    assert.ok(csrf);
+    const response = await fetch(`${web.url}/api/actions`, {
+      method: "POST",
+      headers: { Origin: web.url, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({
+        action: "project.save",
+        input: {
+          name: "web-project",
+          agent: "claude",
+          directories: [extra, primary, extra],
+          makeDefault: true,
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(h.app.projects.get("web-project").directories, [extra, primary]);
+    assert.equal((await stat(join(extra, ".git"))).isDirectory(), true);
+    const state = (await (await fetch(`${web.url}/api/state`)).json()) as WebState;
+    assert.equal(state.catalog?.defaultProject, "web-project");
+    assert.equal(state.model?.keyConfigured, false);
+    const rejected = await fetch(`${web.url}/api/actions`, {
+      method: "POST",
+      headers: { Origin: web.url, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ action: "task.create", input: { title: "不应创建" } }),
+    });
+    assert.equal(rejected.status, 403);
+    assert.deepEqual(h.store.list("tasks"), []);
   } finally {
     await web.close();
     await h.close();
