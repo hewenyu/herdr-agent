@@ -2,6 +2,8 @@
 
 日期：2026-09-17。本文描述 Node 实现及采用的默认决策；[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
 
+2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。手动 `/clear` 由 pi 选择 `session_clear`，当轮回复持久后创建并选中新 pi session；旧回执及已接收排队消息仍绑定旧 session，后续消息进入新 session。任务群和普通群均不支持该操作。Web 的清空按钮仍重置同一 session 的 generation，任务及 herdr 原生 session 均不随此操作清理。
+
 ## 核心职责
 
 **pi 只负责 herdr-agent 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。**
@@ -34,7 +36,7 @@ flowchart LR
 | D04 | discussion 可以不绑定项目，使用状态目录下的独立讨论目录 | 默认创建飞书 task 和群，可分别显式关闭；平台暂不可用保留远端意图并等待，不能静默降级为本地。仅本地任务需明确 `createGroup=false/createRemoteTask=false`。development/review/test 使用已登记项目 |
 | D05 | 讨论转执行建立关联的新任务 | `parentTaskId` 关联原讨论，`parentContext` 冻结创建时的要求、结果和参与者反馈，`requirements` 保存本次用户要求。快照只作背景，本次要求优先；指定参与者形成业务结论，pi 只传递，不把讨论终结当作开发授权 |
 | D06 | 默认 shared；显式可选 task 级 Git worktree | 同一执行任务内参与者串行投递；worktree 只隔离项目首目录，其余附加目录仍共享。跨任务 shared 可并行改同文件；关闭任务不删除代码/worktree |
-| D07 | 新任务默认保留群；可配置 delete 或每任务覆盖 | complete 保留现场；close 确认完成后关闭受管执行资源；destroy 不自动验收。旧任务导入保留原先解散群语义 `keepGroup=false` |
+| D07 | 新任务默认 `group_retention=delete`，completed 确认后自动解散群；明确 `retain` 或每任务 `keepGroup:true` 保留 | review 不收尾；complete/飞书手动完成默认通过herdr关闭执行器并解散群，群任何原因解散都清对应执行资源。明确保留keepExecution仅complete支持，有群任务必须同时keepGroup:true；destroy不自动验收。新任务记录 groupRetentionSource（explicit/default），Go 导入标记 legacy；旧来源未知任务在明确完成/关闭/销毁或外部完成时采用默认解散，历史 task_actions 的显式保留证据优先。已完成旧任务仅凭明确 keepExecution:true 回执保留执行现场；不会批量改写仍活跃的旧任务 |
 | D08 | 保留关闭 AI 的任务操作及关闭 tasks 的旧桥模式；Web 同时管理会话、任务和项目 | 日常 CLI 精简，pane 写入入口退出；配置与显式人工操作不依赖模型答复 |
 | D09 | Node >=24.13；TypeScript；`@earendil-works/pi-agent-core` / `pi-ai` 0.85.1 | 使用真实 pi 工具循环和两种模型 API 适配；业务 session、工具回执、投递回执由本项目持久化，不假设 SDK 自带群协作或事务 |
 | D10 | Node SEA 可执行文件，嵌 Node 运行时、服务代码、Web HTML/CSS/JS 和 flock 原生扩展 | 目标 macOS arm64、Linux x64/arm64，各平台原生构建；系统浏览器打开本机页面。herdr、已认证 Claude/Codex、Git 仍是外部依赖 |

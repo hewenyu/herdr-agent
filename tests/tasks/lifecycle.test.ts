@@ -134,17 +134,26 @@ test("complete preserves execution; reopen works; close confirms remote completi
     assert.ok(started.remoteTaskId);
     assert.ok(started.chatId);
     assert.equal(started.status, "running");
-    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).status, "completed");
     assert.equal(f.herdr.closes, 0);
     assert.equal(f.platform.deletions, 0);
+    assert.equal(f.service.get(actor, task.id).groupDeleted, false);
     await f.service.action({ ...actor, messageId: "reopen" }, task.id, "reopen");
     assert.equal(f.service.get(actor, task.id).status, "review");
     // A duplicate old complete event must not re-complete a reopened task.
-    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     assert.equal(f.service.get(actor, task.id).status, "review");
-    await f.service.action({ ...actor, messageId: "close" }, task.id, "close");
+    await f.service.action({ ...actor, messageId: "close" }, task.id, "close", {
+      keepGroup: false,
+    });
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).status, "destroyed");
     assert.equal(f.herdr.closes, 2);
@@ -224,7 +233,10 @@ test("unknown completion PATCH is resolved by query without repeating the comple
     const task = await f.service.create(actor, discussion);
     await f.service.tick();
     f.platform.updateError = new OperationError("network", "unknown", "unknown");
-    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     const updates = f.platform.updates;
     f.platform.updateError = undefined;
     await f.service.tick();
@@ -385,7 +397,9 @@ test("close preserves and delivers the final unpolled result before cleaning exe
     await h.service.reconcile(task.id);
     const participant = h.service.records.participants(task)[0];
     h.herdr.finish(participant?.execution?.paneId ?? "", "关闭前尚未轮询的最终结论");
-    await h.service.action({ ...actor, messageId: "close" }, task.id, "close");
+    await h.service.action({ ...actor, messageId: "close" }, task.id, "close", {
+      keepGroup: false,
+    });
     await h.service.reconcile(task.id);
     assert.equal(h.service.get(actor, task.id).status, "destroyed");
     assert.match(h.service.get(actor, task.id).result, /最终结论/);
@@ -409,7 +423,10 @@ test("paused and completed tasks still capture late output without resuming disc
     assert.equal(h.service.get(actor, task.id).status, "paused");
     assert.match(h.service.get(actor, task.id).result, /暂停后的迟到回复/);
     assert.equal(h.herdr.sends.length, 1);
-    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     h.herdr.finish(pane, "完成后保留现场的迟到结果");
     await h.service.reconcile(task.id);
     assert.equal(h.service.get(actor, task.id).status, "completed");
@@ -446,7 +463,12 @@ test("read failures on replaced agents cannot erase completed or paused lifecycl
     try {
       const task = await h.service.create(actor, discussion);
       await h.service.reconcile(task.id);
-      await h.service.action({ ...actor, messageId: action }, task.id, action);
+      await h.service.action(
+        { ...actor, messageId: action },
+        task.id,
+        action,
+        action === "complete" ? { keepExecution: true, keepGroup: true } : {},
+      );
       const pane = h.service.records.participants(task)[0]?.execution?.paneId ?? "";
       const live = h.herdr.agents.get(pane);
       assert.ok(live);

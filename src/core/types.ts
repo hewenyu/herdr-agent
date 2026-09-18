@@ -138,6 +138,7 @@ export interface Task {
   chatId?: string;
   groupDeleted: boolean;
   keepGroup: boolean;
+  groupRetentionSource?: "explicit" | "default" | "legacy";
   createGroup: boolean;
   createRemoteTask: boolean;
   worktreeReady: boolean;
@@ -227,6 +228,7 @@ export interface TaskCreateInput {
 
 export interface ActorContext {
   source?: "web" | "feishu" | "system";
+  chatType?: "private" | "group";
   ownerId: string;
   chatId: string;
   sessionId: string;

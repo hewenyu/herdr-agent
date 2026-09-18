@@ -5,6 +5,7 @@ import { parse } from "smol-toml";
 import { fail, OperationError } from "../core/errors.js";
 import type { AgentKind, Catalog, Project } from "../core/types.js";
 import type { AppConfig, MemoryConfig } from "./types.js";
+import { modelProvider } from "./validate.js";
 
 type Fields = Record<string, unknown>;
 export const fields = (value: unknown): Fields =>
@@ -136,10 +137,7 @@ export function loadConfig(
     ...readEnv(join(stateDir, ".env")),
     ...(options.env ?? process.env),
   };
-  const provider = text(ai.provider, "openai-responses");
-  if (provider !== "openai-responses" && provider !== "anthropic-messages") {
-    fail("ai_provider", "模型协议必须为 openai-responses 或 anthropic-messages。");
-  }
+  const provider = modelProvider(text(ai.provider, "openai-responses"));
   let catalog: Catalog = {
     projects: Object.entries(fields(tasks.projects)).map(([name, value]) =>
       project(name, fields(value), home),
@@ -216,7 +214,7 @@ export function loadConfig(
     mirrorDefaultOn: bool(fields(raw.mirror).default_on, false),
     runtime: {
       maxConcurrentTasks: number(rt.max_concurrent_tasks, 4),
-      groupRetention: text(rt.group_retention, "retain") === "delete" ? "delete" : "retain",
+      groupRetention: text(rt.group_retention, "delete") === "delete" ? "delete" : "retain",
     },
   };
 }

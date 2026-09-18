@@ -55,7 +55,7 @@ export function taskDescription(task: Task, participants: Participant[]): string
     task.error ? `\n需要处理：${task.error}` : "",
     task.pending ? `\n待核对操作：${task.pending}` : "",
     task.result ? `\n最近参与者反馈（未独立验证）：\n${task.result}` : "",
-    "\n一轮回复结束不代表验收。仅完成保留现场；关闭按任务设置保留或解散群。",
+    `\n一轮回复结束（review）不代表验收，也不清理资源。用户确认完成后，默认通过 herdr 关闭 Codex/Claude 执行现场，任务群${task.keepGroup ? "按明确设置保留" : "在结果与通知送达后自动解散"}。仅用户明确要求保留执行现场时，完成操作才保留现场，有群任务必须同时保留群。保留群不代表保留执行现场；任何原因关闭群后，其执行资源也必须通过 herdr 关闭。`,
   ];
   const normalized = lines
     .filter(Boolean)

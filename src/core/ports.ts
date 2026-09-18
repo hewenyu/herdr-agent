@@ -71,6 +71,7 @@ export interface PlatformHandlers {
   message(message: IncomingMessage): Promise<void>;
   action(action: CardAction): Promise<void>;
   taskChanged(id: string): Promise<void>;
+  groupChanged?(chatId: string): Promise<void>;
 }
 
 export interface PlatformPort {
@@ -89,6 +90,7 @@ export interface PlatformPort {
   updateTask(id: string, description: string, completedAt?: string): Promise<void>;
   createGroup(name: string, ownerId: string, key: string): Promise<string>;
   deleteGroup(chatId: string): Promise<void>;
+  getGroupStatus?(chatId: string): Promise<"normal" | "dissolved">;
 }
 
 export interface Logger {

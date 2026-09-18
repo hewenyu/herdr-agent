@@ -5,15 +5,61 @@ import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { observeTask } from "./observe.js";
 import { taskDescription } from "./prompts.js";
+import { resolveGroupRetention } from "./retention.js";
 
 export type TaskAction = "complete" | "close" | "destroy" | "reopen" | "retry" | "pause" | "resume";
+export interface TaskActionOptions {
+  keepGroup?: boolean;
+  keepExecution?: boolean;
+}
 
-export function requestAction(context: TaskContext, task: Task, action: TaskAction): Task {
+export function requestAction(
+  context: TaskContext,
+  task: Task,
+  action: TaskAction,
+  options: TaskActionOptions = {},
+): Task {
   if (task.status === "destroyed")
     fail("task_destroyed", "执行资源已关闭，不能重开；可创建关联的新任务。");
-  // A repeated close continues the already-confirmed cleanup; it must not
+  if (
+    options.keepExecution !== undefined &&
+    (typeof options.keepExecution !== "boolean" || action !== "complete")
+  )
+    fail("task_execution_policy", "仅完成操作可指定是否保留执行现场，且必须为布尔值。");
+  if (options.keepExecution && task.status === "destroying")
+    fail("execution_cleanup_started", "执行资源已开始清理，不能再声明保留。");
+  if (options.keepGroup !== undefined) {
+    if (
+      typeof options.keepGroup !== "boolean" ||
+      !["complete", "close", "destroy"].includes(action)
+    )
+      fail("task_group_policy", "仅完成、关闭或销毁操作可指定是否保留任务群。");
+    const deletion = context.store.get<OperationReceipt>("operations", `${task.id}:delete-group`);
+    if (options.keepGroup && (task.groupDeleted || (deletion && deletion.state !== "failed")))
+      fail("group_deletion_started", "任务群已解散或解散结果尚未确认，不能再声明保留。");
+    task.keepGroup = options.keepGroup;
+    task.groupRetentionSource = "explicit";
+  }
+  if (["complete", "close", "destroy"].includes(action)) resolveGroupRetention(context, task);
+  if (
+    options.keepExecution &&
+    (task.createGroup || task.chatId) &&
+    (!task.keepGroup || task.groupDeleted)
+  )
+    fail(
+      "task_retention_conflict",
+      "有任务群时，保留执行现场必须同时保留群；群关闭后必须通过 herdr 关闭执行资源。",
+    );
+  // A repeated completion/close continues the already-confirmed cleanup; it must not
   // create another completion intent or reject the user's retry.
-  if (task.status === "destroying" && action === "close" && task.closeRequested) return task;
+  if (
+    task.status === "destroying" &&
+    ["complete", "close"].includes(action) &&
+    task.closeRequested
+  ) {
+    context.records.save(task);
+    return task;
+  }
   if (task.status === "destroying" && action !== "destroy")
     fail("task_destroying", "任务已进入资源清理，不能更改动作。");
   if (task.status === "completed" && ["pause", "resume", "retry"].includes(action))
@@ -42,6 +88,7 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
   switch (action) {
     case "complete":
       task.completionRequest = "complete";
+      task.closeRequested = !options.keepExecution;
       task.discussion.paused = true;
       break;
     case "close":
@@ -96,6 +143,21 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
   }
   context.records.save(task);
   return task;
+}
+
+export async function syncGroupState(context: TaskContext, task: Task): Promise<void> {
+  assertActive(context);
+  if (task.chatId && !task.groupDeleted && context.platform?.getGroupStatus) {
+    const status = await context.platform.getGroupStatus(task.chatId);
+    assertActive(context);
+    if (status === "dissolved") task.groupDeleted = true;
+  }
+  if (!task.groupDeleted) return;
+  task.status = "destroying";
+  task.completionRequest = undefined;
+  task.closeRequested = false;
+  task.discussion.paused = true;
+  context.records.save(task);
 }
 
 export async function syncCompletion(context: TaskContext, task: Task): Promise<void> {
@@ -185,10 +247,11 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
     context.records.save(task);
   }
   if (task.status !== "destroying") return;
+  resolveGroupRetention(context, task);
   // Read and durably deliver the last result before deleting its execution source.
   // Destroying state prevents this observation from starting another discussion turn.
   await observeTask(context, task);
-  if (!context.store.get("task_close_notice", task.id)) {
+  if (!task.groupDeleted && !context.store.get("task_close_notice", task.id)) {
     await context.hooks.notice?.(task, "before_close");
     context.store.set("task_close_notice", task.id, { at: now() });
   }
@@ -209,24 +272,54 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
     participant.status = "gone";
     context.records.saveParticipant(participant);
   }
-  if (task.chatId && !task.keepGroup && !task.groupDeleted) {
-    if (!context.platform) fail("platform_unavailable", "飞书连接不可用，群清理等待恢复。");
-    if (
-      context.store.get<OperationReceipt>("operations", `${task.id}:delete-group`)?.state ===
-      "failed"
-    ) {
-      context.operations.resetFailed(`${task.id}:delete-group`);
-    }
-    await context.operations.run(
-      `${task.id}:delete-group`,
-      { chat: task.chatId },
-      () => context.platform?.deleteGroup(task.chatId as string) as Promise<void>,
-    );
-    task.groupDeleted = true;
-  }
+  if (!(await deleteTaskGroup(context, task))) return;
   task.status = "destroyed";
   task.completionRequest = undefined;
   task.pending = undefined;
   task.syncError = undefined;
   context.records.save(task);
+}
+
+/** Group deletion is the final cleanup step, after herdr confirms all owned panes closed. */
+export async function deleteTaskGroup(context: TaskContext, task: Task): Promise<boolean> {
+  assertActive(context);
+  if (!task.chatId || task.keepGroup || task.groupDeleted) return true;
+  if (
+    context.records
+      .participants(task)
+      .some(
+        (participant) => participant.execution && !["gone", "removed"].includes(participant.status),
+      )
+  )
+    fail("task_execution_pending", "执行资源尚未通过 herdr 确认关闭，任务群不能解散。");
+  if (!context.platform) fail("platform_unavailable", "飞书连接不可用，群清理等待恢复。");
+  const ready = async () => {
+    if ((await context.hooks.canDeleteGroup?.(task)) === false) {
+      task.syncError = "群内输入或通知尚未确认完成，任务群等待解散。";
+      context.records.save(task);
+      return false;
+    }
+    return true;
+  };
+  if (!(await ready())) return false;
+  if (!context.store.get("task_group_delete_notice", task.id)) {
+    await context.hooks.notice?.(task, "before_group_delete");
+    context.store.set("task_group_delete_notice", task.id, { at: now() });
+  }
+  // The notice can introduce a new pending delivery; inspect the barrier again.
+  if (!(await ready())) return false;
+  assertActive(context);
+  if (
+    context.store.get<OperationReceipt>("operations", `${task.id}:delete-group`)?.state === "failed"
+  )
+    context.operations.resetFailed(`${task.id}:delete-group`);
+  await context.operations.run(
+    `${task.id}:delete-group`,
+    { chat: task.chatId },
+    () => context.platform?.deleteGroup(task.chatId as string) as Promise<void>,
+  );
+  task.groupDeleted = true;
+  task.syncError = undefined;
+  context.records.save(task);
+  return true;
 }

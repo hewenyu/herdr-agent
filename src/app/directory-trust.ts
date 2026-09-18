@@ -35,12 +35,18 @@ export class DirectoryTrust {
   ): Promise<boolean> {
     const ref = participant.execution;
     if (!ref || !this.herdr.trustDirectory || participant.initialSent) return false;
-    const operationId = `${participant.id}:directory-trust`;
-    // One startup effect per participant. Unknown writes stay frozen even if stateSeq changes.
-    const previous = this.store.get<OperationReceipt>("operations", operationId);
-    if (previous) return previous.state === "done" && screen.agent.status !== "blocked";
+    const prefix = `${participant.id}:directory-trust`;
+    // A rejected preflight has no effect and may be re-evaluated at a new stateSeq.
+    // Confirmed/unknown writes stay frozen across all screen versions and restarts.
+    const attempts = this.store
+      .entries<OperationReceipt>("operations")
+      .filter(([id]) => id === prefix || id.startsWith(`${prefix}:`))
+      .map(([, receipt]) => receipt);
+    if (attempts.some((attempt) => attempt.state !== "failed")) return false;
+    const operationId = `${prefix}:${screen.agent.stateSeq}`;
     const decisionId = stableId(participant.id, ref.paneId, screen.agent.stateSeq);
-    if (this.store.get("directory_trust_decisions", decisionId)) return false;
+    const previous = this.store.get<{ retryAt?: string }>("directory_trust_decisions", decisionId);
+    if (previous && (!previous.retryAt || Date.parse(previous.retryAt) > Date.now())) return false;
     let confirmed = false;
     const tool: RuntimeTool = {
       name: "directory_trust_confirm",
@@ -123,6 +129,7 @@ export class DirectoryTrust {
         confirmed,
         code: safeError(error).code,
         at: new Date().toISOString(),
+        retryAt: new Date(Date.now() + 30_000).toISOString(),
       });
     }
     return confirmed;

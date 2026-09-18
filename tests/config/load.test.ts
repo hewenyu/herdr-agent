@@ -14,6 +14,17 @@ async function fixture(t: TestContext) {
   return { dir, load };
 }
 
+test("new tasks default to deleting completed groups while explicit retention survives reload", async (t) => {
+  const { dir, load } = await fixture(t);
+  assert.equal(load().runtime.groupRetention, "delete");
+  await writeFile(join(dir, "config.toml"), '[runtime]\ngroup_retention="retain"\n');
+  assert.equal(load().runtime.groupRetention, "retain");
+  await saveConfigSection(dir, "tasks", { enabled: true });
+  assert.equal(load().runtime.groupRetention, "retain");
+  await writeFile(join(dir, "config.toml"), '[runtime]\ngroup_retention="delete"\n');
+  assert.equal(load().runtime.groupRetention, "delete");
+});
+
 test("literal dotenv compatibility and process > state > repository precedence", async (t) => {
   const { dir } = await fixture(t);
   await mkdir(join(dir, "repo", "nested"), { recursive: true });

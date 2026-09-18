@@ -4,7 +4,7 @@ import { OperationError } from "../core/errors.js";
 import { object, string } from "../feishu/api.js";
 import { officialURL } from "../feishu/http.js";
 import { type HTTPOptions, jsonRequest } from "./http.js";
-import { callbacks, events, requiredScopes } from "./scopes.js";
+import { callbacks, requiredEvents, requiredScopes } from "./scopes.js";
 
 const authHosts = new Set(["accounts.feishu.cn", "accounts.larksuite.com"]);
 const linkHosts = new Set([
@@ -84,7 +84,7 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
     const url = new URL(string(begin.verification_uri_complete));
     const addons = {
       scopes: { tenant: requiredScopes(options.tasks ?? true) },
-      events: { items: { tenant: events } },
+      events: { items: { tenant: requiredEvents(options.tasks ?? true) } },
       callbacks: { items: callbacks },
     };
     for (const [key, value] of Object.entries({

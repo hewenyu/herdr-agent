@@ -14,7 +14,10 @@ test("confirmed completion description supersedes an older unknown projection af
     h.platform.updateError = undefined;
     h.herdr.finish("p1", "新增结果");
     await h.service.tick();
-    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     const receipt = h.store.get<{ text: string; state: string }>("description_sync", task.id);
     assert.equal(receipt?.state, "done");
     assert.notEqual(receipt?.text, old?.text);
@@ -45,7 +48,10 @@ test("confirmation of completedAt alone cannot resolve an unknown description or
       h.platform.updates++;
       if (completedAt !== undefined) remote.completedAt = completedAt;
     };
-    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     assert.equal(h.service.get(actor, task.id).status, "completed");
     assert.equal(h.store.get<{ state: string }>("description_sync", task.id)?.state, "uncertain");
     const writes = h.platform.updates;
@@ -64,7 +70,10 @@ test("uncertain completion keeps its submitted description immutable and resolve
     const task = await h.service.create(actor, discussion);
     await h.service.tick();
     h.platform.updateError = new OperationError("lost", "PATCH未确认", "unknown");
-    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     const target = h.store.get<{ description: string; completedAt: string }>(
       "completion_sync",
       task.id,
@@ -81,7 +90,10 @@ test("uncertain completion keeps its submitted description immutable and resolve
     assert.ok(remote);
     remote.completedAt = target.completedAt;
     remote.description = target.description;
-    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete");
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
     assert.equal(h.platform.updates, writes);
     assert.equal(h.service.get(actor, task.id).status, "completed");
     assert.deepEqual(h.store.get("description_sync", task.id), {

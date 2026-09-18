@@ -133,7 +133,10 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
     }
     participant.cursor = page.cursor;
     context.records.saveParticipant(participant);
-    if (agent.status === "blocked" && participant.lastNotifiedState !== agent.stateSeq) {
+    if (
+      agent.status === "blocked" &&
+      (!participant.initialSent || participant.lastNotifiedState !== agent.stateSeq)
+    ) {
       assertActive(context);
       await context.hooks.blocked?.(task, participant);
       participant.lastNotifiedState = agent.stateSeq;

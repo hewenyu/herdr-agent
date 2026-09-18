@@ -40,7 +40,9 @@
 - welcome：远端任务/群已有、参与者 pending、started/initialSent 均 false。答复为群已就绪，启动和初始投递尚未确认，没有说已开始开发。
 - blocked：started/initialSent 均 true、当前 blocked。答复为启动和初始投递已确认，但当前等待用户处理，没有说仍在执行业务。
 
-本次通过只覆盖两类通知的模型措辞。真实服务后续 welcome/blocked 通知需要在带实际 participants 数据的新版本上复验。
+后续旧版真实服务又出现 completed 通知仍称等待验收。为此追加 `--only completed`：合成 task 的原 requirements 仍要求“完成后等待用户验收，不自动完成或关闭”，当前 status=completed、completedAt 有值、closeRequested=false，参与者 done。真实模型正确答复“任务已登记完成”，没有沿用旧阶段等待验收，也没有声称资源关闭完成。提示词现要求生命周期事实优先于旧 requirements。
+
+本次通过仅覆盖三类通知的模型措辞。真实服务后续 welcome/blocked/completed 通知需要在带实际 participants 数据与新提示词的版本上复验。
 
 ## E04：真实飞书 REST 生命周期
 
@@ -69,7 +71,7 @@
 | 输出与验收状态 | 群 GET 读到署名 Codex 的完整最终消息及“待验收”通知；远端 completed_at=0；主验收核对远端描述含结果全文 | R-P：本次结果投递与未自动验收；描述比较原始 `descriptionMatchesOutput:false` 因 Markdown 转 plain 导致原字串比较失败，主验收确认非漏传，归一化比较证据待落盘 |
 | welcome / blocked 通知 | 群 GET 留有“参与者已开始执行”“blocked但仍在处理中” | **R-F：阶段措辞不准确**；新增实际 participants 上下文和 E03 提示词修正。真实服务修正后的通知 U |
 
-从 Web 到真实 Codex 产物、飞书群结果已形成一条实际链路；原 LIVE-001 飞书入站创建失败仍保留 R-F 历史。真实飞书入站查询正在主验收进行，本文不提前记通过；也不能用 Web 链路替代飞书入站创建的完整复验。
+从 Web 到真实 Codex 产物、飞书群结果已形成一条实际链路；原 LIVE-001 飞书入站创建失败仍保留 R-F 历史。真实飞书入站查询与用户明确完成正在主验收进行；已报告群 UI 可见完成回复，但远端回读与完整证据尚待补入，本文不提前记全通过。旧版 completed 通知仍说等待验收的失败也保留，修正仅有 E03 受控模型证据。不能用 Web 链路替代飞书入站创建的完整复验。
 
 ## E06：目录信任与其余审批的产品边界
 
@@ -78,3 +80,25 @@
 pi 仅通过专用启动流程识别并确认当前任务由服务端配置/绑定的工作目录信任提示，含已有项目新参与者、worktree、无项目讨论目录。受限工具需重新核验参与者尚未 initialSent、任务目录、执行身份、现场版本和原生菜单；不是给普通会话通用按键或审批能力。其他所有确认须由任务群内用户亲自选择，参与者输出和“全自动/继续”等短句不能扩大该例外。
 
 目前实现与受限边界已只读审查；上述提示词和探针脚本 Biome 通过，`npm run typecheck` 通过。新流程的真实 Codex/Claude 自动目录信任、目标变化拒绝、未知写入不重试、确认后仅一次初始投递，以及其他菜单群内点击回调，仍按 B07/B11 单独验收，不由 E05 的既有手动信任步骤替代。
+
+## E07：主入口自动压缩与手动新 pi session
+
+用户新约束：主机器人私聊自动压缩上下文；手动 `/clear` 由模型选择专用 `session_clear` 工具，在当轮回复持久后创建并选中新 pi session。旧历史、回执和已接收排队消息保留原 session 绑定，所有群拒绝；Web 清空仍使用原 generation 语义。
+
+`node --import tsx --test tests/runtime/*.test.ts tests/app/session-tools.test.ts tests/app/conversations.test.ts` 本轮 33 tests 通过，含新增 `entry-reset.test.ts` 三项：延迟切换/旧队列与回执/重复事件及重建服务选中状态；失败不创建及普通群/任务群拒绝；私聊自动压缩不换 session、随后 clear 新 session 不继承旧摘要。原 Web generation 清空测试仍通过。
+
+`node --import tsx scripts/live/entry-context-probe.ts` 使用真实配置模型、真实 PiEngine 和 SessionService，但 SQLite 仅在内存中、历史为 22 条合成用户数据，工具只提供实际 session_clear。没有真实飞书入站，也没有飞书/herdr 资源操作。
+
+- 长上下文触发真实 `summarize` 一次；原 session 不变，24 条原始历史含本轮输入/回复保留，模型答复保留“不创建/关闭任务、保留项目代码”等约束。
+- 随后输入 `/clear`，模型自主调用 `session_clear` 一次；真实内存服务创建并选中新 session，新历史为空，旧 generation=0，旧回复仍可开始投递。
+- 模型答复明确 scheduled 只是已安排，本轮回复持久后生效，没有把工具受理提前描述成切换已经完成。
+
+该探针证明指定输入下的真实模型压缩/工具决策及内存业务语义；不能代替真实飞书回调、持久数据库跨进程或长时间真实对话质量验收。代码与脚本类型/格式检查通过后方纳入构建。
+
+## E08：外部群状态与解散事件边界
+
+主验收记录 `.cache/live/group-status-readback.json`，UTC `2026-09-18T00:37:47.388Z`：旧 REST 测试群 `oc_67528614dccec8d36f5aeed9a315f29f` 实际 GET 为 dissolved，当前 B 群实际 GET 为 normal，与预期一致。**仅这两个群状态 API 读通过**，不代表新程序的 completed→关闭执行器→解散群已做真实验收，也不代表真实解散事件已通过平台连接送入本程序。
+
+本地新增 `tests/feishu/group-events.test.ts`、`tests/app/group-events.test.ts`：GET 只认可 normal/dissolved/dissolved_save，未知值、API错误、403和断网不当作解散；SDK dispatcher 拒绝错误/缺失 app_id、无效 chat_id、旧连接和已取消连接，等待持久入队成功；应用重建后处理已存 group inbox，仅清对应任务，重复/未管理群不清其他资源。`node --import tsx --test tests/feishu/*.test.ts tests/app/group-events.test.ts` 17 tests 通过；使用本地请求和连接替身，无新 WebSocket 或外部资源写入。
+
+官方 [获取群信息](https://open.feishu.cn/document/server-docs/group/chat/get-2.md) 与 [群解散事件](https://open.feishu.cn/document/server-docs/group/chat/events/disbanded.md) 均明确权限三选一：`im:chat`、`im:chat:read`、`im:chat:readonly`。新申请选择最小只读 `im:chat:read`，授权检查接受已有另外两项，仍要求 tenant/granted；tasks 关闭时不请求该权限和群解散事件。没有执行实际补权。群成员列表权限缺口仍独立保留，不能以群状态读取通过消除。

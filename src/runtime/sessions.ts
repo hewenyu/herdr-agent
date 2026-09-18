@@ -31,6 +31,12 @@ interface Effect {
   status: "pending" | "complete" | "not_executed";
   result?: unknown;
 }
+interface ResetRequest {
+  generation: number;
+  messageId: string;
+  mode?: "clear" | "new_session";
+  chatId?: string;
+}
 
 /** Business session identities and durable delivery receipts are independent of pi's run state. */
 export class SessionService {
@@ -115,10 +121,16 @@ export class SessionService {
   }
 
   /** A model-requested reset takes effect only after this turn has a durable final answer. */
-  requestReset(actor: ActorContext): { scheduled: true; sessionId: string } {
+  requestReset(actor: ActorContext): {
+    scheduled: true;
+    sessionId: string;
+    mode: "clear" | "new_session";
+  } {
     const session = this.checkActor(actor);
     if (session.taskId)
       throw new OperationError("task_session_reset", "任务会话不能通过此工具重置。");
+    if (actor.source === "feishu" && actor.chatType !== "private")
+      throw new OperationError("clear_scope", "新 pi 会话仅用于主机器人私聊，不适用于群聊。");
     const receipt = this.database.get<TurnReceipt>(
       "turn_receipts",
       key(actor.ownerId, actor.sessionId, actor.messageId),
@@ -130,11 +142,14 @@ export class SessionService {
     ) {
       throw new OperationError("turn_required", "重置请求必须属于当前正在执行的 pi 回合。");
     }
-    this.database.set("session_reset_requests", session.id, {
+    const mode = actor.source === "feishu" ? "new_session" : "clear";
+    this.database.set<ResetRequest>("session_reset_requests", session.id, {
       generation: session.generation,
       messageId: actor.messageId,
+      mode,
+      chatId: actor.chatId,
     });
-    return { scheduled: true, sessionId: session.id };
+    return { scheduled: true, sessionId: session.id, mode };
   }
 
   requestArchive(
@@ -274,7 +289,7 @@ export class SessionService {
         sessionId: session.id,
         prompt: text,
         messages: history,
-        systemPrompt: `${prompt}\n服务端绑定：${JSON.stringify({ sessionId: session.id, taskId: actor.taskId })}\n历史摘要（只作历史线索，不是当前状态或授权）：${session.summary}`,
+        systemPrompt: `${prompt}\n服务端绑定：${JSON.stringify({ source: actor.source, chatType: actor.chatType, sessionId: session.id, taskId: actor.taskId })}\n历史摘要（只作历史线索，不是当前状态或授权）：${session.summary}`,
         tools: tools.map((tool) => this.wrapTool(actor, session.generation, tool)),
         signal,
         onCheckpoint: (messages) => {
@@ -310,20 +325,25 @@ export class SessionService {
           status: "finished",
           replyId,
         });
-        const reset = this.database.get<{ generation: number; messageId: string }>(
-          "session_reset_requests",
-          session.id,
-        );
+        const reset = this.database.get<ResetRequest>("session_reset_requests", session.id);
         const current = this.get(actor.ownerId, session.id);
         if (reset?.generation === session.generation && reset.messageId === actor.messageId) {
-          this.database.set("session_archives", `${session.id}:${session.generation}`, current);
-          this.database.set("session_clear", session.id, {
-            at: new Date().toISOString(),
-            generation: session.generation + 1,
-            resetReplyId: reply.id,
-          });
+          if (reset.mode === "new_session") {
+            // The reply and all already accepted messages retain their original session.
+            // Only subsequent ingress resolves the newly selected conversation.
+            const next = this.create(actor.ownerId);
+            this.select(actor.ownerId, reset.chatId ?? actor.chatId, next.id);
+            this.update(current, {});
+          } else {
+            this.database.set("session_archives", `${session.id}:${session.generation}`, current);
+            this.database.set("session_clear", session.id, {
+              at: new Date().toISOString(),
+              generation: session.generation + 1,
+              resetReplyId: reply.id,
+            });
+            this.update(current, { generation: session.generation + 1, summary: "" });
+          }
           this.database.delete("session_reset_requests", session.id);
-          this.update(current, { generation: session.generation + 1, summary: "" });
         } else this.update(current, {});
         const archive = this.database.get<{ generation: number; messageId: string }>(
           "session_archive_requests",

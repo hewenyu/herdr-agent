@@ -14,6 +14,7 @@ export function messageActor(context: ApplicationContext, message: IncomingMessa
     : context.sessions.current(message.ownerId, message.chatId);
   return {
     source: "feishu",
+    chatType: message.chatType,
     ownerId: message.ownerId,
     chatId: message.chatId,
     sessionId: session.id,
@@ -32,7 +33,9 @@ export async function handleMessage(
     fail("unauthorized", "当前用户未授权。");
   const task = context.tasks.records.byChat(message.chatId);
   if (!task && message.chatType === "group" && !message.mentionedBot) return;
-  const actor = assignedActor ?? messageActor(context, message);
+  const actor = assignedActor
+    ? { ...assignedActor, source: "feishu" as const, chatType: message.chatType }
+    : messageActor(context, message);
   if (
     actor.taskId !== task?.id ||
     actor.ownerId !== message.ownerId ||
@@ -144,7 +147,7 @@ async function command(
         [
           "直接用文字安排任务，pi 负责调度，Claude/Codex 负责讨论和执行。",
           "/tasks [all] · /projects · /sessions · /session new|switch|rename|archive|restore",
-          "/clear 仅重置入口 pi 上下文；/screen [参与者] 看现场；/stop [参与者|all] 中断。",
+          "AI启用时，主机器人私聊 /clear 由pi开启新会话；/screen [参与者] 看现场；/stop [参与者|all] 中断。",
           "/task complete|close|destroy|reopen|retry|pause|resume [任务编号] 保留人工操作入口。",
           "旧 /new <项目> [codex|claude] <要求> 继续表示创建任务，不表示新会话。",
         ].join("\n"),

@@ -6,7 +6,7 @@ import type { Store } from "../storage/store.js";
 
 export interface InboxRecord {
   id: string;
-  type: "message" | "action" | "task";
+  type: "message" | "action" | "task" | "group";
   payload: IncomingMessage | CardAction | { id: string };
   actor?: ActorContext;
   generation?: number;
@@ -52,7 +52,7 @@ export class Inbox {
   ): boolean {
     const key = `${type}:${id}`;
     const lane =
-      "chatId" in payload ? `${payload.ownerId}:${payload.chatId}` : `task:${payload.id}`;
+      "chatId" in payload ? `${payload.ownerId}:${payload.chatId}` : `${type}:${payload.id}`;
     const fields = logFields({ id: key, type, payload, lane });
     if (this.stopped) {
       this.logger.info("事件未入队：服务正在停止", {

@@ -97,12 +97,27 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_action",
-      "管理本工具任务：complete仅完成保留现场；close验收后清理；destroy不验收；reopen重开；retry仅明确失败；pause停止调度；resume恢复。仅执行用户授权动作。",
+      "管理本工具任务：任务、群、herdr执行session统一生命周期，complete确认完成后默认通过herdr关闭对应Codex/Claude并解散群，任何原因群解散都须清对应执行资源。明确保留群传keepGroup:true；明确保留执行现场传keepExecution:true（仅complete支持），有群任务还必须同时keepGroup:true，无群任务除外。保留群不自动保留执行器。keepGroup省略按策略来源处理，明确保留证据有效，旧默认/来源不明值在收尾时采用解散。close验收后清理；destroy不验收；reopen仅适用仍保留执行资源的已完成任务；retry仅明确失败；pause停止调度；resume恢复。review不是完成，不收尾。清理成功须查询实际回执。",
       false,
-      { taskId, action: { type: "string", enum: taskActions } },
+      {
+        taskId,
+        action: { type: "string", enum: taskActions },
+        keepGroup: {
+          type: "boolean",
+          description: "用户明确保留群时为true；省略由服务按明确保留证据或默认解散策略处理",
+        },
+        keepExecution: {
+          type: "boolean",
+          description: "仅complete支持；明确保留执行器才为true，有群任务必须同时keepGroup:true",
+        },
+      },
       ["action"],
       async (args, ctx) =>
-        services.tasks.action(ctx, id(args, ctx), string(args, "action") as TaskAction),
+        services.tasks.action(ctx, id(args, ctx), string(args, "action") as TaskAction, {
+          keepGroup: args.keepGroup === undefined ? undefined : boolean(args, "keepGroup"),
+          keepExecution:
+            args.keepExecution === undefined ? undefined : boolean(args, "keepExecution"),
+        }),
     ),
     tool(
       "participant_interrupt",
@@ -186,7 +201,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "session_clear",
-      "用户明确要求清空当前主入口pi上下文时调用；本轮回复生成后生效，保留历史、任务和herdr执行session。",
+      "用户手动发送/clear或明确要求开启全新主入口上下文时调用。飞书主机器人私聊：本轮回复持久后创建并选中新pi session，旧历史/回执/排队消息原绑定保留；飞书群禁止。Web等其他入口仍只重置当前session上下文代数。自动压缩无需调用此工具，任务和herdr执行session不变。",
       false,
       {},
       [],
@@ -202,7 +217,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_create",
-      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者讨论默认有界轮流发言。newProject仅用于用户明确新建项目。",
+      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者讨论默认有界轮流发言。newProject仅用于用户明确新建项目。",
       false,
       {
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },
@@ -227,7 +242,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
           },
         },
         directoryMode: { type: "string", enum: ["shared", "worktree"] },
-        keepGroup: { type: "boolean" },
+        keepGroup: { type: "boolean", description: "明确保留完成后的群时为true；默认按配置解散" },
         createGroup: { type: "boolean" },
         createRemoteTask: { type: "boolean" },
         discussion: {

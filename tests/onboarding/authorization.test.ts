@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkAuthorization } from "../../src/onboarding/authorization.js";
 import { saveCredentials } from "../../src/onboarding/credentials.js";
-import { requiredScopes } from "../../src/onboarding/scopes.js";
+import { requiredEvents, requiredScopes } from "../../src/onboarding/scopes.js";
 
 const credentials = { appId: "cli_test", appSecret: "test-secret" };
 const response = (data: unknown) => new Response(JSON.stringify(data));
@@ -57,6 +57,40 @@ test("invalid secret requests auth but transient failures and invalid parameters
       return true;
     },
   );
+});
+
+test("chat status requests minimal read scope but accepts already granted official alternatives", async () => {
+  assert.ok(requiredScopes().includes("im:chat:read"));
+  assert.ok(!requiredScopes().includes("im:chat"));
+  assert.ok(!requiredScopes(false).includes("im:chat:read"));
+  assert.ok(requiredEvents().includes("im.chat.disbanded_v1"));
+  assert.deepEqual(requiredEvents(false), ["im.message.receive_v1"]);
+  for (const alternative of ["im:chat:read", "im:chat", "im:chat:readonly"])
+    for (const valid of [true, false]) {
+      const grants = requiredScopes()
+        .filter((scope) => scope !== "im:chat:read")
+        .map((scope_name) => ({ scope_name, scope_type: "tenant", grant_status: 1 }));
+      grants.push({
+        scope_name: alternative,
+        scope_type: valid ? "tenant" : "user",
+        grant_status: 1,
+      });
+      grants.push({ scope_name: alternative, scope_type: "tenant", grant_status: 0 });
+      const result = await checkAuthorization(credentials, {
+        fetch: async (url) =>
+          response(
+            String(url).endsWith("/scopes")
+              ? { code: 0, data: { scopes: grants } }
+              : { code: 0, tenant_access_token: "fixture-token" },
+          ),
+      });
+      assert.deepEqual(
+        result,
+        valid
+          ? { state: "ready", missingScopes: [] }
+          : { state: "required", missingScopes: ["im:chat:read"] },
+      );
+    }
 });
 
 test("credentials save preserves unrelated settings, enforces app identity and private mode", async () => {

@@ -175,6 +175,11 @@ export class FeishuPlatform implements PlatformPort {
       "task.task.update_user_access_v2": async (raw) => {
         if (accepted(raw) && raw.task_guid) await handlers.taskChanged(raw.task_guid);
       },
+      "im.chat.disbanded_v1": async (raw) => {
+        const chatId = string(raw.chat_id);
+        if (accepted(raw) && raw.app_id === this.options.appId && chatId.trim())
+          await handlers.groupChanged?.(chatId);
+      },
       "im.chat.member.bot.deleted_v1": async () => {},
     });
   }
@@ -249,6 +254,9 @@ export class FeishuPlatform implements PlatformPort {
   }
   deleteGroup(chatId: string): Promise<void> {
     return this.resources.deleteGroup(chatId);
+  }
+  getGroupStatus(chatId: string): Promise<"normal" | "dissolved"> {
+    return this.resources.getGroupStatus(chatId);
   }
   subscribeTasks(): Promise<void> {
     return this.resources.subscribeTasks();

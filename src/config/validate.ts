@@ -1,6 +1,12 @@
 import { isIP } from "node:net";
 import { fail } from "../core/errors.js";
-import type { AppConfig, MemoryConfig } from "./types.js";
+import type { AppConfig, MemoryConfig, ModelConfig } from "./types.js";
+
+export function modelProvider(value: string): ModelConfig["provider"] {
+  if (value !== "openai-responses" && value !== "anthropic-messages")
+    fail("ai_provider", "模型协议必须为 openai-responses 或 anthropic-messages。");
+  return value;
+}
 
 export function loopback(host: string): boolean {
   return host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
@@ -51,6 +57,7 @@ function validateMemory(memory: Omit<MemoryConfig, "users">): void {
 }
 
 export function validateConfig(config: AppConfig, options: { requireFeishu?: boolean } = {}): void {
+  modelProvider(config.ai.provider);
   listenAddress(config.ui.listen);
   for (const value of [config.ui.maxCols, config.ui.tailLines]) {
     if (!Number.isInteger(value) || value < 1) fail("ui_size", "终端显示尺寸必须为正整数。");

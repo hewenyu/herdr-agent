@@ -6,6 +6,7 @@ import {
   ask,
   badge,
   button,
+  check,
   closeModal,
   el,
   empty,
@@ -22,18 +23,25 @@ function taskAction(
   label: string,
   action: Action,
   destructive = false,
+  options?: () => { keepGroup?: boolean; keepExecution?: boolean },
 ) {
   return button(
     label,
     async () => {
       const run = async () =>
-        Boolean(await action("task.action", { id: task.id, action: operation }));
+        Boolean(
+          await action("task.action", {
+            id: task.id,
+            action: operation,
+            ...options?.(),
+          }),
+        );
       if (destructive)
         ask(
           label,
           operation === "close"
-            ? "验收完成后将同步任务状态并清理执行会话；群是否保留按此任务的设置处理。请确认参与者的实际结果。"
-            : "将关闭本任务拥有的执行会话，按任务设置处理群与历史。此操作不会删除项目代码，也不代表验收通过。",
+            ? "验收完成后将同步任务状态并清理执行会话；群是否保留按本次选择处理。请确认参与者的实际结果。"
+            : "将关闭本任务拥有的执行会话，按本次选择保留或解散群。此操作不会删除项目代码，也不代表验收通过。",
           run,
         );
       else await run();
@@ -68,8 +76,10 @@ async function showScreen(participant: Participant, action: Action): Promise<voi
                 nonce,
                 key: choice.key,
               })
-            )
-              closeModal();
+            ) {
+              if (["up", "down", "tab"].includes(choice.key)) await showScreen(participant, action);
+              else closeModal();
+            }
           },
           "primary",
         ),
@@ -264,14 +274,39 @@ export function renderTasks(
   }
   const controls = actions();
   if (task.status !== "destroyed") {
+    const keepGroup =
+      task.createGroup && !task.groupDeleted
+        ? check("完成或关闭时保留讨论群", task.keepGroup)
+        : undefined;
+    if (keepGroup)
+      overview.append(
+        keepGroup.wrapper,
+        el("p", "subtle", "此选择在本次完成、关闭或销毁时保存；未勾选将解散群，项目代码保留。"),
+      );
+    const keepExecution = check("完成后保留执行现场（有群任务需同时保留群）", false);
+    keepExecution.input.disabled = task.groupDeleted;
+    keepExecution.input.addEventListener("change", () => {
+      if (keepExecution.input.checked && keepGroup) keepGroup.input.checked = true;
+    });
+    keepGroup?.input.addEventListener("change", () => {
+      if (!keepGroup.input.checked) keepExecution.input.checked = false;
+    });
+    overview.append(
+      keepExecution.wrapper,
+      el("p", "subtle", "默认完成任务会经 herdr 关闭参与者；勾选为本次明确保留例外。"),
+    );
+    const retention = keepGroup ? () => ({ keepGroup: keepGroup.input.checked }) : undefined;
     controls.append(
-      taskAction(task, "complete", "仅标记完成", action),
-      taskAction(task, "close", "验收并关闭", action, true),
+      taskAction(task, "complete", "完成任务", action, false, () => ({
+        ...retention?.(),
+        keepExecution: keepExecution.input.checked,
+      })),
+      taskAction(task, "close", "验收并关闭", action, true, retention),
       taskAction(task, "reopen", "重新打开", action),
       taskAction(task, "retry", "重试明确失败", action),
       taskAction(task, "pause", "暂停调度", action),
       taskAction(task, "resume", "恢复调度", action),
-      taskAction(task, "destroy", "销毁执行会话", action, true),
+      taskAction(task, "destroy", "销毁执行会话", action, true, retention),
       button(
         "中断所有参与者",
         async () => {

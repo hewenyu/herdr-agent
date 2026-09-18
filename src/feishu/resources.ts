@@ -101,6 +101,16 @@ export class FeishuResources {
       if (!(error instanceof OperationError) || error.code !== "feishu_232009") throw error;
     }
   }
+  async getGroupStatus(chatId: string): Promise<"normal" | "dissolved"> {
+    const body = await this.api.call({
+      method: "GET",
+      url: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+    });
+    const status = object(body.data).chat_status;
+    if (status === "normal") return "normal";
+    if (status === "dissolved" || status === "dissolved_save") return "dissolved";
+    throw new OperationError("feishu_group_status", "无法确认群状态，未推断群已解散。");
+  }
   async subscribeTasks(): Promise<void> {
     await this.api.call({
       method: "POST",

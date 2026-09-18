@@ -174,3 +174,95 @@ test("model text cannot count as confirmation; foreign directory never reaches t
     await h.close();
   }
 });
+
+test("startup state change retries a rejected preflight at fresh guard, without replaying an attempted key", async () => {
+  const h = await fixture();
+  try {
+    let calls = 0;
+    let writes = 0;
+    (h.herdr as HerdrPort).trustDirectory = async (ref) => {
+      calls++;
+      const agent = h.herdr.agents.get(ref.paneId);
+      assert.ok(agent);
+      if (calls === 1) {
+        agent.stateSeq = "2";
+        throw new OperationError("stale_guard", "启动状态已更新，未按键");
+      }
+      writes++;
+      agent.status = "idle";
+      agent.stateSeq = "3";
+    };
+    chooseTrust(h);
+    await h.app.tasks.reconcile(h.task.id);
+    assert.equal(calls, 2);
+    assert.equal(writes, 1);
+    assert.equal(h.platform.cards.length, 0);
+    await h.app.tasks.reconcile(h.task.id);
+    assert.equal(h.herdr.sends.length, 1);
+    assert.equal(writes, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a previous non-trust startup menu does not suppress pi at a later directory prompt", async () => {
+  const h = await fixture();
+  try {
+    let calls = 0;
+    (h.herdr as HerdrPort).trustDirectory = async (ref) => {
+      calls++;
+      if (calls === 1) throw new OperationError("directory_trust_required", "其他菜单不能自动确认");
+      const agent = h.herdr.agents.get(ref.paneId);
+      assert.ok(agent);
+      agent.status = "idle";
+      agent.stateSeq = "3";
+    };
+    chooseTrust(h);
+    await h.app.tasks.reconcile(h.task.id);
+    assert.equal(h.platform.cards.length, 1);
+    assert.equal(h.herdr.sends.length, 0);
+    const participant = h.app.tasks.records.participants(h.task)[0];
+    const agent = h.herdr.agents.get(participant?.execution?.paneId ?? "");
+    assert.ok(agent);
+    agent.stateSeq = "2"; // User handled the previous menu; a distinct trust prompt appears.
+    await h.app.tasks.reconcile(h.task.id);
+    await h.app.tasks.reconcile(h.task.id);
+    assert.equal(calls, 2);
+    assert.equal(h.herdr.sends.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("model transport failure can retry at the same screen after backoff", async () => {
+  const h = await fixture();
+  try {
+    (h.herdr as HerdrPort).trustDirectory = async () => {
+      assert.fail("failed model must not reach terminal");
+    };
+    h.engine.handler = async (turn) => {
+      if (turn.sessionId.startsWith("directory-trust:")) throw new Error("temporary model outage");
+      return { text: '{"notify":false}', messages: [] };
+    };
+    await h.app.tasks.reconcile(h.task.id);
+    const [key, decision] =
+      h.store.entries<Record<string, unknown>>("directory_trust_decisions")[0] ?? [];
+    assert.ok(key && decision?.retryAt);
+    h.store.set("directory_trust_decisions", key, {
+      ...decision,
+      retryAt: new Date(0).toISOString(),
+    });
+    let confirms = 0;
+    (h.herdr as HerdrPort).trustDirectory = async (ref) => {
+      confirms++;
+      const agent = h.herdr.agents.get(ref.paneId);
+      assert.ok(agent);
+      agent.status = "idle";
+    };
+    chooseTrust(h);
+    await h.app.tasks.reconcile(h.task.id);
+    assert.equal(confirms, 1);
+  } finally {
+    await h.close();
+  }
+});

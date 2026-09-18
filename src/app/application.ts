@@ -20,6 +20,7 @@ import { dispatch, snapshot } from "./actions.js";
 import { Approvals } from "./approvals.js";
 import type { ApplicationContext } from "./context.js";
 import { DirectoryTrust } from "./directory-trust.js";
+import { canDeleteTaskGroup } from "./group-delivery.js";
 import { Inbox, type InboxRecord } from "./inbox.js";
 import { LegacyBridge } from "./legacy.js";
 import { createLogger } from "./logger.js";
@@ -140,6 +141,9 @@ export class Application implements ApplicationContext {
       taskChanged: async (id) => {
         this.inbox.enqueue("task", `${id}:${Date.now()}`, { id });
       },
+      groupChanged: async (id) => {
+        this.inbox.enqueue("group", id, { id });
+      },
     };
   }
 
@@ -230,7 +234,11 @@ export class Application implements ApplicationContext {
       } else throw new OperationError("unknown_action", "卡片操作已失效，请刷新现场。");
     } else {
       const remote = record.payload as { id: string };
-      const task = this.store.list<Task>("tasks").find((entry) => entry.remoteTaskId === remote.id);
+      const task = this.store
+        .list<Task>("tasks")
+        .find((entry) =>
+          record.type === "group" ? entry.chatId === remote.id : entry.remoteTaskId === remote.id,
+        );
       if (task) await this.tasks.reconcile(task.id);
     }
     this.changed();
@@ -247,20 +255,33 @@ export class Application implements ApplicationContext {
         changed: () => this.changed(),
         output: (task, participant, entry) => this.output(task, participant, entry),
         notice: (task, kind) => this.notice(task, kind),
+        canDeleteGroup: (task) => canDeleteTaskGroup(this.store, task),
         blocked: async (task, participant) => {
           if (!participant.execution) return;
           let screen = await this.herdr.screen(participant.execution);
-          if (
-            this.config.ai.enabled &&
-            (await this.directoryTrust.handle(
-              task,
-              participant,
-              screen,
-              this.actor(task, `startup:${participant.id}:${screen.agent.stateSeq}`),
-            ))
-          ) {
-            this.changed();
-            return;
+          for (let attempt = 0; this.config.ai.enabled && attempt < 2; attempt++) {
+            const observedSeq = screen.agent.stateSeq;
+            if (
+              await this.directoryTrust.handle(
+                task,
+                participant,
+                screen,
+                this.actor(task, `startup:${participant.id}:${observedSeq}`),
+              )
+            ) {
+              await this.approvals.invalidate(
+                participant.execution,
+                "pi 已确认目录信任，此旧卡片已失效。",
+              );
+              this.changed();
+              return;
+            }
+            screen = await this.herdr.screen(participant.execution);
+            if (screen.agent.status !== "blocked") return;
+            if (screen.agent.stateSeq === observedSeq) break;
+            // Startup metadata can advance while pi reasons. Re-observe before
+            // offering a manual card; never replay a key whose effect is unknown.
+            if (attempt === 1) return;
           }
           // Re-read after model evaluation: a user may have answered meanwhile.
           screen = await this.herdr.screen(participant.execution);
@@ -276,14 +297,19 @@ export class Application implements ApplicationContext {
 
   private actor(task: Task, messageId: string): ActorContext {
     const session = this.sessions.forTask(task.ownerId, task.id);
+    const chatId = this.outputChat(task);
     return {
-      source: task.chatId ? "system" : "web",
+      source: chatId && !chatId.startsWith("web:") ? "system" : "web",
       ownerId: task.ownerId,
-      chatId: task.chatId ?? `web:${task.ownerId}`,
+      chatId: chatId ?? `web:${task.ownerId}`,
       sessionId: session.id,
       taskId: task.id,
       messageId,
     };
+  }
+
+  private outputChat(task: Task): string | undefined {
+    return task.groupDeleted ? task.entryChatId : task.chatId;
   }
 
   private async output(
@@ -294,8 +320,9 @@ export class Application implements ApplicationContext {
     const text = `${participant.name} (${participant.kind})：\n${entry.text}`;
     const outputId = `output:${task.id}:${participant.id}:${entry.id}`;
     const actor = this.actor(task, outputId);
-    const delivered = !!task.chatId && !task.groupDeleted;
-    if (delivered) await this.outbox.send(task.chatId as string, text, outputId);
+    const chatId = this.outputChat(task);
+    const delivered = !!chatId && !chatId.startsWith("web:");
+    if (delivered) await this.outbox.send(chatId as string, text, outputId);
     this.sessions.recordExternal(actor, {
       id: outputId,
       text,
@@ -309,7 +336,7 @@ export class Application implements ApplicationContext {
 
   private async notice(
     task: Task,
-    kind: "welcome" | "group_ready" | "progress" | "before_close",
+    kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
   ): Promise<void> {
     const signature = stableId(
       task.id,
@@ -324,7 +351,7 @@ export class Application implements ApplicationContext {
       progressCooling(this.store, task.id, this.config.ui.notifyCooldownMs)
     )
       return;
-    const chatId = kind === "group_ready" ? task.entryChatId : task.chatId;
+    const chatId = kind === "group_ready" ? task.entryChatId : this.outputChat(task);
     const actor = this.actor(task, `notice:${signature}`);
     let decision = this.store.get<{ notify: boolean; text: string }>("notice_decisions", signature);
     if (!decision) {
@@ -349,14 +376,14 @@ export class Application implements ApplicationContext {
           decision = { notify: parsed.notify, text: parsed.text };
         } catch (error) {
           this.logger.warn("生命周期通知决策未完成", { code: safeError(error).code });
-          if (kind === "before_close") throw error;
+          if (kind === "before_close" || kind === "before_group_delete") throw error;
           return;
         }
       } else decision = { notify: true, text: this.noticeText(task, kind) };
       this.store.set("notice_decisions", signature, decision);
     }
     if (decision.notify && decision.text) {
-      const delivered = !!chatId && !chatId.startsWith("web:") && !task.groupDeleted;
+      const delivered = !!chatId && !chatId.startsWith("web:");
       if (delivered) await this.outbox.send(chatId as string, decision.text, `notice:${signature}`);
       this.sessions.recordExternal(actor, {
         id: `notice-visible:${signature}`,
@@ -379,6 +406,7 @@ export class Application implements ApplicationContext {
     if (kind === "welcome") return `任务：${task.title}\n可以在本群继续讨论、查询进展和处理审批。`;
     if (kind === "before_close")
       return `正在关闭执行资源。${task.keepGroup ? "本群和讨论历史保留。" : "本群将解散，代码和任务结果保留。"}`;
+    if (kind === "before_group_delete") return "任务已完成，即将解散本群；代码和任务历史保留。";
     return `${task.title}：${task.status}${task.error ? `\n${task.error}` : ""}`;
   }
 }

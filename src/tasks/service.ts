@@ -6,12 +6,20 @@ import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { createTask } from "./create.js";
 import { syncDescription } from "./description.js";
-import { closeTask, requestAction, syncCompletion, type TaskAction } from "./lifecycle.js";
+import {
+  closeTask,
+  requestAction,
+  syncCompletion,
+  syncGroupState,
+  type TaskAction,
+  type TaskActionOptions,
+} from "./lifecycle.js";
 import { observeTask } from "./observe.js";
 import { TaskOperations } from "./operations.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
 import { TaskRecords } from "./records.js";
+import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
 
 export type TaskServiceOptions = Omit<TaskContext, "records" | "operations" | "signal">;
@@ -20,7 +28,8 @@ export class TaskService {
   readonly records: TaskRecords;
   private readonly context: TaskContext;
   private readonly locks = new KeyedMutex();
-  private ticking = false;
+  private readonly running = new Set<string>();
+  private readonly queued = new Map<string, { start(): void; cancel(): void }>();
   private readonly control = new AbortController();
 
   constructor(options: TaskServiceOptions) {
@@ -35,6 +44,8 @@ export class TaskService {
 
   stop(): void {
     this.control.abort();
+    for (const pending of this.queued.values()) pending.cancel();
+    this.queued.clear();
   }
 
   create(actor: ActorContext, input: TaskCreateInput): Promise<Task> {
@@ -53,15 +64,33 @@ export class TaskService {
     return this.records.list(actor.ownerId, all);
   }
 
-  async action(actor: ActorContext, id: string, action: TaskAction): Promise<Task> {
+  async action(
+    actor: ActorContext,
+    id: string,
+    action: TaskAction,
+    options: TaskActionOptions = {},
+  ): Promise<Task> {
     return this.locks.run(id, async () => {
       assertActive(this.context);
       const task = this.records.get(actor, id);
       const actionId = `${task.id}:${stableId(actor.messageId, action)}`;
       const applied = this.context.store.transaction(() => {
-        if (this.context.store.get("task_actions", actionId)) return false;
-        requestAction(this.context, task, action);
-        this.context.store.set("task_actions", actionId, { action, at: now() });
+        const prior = this.context.store.get<TaskActionOptions>("task_actions", actionId);
+        if (prior) {
+          if (
+            prior.keepGroup !== options.keepGroup ||
+            prior.keepExecution !== options.keepExecution
+          )
+            fail("operation_conflict", "同一任务操作不能换用不同的资源保留策略。");
+          return false;
+        }
+        requestAction(this.context, task, action, options);
+        this.context.store.set("task_actions", actionId, {
+          action,
+          keepGroup: options.keepGroup,
+          keepExecution: options.keepExecution,
+          at: now(),
+        });
         return true;
       });
       const current = this.records.get(actor, id);
@@ -210,19 +239,43 @@ export class TaskService {
   }
 
   async tick(): Promise<void> {
-    if (this.ticking || this.control.signal.aborted) return;
-    this.ticking = true;
-    try {
-      const tasks = this.context.store
-        .list<Task>("tasks")
-        .filter((task) => task.status !== "destroyed");
-      const size = this.context.config.runtime.maxConcurrentTasks;
-      for (let index = 0; index < tasks.length; index += size) {
-        if (this.control.signal.aborted) break;
-        await Promise.all(tasks.slice(index, index + size).map((task) => this.reconcile(task.id)));
-      }
-    } finally {
-      this.ticking = false;
+    if (this.control.signal.aborted) return;
+    const added: Promise<void>[] = [];
+    for (const task of this.context.store.list<Task>("tasks")) {
+      if (task.status === "destroyed" || this.running.has(task.id) || this.queued.has(task.id))
+        continue;
+      added.push(
+        new Promise<void>((resolve, reject) => {
+          this.queued.set(task.id, {
+            cancel: resolve,
+            start: () => {
+              this.running.add(task.id);
+              void this.reconcile(task.id)
+                .finally(() => {
+                  this.running.delete(task.id);
+                  this.schedule();
+                })
+                .then(resolve, reject);
+            },
+          });
+        }),
+      );
+    }
+    this.schedule();
+    // A later poll can enqueue newly created tasks while earlier work is still running.
+    // Await only this poll's additions; do not retain another waiter for every slow task.
+    await Promise.all(added);
+  }
+
+  private schedule(): void {
+    while (
+      !this.control.signal.aborted &&
+      this.running.size < this.context.config.runtime.maxConcurrentTasks
+    ) {
+      const next = this.queued.entries().next().value;
+      if (!next) return;
+      this.queued.delete(next[0]);
+      next[1].start();
     }
   }
 
@@ -237,7 +290,12 @@ export class TaskService {
       )
         return;
       try {
+        await syncGroupState(this.context, task);
         await syncCompletion(this.context, task);
+        if (task.status === "completed" && !task.completionRequest) {
+          resolveCompletedRetention(this.context, task);
+          this.records.save(task);
+        }
         if (task.closeRequested || task.status === "destroying")
           await closeTask(this.context, task);
         if (["destroyed", "destroying"].includes(task.status)) return;
@@ -263,6 +321,17 @@ export class TaskService {
         await this.context.hooks.notice?.(task, "progress");
         task.syncError = undefined;
         if (task.status !== "attention") task.error = undefined;
+        if (
+          task.status === "completed" &&
+          !task.closeRequested &&
+          !task.completionRequest &&
+          task.chatId &&
+          !task.keepGroup
+        ) {
+          task.closeRequested = true;
+          this.records.save(task);
+          await closeTask(this.context, task);
+        }
         this.records.save(task);
       } catch (error) {
         if (error instanceof OperationError && error.code === "stopping") return;
@@ -297,6 +366,7 @@ export class TaskService {
     const remote = await platform.getTask(task.remoteTaskId);
     task.remoteCheckedAt = now();
     if (remote.completedAt && remote.completedAt !== "0" && !task.completedAt) {
+      resolveGroupRetention(this.context, task);
       task.completedAt = remote.completedAt;
       task.status = "completed";
       task.closeRequested = true;

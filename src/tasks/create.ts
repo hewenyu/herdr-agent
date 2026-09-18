@@ -99,6 +99,7 @@ export async function createTask(
     createGroup: input.createGroup ?? true,
     createRemoteTask: input.createRemoteTask ?? true,
     keepGroup: input.keepGroup ?? config.runtime.groupRetention === "retain",
+    groupRetentionSource: input.keepGroup === undefined ? "default" : "explicit",
     worktreeReady: false,
     parentTaskId: input.parentTaskId,
     parentContext: parent

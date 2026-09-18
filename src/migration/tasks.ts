@@ -90,6 +90,7 @@ export function importTasks(data: Fields, plan: ImportPlan, at: string): void {
       chatId: chatId || undefined,
       groupDeleted: old.chat_deleted === true,
       keepGroup: false,
+      groupRetentionSource: "legacy",
       createGroup: true,
       createRemoteTask: true,
       worktreeReady: false,

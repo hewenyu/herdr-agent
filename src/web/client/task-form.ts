@@ -116,7 +116,7 @@ export function createTaskForm(state: WebState, action: Action): void {
     ["shared", "共享项目目录"],
     ["worktree", "独立 Git worktree"],
   ]);
-  const keepGroup = check("任务完成后保留讨论群", true);
+  const keepGroup = check("任务完成后保留讨论群（默认解散，勾选保留）", false);
   const group = check("创建飞书任务群", true);
   const remote = check("同步创建飞书任务", true);
   const mode = select(

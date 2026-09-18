@@ -2,7 +2,7 @@ import { OperationError } from "../core/errors.js";
 import { object, string } from "../feishu/api.js";
 import { apiHosts } from "../feishu/http.js";
 import { type HTTPOptions, jsonRequest } from "./http.js";
-import { requiredScopes } from "./scopes.js";
+import { hasRequiredScope, requiredScopes } from "./scopes.js";
 
 export interface AuthorizationResult {
   state: "ready" | "required";
@@ -55,7 +55,7 @@ export async function checkAuthorization(
       .map((item) => item.scope_name),
   );
   const missingScopes = requiredScopes(options.tasks ?? true).filter(
-    (scope) => !granted.has(scope),
+    (scope) => !hasRequiredScope(granted, scope),
   );
   return { state: missingScopes.length ? "required" : "ready", missingScopes };
 }

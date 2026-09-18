@@ -1,5 +1,5 @@
 import { saveConfigSection } from "../config/save.js";
-import { validateConfig } from "../config/validate.js";
+import { modelProvider, validateConfig } from "../config/validate.js";
 import { fail } from "../core/errors.js";
 import { newId } from "../core/ids.js";
 import type { ActorContext, Session, StoredMessage } from "../core/types.js";
@@ -201,6 +201,12 @@ export async function dispatch(
         actor,
         id || string(input, "taskId"),
         string(input, "action") as TaskAction,
+        {
+          ...(input.keepGroup === undefined ? {} : { keepGroup: boolean(input, "keepGroup") }),
+          ...(input.keepExecution === undefined
+            ? {}
+            : { keepExecution: boolean(input, "keepExecution") }),
+        },
       );
       break;
     case "participant.send":
@@ -319,7 +325,7 @@ async function modelConfig(
   const ai = {
     ...previous,
     enabled: boolean(input, "enabled", previous.enabled),
-    provider: string(input, "provider", previous.provider) as typeof previous.provider,
+    provider: modelProvider(string(input, "provider", previous.provider)),
     model: string(input, "model", previous.model),
     baseUrl: string(input, "baseUrl", previous.baseUrl),
     apiKey: optionalString(input, "apiKey") ?? previous.apiKey,

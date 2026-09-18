@@ -82,4 +82,4 @@ timeout = "10s"
 max_concurrent_tasks = 4
 # New tasks retain group history unless explicitly overridden.
 # Migrated Go tasks preserve their original delete-group semantics.
-group_retention = "retain" # or "delete"
+group_retention = "delete" # default: dissolve group after completed; "retain" explicitly keeps it
