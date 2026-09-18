@@ -244,16 +244,41 @@ export class LegacyBridge {
   }
 
   private async route(messageId: string): Promise<ExecutionRef | undefined> {
-    const route = this.context.store.get<ExecutionRef | { p: string }>("legacy_routes", messageId);
+    const route = this.context.store.get<unknown>("legacy_routes", messageId);
     if (!route) return undefined;
-    if ("paneId" in route) return this.verifyRoute(route);
-    let binding: { p?: string; k?: string };
+    if (typeof route !== "object" || Array.isArray(route))
+      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+    if ("paneId" in route) {
+      const candidate = route as Record<string, unknown>;
+      if (
+        typeof candidate.paneId !== "string" ||
+        typeof candidate.workspaceId !== "string" ||
+        typeof candidate.kind !== "string" ||
+        !["codex", "claude"].includes(candidate.kind) ||
+        typeof candidate.cwd !== "string" ||
+        typeof candidate.sessionId !== "string"
+      )
+        fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+      return this.verifyRoute(candidate as unknown as ExecutionRef);
+    }
+    const raw = (route as Record<string, unknown>).p;
+    if (typeof raw !== "string" || !raw)
+      fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
+    let binding: { p?: unknown; k?: unknown };
     try {
-      binding = JSON.parse(route.p);
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+      binding = parsed as { p?: unknown; k?: unknown };
     } catch {
       fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
     }
-    if (!binding.p || !binding.k) fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
+    if (
+      typeof binding.p !== "string" ||
+      typeof binding.k !== "string" ||
+      !binding.p ||
+      !["codex", "claude"].includes(binding.k)
+    )
+      fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
     const ref = await this.ref(binding.p);
     if (ref.kind !== binding.k) fail("target_changed", "被引用的 agent 已变化，未投递。");
     return ref;

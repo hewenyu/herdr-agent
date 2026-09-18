@@ -78,6 +78,28 @@ test("legacy raw reply route is rejected after the pane session is replaced", as
   }
 });
 
+test("legacy malformed reply routes fail closed without a runtime type error", async () => {
+  const h = await existing();
+  try {
+    h.store.set("legacy_routes", "bad-route", "corrupt legacy state");
+    await assert.rejects(
+      h.app.legacy.handle({ ...message("bad-route", "不要误发"), replyToMessageId: "bad-route" }),
+      /旧引用缺少 agent 身份/,
+    );
+    h.store.set("legacy_routes", "null-binding", { p: "null" });
+    await assert.rejects(
+      h.app.legacy.handle({
+        ...message("null-binding", "不要误发"),
+        replyToMessageId: "null-binding",
+      }),
+      /旧引用缺少 agent 身份/,
+    );
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("migrated selection resumes from current output baseline and close cannot resurrect it", async () => {
   const h = await existing();
   try {
