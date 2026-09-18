@@ -368,6 +368,33 @@ test("partial publication never advances the launcher and reruns only the missin
   );
 });
 
+test("publication confirmation retries while npm registry metadata propagates", async () => {
+  const input = distribution();
+  const existing = new Map<string, string>();
+  const reads = new Map<string, number>();
+  const published: string[] = [];
+  const port: RegistryPort = {
+    async integrity(name) {
+      const count = (reads.get(name) ?? 0) + 1;
+      reads.set(name, count);
+      return count < 3 ? undefined : existing.get(name);
+    },
+    async publish(item) {
+      published.push(item.name);
+      existing.set(item.name, item.integrity);
+    },
+  };
+  assert.deepEqual(
+    await publishVerified(input, port, { confirmationDelayMs: 0, pause: async () => {} }),
+    [...input.packages.map((item) => item.name)],
+  );
+  assert.equal(reads.get(input.packages[0]?.name ?? ""), 3);
+  assert.deepEqual(
+    published,
+    input.packages.map((item) => item.name),
+  );
+});
+
 test("public registry installation retries are bounded, contain no token, and require the exact commit", async () => {
   const commit = "a".repeat(40);
   const aliases = new Set<string>();
