@@ -73,7 +73,7 @@ jobs:
     permissions:
       contents: read
     env:
-      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@yuebanlaosiji/myrix' }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,7 +98,7 @@ jobs:
           path: build/npm
           if-no-files-found: error
           retention-days: 30
-      - name: Publish verified platform packages, then myrix
+      - name: Publish verified platform packages, then @yuebanlaosiji/myrix
         env:
           NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
         run: node --import tsx scripts/npm.ts publish "$RELEASE_TAG" build/npm
@@ -125,7 +125,7 @@ jobs:
     permissions:
       contents: read
     env:
-      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@yuebanlaosiji/myrix' }}
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_COMMIT: ${{ github.sha }}
       EXPECTED_PLATFORM: ${{ matrix.platform }}
@@ -165,7 +165,7 @@ jobs:
 
           Node.js, the frontend, SQLite, and the native locking addon are embedded in the executable. No Node installation or node_modules directory is needed. herdr and authenticated Claude/Codex executors remain separate prerequisites.
 
-          Alternatively, with Node.js >=18 installed, run `npm install -g myrix`, then `myrix setup` and `myrix serve`. The `herdr-agent` command remains a compatibility alias. npm selects the matching native optional dependency; keep optional dependencies enabled. No postinstall script downloads or executes the binary. Prerelease npm versions use the `next` dist-tag; stable versions use `latest`.
+          Alternatively, with Node.js >=18 installed, run `npm install -g @yuebanlaosiji/myrix`, then `myrix setup` and `myrix serve`. The `herdr-agent` command remains a compatibility alias. npm selects the matching native optional dependency; keep optional dependencies enabled. No postinstall script downloads or executes the binary. Install an exact version with `npm install -g @yuebanlaosiji/myrix@<version>`; prerelease npm versions use the `next` dist-tag and stable versions use `latest`.
 
           The LICENSES directory contains the bundled runtime and dependency license notices and must accompany redistribution of the executable.
 

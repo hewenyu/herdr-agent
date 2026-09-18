@@ -10,10 +10,10 @@ pi handles this tool's business: arranging work, routing messages, querying stat
 
 ## Install
 
-The Node/pi rewrite starts at **v0.3.0**. Release tags publish native executables and the npm package **myrix** for macOS arm64, Linux x64 and Linux arm64.
+The Node/pi rewrite starts at **v0.3.0**. Release tags publish native executables and the scoped npm package **@yuebanlaosiji/myrix** for macOS arm64, Linux x64 and Linux arm64.
 
 ```sh
-npm install -g myrix
+npm install -g @yuebanlaosiji/myrix
 myrix version --json
 myrix setup
 myrix serve

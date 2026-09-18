@@ -22,10 +22,10 @@
 
 ## 安装
 
-Node/pi 重构版本从 **v0.3.0** 开始，npm 包名为 **myrix**，支持 macOS arm64、Linux x64 和 Linux arm64。
+Node/pi 重构版本从 **v0.3.0** 开始，npm 包名为 **@yuebanlaosiji/myrix**，支持 macOS arm64、Linux x64 和 Linux arm64。
 
 ```sh
-npm install -g myrix
+npm install -g @yuebanlaosiji/myrix
 myrix version --json
 myrix setup
 myrix serve

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Script } from "node:vm";
 import {
+  defaultPackageName,
   launcher,
   packageName,
   platformPackage,
@@ -41,7 +42,7 @@ function executable(target: Target) {
 }
 
 test("npm release names and strict tags are explicit and cannot escape paths or shell arguments", () => {
-  assert.equal(packageName(), "myrix");
+  assert.equal(packageName(), "@yuebanlaosiji/myrix");
   assert.equal(packageName("@team/myrix"), "@team/myrix");
   assert.equal(platformPackage("@team/myrix", targets[0]), "@team/myrix-darwin-arm64");
   for (const name of [
@@ -107,7 +108,7 @@ test("launcher forwards arguments, exit status and termination to only the insta
       if (name === "node:child_process")
         return {
           spawn(path: string, args: string[], options: unknown) {
-            assert.equal(path, "/packages/myrix-linux-arm64/bin/herdr-agent");
+            assert.equal(path, `/packages/${defaultPackageName}-linux-arm64/bin/herdr-agent`);
             assert.deepEqual(Array.from(args), ["serve", "--state-dir", "/tmp/a b"]);
             assert.equal(JSON.stringify(options), '{"stdio":"inherit"}');
             return child;
@@ -124,8 +125,11 @@ test("launcher forwards arguments, exit status and termination to only the insta
       },
     },
   );
-  new Script(launcher("myrix")).runInNewContext({ require: requireStub, process: processStub });
-  assert.deepEqual(required, ["myrix-linux-arm64/package.json"]);
+  new Script(launcher(defaultPackageName)).runInNewContext({
+    require: requireStub,
+    process: processStub,
+  });
+  assert.deepEqual(required, [`${defaultPackageName}-linux-arm64/package.json`]);
   processStub.emit("SIGTERM");
   assert.deepEqual(killed, ["SIGTERM"]);
   child.emit("exit", 7, null);
@@ -153,13 +157,16 @@ test("unsupported or missing native packages fail explicitly without downloading
         throw new Error("missing");
       },
     });
-    new Script(launcher("myrix")).runInNewContext({ require: requireStub, process: processStub });
+    new Script(launcher(defaultPackageName)).runInNewContext({
+      require: requireStub,
+      process: processStub,
+    });
     assert.equal(processStub.exitCode, 1);
     assert.match(
       error,
       platform === "win32"
         ? /unsupported platform win32-x64/
-        : /missing native package myrix-linux-x64/,
+        : new RegExp(`missing native package ${defaultPackageName}-linux-x64`),
     );
   }
 });
@@ -270,14 +277,14 @@ function distribution(tag = "v0.3.0"): Distribution {
   return {
     schema: 1,
     tag,
-    name: "myrix",
+    name: defaultPackageName,
     ...release,
     packages: [
       ...targets.map((target) => ({
-        name: platformPackage("myrix", target),
+        name: platformPackage(defaultPackageName, target),
         target: target.suffix,
       })),
-      { name: "myrix", target: "launcher" },
+      { name: defaultPackageName, target: "launcher" },
     ].map((item, i) => ({
       ...item,
       version: release.version,
@@ -306,7 +313,7 @@ test("publication preflights all versions, publishes platforms before launcher, 
       await publishVerified(input, port),
       input.packages.map((item) => item.name),
     );
-    assert.equal(published.at(-1), "myrix");
+    assert.equal(published.at(-1), defaultPackageName);
     assert.deepEqual(await publishVerified(input, port), []);
     assert.equal(published.length, 4);
   }
@@ -318,7 +325,7 @@ test("a version conflict or registry read failure prevents every publish", async
     await assert.rejects(
       publishVerified(distribution(), {
         async integrity(name) {
-          if (name !== "myrix") return undefined;
+          if (name !== defaultPackageName) return undefined;
           if (failure === "network") throw new Error("registry unavailable");
           return "sha512-different";
         },
@@ -348,14 +355,17 @@ test("partial publication never advances the launcher and reruns only the missin
     },
   };
   await assert.rejects(publishVerified(input, port), /publish interrupted/);
-  assert.deepEqual(published, ["myrix-darwin-arm64"]);
+  assert.deepEqual(published, [platformPackage(defaultPackageName, targets[0])]);
   fail = false;
   assert.deepEqual(await publishVerified(input, port), [
-    "myrix-linux-arm64",
-    "myrix-linux-x64",
-    "myrix",
+    platformPackage(defaultPackageName, targets[1]),
+    platformPackage(defaultPackageName, targets[2]),
+    defaultPackageName,
   ]);
-  assert.equal(published.filter((name) => name === "myrix-darwin-arm64").length, 1);
+  assert.equal(
+    published.filter((name) => name === platformPackage(defaultPackageName, targets[0])).length,
+    1,
+  );
 });
 
 test("public registry installation retries are bounded, contain no token, and require the exact commit", async () => {
@@ -368,7 +378,7 @@ test("public registry installation retries are bounded, contain no token, and re
     if (file === "npm") {
       installs++;
       assert.ok(args.includes("--ignore-scripts"));
-      assert.ok(args.includes("myrix@0.3.0"));
+      assert.ok(args.includes(`${defaultPackageName}@0.3.0`));
       if (installs === 1) throw new Error("registry propagation pending");
       return "installed";
     }
@@ -376,16 +386,19 @@ test("public registry installation retries are bounded, contain no token, and re
     if (args[0] === "version") return JSON.stringify({ version: "v0.3.0", commit });
     return args[0] === "help" ? "setup serve" : "v0.3.0";
   };
-  await verifyRegistry("v0.3.0", "myrix", commit, { run, pause: async () => {} });
+  await verifyRegistry("v0.3.0", defaultPackageName, commit, { run, pause: async () => {} });
   assert.equal(installs, 2);
   assert.deepEqual(aliases, new Set(["myrix", "herdr-agent"]));
   await assert.rejects(
-    verifyRegistry("v0.3.0", "myrix", "b".repeat(40), { run, pause: async () => {} }),
+    verifyRegistry("v0.3.0", defaultPackageName, "b".repeat(40), {
+      run,
+      pause: async () => {},
+    }),
     /commit mismatch/,
   );
   let failures = 0;
   await assert.rejects(
-    verifyRegistry("v0.3.0", "myrix", commit, {
+    verifyRegistry("v0.3.0", defaultPackageName, commit, {
       run() {
         failures++;
         throw new Error("registry unavailable");
@@ -404,7 +417,7 @@ test("npm install success with a missing optional binary or broken alias cleans 
     let prefix = "";
     let pauses = 0;
     const verified = new Set<string>();
-    await verifyRegistry("v0.3.0", "myrix", commit, {
+    await verifyRegistry("v0.3.0", defaultPackageName, commit, {
       run(file, args) {
         if (file === "npm") {
           installs++;
@@ -445,7 +458,7 @@ test("three successful npm installs with a persistently missing optional binary 
   let aliasAttempts = 0;
   let pauses = 0;
   await assert.rejects(
-    verifyRegistry("v0.3.0", "myrix", "a".repeat(40), {
+    verifyRegistry("v0.3.0", defaultPackageName, "a".repeat(40), {
       run(file) {
         if (file === "npm") {
           installs++;
