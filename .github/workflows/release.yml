@@ -169,7 +169,7 @@ jobs:
 
           The LICENSES directory contains the bundled runtime and dependency license notices and must accompany redistribution of the executable.
 
-          `./herdr-agent configure --open` opens read-only session records without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
+          `./herdr-agent configure --open` opens the local configuration and session-record page without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
 
           Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
 
