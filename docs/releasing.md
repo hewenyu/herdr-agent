@@ -8,8 +8,8 @@
 2. 最终源码通过 format、lint、typecheck、测试、1000 行限制及三平台 CI；合并 PR 后从实际主分支提交创建新的 `v0.3.x` tag。
 3. tag 自动触发三平台原生 SEA 构建和独立烟测。打包包含完整 LICENSES，禁止用一个平台的二进制伪装其他平台。
 4. 从原始构建产物生成 npm 包，验证架构、执行位、版本、提交及离线全局安装。平台包先发布，主包最后发布；主包精确依赖同版本平台包。
-5. npm publish 步骤等待 registry metadata 传播并逐包核对 integrity；已存在且 integrity 相同的不可变版本会跳过，主包仍最后发布。
-6. npm 分发离线安装验证通过后创建 GitHub Release，上传三个原生压缩包与 SHA256SUMS。Release workflow 不再执行公共 registry 下载验收。
+5. npm publish 步骤在写入前逐包核对已存在版本的 integrity；已存在且 integrity 相同的不可变版本会跳过，主包仍最后发布。npm 接受发布后可能需要几分钟才在公共 registry 暴露 metadata，Release workflow 不等待这段传播。
+6. npm 分发离线安装验证通过后创建 GitHub Release，上传三个原生压缩包与 SHA256SUMS。Release workflow 不执行公共 registry 下载验收。
 
 GitHub environment 名为 `NPM`，secret 名为 `TOKEN`。仅 npm publish 步骤注入 NODE_AUTH_TOKEN。TOKEN 必须对 `@yuebanlaosiji` scope 具有写权限。稳定版发布到 `latest`，预发布版到 `next`。默认三个平台包为 `@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-arm64`、`@yuebanlaosiji/myrix-linux-x64`。
 
