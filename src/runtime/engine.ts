@@ -10,6 +10,7 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
+import { hasUnverifiedToolClaim } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import type {
   ConversationEngine,
@@ -84,6 +85,7 @@ export class PiEngine implements ConversationEngine {
     if (input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
     let calls = 0;
     let executedCalls = 0;
+    let toolCallsSeen = 0;
     let writes = 0;
     const startedAt = Date.now();
     const trace = { sessionId: input.sessionId, messageId: input.actor.messageId };
@@ -143,6 +145,18 @@ export class PiEngine implements ConversationEngine {
         }
       },
     }));
+    let requireToolCall = false;
+    const stream: StreamFn = (model, context, options) => {
+      if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
+      const toolChoice =
+        this.config.provider === "anthropic-messages" ? ("any" as const) : ("required" as const);
+      return this.stream(model, context, {
+        ...(options ?? {}),
+        // The provider adapters accept `any` (Anthropic) or `required` (Responses),
+        // while pi's provider-neutral option type intentionally exposes only auto/none.
+        toolChoice,
+      } as unknown as NonNullable<Parameters<StreamFn>[2]>);
+    };
     const agent = new Agent({
       initialState: {
         model: this.model,
@@ -152,7 +166,7 @@ export class PiEngine implements ConversationEngine {
         thinkingLevel: "off",
       },
       sessionId: input.sessionId,
-      streamFn: this.stream,
+      streamFn: stream,
       getApiKey: () => this.config.apiKey,
       toolExecution: "sequential",
       beforeToolCall: async () => {
@@ -205,6 +219,9 @@ export class PiEngine implements ConversationEngine {
           agent.abort();
         }
       }
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        toolCallsSeen += event.message.content.filter((part) => part.type === "toolCall").length;
+      }
       if (
         event.type === "message_end" &&
         event.message.role === "assistant" &&
@@ -218,6 +235,17 @@ export class PiEngine implements ConversationEngine {
     });
     try {
       await agent.prompt(input.prompt);
+      const claimRecovery =
+        input.tools.length > 0 && toolCallsSeen === 0 && hasUnverifiedToolClaim(finalText);
+      if (claimRecovery) {
+        requireToolCall = true;
+        await agent.prompt({
+          role: "user",
+          content:
+            "上一次答复没有调用任何工具。请重新检查原始用户请求：如果需要本工具的业务操作或当前状态，先调用一个合适的工具并根据返回事实回答；不要把历史文字当作执行回执。",
+          timestamp: Date.now(),
+        });
+      }
       if (checkpointError)
         throw new OperationError(
           "checkpoint_failed",
@@ -241,6 +269,12 @@ export class PiEngine implements ConversationEngine {
       }
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
+      if (claimRecovery && toolCallsSeen === 0)
+        throw new OperationError(
+          "model_failed",
+          "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+          "not_executed",
+        );
       this.logger?.info("pi 已生成回复", {
         event: "pi.turn_completed",
         ...trace,
@@ -248,7 +282,12 @@ export class PiEngine implements ConversationEngine {
         writeCalls: writes,
         durationMs: Date.now() - startedAt,
       });
-      return { text: finalText, messages: safeMessages(agent.state.messages) };
+      return {
+        text: finalText,
+        messages: safeMessages(agent.state.messages),
+        toolCalls: toolCallsSeen,
+        writeCalls: writes,
+      };
     } catch (error) {
       const failure = safeError(error);
       this.logger?.error("pi 本轮未完成", {

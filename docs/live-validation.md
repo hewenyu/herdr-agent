@@ -2,9 +2,9 @@
 
 更新时间：2026-09-18。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
-2026-09-18 当前运行检查：HEAD `e7e8b3e` 已构建为 macOS arm64 SEA `0.3.6`，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
+2026-09-18 当前运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
 
-本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
+本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，本轮 pi 工具事实修正见[现场证据](live-evidence-pi-tool-recovery-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
 2026-09-18 用户纠正后的范围：**真实业务全部在飞书发生；Web 只做会话记录。** 网页可本地浏览、筛选已有历史，不改 active pi session 或服务端业务身份，不发消息，不创建任务/项目，不审批、清理或配置，不提供 `/clear` 等命令入口。只读实现已部署至 `a7e9ffb`，HTTP 拒写、身份/历史浏览和轮询菜单修复已有真实证据；后续390×728和刷新后Console已有E20限定检查，未覆盖断线/竞态分支仍未验，不将整组标为通过。
 

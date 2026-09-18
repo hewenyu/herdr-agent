@@ -55,6 +55,92 @@ test("real pi loop validates tool arguments, binds actor and checkpoints before 
   assert.equal(result.text, "已登记");
   assert.ok(order.indexOf("persist") < order.indexOf("execute"));
   assert.ok(result.messages.some((message) => message.role === "toolResult"));
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.writeCalls, 1);
+});
+
+test("a text-only business turn is retried with required tool selection before success", async () => {
+  let requests = 0;
+  let writes = 0;
+  const choices: unknown[] = [];
+  const messages = [
+    response("已安排新项目。"),
+    response("", [
+      { type: "toolCall", id: "create", name: "create", arguments: { title: "新项目" } },
+    ]),
+    response("已根据工具结果登记。"),
+  ];
+  const engine = new PiEngine(config, {
+    streamFn: (model, context, options) => {
+      choices.push(options?.toolChoice);
+      requests++;
+      return scripted(messages)(model, context, options);
+    },
+  });
+  const result = await engine.run(
+    input([
+      {
+        name: "create",
+        description: "create",
+        parameters: schema,
+        readOnly: false,
+        execute: async () => {
+          writes++;
+          return { accepted: true };
+        },
+      },
+    ]),
+  );
+  assert.equal(requests, 3);
+  assert.equal(choices[0], undefined);
+  assert.equal(choices[1], "required");
+  assert.equal(result.text, "已根据工具结果登记。");
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.writeCalls, 1);
+  assert.equal(writes, 1);
+});
+
+test("ordinary text-only conversation remains a model reply when tools are available", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([response("你好，我可以帮你梳理需求。")]),
+  });
+  const result = await engine.run(
+    input([
+      {
+        name: "create",
+        description: "create",
+        parameters: schema,
+        readOnly: false,
+        execute: async () => ({ accepted: true }),
+      },
+    ]),
+  );
+  assert.equal(result.text, "你好，我可以帮你梳理需求。");
+  assert.equal(result.toolCalls, 0);
+  assert.equal(result.writeCalls, 0);
+});
+
+test("a text-only turn that remains tool-free fails without a successful response", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([response("已安排新项目。"), response("仍然没有调用工具。")]),
+  });
+  await assert.rejects(
+    engine.run(
+      input([
+        {
+          name: "create",
+          description: "create",
+          parameters: schema,
+          readOnly: false,
+          execute: async () => ({ accepted: true }),
+        },
+      ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
 });
 
 test("unknown write outcome blocks later writes but permits reads", async () => {
