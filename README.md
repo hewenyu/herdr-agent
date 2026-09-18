@@ -10,7 +10,7 @@ pi handles this tool's business: arranging work, routing messages, querying stat
 
 ## Release and acceptance status
 
-The latest published release is [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6). Install that exact release with `npm install -g @yuebanlaosiji/myrix@0.3.6`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
+The latest published release is [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6). The public entry package and all three native optional packages are published at the same version. Install the entry package with `npm install -g @yuebanlaosiji/myrix@0.3.6`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
 
 Automated checks and native packaging are run by the release workflow. End-to-end acceptance is still tracked per scenario: a green build does not prove that a real Feishu message, model tool call, herdr resource, group message, or cleanup readback happened. Check [live validation](docs/live-validation.md) for the current `U`, `R-部分`/`R-partial`, and `R-P` evidence, including retained historical unknown results. Treat a scenario as accepted only when its corresponding Feishu, pi, model, herdr, and external readbacks are present.
 
@@ -27,7 +27,7 @@ myrix setup
 myrix serve
 ```
 
-npm installation needs Node >=18 for its small launcher and selects the matching bundled executable. Keep optional dependencies enabled; no install script downloads code. `herdr-agent` remains a command alias, and the existing state directory stays `~/.herdr-agent`. To run without Node, download the matching binary archive from [Releases](https://github.com/hewenyu/herdr-agent/releases).
+npm installation needs Node >=18 for its small launcher and selects the matching bundled executable. Install **`@yuebanlaosiji/myrix`**, not a platform package. Packages named `@yuebanlaosiji/myrix-darwin-arm64`, `@yuebanlaosiji/myrix-linux-arm64` and `@yuebanlaosiji/myrix-linux-x64` are implementation dependencies selected automatically by npm; they are published separately so npm can install the native executable for the current platform. Keep optional dependencies enabled; no install script downloads code. `herdr-agent` remains a command alias, and the existing state directory stays `~/.herdr-agent`. To run without Node, download the matching binary archive from [Releases](https://github.com/hewenyu/herdr-agent/releases).
 
 The release workflow uses the `TOKEN` secret in GitHub environment `NPM` only for publishing. It assembles and verifies the complete npm distribution with an offline global install before publishing the GitHub Release. npm may take a few minutes to expose a newly published version through its public registry. See [release operations](docs/releasing.md) for recovery.
 
