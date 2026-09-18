@@ -46,7 +46,7 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`，无需手动选择 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)。这些记录不替代真实用户从飞书进入的完整链路。
+全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28](docs/live-evidence-e28-real-model-tool-decision.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)。这些记录不替代真实用户从飞书进入的完整链路。
 
 ## 运行前置
 
@@ -107,6 +107,8 @@ myrix doctor --json
 主入口飞书私聊达到配置的上下文预算时会自动压缩 pi 历史，保留原始记录和持久化操作回执。只有用户需要手动开启新会话时，才在主入口私聊单独发送 `/clear`；程序直接归档旧 pi session 并创建、选中新 session，事务成功后只回复 `CLEAR_NEW_SESSION_OK`。关闭 AI 或模型不可用时也可用；保留历史、任务和 herdr session，群聊拒绝。只匹配实际正文去掉前后空白后恰好为 `/clear` 的消息；引用内容、`/CLEAR`、`／clear`、`/clear now` 或正文中提到 `/clear` 不触发。Web 没有聊天框、`/clear` 或清空按钮；查看另一段历史不改变飞书活跃 session。
 
 AI 开启时，其余聊天文本由模型理解，包括斜杠形式。关闭 AI 后仍保留任务模式的 `/new /tasks /projects /task /screen /stop` 等兼容入口；关闭 tasks 后可以用 `/ls /card /say /stop /mirror /close` 接管已有 agent。旧桥 `/close` 仅解除选择，不销毁任务。
+
+旧桥 `/ls` 只列出由 herdr 托管的 Claude/Codex agent；普通 shell pane 不属于可接管目标，也不会出现在选择卡片中。
 
 日常 CLI 为 `serve / setup / configure / doctor / version / help`；`configure` 现用于本地配置和会话记录页，旧 Web 业务管理控件已移除，维护入口为 `migrate` 与只读 `debug ls|screen|transcript`。旧顶层 `key / say / watch / dialog / tail` 等已退出，终端输入通过飞书参与者调度，普通审批在飞书群内由用户选择。`help` 列出有效参数。退出码：0 成功、1 失败、2 用法错误、3 setup 凭据已保存但验证未完成、130 取消；旧 Go 的所有退出码并非逐项兼容。
 

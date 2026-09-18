@@ -55,6 +55,12 @@ export async function createTask(
   const id = `task_${stableId(actor.ownerId, actor.sessionId, actor.messageId, canonical(input))}`;
   const previous = store.get<Task>("tasks", id);
   if (previous) return records.get(actor, id);
+  // A task created before sessionId became part of the key may still receive
+  // a retry after an upgrade. Reuse that legacy record only when its persisted
+  // session matches; a different session must remain an independent intent.
+  const legacyId = `task_${stableId(actor.ownerId, actor.messageId, canonical(input))}`;
+  const legacy = store.get<Task>("tasks", legacyId);
+  if (legacy?.sessionId === actor.sessionId) return records.get(actor, legacyId);
   if (input.newProject && !input.project) fail("project_name", "新建项目需要明确名称。");
   if (input.newProject && input.project) {
     await context.operations.run(`${id}:project`, { name: input.project }, () =>

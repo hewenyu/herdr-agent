@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { Task } from "../../src/core/types.js";
 import { canonical, stableId } from "../../src/core/ids.js";
+import type { Task } from "../../src/core/types.js";
 import { actor, setup } from "./helpers.js";
 
 function deferred() {

@@ -12,6 +12,10 @@
 
 2026-09-19 E27：向当前生产服务配置的主聊天发送唯一 LIVE-001-R5 提示，并用同一服务应用读回 sender/chat/body；随后观察 30 秒没有用户 marker 入站。此前另一个 lark-cli bot 的提示不计入本服务入口。该记录只证明正确应用的提示送达，LIVE-001 仍等待真实用户回复。[E27 记录](live-evidence-e27-service-ingress-prompt.md)
 
+2026-09-19 E28：当前配置模型 `kimi-k2.5` 的真实首步探针连续三次均选择 `task_create`，参数保留新项目、Codex 和“不用测试”；工具实现在执行前拦截，没有外部写入。历史零工具决策问题在此隔离首步未复现，但该证据不关闭 LIVE-001 用户入口或完整资源链路。[E28 记录](live-evidence-e28-real-model-tool-decision.md)
+
+2026-09-19 E29：补充自动化边界回归。任务键加入 pi `sessionId` 后，相同 request ID 的不同 session 可并行创建不同项目；升级后的旧任务键在同 session 重试仍保持幂等。已解散群的迟到消息和卡片在入口及执行前均忽略，不创建主 pi session、不消费审批；旧桥 `/ls` 不再暴露无 kind 的 shell pane，损坏的历史路由统一失败关闭。当前 `npm run check` 通过 463/463。以上均为本地回归，不替代真实飞书用户入口、模型和 herdr 端到端验收。
+
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
 2026-09-19 E24 前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
