@@ -1,5 +1,5 @@
 export const registry = "https://registry.npmjs.org/";
-export const defaultPackageName = "myrix";
+export const defaultPackageName = "@yuebanlaosiji/myrix";
 export const targets = [
   { archive: "darwin_arm64", suffix: "darwin-arm64", os: "darwin", cpu: "arm64" },
   { archive: "linux_arm64", suffix: "linux-arm64", os: "linux", cpu: "arm64" },
@@ -38,7 +38,7 @@ export function packageName(input = defaultPackageName): string {
     throw new Error("NPM_PACKAGE_NAME must be a lowercase npm package name (up to 195 characters)");
   if (["herdr-agent", "rix", "node_modules", "favicon.ico"].includes(input))
     throw new Error(
-      `NPM_PACKAGE_NAME ${input} is unavailable; use the authorized myrix name or your own scope`,
+      `NPM_PACKAGE_NAME ${input} is unavailable; use the authorized @yuebanlaosiji/myrix name or your own scope`,
     );
   return input;
 }

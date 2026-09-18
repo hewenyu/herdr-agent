@@ -7,7 +7,7 @@ import { verifyDistribution } from "./npm/verify.js";
 const [command, tag, input, output] = process.argv.slice(2);
 if (!command || command === "--help") {
   process.stdout.write(
-    "Usage: node --import tsx scripts/npm.ts <validate|prepare|verify|publish|download> <vSEMVER> [archives-or-packages-dir|commit] [output-dir]\nNPM_PACKAGE_NAME defaults to myrix; prepare is offline, verify installs locally offline, download checks public registry installation, only publish writes to npm.\n",
+    "Usage: node --import tsx scripts/npm.ts <validate|prepare|verify|publish|download> <vSEMVER> [archives-or-packages-dir|commit] [output-dir]\nNPM_PACKAGE_NAME defaults to @yuebanlaosiji/myrix; prepare is offline, verify installs locally offline, download checks public registry installation, only publish writes to npm.\n",
   );
 } else {
   if (!tag) throw new Error("A release tag is required");

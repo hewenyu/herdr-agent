@@ -1,6 +1,6 @@
 # v0.3.x 与 npm 分发
 
-重构首版计划为 `v0.3.0`，后续按 SemVer 发布。npm 包名为 `myrix`，薄启动器提供 `myrix` 和兼容命令 `herdr-agent`；状态目录仍使用 `~/.herdr-agent`。根 package.json 是私有源码包，不直接发布。
+重构首版计划为 `v0.3.0`，后续按 SemVer 发布。npm 包名为 `@yuebanlaosiji/myrix`，薄启动器提供 `myrix` 和兼容命令 `herdr-agent`；状态目录仍使用 `~/.herdr-agent`。根 package.json 是私有源码包，不直接发布。
 
 ## 发布条件与顺序
 
@@ -11,12 +11,12 @@
 5. 三平台无凭证从公共 registry 安装精确版本，运行两个命令的 version/--version/help。安装及可选原生包可见性一起有界重试。
 6. 全部通过才创建 GitHub Release，上传三个原生压缩包与 SHA256SUMS。
 
-GitHub environment 名为 `NPM`，secret 名为 `TOKEN`。仅 npm publish 步骤注入 NODE_AUTH_TOKEN；下载验收不使用该 secret。稳定版发布到 `latest`，预发布版到 `next`。默认三个平台包为 `myrix-darwin-arm64`、`myrix-linux-arm64`、`myrix-linux-x64`。
+GitHub environment 名为 `NPM`，secret 名为 `TOKEN`。仅 npm publish 步骤注入 NODE_AUTH_TOKEN；下载验收不使用该 secret。TOKEN 必须对 `@yuebanlaosiji` scope 具有写权限。稳定版发布到 `latest`，预发布版到 `next`。默认三个平台包为 `@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-arm64`、`@yuebanlaosiji/myrix-linux-x64`。
 
 ## 安装与核对
 
 ```sh
-npm install -g myrix
+npm install -g @yuebanlaosiji/myrix
 myrix version --json
 myrix help
 ```
