@@ -38,6 +38,7 @@ export async function verifyRegistry(
             "--no-fund",
             "--prefer-online",
             "--fetch-retries=1",
+            "--fetch-retry-mintimeout=1000",
             "--fetch-retry-maxtimeout=5000",
             "--registry",
             registry,
