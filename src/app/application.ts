@@ -171,12 +171,21 @@ export class Application implements ApplicationContext {
 
   async tick(): Promise<void> {
     if (this.signal.aborted) return;
-    await this.track(
-      Promise.allSettled([
-        this.inbox.drain(),
-        this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
-      ]),
+    // Keep independent task reconciliation running while a model-backed inbox
+    // turn is pending. After the drain commits its records, run one more
+    // scheduling pass so a task_create in this turn is provisioned immediately.
+    // Each tick must run inbox admission even when an earlier tick is waiting
+    // on a slow lane. Inbox.drain() deduplicates active lanes itself, while a
+    // fresh call can admit messages that arrived after the previous snapshot.
+    const inbox = this.track(this.inbox.drain());
+    const scheduler = this.track(
+      this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
     );
+    await inbox;
+    if (this.config.tasks.enabled) {
+      const followUp = this.track(this.tasks.tick());
+      await Promise.allSettled([scheduler, followUp]);
+    } else await scheduler;
   }
 
   async shutdown(): Promise<void> {

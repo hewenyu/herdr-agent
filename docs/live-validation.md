@@ -1,6 +1,6 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-18。状态：**本轮目标仍进行中；E21-R2 事件订阅与默认收尾已完成真实闭环验收，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-18。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
 本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
@@ -87,6 +87,8 @@ E17 部署与验收记录：`.cache/live/e17-deployment.json` 固定运行源码
 E17后续独立证据已确认B/C从真实飞书请求到原生执行、产物、署名群结果、远端描述与review等待验收的限定链路通过，见 `cli-e17-r2-completion.json`、`independent-e17-completion.json`。C入站和创建时A仍attention，B原生回合尚未结束；A的原生名称拒绝及误unknown历史R-F保留。03:03模型已恢复200/精确标记，不继续沿用旧额度阻塞。任务群owner无@ exact `/clear`拒绝也为限定R-P。
 
 E21-R2 已完成订阅发布后的真实事件闭环：提交 `71ffd7a`、PID `8171`、SEA SHA256 `6ee3f05d65c413fd24f52be453cd2a8f624b0d7e64bc6fdb5b889a5e8c1a952`；用户在飞书原生任务详情点击完成后，`task.task.update_user_access_v2` 在约0.6秒内进入 task inbox，约1.3秒内强制读回远端完成状态并绕过30秒轮询冷却。随后 herdr 关闭 `w1P:p1`，任务描述同步、群解散和所有 outbox 送达均完成；本地任务 `destroyed`、参与者 `gone`、群 `dissolved`，飞书“已完成”列表可见。证据：`docs/live-evidence-e21-release.md`、`.cache/live/e21-r2-event-closure-2026-09-18.json`。该条为 B12/B13 的 R-P 子场景，不能扩张为其他任务类型、权限或恢复组合均已通过。
+
+E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd11260798ba328dc18b99`（macOS arm64，`dist/herdr-agent` SHA256 `7488461ec9ce743a71aacfbd2c07f13401d0d3548cf4b9bb67182daac03c8d5b`）重启后，用户在飞书私聊创建 `LIVE-RACE-20260918-R2`，实际建立飞书任务和专属群，启动 Codex，初始输入回执为 `delivered/acked/verified`，群内输出 `LIVE_RACE_R2_OK` 已回读。用户随后在私聊确认完成；本地回读为 `destroyed`、参与者 `gone`、`groupDeleted=true`，关闭和删群操作均为 `done`。启动阶段曾出现一次真实 `stale_guard`（未执行）后由新 guard 完成目录信任，未重复发送初始要求。`npm run check` 为 422/422，`build`、`binary`、`smoke` 和 `doctor` 均通过。该条是 N02/B06/B12/B13 的限定 R-P，证明当前二进制的一条讨论与默认清理链路；其他任务类型、并发满载补位、审批/权限和异常恢复仍未验。
 
 随后A/B/C均完成已授权资源清理，`e17-cleanup-readback.json`最终快照全true；B通过真实任务群无@完成指令调用task_action，回复送达和herdr close均早于删群。原9加本轮3共12群dissolved、panes缺失、pending outbox为0；inventory-e17两次remote GET400在03:45串行回读均200/completed，原失败保留且原因不确定，见 `test-resource-inventory-e17-read-errors.json`。
 

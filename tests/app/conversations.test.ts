@@ -60,6 +60,38 @@ test("one slow pi session does not block independent conversations; same chat st
   }
 });
 
+test("later application ticks admit a new conversation while an earlier tick is still draining", async () => {
+  const h = setup();
+  const started = deferred();
+  const fastStarted = deferred();
+  const release = deferred();
+  try {
+    h.engine.handler = async (input) => {
+      if (input.prompt === "slow") {
+        started.resolve();
+        await release.promise;
+      }
+      if (input.prompt === "fast") fastStarted.resolve();
+      return { text: input.prompt, messages: [] };
+    };
+    await h.app.handlers().message(message("slow-tick", "slow", "slow-chat"));
+    const firstTick = h.app.tick();
+    await started.promise;
+    await h.app.handlers().message(message("fast-tick", "fast", "fast-chat"));
+    const secondTick = h.app.tick();
+    await fastStarted.promise;
+    assert.deepEqual(
+      h.engine.calls.map((call) => call.prompt),
+      ["slow", "fast"],
+    );
+    release.resolve();
+    await Promise.all([firstTick, secondTick]);
+  } finally {
+    release.resolve();
+    await h.close();
+  }
+});
+
 test("Web reply only becomes visible context after scoped rendering acknowledgement", async () => {
   const h = setup();
   try {
@@ -173,6 +205,41 @@ test("AI transport failure never falls through to templates, terminal input or s
     assert.equal(h.platform.texts.length, 0);
     assert.equal(h.herdr.sends.length, 0);
     assert.equal(h.app.tasks.records.list("owner", true).length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("one application tick provisions a task created while draining its inbox", async () => {
+  const h = setup();
+  try {
+    h.engine.handler = async (turn) => {
+      if (turn.sessionId.startsWith("notice:"))
+        return { text: '{"notify":false,"text":""}', messages: [] };
+      const create = turn.tools.find((tool) => tool.name === "task_create");
+      assert.ok(create);
+      await create.execute(
+        {
+          kind: "development",
+          title: "同轮调度任务",
+          requirements: "创建一个 HTML 页面。",
+          project: "project",
+          participants: [{ kind: "codex" }],
+          createGroup: true,
+          createRemoteTask: false,
+        },
+        turn.actor,
+      );
+      return { text: "已登记。", messages: [] };
+    };
+    await h.app.handlers().message(message("same-tick", "请创建任务"));
+    await h.app.tick();
+    const task = h.app.tasks.records.list("owner", true)[0];
+    assert.ok(task);
+    assert.equal(task.chatId, "group1");
+    assert.equal(task.status, "running");
+    assert.equal(h.platform.groups, 1);
+    assert.equal(h.herdr.creates, 1);
   } finally {
     await h.close();
   }
