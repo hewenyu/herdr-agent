@@ -1,5 +1,5 @@
 import { fail } from "../core/errors.js";
-import { newId, now } from "../core/ids.js";
+import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
@@ -147,17 +147,64 @@ export function requestAction(
 
 export async function syncGroupState(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
+  let observedDissolved = false;
   if (task.chatId && !task.groupDeleted && context.platform?.getGroupStatus) {
     const status = await context.platform.getGroupStatus(task.chatId);
     assertActive(context);
-    if (status === "dissolved") task.groupDeleted = true;
+    observedDissolved = status === "dissolved";
   }
-  if (!task.groupDeleted) return;
-  task.status = "destroying";
-  task.completionRequest = undefined;
-  task.closeRequested = false;
-  task.discussion.paused = true;
-  context.records.save(task);
+  if (!task.groupDeleted && !observedDissolved) return;
+  const updated: Task = {
+    ...task,
+    groupDeleted: true,
+    status: "destroying",
+    completionRequest: undefined,
+    closeRequested: false,
+    discussion: { ...task.discussion, paused: true },
+  };
+  context.store.transaction(() => {
+    if (observedDissolved) confirmGroupDeletion(context, updated);
+    context.records.save(updated);
+  });
+  Object.assign(task, updated);
+}
+
+/** GET proves the target state, not that the original DELETE was acknowledged. */
+function confirmGroupDeletion(context: TaskContext, task: Task): void {
+  const id = `${task.id}:delete-group`;
+  const receipt = context.store.get<OperationReceipt>("operations", id);
+  if (!receipt || !["pending", "uncertain"].includes(receipt.state)) return;
+  if (receipt.id !== id || receipt.fingerprint !== stableId(canonical({ chat: task.chatId })))
+    fail("operation_conflict", "删群回执与当前绑定群不匹配，未确认该操作。");
+  const otherUnresolved = context.store
+    .entries<OperationReceipt>("operations")
+    .some(([key, value]) => key !== id && key.startsWith(`${task.id}:`) && value.state !== "done");
+  const pendingDelivery = context.store
+    .list<{ chatId: string; state: string }>("outbox")
+    .some((value) => value.chatId === task.chatId && value.state !== "delivered");
+  if (
+    receipt.error &&
+    task.error === receipt.error.message &&
+    !otherUnresolved &&
+    !pendingDelivery &&
+    !context.records.participants(task).some((participant) => participant.error)
+  )
+    task.error = undefined;
+  const observedAt = now();
+  context.store.set("operations", id, {
+    ...receipt,
+    state: "done",
+    error: undefined,
+    result: {
+      confirmedBy: "group_status",
+      chatId: task.chatId,
+      status: "dissolved",
+      observedAt,
+      previousState: receipt.state,
+      previousError: receipt.error,
+    },
+    updatedAt: observedAt,
+  });
 }
 
 export async function syncCompletion(context: TaskContext, task: Task): Promise<void> {
