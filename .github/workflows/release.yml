@@ -134,7 +134,7 @@ jobs:
 
           Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
 
-          All three native targets also install the exact published npm version into an isolated prefix, execute both command aliases, and verify the build version and commit before this GitHub release is published.
+          The npm distribution is assembled and verified with an offline global install before publication. npm may take a few minutes to expose a newly published version through its public registry.
 
           Verify downloads with `sha256sum --ignore-missing -c SHA256SUMS` (Linux) or `shasum -a 256 --ignore-missing -c SHA256SUMS` (macOS).
 
