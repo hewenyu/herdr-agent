@@ -5,7 +5,7 @@ import type { ActorContext, AgentKind, Participant, Task, TaskCreateInput } from
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { createTask } from "./create.js";
-import { syncDescription } from "./description.js";
+import { hasFinalDescription, syncDescription, syncFinalDescription } from "./description.js";
 import {
   closeTask,
   requestAction,
@@ -266,7 +266,11 @@ export class TaskService {
     if (this.control.signal.aborted) return;
     const added: Promise<void>[] = [];
     for (const task of this.context.store.list<Task>("tasks")) {
-      if (task.status === "destroyed" || this.running.has(task.id) || this.queued.has(task.id))
+      if (
+        (task.status === "destroyed" && !hasFinalDescription(this.context, task)) ||
+        this.running.has(task.id) ||
+        this.queued.has(task.id)
+      )
         continue;
       added.push(
         new Promise<void>((resolve, reject) => {
@@ -307,13 +311,12 @@ export class TaskService {
     await this.locks.run(id, async () => {
       if (this.control.signal.aborted) return;
       const task = this.context.store.get<Task>("tasks", id);
-      if (
-        !task ||
-        task.status === "destroyed" ||
-        !this.context.config.feishu.allowedOpenIds.includes(task.ownerId)
-      )
-        return;
+      if (!task || !this.context.config.feishu.allowedOpenIds.includes(task.ownerId)) return;
       try {
+        if (task.status === "destroyed") {
+          await syncFinalDescription(this.context, task);
+          return;
+        }
         await syncGroupState(this.context, task);
         await syncCompletion(this.context, task);
         if (task.status === "completed" && !task.completionRequest) {
@@ -322,7 +325,10 @@ export class TaskService {
         }
         if (task.closeRequested || task.status === "destroying")
           await closeTask(this.context, task);
-        if (["destroyed", "destroying"].includes(task.status)) return;
+        if (["destroyed", "destroying"].includes(task.status)) {
+          await syncFinalDescription(this.context, task);
+          return;
+        }
         const legacyPending = this.context.store.get<OperationReceipt>(
           "operations",
           `${task.id}:legacy-pending`,
@@ -355,6 +361,7 @@ export class TaskService {
           task.closeRequested = true;
           this.records.save(task);
           await closeTask(this.context, task);
+          await syncFinalDescription(this.context, task);
         }
         this.records.save(task);
       } catch (error) {

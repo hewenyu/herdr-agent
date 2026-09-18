@@ -3,6 +3,7 @@ import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { queueFinalDescription } from "./description.js";
 import { observeTask } from "./observe.js";
 import { ownsTaskOperation, taskOperationPrefixes } from "./operation-scope.js";
 import { taskDescription } from "./prompts.js";
@@ -141,7 +142,7 @@ export function requestAction(
       id: `${task.id}:completion:${newId("c")}`,
       request: task.completionRequest,
       completedAt: task.completionRequest === "complete" ? String(Date.now()) : "0",
-      description: taskDescription(task, context.records.participants(task)),
+      description: completionDescription(context, task),
     });
   }
   context.records.save(task);
@@ -226,14 +227,14 @@ export async function syncCompletion(context: TaskContext, task: Task): Promise<
       id: `${task.id}:completion:${newId("c")}`,
       request: task.completionRequest,
       completedAt: task.completionRequest === "complete" ? String(Date.now()) : "0",
-      description: taskDescription(task, context.records.participants(task)),
+      description: completionDescription(context, task),
     };
     context.store.set("completion_sync", task.id, target);
   }
   // Older receipts did not store their description. Only capture one if no
   // write was attempted; an uncertain legacy request must not acquire guessed text.
   if (target.description === undefined && !context.store.get("operations", target.id)) {
-    target.description = taskDescription(task, context.records.participants(task));
+    target.description = completionDescription(context, task);
     context.store.set("completion_sync", task.id, target);
   }
   let confirmedAt = target.completedAt;
@@ -289,6 +290,13 @@ export async function syncCompletion(context: TaskContext, task: Task): Promise<
   context.records.save(task);
 }
 
+function completionDescription(context: TaskContext, task: Task): string {
+  return taskDescription(
+    { ...task, status: task.completionRequest === "complete" ? "completed" : "review" },
+    context.records.participants(task),
+  );
+}
+
 export async function closeTask(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
   if (task.closeRequested && task.status !== "destroying") {
@@ -331,7 +339,10 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
   task.completionRequest = undefined;
   task.pending = undefined;
   task.syncError = undefined;
-  context.records.save(task);
+  context.store.transaction(() => {
+    context.records.save(task);
+    queueFinalDescription(context, task);
+  });
 }
 
 /** Group deletion is the final cleanup step, after herdr confirms all owned panes closed. */

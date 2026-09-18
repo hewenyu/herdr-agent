@@ -306,7 +306,15 @@ test("confirmed external group closure cleans only owned panes from every active
       assert.equal(h.herdr.agents.size, 1);
       assert.ok(h.herdr.agents.has(foreign.paneId));
       assert.equal(h.platform.deletions, 0, "external deletion is already confirmed");
-      assert.equal(h.platform.updates, writes, "closing a group does not assert task acceptance");
+      const projection = h.platform.updateCalls.slice(writes);
+      assert.equal(projection.length, 1, "closed resources receive a final description");
+      assert.equal(
+        projection.some((call) => call.completedAt !== undefined),
+        false,
+        "closing a group does not assert task acceptance",
+      );
+      assert.match(projection[0]?.description ?? "", /状态：destroyed/);
+      assert.doesNotMatch(projection[0]?.description ?? "", /会话：https/);
     } finally {
       h.close();
     }
