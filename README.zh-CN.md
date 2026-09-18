@@ -16,6 +16,8 @@
 
 Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herder 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herder 和外部状态回读，才能把某个场景视为已验收。
 
+当前源码还包含 inbox 调度竞态修复：`npm run check` 已通过 422 项测试，`npm run build`、`npm run binary` 和 `npm run smoke` 在 macOS arm64 通过。新二进制已重启，并通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
+
 ## 运行前置
 
 - 本机 herdr 可用，其 Unix socket 可访问。
