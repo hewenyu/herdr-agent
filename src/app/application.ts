@@ -59,6 +59,7 @@ export class Application implements ApplicationContext {
   private readonly engine: ConversationEngine;
   private readonly directoryTrust: DirectoryTrust;
   private readonly active = new Set<Promise<unknown>>();
+  private inboxDrain?: Promise<void>;
   authorization = {
     status: "checking",
     message: "正在检查飞书授权。",
@@ -171,12 +172,30 @@ export class Application implements ApplicationContext {
 
   async tick(): Promise<void> {
     if (this.signal.aborted) return;
-    await this.track(
-      Promise.allSettled([
-        this.inbox.drain(),
-        this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
-      ]),
+    // Keep independent task reconciliation running while a model-backed inbox
+    // turn is pending. After the drain commits its records, run one more
+    // scheduling pass so a task_create in this turn is provisioned immediately.
+    const inbox = this.track(this.drainInbox());
+    const scheduler = this.track(
+      this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
     );
+    await inbox;
+    if (this.config.tasks.enabled) {
+      const followUp = this.track(this.tasks.tick());
+      await Promise.allSettled([scheduler, followUp]);
+    } else await scheduler;
+  }
+
+  private drainInbox(): Promise<void> {
+    if (this.inboxDrain) return this.inboxDrain;
+    const operation = this.inbox.drain();
+    this.inboxDrain = operation;
+    void operation
+      .finally(() => {
+        if (this.inboxDrain === operation) this.inboxDrain = undefined;
+      })
+      .catch(() => {});
+    return operation;
   }
 
   async shutdown(): Promise<void> {

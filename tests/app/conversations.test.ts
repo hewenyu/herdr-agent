@@ -177,3 +177,38 @@ test("AI transport failure never falls through to templates, terminal input or s
     await h.close();
   }
 });
+
+test("one application tick provisions a task created while draining its inbox", async () => {
+  const h = setup();
+  try {
+    h.engine.handler = async (turn) => {
+      if (turn.sessionId.startsWith("notice:"))
+        return { text: '{"notify":false,"text":""}', messages: [] };
+      const create = turn.tools.find((tool) => tool.name === "task_create");
+      assert.ok(create);
+      await create.execute(
+        {
+          kind: "development",
+          title: "同轮调度任务",
+          requirements: "创建一个 HTML 页面。",
+          project: "project",
+          participants: [{ kind: "codex" }],
+          createGroup: true,
+          createRemoteTask: false,
+        },
+        turn.actor,
+      );
+      return { text: "已登记。", messages: [] };
+    };
+    await h.app.handlers().message(message("same-tick", "请创建任务"));
+    await h.app.tick();
+    const task = h.app.tasks.records.list("owner", true)[0];
+    assert.ok(task);
+    assert.equal(task.chatId, "group1");
+    assert.equal(task.status, "running");
+    assert.equal(h.platform.groups, 1);
+    assert.equal(h.herdr.creates, 1);
+  } finally {
+    await h.close();
+  }
+});

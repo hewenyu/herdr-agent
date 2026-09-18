@@ -10,6 +10,12 @@
 
 **2026-09-18 范围纠正：** Web 只维护本机配置和浏览会话记录。可以配置本地项目（支持多目录，首目录保存时自动确保 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不能发消息、创建任务、管理参与者、审批、清理资源或操作 pi session。飞书仍是所有业务交互入口；配置写入口受 loopback、Origin、Host 和 CSRF 保护。
 
+## 发布与验收状态
+
+当前最新公开版本是 [v0.3.5](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.5)。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.5`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
+
+Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herder 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herder 和外部状态回读，才能把某个场景视为已验收。
+
 ## 运行前置
 
 - 本机 herdr 可用，其 Unix socket 可访问。
