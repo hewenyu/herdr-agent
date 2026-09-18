@@ -8,7 +8,7 @@
 
 后端、前端均为 TypeScript，使用 Node SEA 一体打包。普通用户运行可执行文件，无需另装 Node 或放置前端资源。设计与取舍见 [实施设计](docs/node-pi-design.md)，实际验证范围见 [验收证据](docs/acceptance.md)。
 
-**2026-09-18 范围纠正：** Web 只允许在本地浏览、筛选已有会话历史，不改变 active pi session，不发消息、不创建任务或项目、不审批或清理资源、不修改配置，也不提供命令入口。相应实现与验收正在整改，本文不宣称已经完成。旧 Web/API 业务证据保留，但不能证明飞书业务入口通过。
+**2026-09-18 范围纠正：** Web 只允许在本地浏览、筛选已有会话历史，不改变 active pi session，不发消息、不创建任务或项目、不审批或清理资源、不修改配置，也不提供命令入口。只读实现已部署，HTTP 写入口拒绝和桌面浏览无业务副作用已实测；完整边界按验收矩阵记录。旧 Web/API 业务证据保留，但不能证明飞书业务入口通过。
 
 ## 运行前置
 
@@ -19,6 +19,21 @@
 - 目标平台：macOS arm64、Linux x64/arm64。使用对应平台的原生构建；不能把 macOS 包复制到 Linux 使用。原生 flock 扩展仍依赖兼容的系统 C++ 运行库。
 
 这是单人单机工具。本机页面只监听 loopback IP，允许按已有授权范围筛选会话记录；筛选不能改变服务端业务身份或飞书活跃会话。这不是远程 Web 登录或多租户管理。
+
+## 安装
+
+Node/pi 重构版本从 **v0.3.0** 开始，npm 包名为 **myrix**，支持 macOS arm64、Linux x64 和 Linux arm64。
+
+```sh
+npm install -g myrix
+myrix version --json
+myrix setup
+myrix serve
+```
+
+npm 安装需要 Node >=18 来运行薄启动器，实际业务执行对应平台的独立二进制。保留 optional dependencies；没有下载代码的安装脚本。兼容 `herdr-agent` 命令，现有状态目录仍为 `~/.herdr-agent`。无需 Node 的安装方式是从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包。
+
+Release Action 仅在发布步骤使用 GitHub environment `NPM` 的 `TOKEN`。三平台从公共 npm 安装精确版本，并核对两个命令、版本号和提交号后，才创建 GitHub Release。失败恢复见[发布说明](docs/releasing.md)。
 
 ## 从源码构建
 

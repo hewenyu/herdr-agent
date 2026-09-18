@@ -6,8 +6,22 @@ import { participantPrompt } from "../../src/tasks/prompts.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
 
-for (const state of ["pending", "uncertain"] as const) {
-  test(`first participant ${state} delivery recovers before provisioning, without re-sending`, async () => {
+function previousDiscussionPrompt(text: string): string {
+  const previous = text.replace(
+    "用户明确指定的篇幅、输出格式和是否列出未决问题优先于通用讨论模板；不得为补齐观点、问题、方案而增加用户未要求的段落。\n用户未指定时，按需要给出具体观点、方案或影响结论的未决问题，不强制凑齐类别；只进行本轮发言，等待用户或调度器安排下一轮。",
+    "给出具体观点、未决问题和方案；只进行本轮发言，等待用户或调度器安排下一轮。",
+  );
+  assert.notEqual(previous, text);
+  return previous;
+}
+
+for (const [state, oldTemplate] of [
+  ["pending", false],
+  ["uncertain", false],
+  ["pending", true],
+  ["uncertain", true],
+] as const) {
+  test(`first participant ${state} delivery recovers without re-sending (old template=${oldTemplate})`, async () => {
     const outputs: string[] = [];
     const f = setup({
       output: async (_task, _participant, entry) => {
@@ -29,7 +43,10 @@ for (const state of ["pending", "uncertain"] as const) {
       assert.ok(op);
       f.store.set("operations", key, { ...op, state });
       f.herdr.finish(first.execution.paneId, "received and answered");
-      (f.herdr as HerdrPort).initialInput = async () => f.herdr.sends[0]?.text;
+      const sent = f.herdr.sends[0]?.text;
+      assert.ok(sent);
+      (f.herdr as HerdrPort).initialInput = async () =>
+        oldTemplate ? previousDiscussionPrompt(sent) : sent;
       const restored = new TaskService(f.options);
       await restored.tick();
       assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");
@@ -47,8 +64,13 @@ for (const state of ["pending", "uncertain"] as const) {
   });
 }
 
-for (const legacy of [false, true]) {
-  test(`uncertain first relay recovers the unique fingerprint once (legacy=${legacy})`, async () => {
+for (const [legacy, oldTemplate] of [
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+]) {
+  test(`uncertain first relay recovers once (legacy arrangement=${legacy}, old template=${oldTemplate})`, async () => {
     const outputs: string[] = [];
     const f = setup({
       output: async (_task, _participant, entry) => {
@@ -74,8 +96,11 @@ for (const legacy of [false, true]) {
       const suffix = `\n\n投递标识（无需复述）：\n${second.initialReceipt}`;
       const arrangement = sent.split("\n\n本轮安排：\n")[1]?.slice(0, -suffix.length);
       assert.ok(arrangement);
+      const initial = legacy
+        ? `${participantPrompt(task, second)}\n\n本轮安排：\n${arrangement}`
+        : sent;
       (f.herdr as HerdrPort).initialInput = async () =>
-        legacy ? `${participantPrompt(task, second)}\n\n本轮安排：\n${arrangement}` : sent;
+        oldTemplate ? previousDiscussionPrompt(initial) : initial;
       const restored = new TaskService(f.options);
       await restored.tick();
       assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");
@@ -94,8 +119,10 @@ for (const legacy of [false, true]) {
   });
 }
 
-for (const failure of ["wrong_input", "wrong_fingerprint", "ambiguous"] as const) {
-  test(`${failure} evidence leaves the initial relay uncertain and never replays it`, async () => {
+for (const [failure, oldTemplate] of (
+  ["wrong_input", "wrong_fingerprint", "wrong_receipt", "ambiguous"] as const
+).flatMap((failure) => [false, true].map((oldTemplate) => [failure, oldTemplate] as const))) {
+  test(`${failure} evidence leaves the relay uncertain without replay (old template=${oldTemplate})`, async () => {
     const f = setup();
     try {
       const task = await f.service.create(actor, discussion);
@@ -117,8 +144,15 @@ for (const failure of ["wrong_input", "wrong_fingerprint", "ambiguous"] as const
           ...operation,
           id: `${task.id}:relay:duplicate:${second.id}`,
         });
+      const sent = f.herdr.sends[1]?.text;
+      assert.ok(sent);
+      const input = oldTemplate ? previousDiscussionPrompt(sent) : sent;
       (f.herdr as HerdrPort).initialInput = async () =>
-        failure === "wrong_input" ? "other input" : f.herdr.sends[1]?.text;
+        failure === "wrong_input"
+          ? "other input"
+          : failure === "wrong_receipt"
+            ? input.replaceAll(second.initialReceipt, "wrong-receipt")
+            : input;
       await new TaskService(f.options).tick();
       assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "uncertain");
       assert.equal(f.service.get(actor, task.id).participants[1]?.initialSent, false);

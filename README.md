@@ -6,7 +6,22 @@ A personal orchestration tool built with **Node, TypeScript and pi**. Use Feishu
 
 pi handles this tool's business: arranging work, routing messages, querying state and managing lifecycles. Claude/Codex handle your project's requirements, design, implementation, tests and reviews. With AI enabled, the model decides ordinary conversational responses and tool calls. The exact `/clear` session command runs directly without a model. The application enforces identity, scope, human approval and durable receipts.
 
-**Scope correction, 2026-09-18:** Web may browse and filter existing conversation records locally. It must not change the active pi session, send messages, create tasks or projects, approve or clean up resources, edit configuration, or accept commands. The implementation and verification of this correction are in progress; earlier Web/API business tests remain historical evidence and do not establish a Feishu business flow.
+**Scope correction, 2026-09-18:** Web may browse and filter existing conversation records locally. It must not change the active pi session, send messages, create tasks or projects, approve or clean up resources, edit configuration, or accept commands. The read-only implementation is deployed and has passed HTTP boundary and desktop browsing checks. Earlier Web/API business tests remain historical evidence and do not establish a Feishu business flow.
+
+## Install
+
+The Node/pi rewrite starts at **v0.3.0**. Release tags publish native executables and the npm package **myrix** for macOS arm64, Linux x64 and Linux arm64.
+
+```sh
+npm install -g myrix
+myrix version --json
+myrix setup
+myrix serve
+```
+
+npm installation needs Node >=18 for its small launcher and selects the matching bundled executable. Keep optional dependencies enabled; no install script downloads code. `herdr-agent` remains a command alias, and the existing state directory stays `~/.herdr-agent`. To run without Node, download the matching binary archive from [Releases](https://github.com/hewenyu/herdr-agent/releases).
+
+The release workflow uses the `TOKEN` secret in GitHub environment `NPM` only for publishing. It installs the exact published version on all three native runners and verifies both command aliases, version and commit before publishing the GitHub Release. See [release operations](docs/releasing.md) for recovery.
 
 ## Build and run
 

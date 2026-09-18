@@ -5,6 +5,25 @@ export function participantPrompt(
   participant: Participant,
   arrangement?: string,
 ): string {
+  return renderParticipantPrompt(task, participant, arrangement, false);
+}
+
+/** Exact historical templates are readback candidates only, never fresh instructions. */
+export function participantPromptCandidates(task: Task, participant: Participant): string[] {
+  return task.kind === "discussion"
+    ? [
+        participantPrompt(task, participant),
+        renderParticipantPrompt(task, participant, undefined, true),
+      ]
+    : [participantPrompt(task, participant)];
+}
+
+function renderParticipantPrompt(
+  task: Task,
+  participant: Participant,
+  arrangement: string | undefined,
+  legacyDiscussion: boolean,
+): string {
   const role = participant.role || (task.kind === "discussion" ? "需求讨论参与者" : "任务执行者");
   const lines = [
     `你是 herdr-agent 任务 ${task.id} 的参与者 ${participant.name}（${participant.kind}）。`,
@@ -15,7 +34,12 @@ export function participantPrompt(
   if (task.kind === "discussion") {
     lines.push(
       "本任务只讨论需求和方案。不要修改项目文件或开始开发；需开发时由用户授权后另行安排。",
-      "给出具体观点、未决问题和方案；只进行本轮发言，等待用户或调度器安排下一轮。",
+      ...(legacyDiscussion
+        ? ["给出具体观点、未决问题和方案；只进行本轮发言，等待用户或调度器安排下一轮。"]
+        : [
+            "用户明确指定的篇幅、输出格式和是否列出未决问题优先于通用讨论模板；不得为补齐观点、问题、方案而增加用户未要求的段落。",
+            "用户未指定时，按需要给出具体观点、方案或影响结论的未决问题，不强制凑齐类别；只进行本轮发言，等待用户或调度器安排下一轮。",
+          ]),
     );
   } else if (task.kind === "review") {
     lines.push("评审已有实现，报告可复现问题和依据；没有明确修改要求时不修改项目。");

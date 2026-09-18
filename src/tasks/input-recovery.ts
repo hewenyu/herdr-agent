@@ -3,7 +3,7 @@ import type { Delivery, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { ownsTaskOperation } from "./operation-scope.js";
-import { participantPrompt } from "./prompts.js";
+import { participantPromptCandidates } from "./prompts.js";
 
 /** Resolve only a unique initial delivery proved by native user input; never send again. */
 export async function recoverInitialInputs(context: TaskContext, task: Task): Promise<void> {
@@ -33,24 +33,25 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
     );
     assertActive(context);
     if (!input) continue;
-    const prefix = participantPrompt(task, participant);
+    const prefixes = participantPromptCandidates(task, participant);
     const initialFingerprint = stableId(canonical({ receipt: participant.initialReceipt }));
-    const legacyPrefix = `${prefix}\n\n本轮安排：\n`;
     const receiptSuffix = `\n\n投递标识（无需复述）：\n${participant.initialReceipt}`;
-    const arrangedPrefix = `${prefix.slice(0, -receiptSuffix.length)}\n\n本轮安排：\n`;
-    const arrangement = input.startsWith(legacyPrefix)
-      ? input.slice(legacyPrefix.length)
-      : input.startsWith(arrangedPrefix) && input.endsWith(receiptSuffix)
-        ? input.slice(arrangedPrefix.length, -receiptSuffix.length)
-        : undefined;
-    const fingerprint =
-      arrangement === undefined
-        ? undefined
-        : stableId(canonical({ participant: participant.id, text: arrangement }));
+    const fingerprints = new Set<string>();
+    for (const prefix of prefixes) {
+      const legacyPrefix = `${prefix}\n\n本轮安排：\n`;
+      const arrangedPrefix = `${prefix.slice(0, -receiptSuffix.length)}\n\n本轮安排：\n`;
+      const arrangement = input.startsWith(legacyPrefix)
+        ? input.slice(legacyPrefix.length)
+        : input.startsWith(arrangedPrefix) && input.endsWith(receiptSuffix)
+          ? input.slice(arrangedPrefix.length, -receiptSuffix.length)
+          : undefined;
+      if (arrangement !== undefined)
+        fingerprints.add(stableId(canonical({ participant: participant.id, text: arrangement })));
+    }
     const matches = operations.filter(([id, operation]) =>
       id === `${participant.id}:initial`
-        ? input === prefix && operation.fingerprint === initialFingerprint
-        : fingerprint !== undefined && operation.fingerprint === fingerprint,
+        ? prefixes.includes(input) && operation.fingerprint === initialFingerprint
+        : fingerprints.has(operation.fingerprint),
     );
     if (matches.length !== 1) continue;
     const [id, operation] = matches[0] as [string, OperationReceipt];

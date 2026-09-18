@@ -35,7 +35,7 @@ jobs:
           EXPECTED_PLATFORM: ${{ matrix.platform }}
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          node --experimental-strip-types --input-type=module -e 'import {releaseVersion} from "./scripts/npm/config.ts"; releaseVersion(process.env.GITHUB_REF_NAME)'
           node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
       - run: npm ci
       - run: npm run check
@@ -45,13 +45,14 @@ jobs:
           COMMIT: ${{ github.sha }}
           TARGET: ${{ matrix.target }}
         run: |
-          export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export BUILD_DATE=$(git show -s --format=%cI "$GITHUB_SHA")
           npm run binary
           npm run smoke
           mkdir -p build/release
           cp dist/herdr-agent README.md README.zh-CN.md LICENSE build/release/
           cp -R dist/LICENSES build/release/LICENSES
           cp -R docs deploy licenses build/release/
+          export COPYFILE_DISABLE=1
           tar -czf "dist/herdr-agent_${VERSION}_${TARGET}.tar.gz" -C build/release herdr-agent README.md README.zh-CN.md LICENSE LICENSES docs deploy licenses
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -59,8 +60,89 @@ jobs:
           path: dist/herdr-agent_*.tar.gz
           if-no-files-found: error
           retention-days: 7
-  publish:
+  npm-publish:
+    # Recovery: rerun failed publish/downstream jobs in this run, reusing successful build artifacts.
+    # Existing versions are immutable; never repoint the public tag or overwrite published packages.
+    name: Verify and publish npm distribution
     needs: build
+    runs-on: ubuntu-22.04
+    environment: NPM
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Pack all targets and verify an offline global install
+        run: |
+          node --import tsx scripts/npm.ts prepare "$RELEASE_TAG" dist build/npm
+          node --import tsx scripts/npm.ts verify "$RELEASE_TAG" build/npm
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: npm-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
+          path: build/npm
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish verified platform packages, then myrix
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
+        run: node --import tsx scripts/npm.ts publish "$RELEASE_TAG" build/npm
+  npm-verify:
+    name: Download npm · ${{ matrix.target }}
+    needs: npm-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin_arm64
+            platform: darwin
+            arch: arm64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            platform: linux
+            arch: arm64
+          - runner: ubuntu-22.04
+            target: linux_amd64
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_COMMIT: ${{ github.sha }}
+      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install exact version from public npm and execute both aliases
+        run: |
+          node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
+          node --import tsx scripts/npm.ts download "$RELEASE_TAG" "$RELEASE_COMMIT"
+  publish:
+    needs: [build, npm-publish, npm-verify]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -83,11 +165,15 @@ jobs:
 
           Node.js, the frontend, SQLite, and the native locking addon are embedded in the executable. No Node installation or node_modules directory is needed. herdr and authenticated Claude/Codex executors remain separate prerequisites.
 
+          Alternatively, with Node.js >=18 installed, run `npm install -g myrix`, then `myrix setup` and `myrix serve`. The `herdr-agent` command remains a compatibility alias. npm selects the matching native optional dependency; keep optional dependencies enabled. No postinstall script downloads or executes the binary. Prerelease npm versions use the `next` dist-tag; stable versions use `latest`.
+
           The LICENSES directory contains the bundled runtime and dependency license notices and must accompany redistribution of the executable.
 
-          `./herdr-agent configure --open` starts local management without a Feishu connection. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
+          `./herdr-agent configure --open` opens read-only session records without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
 
           Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
+
+          All three native targets also install the exact published npm version into an isolated prefix, execute both command aliases, and verify the build version and commit before this GitHub release is published.
 
           Verify downloads with `sha256sum --ignore-missing -c SHA256SUMS` (Linux) or `shasum -a 256 --ignore-missing -c SHA256SUMS` (macOS).
 
