@@ -38,6 +38,12 @@
 
 中英文 README 同步更新产品名 myrix、npm 主包与平台依赖、指定版本安装、独立包命令名、pi/herdr 分工、Web 配置范围、主私聊 `/clear`、群与执行器清理。移除 README 中过期的本机进程与旧入口标记；现场细节继续由本文件和矩阵记录。全部 README 本地链接及 Markdown 代码围栏检查通过，npm registry 当前 `latest=0.3.11` 已只读核对。
 
+## 二进制与运行回读
+
+2026-09-19 E24 部署：功能提交 `15f29b31383adfd0cda416bb59eaaa71fafd6939` 构建的 macOS arm64 SEA `0.3.12-dev` 已通过独立烟测并重启为 PID `37384`，构建时间 `2026-09-18T18:20:23.267Z`，SHA256 `3620789d387f5b5bea4f6f496732f72c88f63f8b41080fc9388c7e79d7649122`。运行路径 `build/e24/herdr-agent`，`dist/herdr-agent` 已同步同一产物；`version --json`、`doctor --json`、HTTP runtime/authorization ready 均回读。生产 SQLite 中 23 任务 destroyed、23 群 groupDeleted=true、25 参与者 gone/2 removed、177 outbox delivered；这些是本地状态读回，不冒充本轮逐群远端验证。herdr agent 列表为空，原有 `w1:p1`、`w2:p1`、`w2:p2` 保持。PR [#39](https://github.com/hewenyu/herdr-agent/pull/39) 已创建；真实用户入口标记仍未观察到，相关场景继续待验。
+
+原始运行证据：`.cache/live/e24-deployment.json`、`.cache/live/e24-production-readback.json`、`.cache/e24-doctor.json` 与 `.cache/e24-smoke.log`。该源码提交之后的部署记录文档不改变运行代码。
+
 ## 尚未关闭的验收
 
 LIVE-001-R4 需要真实飞书用户私聊入站，再核对模型自主工具调用和项目/任务/群/产物。当前 lark-cli 用户 token 缺失，原生飞书窗口也未能读取；已请求用户发送唯一验收标记，尚未观察到入站记录。B01–B18/N01–N07 的其他未测组合继续保留，不以本次修复或服务组件测试代替全量验收。

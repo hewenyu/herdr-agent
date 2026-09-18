@@ -4,6 +4,8 @@
 
 2026-09-19 E24：修复保留群在执行器已关闭后的再次清理、外部解散回读及终态描述；另由真实模型复现并修复强制工具恢复循环与生命周期通知的证据误用。最终 `npm run check` 453/453 通过（含行数、TypeScript 与 Biome），首次 452/453 的终态错误残留回归及修正已记入 E24。两条隔离真实组件链路已验证 Codex 结果、完成后保留群、再显式/外部解散，测试群和对应 pane 均已清理。普通用户写工具护栏保持；本次未走飞书用户入站，B12/B14/B10 仅补服务组件证据，LIVE-001 与其余 U/R-部分不关闭。[E24 记录](live-evidence-e24-retained-group.md) 保留准备失败、通知失败和回读边界。
 
+2026-09-19 E24 部署：功能提交 `15f29b31383adfd0cda416bb59eaaa71fafd6939` 构建的 macOS arm64 SEA `0.3.12-dev` 已通过独立烟测并重启为 PID `37384`，构建时间 `2026-09-18T18:20:23.267Z`，SHA256 `3620789d387f5b5bea4f6f496732f72c88f63f8b41080fc9388c7e79d7649122`。运行路径 `build/e24/herdr-agent`，`dist/herdr-agent` 已同步同一产物；`version --json`、`doctor --json`、HTTP runtime/authorization ready 均回读。生产 SQLite 中 23 任务 destroyed、23 群 groupDeleted=true、25 参与者 gone/2 removed、177 outbox delivered；这些是本地状态读回，不冒充本轮逐群远端验证。herdr agent 列表为空，原有 `w1:p1`、`w2:p1`、`w2:p2` 保持。PR [#39](https://github.com/hewenyu/herdr-agent/pull/39) 已创建；真实用户入口标记仍未观察到，相关场景继续待验。
+
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
 2026-09-19 E24 前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
