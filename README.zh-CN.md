@@ -12,9 +12,9 @@
 
 ## 发布与验收状态
 
-当前最新公开版本是 [v0.3.8](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.8)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.8`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
+当前最新公开版本是 [v0.3.9](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.9)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.9`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
 
-PR #28 的工具事实护栏修正和 PR #31 的旧版工具计数护栏修正已包含在 `v0.3.8`。当前源码还加入了上文所述的结果感知证据检查；这些新增检查需要重新发布一个 `v0.3.x` tag 后，才能视为公开版本的一部分。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。下面记录的本机 SEA 证据从合并提交 `452aae9` 重建并重启为 `v0.3.7`（PID `31577`，SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`）。
+PR #28 的工具事实护栏修正、PR #31 的旧版工具计数护栏修正，以及当前源码的结果感知证据检查，均已包含在 `v0.3.9`。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。下面记录的本机 SEA 证据从合并提交 `452aae9` 重建并重启为 `v0.3.7`（PID `31577`，SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`）。
 
 重启后的实例和 `doctor --json` 检查均正常，当前没有活动的 herdr 托管参与者。当前真实入口复验 marker `LIVE-001-R3-20260918` 尚未在飞书和状态回读中观察到，且没有发送端证据，因此无法确认对应任务、群、参与者或 outbox 状态；它仍是待完成的现场验收项，不能判定为已完成。没有持久化 marker 不能证明入口已经成功或失败。
 
