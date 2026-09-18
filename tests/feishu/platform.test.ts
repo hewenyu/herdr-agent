@@ -5,7 +5,7 @@ import { OperationError } from "../../src/core/errors.js";
 import type { PlatformHandlers } from "../../src/core/ports.js";
 import type { APIRequest } from "../../src/feishu/api.js";
 import { FetchHttpClient } from "../../src/feishu/http.js";
-import { FeishuPlatform } from "../../src/feishu/platform.js";
+import { FeishuPlatform, type PlatformDependencies } from "../../src/feishu/platform.js";
 
 const credentials = { appId: "cli_test", appSecret: "test-secret" };
 const handlers: PlatformHandlers = {
@@ -236,6 +236,30 @@ test("connection timeout closes transport and failed startup can be retried", as
     code: "feishu_connect_timeout",
   });
   assert.ok(closed >= 2);
+});
+
+test("terminal runtime connection failure is reported after startup", async () => {
+  let callbacks: Parameters<NonNullable<PlatformDependencies["connection"]>>[0] | undefined;
+  const failures: Error[] = [];
+  const platform = new FeishuPlatform(credentials, {
+    request: async () => ({ code: 0, bot: { open_id: "bot" } }),
+    connection: (input) => {
+      callbacks = input;
+      return {
+        start: async () => input.onReady(),
+        close: () => {},
+      };
+    },
+  });
+  await platform.start(handlers, new AbortController().signal, (error) => failures.push(error));
+  callbacks?.onError(new Error("reconnect exhausted"));
+  callbacks?.onError(new Error("duplicate terminal error"));
+  assert.equal(failures.length, 1);
+  assert.ok(failures[0] instanceof OperationError);
+  assert.equal((failures[0] as OperationError).code, "feishu_connect_failed");
+  await platform.stop();
+  callbacks?.onError(new Error("late terminal error"));
+  assert.equal(failures.length, 1);
 });
 
 test("HTTP adapter restricts hosts, aborts timeout, and distinguishes 503 from 403", async () => {

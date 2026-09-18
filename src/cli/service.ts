@@ -85,17 +85,25 @@ export async function service(
         runningApp,
         deps,
         signal,
-        async () => {
+        async (onFailure) => {
           await herdr.ping(signal);
           platform = deps.createPlatform(config);
           runningApp.attachPlatform(platform);
-          await platform.start(runningApp.handlers(), signal);
+          let starting = true;
+          let startupFailure: Error | undefined;
+          const notifyFailure = (error: Error) => {
+            if (starting) startupFailure = error;
+            else onFailure(error);
+          };
+          await platform.start(runningApp.handlers(), signal, notifyFailure);
           signal.throwIfAborted();
           if (config.tasks.enabled) await platform.subscribeTasks();
           signal.throwIfAborted();
+          if (startupFailure) throw startupFailure;
           runningApp.runtime = { status: "ready", message: "飞书连接与任务调度已启动。" };
           runningApp.changed();
           startTicks();
+          starting = false;
         },
         async () => {
           if (platform) {
@@ -128,7 +136,7 @@ async function authorize(
   app: ServiceApplication,
   deps: Dependencies,
   signal: AbortSignal,
-  start: () => Promise<void>,
+  start: (onFailure: (error: Error) => void) => Promise<void>,
   stop: () => Promise<void>,
 ): Promise<void> {
   while (!signal.aborted) {
@@ -185,8 +193,12 @@ async function authorize(
       }
       app.authorization = { status: "ready", message: "当前应用权限已就绪。" };
       app.changed();
-      await start();
-      await aborted(signal);
+      let fail!: (error: Error) => void;
+      const connectionFailed = new Promise<never>((_, reject) => {
+        fail = reject;
+      });
+      await start(fail);
+      await Promise.race([aborted(signal), connectionFailed]);
       return;
     } catch (error) {
       if (signal.aborted) return;

@@ -6,6 +6,8 @@
 
 2026-09-19 E24 部署：功能提交 `15f29b31383adfd0cda416bb59eaaa71fafd6939` 构建的 macOS arm64 SEA `0.3.12-dev` 已通过独立烟测并重启为 PID `37384`，构建时间 `2026-09-18T18:20:23.267Z`，SHA256 `3620789d387f5b5bea4f6f496732f72c88f63f8b41080fc9388c7e79d7649122`。运行路径 `build/e24/herdr-agent`，`dist/herdr-agent` 已同步同一产物；`version --json`、`doctor --json`、HTTP runtime/authorization ready 均回读。生产 SQLite 中 23 任务 destroyed、23 群 groupDeleted=true、25 参与者 gone/2 removed、177 outbox delivered；这些是本地状态读回，不冒充本轮逐群远端验证。herdr agent 列表为空，原有 `w1:p1`、`w2:p1`、`w2:p2` 保持。PR [#39](https://github.com/hewenyu/herdr-agent/pull/39) 已创建；真实用户入口标记仍未观察到，相关场景继续待验。
 
+2026-09-19 E25：修复 ready 后飞书长连接 terminal failure 不会触发服务级重连的问题，增加连接代次、一次性故障通知、旧平台停止、授权/订阅重试和 shutdown 取消回归；同时修复 tasks 关闭时旧兼容桥的回复路由覆盖和 pane/session 替换校验。最终 `npm run check` 457/457，定向 Feishu/CLI/legacy 回归 31 项通过。[E25 记录](live-evidence-e25-transport-legacy.md)仅记本地注入式故障与兼容路径，不关闭真实飞书断线或用户入口验收。
+
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
 2026-09-19 E24 前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
@@ -147,7 +149,7 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | ID | 正常执行步骤与必要结果 | 失败/恢复/权限/投递检查 | 实现与历史离线依据 | 真实状态 |
 | --- | --- | --- | --- | --- |
 | B01 | `setup` 新注册、复用、明确 `--app`、补授权分别执行；保存正确应用，私聊与精确 nonce 卡片往返 | F1/F7；取消/超时/身份不匹配；保存成功但回调未完成返回部分成功；A1/A3/D1 | I；O-H `tests/onboarding/`、`tests/cli/run.test.ts` | U，不能拿已有机器人可发消息证明注册全流程 |
-| B02 | `serve` 获取排它锁→迁移→只读历史页→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage | R-部分：LIVE-001 入站/回复及 E05 真实运行；启动补权/重连/唯一连接完整流程 U |
+| B02 | `serve` 获取排它锁→迁移→只读历史页→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage；E25 runtime failure recovery | R-部分：E25 注入式 terminal failure 已验证旧连接停止、授权/订阅重新执行和退避重试；真实飞书网络中断、重连耗尽和用户入口仍 U |
 | B03 | `doctor [--json]`、debug ls/screen/transcript 分别核对实际宿主结果 | 不启动编码、不建立第二平台长连接；不可读报 unknown；脱敏，宽度仅估算 | I；O-H cli/host-checks | R-部分：旧CLI成功screen/transcript证据保留；旧width fail不证明窄终端。E17在5d1e96f的28项只读检查通过，doctor文本/JSON无agent正常；a6018ec已修短内容为unknown，实际PTY列数未测 |
 | B04 | 登记已有项目，验证全部有序目录与默认 agent/default project；任务冻结目录快照 | F1/F2；第二目录无效不先改首目录；A1/A2；bypass仅影响新执行器 | I；O-H projects/config | R-部分：E13非法第二目录拒绝且首目录未初始化Git；E14真实worktree/额外目录读取、原项目干净与额外目录不变通过；完整多目录/配置组合未全验 |
 | B05 | 明确新项目指令→创建目录/Git/登记；普通新任务只复用项目；连续不同项目独立创建 | 名称穿越/占用拒绝；F3/F4；删除登记不删代码 | I；O-H projects；LIVE-001 | R-部分：E05/E16证据保留。E17 a6018ec B/C各自新项目、真实Codex产物、署名群结果及远端描述通过；原核心输入+新scope限定链路R-P，不覆盖A名称拒绝和历史无工具R-F |
@@ -162,7 +164,7 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E09 外部群解散后只清对应pane、本地destroyed且远端未冒充验收通过；E24 真实组件已验证 destroyed 后显式 destroy+keepGroup:false 及外部解散后 tick 更新，未重启/重关执行器、未改原完成时间且移除失效群链接；显式 destroy 的真实飞书用户入口及其他失败恢复仍未全验 |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | R-部分：E12初始输入只读恢复、E16隔离真实删群unknown-ack恢复保留。a6018ec补旧participant操作归属与retry事务，O-P；E17迁移故障4项O。outbox/建群/remote未知写入与硬断电仍未全验 |
 | B16 | 飞书中session创建/选择/重命名/归档/恢复；私聊自动压缩及飞书主入口exact /clear确定性归档旧session并新建选中，不调模型，事务成功后仅CLEAR_NEW_SESSION_OK；Web无命令/清空入口；provider通过本地安装配置维护 | A1/A2；事务失败不送成功标记、失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P E15 clear-command/session-tools：AI关闭、正文匹配、旧队列、Web无sessionId重复请求；既有entry-reset | R-部分：E15真实私聊及Chromium机械clear均无checkpoint、source command、实际归档切新和精确marker送达；私聊4条旧历史保留，Web可见ACK/归档历史/390px通过。旧模型两次失败及全部R-F保留；新命令故障组合仅离线通过；E16 memory 15项真实loopback HTTP及11针对性测试O-P，外部生产memory/TLS/ACL仍U |
-| B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration | U |
+| B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration；E25 route verification | U：E25 已补旧桥 6 项离线回归，真实 tasks 关闭飞书入口和 notify_chat 现场仍未验 |
 | B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | R-部分：当前0b6966f/PID38264/SHAfeb1…0069，345tests、SEA和三平台CI35304636486通过；a6018ec历史证据保留。E17 5d1e96f旧状态副本迁移4项R-local-copy/4项O；完整生产回退、Linux宿主及长期故障未验，旧版本证据保留 |
 | N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | R-部分：E01 查询自主调用 tasks_list；E02 多轮查询事实措辞通过（合成回执）；真实飞书查询进行中，LIVE-001 历史 R-F |
 | N02 | 明确仅讨论→无项目或已有项目→单Claude/Codex参与需求讨论 | pi不能自行替项目写方案；禁止编码的要求完整保留；D3/D4；F6 | I；O-H tasks/prompts | R-部分：E01 创建只讨论任务的参数含 discussion/Claude/Codex；真实单参与者讨论与禁止编码行为 U |
