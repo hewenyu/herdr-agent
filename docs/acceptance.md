@@ -4,7 +4,9 @@
 
 ## 最新整改与现场证据
 
-`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已按原部署运行，PID `20390`，构建时间 `2026-09-18T02:25:03.576Z`，SEA SHA256 `04d14c861c91c980038c9e659de68a86b531216c39f6c2b971444700adf20358`。`npm run format`、`npm run check`（315 项测试）及 SEA smoke 通过；[CI 35299218668](https://github.com/hewenyu/herdr-agent/actions/runs/35299218668) 已在同一源码提交的 linux_amd64、linux_arm64、darwin_arm64 三任务通过 check 与 SEA。E15 已独立回读真实私聊/Web机械轮转及本轮 9 个测试任务的资源清理；未测的整体功能项仍保留，目标 active。新增 `clear-command`、`session-tools` 和 `cleanup-notification` 回归已随 315 项测试通过，覆盖机械轮转、AI关闭旧队列拒绝、Web无sessionId同requestId并发去重，以及通知生成失败审计后继续已授权清理、未知发送与最后结果投递屏障。E15 另有真实私聊/Web机械命令和本轮 9 个测试任务资源清理的独立通过证据；通知 unavailable 没有发送/送达记录，不把清理成功写成通知成功。
+最新进展（E16）：运行二进制已更新为源码提交 `5d1e96f1698af95ad0fa2317b34b73441518e968`，PID `26077`，构建时间 `2026-09-18T02:52:38.355Z`，SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`。format、check（329项测试）、SEA smoke 和[同提交三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/35301019616)全部通过；重启后飞书连接及授权 ready，herdr 原进程未重启。两专用群真实复现并验证删群回执丢失后的跨进程恢复，各仅一次 DELETE，最终均 dissolved；恢复只凭匹配群的 fresh GET 事实，保留原错误审计及其他未决问题。Web 身份隔离、17项 API 作用域检查、会话创建/重命名/归档/恢复和显式清空已补验，三个测试会话已归档并恢复原选择。memory 15项 loopback 协议检查仅为 O-P，外部服务仍未测。重启后原9个测试任务清理状态再次回读通过；原失败和未覆盖分支保留，整体目标 active。详细边界见[现场矩阵](live-validation.md)和[版本化证据 E16](live-evidence-2026-09-18.md)。
+
+E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已按原部署运行，PID `20390`，构建时间 `2026-09-18T02:25:03.576Z`，SEA SHA256 `04d14c861c91c980038c9e659de68a86b531216c39f6c2b971444700adf20358`。`npm run format`、`npm run check`（315 项测试）及 SEA smoke 通过；[CI 35299218668](https://github.com/hewenyu/herdr-agent/actions/runs/35299218668) 已在同一源码提交的 linux_amd64、linux_arm64、darwin_arm64 三任务通过 check 与 SEA。E15 已独立回读真实私聊/Web机械轮转及本轮 9 个测试任务的资源清理；未测的整体功能项仍保留，目标 active。新增 `clear-command`、`session-tools` 和 `cleanup-notification` 回归已随 315 项测试通过，覆盖机械轮转、AI关闭旧队列拒绝、Web无sessionId同requestId并发去重，以及通知生成失败审计后继续已授权清理、未知发送与最后结果投递屏障。E15 另有真实私聊/Web机械命令和本轮 9 个测试任务资源清理的独立通过证据；通知 unavailable 没有发送/送达记录，不把清理成功写成通知成功。
 
 ## 初版离线证据（历史记录）
 
@@ -39,7 +41,7 @@
 | B15 失败恢复 | `storage/operations.ts`、`app/inbox.ts`、`outbox.ts`、任务恢复；未知写操作冻结 | `tests/storage/store.test.ts` ledger/回滚；`tests/app/conversations.test.ts` 输入去重/部分投递；任务测试覆盖重启和未知响应 | 进程硬断电、磁盘满、长期网络抖动未做混沌测试 |
 | B16 会话记忆 | pi 多 session、私聊自动压缩；主入口 exact /clear 不调模型，事务归档旧 session 并新建选中，成功后仅 CLEAR_NEW_SESSION_OK；AI 关闭也可用；Web 按钮仍为代数 clear | 新增 `tests/app/clear-command.test.ts` 对应 AI 开/关及模型不可用、去重、旧队列拒绝、引用与非精确正文、群拒绝、事务回滚、未知投递恢复；E15 离线回归通过；`session-tools.test.ts` 另覆盖 Web 省略 sessionId 的同 requestId 并发去重。既有 `tests/runtime/entry-reset.test.ts` 对应模型工具延迟切换；`sessions.test.ts`、`memory.test.ts`、`migration/conversations.test.ts` 对应持久化、压缩及迁移 | E15 已独立验证真实私聊直接命令/精确送达和 Web 显示后 ACK/归档历史；故障组合仅离线通过，外部 memory 服务 SLA 仍须核验 |
 | B17 已有 agent 桥 | `app/legacy.ts` 只在 tasks 关闭时启用；选择/回复绑定/镜像/解除选择 | `tests/app/legacy.test.ts` 回复优先于选中、迁移绑定核验、解除后不复活、notify_chat 基线；herdr control 与 migration 测试覆盖底层 | 旧卡片完整恢复不应推定；必须重新核对目标 |
-| B18 长期部署升级 | `cli/service.ts`、flock/SQLite、SEA、deploy 与 CI；停止服务不杀全部 agent | 锁/存储/迁移测试；`tests/tasks/lifecycle.test.ts` 停机等待已提交结果、不启动后续 agent/任务、不关闭 herdr；`scripts/smoke.ts` 空目录独立运行 | Linux runner 尚未执行；真实服务管理器重启、长期保留增长 |
+| B18 长期部署升级 | `cli/service.ts`、flock/SQLite、SEA、deploy 与 CI；停止服务不杀全部 agent | 锁/存储/迁移测试；`tests/tasks/lifecycle.test.ts` 停机等待已提交结果、不启动后续 agent/任务、不关闭 herdr；`scripts/smoke.ts` 空目录独立运行 | 同提交Linux x64/arm64 runner的check/SEA已通过；Linux真实宿主、服务管理器重启和长期保留增长仍未全验 |
 
 ## N：新增业务
 

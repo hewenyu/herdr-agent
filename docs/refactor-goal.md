@@ -36,7 +36,9 @@ herdr 托管的 Claude / Codex 执行，不替换或绕过 herdr 的托管职责
 
 2026-09-18 旧模型驱动方案的实际验收状态：E14 的 `2aa5337` 真实 Web `/clear` 已实际切换并仅回复 `CLEAR_NEW_SESSION_OK`，可见后 ACK 通过；真实私聊两次模型故障均未切换、未送成功。上游 Kimi 五小时额度耗尽，恢复时间未知，用户随后明确 `/clear` 改为无模型的机械轮转，当时新方案尚未部署；不能拿旧方案的额度阻塞判断新方案失败。E11 同名标记是切换后的另一次 canary，不能冒充新规范通过。当时 worktree 默认收尾受通知失败阻塞；E15 后续独立证据已确认该任务及本轮全部 9 个测试任务完成资源清理，旧阻塞记录仍保留。
 
-最新整改进展（E15）：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已按原部署运行，PID `20390`，构建时间 `2026-09-18T02:25:03.576Z`，SEA SHA256 `04d14c861c91c980038c9e659de68a86b531216c39f6c2b971444700adf20358`。`npm run format`、`npm run check`（315 项测试）及 SEA smoke 通过；[CI 35299218668](https://github.com/hewenyu/herdr-agent/actions/runs/35299218668) 已在同一源码提交的 linux_amd64、linux_arm64、darwin_arm64 三任务通过 check 与 SEA。E15 已独立回读真实私聊/Web机械轮转及本轮 9 个测试任务的资源清理；未测的整体功能项仍保留，目标 active。
+最新进展（E16）：运行二进制已更新为源码提交 `5d1e96f1698af95ad0fa2317b34b73441518e968`，PID `26077`，构建时间 `2026-09-18T02:52:38.355Z`，SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`。format、check（329项测试）、SEA smoke 和[同提交三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/35301019616)全部通过；重启后飞书连接及授权 ready，herdr 原进程未重启。两专用群真实复现并验证删群回执丢失后的跨进程恢复，各仅一次 DELETE，最终均 dissolved；恢复只凭匹配群的 fresh GET 事实，保留原错误审计及其他未决问题。Web 身份隔离、17项 API 作用域检查、会话创建/重命名/归档/恢复和显式清空已补验，三个测试会话已归档并恢复原选择。memory 15项 loopback 协议检查仅为 O-P，外部服务仍未测。重启后原9个测试任务清理状态再次回读通过；原失败和未覆盖分支保留，整体目标 active。详细边界见[现场矩阵](live-validation.md)和[版本化证据 E16](live-evidence-2026-09-18.md)。
+
+E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已按原部署运行，PID `20390`，构建时间 `2026-09-18T02:25:03.576Z`，SEA SHA256 `04d14c861c91c980038c9e659de68a86b531216c39f6c2b971444700adf20358`。`npm run format`、`npm run check`（315 项测试）及 SEA smoke 通过；[CI 35299218668](https://github.com/hewenyu/herdr-agent/actions/runs/35299218668) 已在同一源码提交的 linux_amd64、linux_arm64、darwin_arm64 三任务通过 check 与 SEA。E15 已独立回读真实私聊/Web机械轮转及本轮 9 个测试任务的资源清理；未测的整体功能项仍保留，目标 active。
 
 修复同时覆盖 AI 关闭时旧归档 session 的排队命令拒绝，以及 Web 省略 sessionId 后用相同 requestId 重试造成重复轮转：按 owner/chat/messageId 加命令锁，命令回执与轮转同事务写入，重复请求复用原答复。`before_close` / `before_group_delete` 仅在通知生成失败、尚未发送时写入 `unavailable` 审计并继续已授权清理；不生成固定替代通知，不记录虚假送达。已尝试但结果未知的发送、未完成输入/输出和原生最后结果的投递屏障仍保留，不能借模型故障跳过。真实私聊/Web机械轮转及 worktree 收尾已独立回读通过，本轮 9 个已知测试任务均完成资源清理；两类不可用通知没有伪造送达。未测功能继续按矩阵推进，目标仍 active。
 
@@ -73,7 +75,7 @@ herdr 托管的 Claude / Codex 执行，不替换或绕过 herdr 的托管职责
 ### 已知现场问题
 
 - LIVE-001：提供的飞书事件记录标注 23:28（日期/时区随原始证据补齐）。用户要求新项目、Codex 制作 HTML 比武页面；inbox done、outbox delivered，但 checkpoint 无 toolCall，operations 为空，没有对应新任务/群；模型回复虚构旧任务 ID 和排队状态。判定真实调度与事实答复失败，不能以文字回复成功关闭目标。
-- LIVE-002：该次现象发生时 Web 使用允许名单首个 owner，第二位允许用户的飞书任务不会自动显示。本轮工作区已新增显式身份选择，但不代表已验收；仍需明确本机管理面的身份语义并核对对象是否存在；暂不定性为缺陷，不以取消 owner 隔离修复空列表，也不能用该差异解释 LIVE-001 的无对象事实。
+- LIVE-002：该次现象发生时 Web 使用允许名单首个 owner，第二位允许用户的飞书任务不会自动显示。本轮已新增显式身份选择，E16 实际浏览器 A/B 切换、各自会话/任务和草稿隔离、刷新选中持久及17项 API 作用域检查通过；迟到回复/ACK竞态与撤销授权仍未验。原现象不以取消 owner 隔离处理，也不能用该差异解释 LIVE-001 的无对象事实。
 
 ### 本轮执行与完成条件
 

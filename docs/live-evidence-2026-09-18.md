@@ -229,3 +229,72 @@ E13 进一步定位记录：
 离线的 AI 关闭、事务回滚、群拒绝、无 sessionId 并发去重、未知投递等证据不冒充真实环境故障注入。setup/补授权、外部 memory、完整未知写入与长期故障等未测项仍按矩阵保留；E15 不关闭整体目标。
 
 部署版本说明：上述运行二进制对应源码提交 ab79cc0；后续仅文档提交可能改变仓库 HEAD，不表示运行产物已按文档提交重新构建。
+
+
+## E16：请求边界、记忆协议与已有证据补记（进行中）
+
+本轮目标仍 active。本节02:40–02:56 UTC的真实 Web 检查指向 E15 的 ab79cc0/PID20390/原 SEA SHA；工作区或文档 HEAD 不代表运行二进制改变。以下新增现场检查、隔离协议检查与历史漏记分别报告，W27及会话管理的当前原生UI/API证据见本节后续；删群回执恢复已有隔离真实证据，新源码5d1e96f已提交并通过329项check与SEA，02:58 UTC新部署已核对，详见本节末尾。
+
+### 当前部署 Web 请求边界：W02/W04
+
+`.cache/live/web-entry-runtime.json`（02:40–02:41 UTC）固定上述运行版本。合法只读请求 200；错误 Host、错误 Origin、缺 CSRF 分别 403；非 JSON、损坏 JSON、未知 action 分别 400；超过 1 MiB 的正文 413。检查前后 owner/选中会话/对象列表及 tasks、participants、operations hash 不变，`requestBoundaryNoStateChanges=true`。CSS/JS 返回正确类型和 CSP，未知路径与 `/state.sqlite` 均 404。记为本次真实请求边界 R-P，不等于全部写入幂等、所有页面视觉或 SSE 恢复已验收。
+
+Host 初始检查使用 Node fetch 时，传入 Host 被客户端覆盖；记录中的 harnessCorrection 明确此为验收器问题，改用原生 http.request 后才实际测试 Host 不匹配。不能把先前未发送预期 Host 的结果记作产品漏洞，也不据此删掉校验步骤。
+
+### Memory 协议：B16/GAP15 的 O-P
+
+`.cache/live/memory-protocol-audit.json`（02:39 UTC）与 `memory-protocol-provenance.json` 使用隔离临时 state、实际 MemoryService/native fetch 和真实 loopback HTTP，合成凭据与数据，无真实模型、飞书、herdr 或生产配置访问。15 项检查通过：owner/session/task scope、每 owner endpoint/key 覆盖、file 模式不联网、HTTP 成功/空值契约、响应错误/坏 JSON/schema/超大/断体脱敏、首部及正文超时、调用前取消不发请求、重定向不泄露流量/凭据、不安全 endpoint 拒绝及 provider 切换摘要同步。
+
+provenance 固定检查时 HEAD `234cd22dbbd10a8d2c8c56b34991f5a53608630e` 和相关源码 hash，sourceEdits=false；这是检查源码来源，不改写生产 stamp。`node --import tsx --test tests/runtime/memory.test.ts tests/config/load.test.ts` 的保存输出为 `.cache/live/memory-protocol-targeted-tests.txt`：11/11 通过，无失败/跳过。全部归 O-P，不是外部生产 R-P。外部部署的 TLS、真实凭据、服务端 ACL/scope 强制隔离及 SLA 仍 U；provider 切换只从本地摘要在后续会话同步，不迁移原始 transcript，也不删除旧 provider 数据。
+
+### 历史漏记补齐：不改变当时版本或覆盖失败
+
+| 场景 | 已有真实事实与原始证据 | 保留边界 |
+| --- | --- | --- |
+| B05/B06/T14/FSH01 | `.cache/live-validation-run.json` 的 concurrentRequest/concurrentToolCalls/concurrentObservations：00:18:29 UTC飞书入站done，3次task_create(newProject=true)，3个项目的任务/群/远端task与4名started参与者；`.cache/live/concurrent-ac-products.json` 另证A/C独立产物及唯一初始回执 | 三项目创建正常分支R-P；不关闭LIVE-001原HTML比武输入失败，也不证明已working/blocked时再次独立请求的完整时序。A/C旧信任为人工处理，不冒充自动信任 |
+| B03 | `.cache/live/cli-2026-09-18T00-16-12.656Z.json` 实际doctor、debug ls/screen/transcript与缺pane拒绝，详见CLI证据 | 限旧SHA793b9006…c982c098；pane-width真实fail保留，非ab79cc0当前诊断全绿 |
+| W06/W08/W10 | `.cache/live-web-session-fixed-0918.json`（00:16 UTC）真实部署浏览器：archiveAutoHistory、restorePersisted、explicitSelectionReconnect均true，恢复后服务端选中正确、390px无溢出且pageErrors空 | 补正常分支，不抹去recheck旧归档历史为空/恢复丢选中两失败；报告缺源码stamp，不写成当前版本复验；草稿/跨owner/迟到回执及T19/T20模型工具仍分验 |
+| B11/N06/W16/W19 | `.cache/live/pause-interrupt.json`（01:44 UTC，9a86e40）：pause前后Codex仍working、暂停send拒绝，真实native interrupted、2条stop done、重复请求不变、resume accepted、项目文件未变 | 服务及执行器限定分支R-P，非Web按钮点击或T06模型选择；Claude当时idle，不能说两位均被中断运行中任务，也不保证任意子进程退出 |
+| FSH02/FSH07/GAP09 | `.cache/live/ordinary-menu-completed.json`（01:39 UTC）8项true：本人匹配owner/group/card/nonce/key=1回调、inbox done、卡片consumed、native AskUserQuestion答案和群内结果可见；问题期间目录信任操作0 | 本次普通菜单链路R-P；非owner、过期/重复卡片、长分片及其他权限菜单仍U，不替代W20 Web审批 |
+| B12/B13/N07 | `.cache/live/review-cleanup.json` 和 `interrupt-cleanup.json`（01:47 UTC）各9项PASS：destroyed/远端完成/群dissolved/受管pane缺失，close/delete done，消息与close确认早于删群；E15九任务库存再次核对最终资源状态 | 只补具体已知资源，不扩大到全部未知写入恢复或任意用户资源；旧通知文字冗长证据保留 |
+| W25/GAP11 | `.cache/live/config-invalid-provider.json`（00:58 UTC）：ai_provider错误且configurationUnchanged=true | 仅非法provider拒绝分支；缺部署stamp和完整请求，不能据此关闭当前配置保存、密钥遮蔽或重启生效全流程 |
+
+初次只读审计时未找到W27旧记录，因此没有凭单个owner绑定关闭缺口；下文新增原生Chrome和API检查提供独立证据。
+
+
+### F3/B12：真实删群成功后丢回执的跨进程恢复
+
+`.cache/live/group-delete-recovery-summary.json` 汇总两个专用测试群，baseline/fixed 分别使用独立 state 和不同的注入/恢复进程。直接连接真实飞书；没有模型请求、herdr/native 执行、远端 task 创建或 WebSocket，生产服务和数据库不变。各组在真实 DELETE 已成功之后注入回执丢失，恢复阶段只发真实 GET，不再次 DELETE。两组既有通知均在删除前确认送达，不能将这组证据当成 outbox 未知发送恢复。
+
+- **基线 R-F 保留。** `group-delete-recovery-baseline-injected.json` 与 `group-delete-recovery-baseline-failure.json`（02:42 UTC）记录 PID21457 注入、PID21482恢复：远端群已 dissolved，本地 task 已 destroyed，但 delete-group 回执仍 uncertain，task 仍带未确认错误。旧源码 lifecycle SHA256 为 `7b4ff41dfe9aa233f770b9e9ee56e27f44e332c00bd9750ef79b48ed14a9d325`。原故障回执和错误保留在隔离数据库及快照中，没有用后续成功覆盖。
+- **工作区修复后的限定恢复 R-P。** `group-delete-recovery-fixed-success.json`（02:47 UTC）及 fixed-ledger 记录 PID21767 注入、PID21787恢复。真实 GET 确认目标群 dissolved 后，delete-group 回执由 uncertain 转 done，`confirmedBy=group_status`、原 previousState/previousError 与 observedAt 均留存；task destroyed，陈旧错误清除。测试对应 `src/tasks/lifecycle.ts` SHA256 `dfbde766351bf4e2d9878cebedef35287092149115eb6d9116d25d870ac4e41d`，该次隔离实测发生于未提交工作区，随后修复已提交5d1e96f；02:58 UTC新部署已核对，但旧生产ab79cc0不包含该修复。
+- **资源与重放边界。** summary 和两份 ledger 的最终 GET（02:48 UTC）确认两群均 dissolved；每组全流程 DELETE 恰好一次，forbiddenCalls 为空，allOutboxDelivered 与 allMessagesAcknowledgedBeforeDelete 均 true。这是删群 lost acknowledgement 的跨进程恢复实证，不扩展为消息未知发送、建群未知响应、远端 task 未知写入或完整灾难恢复通过。
+
+此隔离检查执行时生产仍为E15的ab79cc0；后续5d1e96f部署单独记录，隔离检查的PID和源码hash不替代运行部署证据。整体目标保持 active。
+
+
+### W05–W10/W27：原生 Chrome 会话管理与身份隔离
+
+`.cache/live/web-entry-runtime.json` 的 ui/cleanup（截至02:56 UTC）固定真实运行 ab79cc0，使用原生 CUA Chrome，无 HTTP mock。实际创建并重命名A会话、观察未发送草稿，切换B后不显示A会话或草稿；创建B会话，刷新保留B身份与选中。A任务列表显示自身任务，B列表为空，返回A后选中自身会话且不显示B回复。记为该正常UI流程有限R-P。
+
+在B输入 `/clear`，机械归档原B会话、创建并选中新空会话，`source:command` 的 `CLEAR_NEW_SESSION_OK` 在页面可见并ACK为delivered；随后可查看归档历史，恢复原B后刷新仍保持选中。点击显式清空按钮将这个原B的 generation 从0增加到1，仍保留旧命令和marker历史；它不是再次机械轮转。归档按钮也实际确认执行。
+
+cleanup记录三个测试session均已归档、原主owner与A/B原选中均恢复；tasks/participants/operations hash保持一致。UI切身份会清除草稿，且返回A前已经刷新，因此只确认草稿未泄漏，不声称跨身份切回能还原草稿。本次没有console/pageerror instrumentation，未重测390px，也没有验证in-flight回复/ACK身份竞态、撤销授权或重启后的撤权失效；E15移动布局证据独立保留，不移植成本轮全覆盖。
+
+### A1/W27：真实 Web API 的17项owner边界
+
+`.cache/live/web-owner-scope-api.json`（02:51 UTC）17项PASS：自身session历史读取200；跨owner的history/select/rename/clear拒绝，陈旧expectedOwnerId拒绝，伪造ownerId拒绝，跨owner task.get（id/taskId两种输入）及participant.screen拒绝，未允许身份的identity.select拒绝。预期错误分别为session_not_found、web_identity_changed、web_identity_input、task_missing、unauthorized，拒绝均not_executed；state只含B对象、任务数0。
+
+该API检查不执行身份切换、模型、执行器控制、任务动作或远端对账，配合上段实际UI切换证据使用。前后完整SQLite records均903条且hash相同（`5c3511fe8f3ad74a8c529f3c4b832ac0a3beaddc7ebd2e8e6b702bc4965881e7`），changedNamespaces为空，identityUnchanged=true。只覆盖这些请求，不扩张为所有权限和异步竞态通过。
+
+源码与部署边界：修复源码提交为 `5d1e96f1698af95ad0fa2317b34b73441518e968`，主验收报告329项check和SEA通过；本节上述UI/API仍实际运行ab79cc0，新构建已在02:58 UTC重启核对，不能把上述旧运行UI/API冒充新版本重跑。目标仍active。
+
+
+### E16 新源码部署与验证范围
+
+`.cache/live/e16-deployment.json`（02:58:40 UTC）实际版本为 `5d1e96f1698af95ad0fa2317b34b73441518e968 / PID26077 / 构建2026-09-18T02:52:38.355Z / SEA SHA256 c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`，runtime/authorization ready，原 herdr 进程39037保留，主owner及原选中保持。主验收报告format/check全部329测试及SEA smoke通过；[CI 35301019616](https://github.com/hewenyu/herdr-agent/actions/runs/35301019616) 的macOS arm64、Linux x64/arm64三任务全部成功。
+
+本节原生Chrome、owner API及W04证据仍固定此前实际运行的ab79cc0；删群故障修复是上述源码的隔离state/真实Feishu跨进程验证。部署ready不代替生产业务回归。新版本下原九任务资源清理只读复查见下文独立记录，不覆盖E15库存快照；整体目标仍active。
+
+
+`.cache/live/test-resource-inventory-e16.json`（02:58:39–02:58:40 UTC）在本次重启后只读核对生产专用runId的9个已知任务：9/9 destroyed、remote completed、groups dissolved、所有已知受管panes缺失；awaitingCleanup、stillUsedForValidation、unownedValidationAgents及readErrors为空，pendingOutbox为0。两个人工故障注入样本的群在独立state及各自ledger确认dissolved，不能并成“生产11个任务”。E15原库存保持不变。后续纯文档提交改变HEAD时，实际运行产物仍对应5d1e96f，不冒充文档提交构建。
