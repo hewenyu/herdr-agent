@@ -193,6 +193,48 @@ test("unverified business claims do not become assistant messages or delivery ca
   }
 });
 
+test("an omitted tool count still blocks an unverified business claim", async () => {
+  const store = new Store(":memory:");
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    // Deliberately use the legacy EngineResult shape without toolCalls.
+    run: async () => ({ text: "已创建任务 task_legacy123", messages: [] }),
+  };
+  const sessions = new SessionService(store, engine, {
+    tools: () => [
+      {
+        name: "task_create",
+        description: "create",
+        parameters: { type: "object", properties: {} },
+        readOnly: false,
+        execute: async () => ({ accepted: true }),
+      },
+    ],
+  });
+  try {
+    const session = sessions.current("owner", "entry");
+    await assert.rejects(
+      sessions.reply(
+        {
+          ownerId: "owner",
+          chatId: "entry",
+          sessionId: session.id,
+          messageId: "legacy-claim",
+        },
+        "创建任务",
+      ),
+      /未调用工具/,
+    );
+    assert.equal(
+      store.list<{ role: string }>("messages").some((m) => m.role === "assistant"),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("failed turns do not replay writes after restart and clear does not delete operation receipts", async () => {
   const { store } = setup();
   let effects = 0;

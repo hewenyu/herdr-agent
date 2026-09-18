@@ -397,7 +397,11 @@ export class SessionService {
           });
         },
       });
-      if (result.toolCalls === 0 && tools.length > 0 && hasUnverifiedToolClaim(result.text))
+      // Treat an omitted tool count as zero so custom engines cannot bypass the
+      // provenance guard by returning the legacy EngineResult shape. The guard
+      // only applies when business tools are available; without tools, a model
+      // cannot execute a claim and ordinary conversational text remains valid.
+      if ((result.toolCalls ?? 0) === 0 && tools.length > 0 && hasUnverifiedToolClaim(result.text))
         throw new OperationError(
           "model_failed",
           "pi 调度模型未调用工具，本轮业务未执行；请重试。",
