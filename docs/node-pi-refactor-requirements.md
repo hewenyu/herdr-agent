@@ -10,7 +10,7 @@
 
 下文 Go 基线的 Web 聊天和业务管理建议只作历史盘点；当前 Web 保留本机项目、模型和 Bypass 配置，B/N 业务能力仍由飞书交互承接。
 
-2026-09-18 当前运行检查：`master`/`origin/master` 为 `e7e8b3e`，本机运行 SEA 为 `0.3.6`，构建提交为 `e7e8b3e`，SHA256 为 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID 为 `91732`；`/api/state` 报告 runtime 与 Feishu authorization 均为 `ready`。本地状态中的 23 个任务均为 `destroyed`，177/177 个 outbox 已送达；本轮回读的 28 个专用测试群均为 `dissolved`。这些是运行与清理事实，不关闭下文仍为 U、R-部分或 R-F 的业务场景，尤其是 LIVE-001 的真实用户入站重验。
+2026-09-18 当前运行检查：仓库 `master`/`origin/master` 为 `f2afb9b`；运行中的 SEA 由旧提交 `e7e8b3e` 构建，本机运行 SEA 为 `0.3.6`，构建提交为 `e7e8b3e`，SHA256 为 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID 为 `91732`；`/api/state` 报告 runtime 与 Feishu authorization 均为 `ready`。本地状态中的 23 个任务均为 `destroyed`，177/177 个 outbox 已送达；本轮回读的 28 个专用测试群均为 `dissolved`。这些是运行与清理事实，不关闭下文仍为 U、R-部分或 R-F 的业务场景，尤其是 LIVE-001 的真实用户入站重验。
 
 ## 1. 已确认的目标与职责
 

@@ -145,6 +145,54 @@ test("durable tool operation idempotency and read-only notification tools", asyn
   }
 });
 
+test("unverified business claims do not become assistant messages or delivery candidates", async () => {
+  const store = new Store(":memory:");
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    run: async () => ({
+      text: "已创建任务 task_fake123",
+      messages: [],
+      toolCalls: 0,
+      writeCalls: 0,
+    }),
+  };
+  const sessions = new SessionService(store, engine, {
+    tools: () => [
+      {
+        name: "task_create",
+        description: "create",
+        parameters: { type: "object", properties: {} },
+        readOnly: false,
+        execute: async () => ({ accepted: true }),
+      },
+    ],
+  });
+  try {
+    const session = sessions.current("owner", "entry");
+    await assert.rejects(
+      sessions.reply(
+        {
+          ownerId: "owner",
+          chatId: "entry",
+          sessionId: session.id,
+          messageId: "unverified-claim",
+        },
+        "创建任务",
+      ),
+      /未调用工具/,
+    );
+    assert.equal(
+      store.list<{ role: string }>("messages").filter((message) => message.role === "assistant")
+        .length,
+      0,
+    );
+    assert.equal(store.list("pi_operations").length, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test("failed turns do not replay writes after restart and clear does not delete operation receipts", async () => {
   const { store } = setup();
   let effects = 0;

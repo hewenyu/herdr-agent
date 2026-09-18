@@ -5,6 +5,7 @@ import { isNotExecuted, OperationError } from "../core/errors.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { ActorContext, Session, StoredMessage } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import { hasUnverifiedToolClaim } from "./claims.js";
 import { estimateTokens } from "./engine.js";
 import { type MemoryProvider, MemoryService, memoryEntry } from "./memory.js";
 import { NOTIFICATION_PROMPT, ORCHESTRATOR_PROMPT } from "./prompts.js";
@@ -396,6 +397,12 @@ export class SessionService {
           });
         },
       });
+      if (result.toolCalls === 0 && tools.length > 0 && hasUnverifiedToolClaim(result.text))
+        throw new OperationError(
+          "model_failed",
+          "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+          "not_executed",
+        );
       if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)
         throw new OperationError(
           "cancelled",

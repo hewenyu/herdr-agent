@@ -30,6 +30,10 @@ export interface EngineInput {
 export interface EngineResult {
   text: string;
   messages: AgentMessage[];
+  /** Number of tool calls emitted during this run, including read-only calls. */
+  toolCalls?: number;
+  /** Number of write tools that actually started during this run. */
+  writeCalls?: number;
 }
 export interface SummaryInput {
   messages: AgentMessage[];
