@@ -143,6 +143,102 @@ test("a text-only turn that remains tool-free fails without a successful respons
   );
 });
 
+test("English business claims fail without any tool context", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([response("Created project demo and started Codex")]),
+  });
+  await assert.rejects(
+    engine.run(input()),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
+});
+
+test("a read-only lookup cannot authorize an action completion claim", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "read-1", name: "status", arguments: {} }]),
+      response("The task was created and the group was closed"),
+      response("The task was created and the group was closed"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run(
+      input([
+        {
+          name: "status",
+          description: "read status",
+          parameters: { type: "object", properties: {} },
+          readOnly: true,
+          execute: async () => ({ status: "completed", taskId: "t1" }),
+        },
+      ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
+});
+
+test("unknown tool result cannot support a successful completion claim", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }]),
+      response("Created task t1"),
+      response("Created task t1"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run(
+      input([
+        {
+          name: "write",
+          description: "write",
+          parameters: { type: "object", properties: {} },
+          readOnly: false,
+          execute: async () => {
+            throw new OperationError("timeout", "unknown", "unknown");
+          },
+        },
+      ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "unknown",
+  );
+});
+
+test("not-executed tool result cannot support a successful completion claim", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }]),
+      response("Created task t1"),
+      response("Created task t1"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run(
+      input([
+        {
+          name: "write",
+          description: "write",
+          parameters: { type: "object", properties: {} },
+          readOnly: false,
+          execute: async () => ({ outcome: "not_executed" }),
+        },
+      ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
+});
+
 test("unknown write outcome blocks later writes but permits reads", async () => {
   let writes = 0;
   let reads = 0;

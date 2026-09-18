@@ -4,8 +4,38 @@
  * provenance; it never chooses a tool or generates a replacement response.
  */
 export function hasUnverifiedToolClaim(text: string): boolean {
-  const action = /(?:已经|正在|成功|排队|已(?:安排|创建|登记|发送|启动|转交|完成|关闭|解散|销毁))/u;
+  const value = text.trim();
+  // A question asks for state; it does not assert that the state exists. Keep
+  // this narrow so a sentence containing a question and a separate assertion
+  // still receives the provenance guard.
+  if (/[?？]\s*$/u.test(value)) return false;
+  const action =
+    /(?:已经|正在|成功|排队|已(?:安排|创建|登记|发送|启动|转交|完成|关闭|解散|销毁)|\b(?:already\s+)?(?:created|creating|registered|queued|scheduled|sent|started|starting|assigned|dispatched|launched|provisioned|initialized|initialised|completed|complete|finished|closed|closing|deleted|deleting|removed|destroyed|done|succeeded)\b)/iu;
+  const withoutNegatedAction = removeNegatedAction(value);
   const business =
-    /(?:项目|任务|群|参与者|Codex|Claude|目录|链接|会话|session|task|chat|remoteTask|participant)/iu;
-  return action.test(text) && business.test(text);
+    /(?:项目|任务|群|参与者|Codex|Claude|目录|链接|会话|session|project|task|chat|group|participant|directory|workspace|remoteTask)/iu;
+  return action.test(withoutNegatedAction) && business.test(value);
+}
+
+/**
+ * A read-only lookup can report state but cannot by itself prove that an action
+ * such as creating, sending, or closing was carried out in this turn.
+ */
+export function requiresWriteEvidence(text: string): boolean {
+  const value = text.trim();
+  if (/[?？]\s*$/u.test(value)) return false;
+  const writeAction =
+    /(?:创建|登记|发送|启动|安排|转交|已(?:创建|登记|发送|启动|安排|转交)|\b(?:created|registered|sent|started|scheduled|assigned|dispatched|launched|provisioned|initialized|initialised|succeeded)\b)/iu;
+  const business =
+    /(?:项目|任务|群|参与者|Codex|Claude|目录|会话|session|project|task|chat|group|participant|workspace)/iu;
+  return writeAction.test(removeNegatedAction(value)) && business.test(value);
+}
+
+const negatedEnglishAction =
+  /\b(?:not|never|no|cannot|can't|couldn't|didn't|doesn't|isn't|wasn't|weren't|hasn't|haven't|failed\s+to|unable\s+to)\b[^.!?]{0,32}\b(?:created|creating|registered|queued|scheduled|sent|started|assigned|dispatched|launched|provisioned|initialized|initialised|completed|complete|finished|closed|deleted|removed|destroyed|done|succeeded)\b/giu;
+const negatedChineseAction =
+  /(?:尚未|还没|没有|没|未能|无法|不能|未|不)\s*(?:成功|已|正在|排队)?\s*(?:安排|创建|登记|发送|启动|转交|完成|关闭|解散|销毁|删除|排队|成功)|不成功/gu;
+
+function removeNegatedAction(value: string): string {
+  return value.replace(negatedEnglishAction, "").replace(negatedChineseAction, "");
 }

@@ -235,6 +235,99 @@ test("an omitted tool count still blocks an unverified business claim", async ()
   }
 });
 
+test("business completion claims are rejected when no tool context exists", async () => {
+  const store = new Store(":memory:");
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    run: async () => ({ text: "Created project demo", messages: [] }),
+  };
+  const sessions = new SessionService(store, engine);
+  try {
+    const session = sessions.current("owner", "entry");
+    await assert.rejects(
+      sessions.reply(
+        { ownerId: "owner", chatId: "entry", sessionId: session.id, messageId: "no-tools" },
+        "创建项目",
+      ),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code?: string }).code === "model_failed",
+    );
+    assert.equal(
+      store.list<{ role: string }>("messages").some((m) => m.role === "assistant"),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("outcome-aware evidence rejects read-only, unknown, and not-executed completion claims", async () => {
+  for (const [name, tool, evidence, outcome] of [
+    [
+      "read-only",
+      { name: "task_get", readOnly: true },
+      { successful: 1, unknown: 0, notExecuted: 0 },
+      "not_executed",
+    ],
+    [
+      "unknown",
+      { name: "task_create", readOnly: false },
+      { successful: 1, successfulWrites: 1, unknown: 1, notExecuted: 0 },
+      "unknown",
+    ],
+    [
+      "not-executed",
+      { name: "task_create", readOnly: false },
+      { successful: 1, successfulWrites: 1, unknown: 0, notExecuted: 1 },
+      "not_executed",
+    ],
+  ] as const) {
+    const store = new Store(":memory:");
+    const engine: ConversationEngine = {
+      contextTokens: 50000,
+      summarize: async () => "",
+      run: async () => ({
+        text: "已创建任务 task_fake",
+        messages: [],
+        toolCalls: 1,
+        writeCalls: tool.readOnly ? 0 : 1,
+        toolEvidence: evidence,
+      }),
+    };
+    const sessions = new SessionService(store, engine, {
+      tools: () => [
+        {
+          name: tool.name,
+          description: name,
+          parameters: { type: "object", properties: {} },
+          readOnly: tool.readOnly,
+          execute: async () => ({}),
+        },
+      ],
+    });
+    try {
+      const session = sessions.current("owner", "entry");
+      await assert.rejects(
+        sessions.reply(
+          { ownerId: "owner", chatId: "entry", sessionId: session.id, messageId: name },
+          "创建任务",
+        ),
+        (error: unknown) =>
+          error instanceof Error &&
+          "code" in error &&
+          (error as { code?: string }).code === "model_failed" &&
+          "outcome" in error &&
+          (error as { outcome?: string }).outcome === outcome,
+      );
+    } finally {
+      store.close();
+    }
+  }
+});
+
 test("failed turns do not replay writes after restart and clear does not delete operation receipts", async () => {
   const { store } = setup();
   let effects = 0;

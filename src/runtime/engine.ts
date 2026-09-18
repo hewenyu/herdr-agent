@@ -10,7 +10,7 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
-import { hasUnverifiedToolClaim } from "./claims.js";
+import { hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import type {
   ConversationEngine,
@@ -87,6 +87,10 @@ export class PiEngine implements ConversationEngine {
     let executedCalls = 0;
     let toolCallsSeen = 0;
     let writes = 0;
+    let successfulToolCalls = 0;
+    let successfulWriteCalls = 0;
+    let unknownToolResults = 0;
+    let notExecutedToolResults = 0;
     const startedAt = Date.now();
     const trace = { sessionId: input.sessionId, messageId: input.actor.messageId };
     this.logger?.info("pi 开始处理", {
@@ -118,12 +122,20 @@ export class PiEngine implements ConversationEngine {
         });
         try {
           const result = await tool.execute(args as Record<string, unknown>, input.actor, signal);
-          if (!tool.readOnly && isUncertain(result)) uncertain = true;
+          const outcome = toolResultOutcome(result);
+          if (outcome === "unknown") {
+            unknownToolResults++;
+            if (!tool.readOnly) uncertain = true;
+          } else if (outcome === "not_executed") notExecutedToolResults++;
+          else {
+            successfulToolCalls++;
+            if (!tool.readOnly) successfulWriteCalls++;
+          }
           this.logger?.info("pi 工具已返回", {
             event: "pi.tool_completed",
             ...trace,
             tool: tool.name,
-            outcome: isUncertain(result) ? "unknown" : "returned",
+            outcome: outcome === "successful" ? "returned" : outcome,
             durationMs: Date.now() - toolStartedAt,
           });
           return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
@@ -138,6 +150,8 @@ export class PiEngine implements ConversationEngine {
             outcome: safe.outcome,
             durationMs: Date.now() - toolStartedAt,
           });
+          if (safe.outcome === "not_executed") notExecutedToolResults++;
+          else unknownToolResults++;
           return {
             content: [{ type: "text", text: JSON.stringify({ error: safe.message, ...safe }) }],
             details: {},
@@ -236,8 +250,15 @@ export class PiEngine implements ConversationEngine {
     try {
       await agent.prompt(input.prompt);
       const claimRecovery =
-        input.tools.length > 0 && toolCallsSeen === 0 && hasUnverifiedToolClaim(finalText);
-      if (claimRecovery) {
+        input.enforceClaims !== false &&
+        hasUnverifiedToolClaim(finalText) &&
+        (unknownToolResults > 0 ||
+          notExecutedToolResults > 0 ||
+          toolCallsSeen === 0 ||
+          (requiresWriteEvidence(finalText)
+            ? successfulWriteCalls === 0
+            : successfulToolCalls === 0));
+      if (claimRecovery && input.tools.length > 0) {
         requireToolCall = true;
         await agent.prompt({
           role: "user",
@@ -269,17 +290,34 @@ export class PiEngine implements ConversationEngine {
       }
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
-      if (claimRecovery && toolCallsSeen === 0)
+      if (
+        claimRecovery &&
+        (unknownToolResults > 0 ||
+          notExecutedToolResults > 0 ||
+          (requiresWriteEvidence(finalText)
+            ? successfulWriteCalls === 0
+            : successfulToolCalls === 0))
+      )
         throw new OperationError(
           "model_failed",
-          "pi 调度模型未调用工具，本轮业务未执行；请重试。",
-          "not_executed",
+          unknownToolResults > 0
+            ? "pi 调度模型未取得可确认的工具事实，本轮业务结果未知；请查询状态。"
+            : notExecutedToolResults > 0
+              ? "pi 调度模型调用的工具未执行，本轮业务未执行；请重试。"
+              : "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+          unknownToolResults > 0 ? "unknown" : "not_executed",
         );
       this.logger?.info("pi 已生成回复", {
         event: "pi.turn_completed",
         ...trace,
         toolCalls: executedCalls,
         writeCalls: writes,
+        toolEvidence: {
+          successful: successfulToolCalls,
+          successfulWrites: successfulWriteCalls,
+          unknown: unknownToolResults,
+          notExecuted: notExecutedToolResults,
+        },
         durationMs: Date.now() - startedAt,
       });
       return {
@@ -287,6 +325,12 @@ export class PiEngine implements ConversationEngine {
         messages: safeMessages(agent.state.messages),
         toolCalls: toolCallsSeen,
         writeCalls: writes,
+        toolEvidence: {
+          successful: successfulToolCalls,
+          successfulWrites: successfulWriteCalls,
+          unknown: unknownToolResults,
+          notExecuted: notExecutedToolResults,
+        },
       };
     } catch (error) {
       const failure = safeError(error);
@@ -297,6 +341,12 @@ export class PiEngine implements ConversationEngine {
         outcome: failure.outcome,
         toolCalls: executedCalls,
         writeCalls: writes,
+        toolEvidence: {
+          successful: successfulToolCalls,
+          successfulWrites: successfulWriteCalls,
+          unknown: unknownToolResults,
+          notExecuted: notExecutedToolResults,
+        },
         durationMs: Date.now() - startedAt,
       });
       throw error;
@@ -319,6 +369,7 @@ export class PiEngine implements ConversationEngine {
       messages: [],
       tools: [],
       signal: input.signal,
+      enforceClaims: false,
     });
     if (
       !result.text.trim() ||
@@ -375,13 +426,19 @@ export class PiEngine implements ConversationEngine {
   }
 }
 
-function isUncertain(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const result = value as Record<string, unknown>;
-  return [result.outcome, result.status].some(
-    (item) => item === "unknown" || item === "unconfirmed",
-  );
+function toolResultOutcome(value: unknown): "successful" | "unknown" | "not_executed" {
+  if (!value || typeof value !== "object") return "successful";
+  const record = value as Record<string, unknown>;
+  const nested =
+    record.error && typeof record.error === "object"
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+  const values = [record.outcome, record.status, nested?.outcome, nested?.status];
+  if (values.includes("unknown") || values.includes("unconfirmed")) return "unknown";
+  if (values.includes("not_executed")) return "not_executed";
+  return "successful";
 }
+
 function safeMessages(messages: AgentMessage[]): AgentMessage[] {
   return structuredClone(messages).map((message) => {
     if (message.role === "assistant" && message.errorMessage) message.errorMessage = "模型响应失败";
