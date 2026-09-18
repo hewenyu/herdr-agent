@@ -41,7 +41,7 @@
 
 **已确认连续创建要求：不同项目和 pi session 独立推进。** 一项任务运行或 blocked 时，后续任务仍须登记、创建资源并启动执行器；真实至少三项目及多 session 场景正在安排，未回读的步骤不提前通过。
 
-**已确认主入口会话语义：私聊自动压缩，手动 /clear 开启新 pi session。** 当轮回复持久后切换，旧历史/回执及已接收排队消息留在旧 session；群聊拒绝，Web 清空继续使用原 session generation 重置。E07 已完成真实模型与内存 SessionService 探针，真实飞书入站切换仍待复验。
+**已确认主入口会话语义：私聊自动压缩，主入口私聊/Web聊天的 /clear 归档旧 pi session 并开启新 session。** 当轮回复持久后归档与切换，旧历史/回执保留；旧排队消息不改绑且因归档拒绝执行，当前 clear 答复仍可投递；群聊拒绝，Web 显式清空按钮继续使用原 session generation 重置。E07 早期内存探针通过；后续真实私聊因旧拒绝污染未调用工具，记 R-F，修复后真实模型只读旧历史的内存重放通过，飞书现场仍须复验。
 
 **已确认审批规则：保留现有 Bypass，只处理仍出现的确认。** 当前任务绑定工作目录的启动信任由专用 pi 流程识别并经受限工具确认；其余确认必须任务群内用户选择。目录范围含已有项目新参与者、worktree、无项目讨论，不限新建项目。新自动流程仍需独立真实验收，不能用既有手动信任记录代替。
 
@@ -100,7 +100,7 @@
 | B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E04 REST 完成和解散群已回读；真实 TaskService close 顺序、外部勾选与最后结果收尾 U |
 | B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E04 仅测试群解散可确认；TaskService destroy、pane/workspace 清理和恢复 U |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | U |
-| B16 | session创建/选择/重命名/归档/恢复；私聊自动压缩及手动/clear新session；Web generation清空；provider切换 | A1/A2；失败不切换、排队旧绑定/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P entry-reset三边界测试 | R-部分：E01首步、E05独立session；E07真实模型+内存服务压缩/clear通过，真实飞书切换及跨入口完整组合 U |
+| B16 | session创建/选择/重命名/归档/恢复；私聊自动压缩及主入口/clear归档旧session并新建；Web按钮generation清空；provider切换 | A1/A2；失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P entry-reset三边界测试 | R-部分：E01首步、E05独立session；E07真实模型+内存服务压缩/clear通过，真实飞书切换及跨入口完整组合 U |
 | B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration | U |
 | B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | 运行启动证据需补；长期运行/Linux现场 U |
 | N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | R-部分：E01 查询自主调用 tasks_list；E02 多轮查询事实措辞通过（合成回执）；真实飞书查询进行中，LIVE-001 历史 R-F |
@@ -113,7 +113,7 @@
 
 ## 5. CLI 全入口矩阵
 
-本节每行实现为 I、历史证据为 O-H `tests/cli/`（迁移另见 migration，构建另见 build）；本轮执行与真实状态均 U，除表中明确记录。CLI 参数详情以 `src/cli/args.ts` 为准；`--json`被解析不等于每个子命令所有错误都有统一JSON，需实际核验。
+本节每行实现为 I、历史证据为 O-H `tests/cli/`（迁移另见 migration，构建另见 build）。本轮已用独立真实二进制执行 CLI，详见 [2026-09-18 CLI 实测证据](live-cli-evidence-2026-09-18.md)：C01/C02/C11/C13/C14 在该文限定分支为 R-P；C03–C05/C08–C10/C12/C15–C16 为 R-部分；C06/C07 仍 U。C08/C09 只测参数拒绝，不代表 setup 注册或授权通过；doctor 正确报告 pane-width 失败，不代表宿主全绿。CLI 证据对应 SHA `793b9006…c982c098`，后续改动及新构建须另行复验。下表保留完整待核对范围，不能把单个已测分支扩张为整行通过。参数详情以 `src/cli/args.ts` 为准；`--json`被解析不等于每个子命令所有错误都有统一JSON。
 
 | ID / 入口 | 正常步骤 | 失败、恢复、权限与输出核对 |
 | --- | --- | --- |
@@ -189,7 +189,7 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | T09 `project_save` | 已有多目录、agent、makeDefault，准确登记 | F1/F2；不擅自把新任务变成新目录；既有任务冻结快照 |
 | T10 `project_create` | 只有明确新项目才创建并初始化 | 重复名称/占用/穿越/权限错误；F3；LIVE-001未进入此路径 |
 | T11 `project_remove` | 移除登记，明确代码仍保留 | 不误删文件/任务，默认项目失效处理 |
-| T12 `session_clear` | 飞书主机器人私聊/clear由模型选工具，答复持久后创建并选择新session；Web仍重置generation | 群拒绝；旧历史/回执/排队原绑定保留、失败不切换、重复event不重复创建；E07内存服务+真实模型通过，飞书现场待验 |
+| T12 `session_clear` | 主入口飞书私聊/Web聊天的/clear由模型选工具，答复持久后归档旧session并创建、选择新session；Web显式清空按钮仍重置generation | 群拒绝；旧历史/回执保留、旧排队原绑定拒绝、失败不切换、重复event不重复创建；E07内存服务+真实模型通过，飞书现场失败后已修复，须重新验收 |
 | T13 `projects_list` | 查询目录/default agent/Bypass实际值 | 无配置返回事实空态；不读项目源码代做需求 |
 | T14 `task_create` | 四种kind、完整requirements、participants、目录模式、newProject/parentTaskId、建群/远端task、讨论预算 | F1/F3/F4/F6，A1/A2/D1/D3；accepted仅已登记；**LIVE-001 历史失败保留；E05 Web 真实开发创建通过，accepted 时事实答复失败；四类型及恢复未全验** |
 | T15 `sessions_list` | 当前owner活动/archived=true列表 | 群内无此工具；A1；不混淆pi与Codex/Claude原生session |
@@ -209,7 +209,7 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | FSH02 群/身份 | 任务群、非任务群@/不@、异owner、回调非owner | owner与chat绑定；当前任务群不能跳转其它任务；callback等同严格验证 | I/O-H，现场U |
 | FSH03 AI关闭、tasks启用 | `/help /doctor /projects /tasks [all] /sessions`；`/session new\|switch\|rename\|archive\|restore` | 返回确定性控制结果；任务群禁止切换；无AI不冒充pi沟通 | I/O-H，现场U |
 | FSH04 AI关闭、tasks启用 | `/new <项目> [agent] <要求>`、自然“新建任务”、`/task`七动作、`/screen /stop` | 完整参数/默认agent；关闭/确认关闭中文别名与否定区分；多参与者明确ID | I/O-H，现场U |
-| FSH05 `/clear`跨模式 | AI启用由模型session_clear为主私聊开启新pi session，自动压缩无需clear；AI关闭仍拒绝ai_disabled | 所有群拒绝；旧history/receipt/queued消息不改绑定；Web generation语义独立 | O-P边界测试，E07真实模型+内存服务通过；真实飞书现场U |
+| FSH05 `/clear`跨模式 | AI启用由模型session_clear为主入口私聊/Web聊天归档旧pi session并新建，自动压缩无需clear；AI关闭仍拒绝ai_disabled | 所有群拒绝；旧history/receipt保留，queued消息不改绑且拒绝执行；Web显式按钮generation语义独立 | O-P边界测试，E07/E10真实模型+内存服务通过；真实飞书失败后待新构建复验 |
 | FSH06 tasks关闭兼容桥 | `/ls`选中；引用优先；`/card /say /stop /mirror on\|off /close /help`，普通文本续聊 | 只按已有herdr agent发送；/close仅解除选中；notify_chat只选可信owner；旧路由核验 | I/O-H，现场U |
 | FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | I/O-H，LIVE-001仅证明一条文本outbox回执，完整范围U |
 

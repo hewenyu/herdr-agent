@@ -13,7 +13,7 @@ function gate() {
   return { promise, resolve };
 }
 
-test("Feishu clear selects a new session only after durable reply; queued input and receipts stay bound", async () => {
+test("Feishu clear archives the old session after durable reply; queued input is rejected without rebinding", async () => {
   const store = new Store(":memory:");
   const entered = gate();
   const finish = gate();
@@ -48,20 +48,21 @@ test("Feishu clear selects a new session only after durable reply; queued input 
     assert.equal(sessions.current("owner", actor.chatId).id, old.id);
     assert.equal(sessions.list("owner").length, 1);
     const queued = sessions.reply({ ...actor, messageId: "queued-before-switch" }, "此前排队输入");
+    const rejectedQueue = assert.rejects(queued, { code: "invalid_scope" });
     finish.resolve();
     const reply = await pending;
-    await queued;
+    await rejectedQueue;
     const next = sessions.current("owner", actor.chatId);
     assert.notEqual(next.id, old.id);
     assert.equal(reply.sessionId, old.id);
     assert.equal(sessions.get("owner", old.id).generation, 0);
-    assert.equal(sessions.get("owner", old.id).archived, false);
-    assert.equal(inputs[1]?.sessionId, old.id);
+    assert.equal(sessions.get("owner", old.id).archived, true);
+    assert.equal(inputs.length, 1, "archived queued input must not run in either session");
     assert.equal(sessions.beginDelivery("owner", reply.id), true);
     sessions.recordDelivery("owner", reply.id, { complete: true, ids: ["real-delivery-receipt"] });
     assert.equal((await sessions.reply(actor, "duplicate replay")).id, reply.id);
     assert.equal(
-      sessions.list("owner").length,
+      sessions.list("owner", { archived: true }).length,
       2,
       "a repeated event cannot create another session",
     );
@@ -69,7 +70,7 @@ test("Feishu clear selects a new session only after durable reply; queued input 
     assert.equal(restarted.current("owner", actor.chatId).id, next.id);
     await restarted.reply({ ...actor, sessionId: next.id, messageId: "new-message" }, "新会话消息");
     assert.deepEqual(inputs.at(-1)?.messages, []);
-    assert.equal(sessions.history("owner", old.id).length, 4);
+    assert.equal(sessions.history("owner", old.id).length, 2);
     assert.equal(store.list("session_reset_requests").length, 0);
   } finally {
     finish.resolve();
@@ -160,7 +161,8 @@ test("private entry compacts automatically without changing session; a later man
     assert.equal(sessions.current("owner", actor.chatId).id, session.id);
     assert.equal(sessions.get("owner", session.id).generation, 0);
     assert.equal(sessions.history("owner", session.id).length, 28);
-    assert.ok(inputs.at(-1)?.systemPrompt.includes("保留项目代码"));
+    assert.ok(JSON.stringify(inputs.at(-1)?.messages).includes("保留项目代码"));
+    assert.ok(!inputs.at(-1)?.systemPrompt.includes("用户要求保留项目代码"));
     await sessions.reply({ ...actor, messageId: "manual-clear" }, "/clear");
     const next = sessions.current("owner", actor.chatId);
     await sessions.reply({ ...actor, sessionId: next.id, messageId: "fresh" }, "你好");

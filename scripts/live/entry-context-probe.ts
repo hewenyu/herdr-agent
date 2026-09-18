@@ -78,6 +78,7 @@ async function run() {
     assert.deepEqual(toolsCalled, ["session_clear"]);
     assert.notEqual(next.id, session.id);
     assert.equal(sessions.get(actor.ownerId, session.id).generation, 0);
+    assert.equal(sessions.get(actor.ownerId, session.id).archived, true);
     assert.equal(sessions.beginDelivery(actor.ownerId, reset.id), true);
     assert.equal(sessions.history(actor.ownerId, next.id).length, 0);
     process.stdout.write(

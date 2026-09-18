@@ -32,6 +32,8 @@ export interface ExecutionRef {
   kind: AgentKind;
   cwd: string;
   sessionId?: string;
+  /** Durable initial input marker used only to correlate a missing native transcript ID. */
+  transcriptReceipt?: string;
 }
 
 export interface AgentSnapshot {

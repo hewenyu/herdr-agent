@@ -38,6 +38,7 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
       ["removed", "gone"].includes(participant.status)
     )
       continue;
+    participant.execution.transcriptReceipt = participant.initialReceipt;
     let agent: AgentSnapshot;
     try {
       agent = await context.herdr.get(participant.execution.paneId);

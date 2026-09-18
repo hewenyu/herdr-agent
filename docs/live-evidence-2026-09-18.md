@@ -83,7 +83,7 @@ pi 仅通过专用启动流程识别并确认当前任务由服务端配置/绑�
 
 ## E07：主入口自动压缩与手动新 pi session
 
-用户新约束：主机器人私聊自动压缩上下文；手动 `/clear` 由模型选择专用 `session_clear` 工具，在当轮回复持久后创建并选中新 pi session。旧历史、回执和已接收排队消息保留原 session 绑定，所有群拒绝；Web 清空仍使用原 generation 语义。
+当时约束与探针范围：主机器人私聊自动压缩上下文；手动 `/clear` 由模型选择专用 `session_clear` 工具，在当轮回复持久后创建并选中新 pi session。旧历史、回执和已接收排队消息保留原 session 绑定，所有群拒绝。后续用户明确旧会话须归档，且主入口 Web 聊天同样适用，以下早期结果不证明新语义已现场通过。
 
 `node --import tsx --test tests/runtime/*.test.ts tests/app/session-tools.test.ts tests/app/conversations.test.ts` 本轮 33 tests 通过，含新增 `entry-reset.test.ts` 三项：延迟切换/旧队列与回执/重复事件及重建服务选中状态；失败不创建及普通群/任务群拒绝；私聊自动压缩不换 session、随后 clear 新 session 不继承旧摘要。原 Web generation 清空测试仍通过。
 
@@ -102,3 +102,28 @@ pi 仅通过专用启动流程识别并确认当前任务由服务端配置/绑�
 本地新增 `tests/feishu/group-events.test.ts`、`tests/app/group-events.test.ts`：GET 只认可 normal/dissolved/dissolved_save，未知值、API错误、403和断网不当作解散；SDK dispatcher 拒绝错误/缺失 app_id、无效 chat_id、旧连接和已取消连接，等待持久入队成功；应用重建后处理已存 group inbox，仅清对应任务，重复/未管理群不清其他资源。`node --import tsx --test tests/feishu/*.test.ts tests/app/group-events.test.ts` 17 tests 通过；使用本地请求和连接替身，无新 WebSocket 或外部资源写入。
 
 官方 [获取群信息](https://open.feishu.cn/document/server-docs/group/chat/get-2.md) 与 [群解散事件](https://open.feishu.cn/document/server-docs/group/chat/events/disbanded.md) 均明确权限三选一：`im:chat`、`im:chat:read`、`im:chat:readonly`。新申请选择最小只读 `im:chat:read`，授权检查接受已有另外两项，仍要求 tenant/granted；tasks 关闭时不请求该权限和群解散事件。没有执行实际补权。群成员列表权限缺口仍独立保留，不能以群状态读取通过消除。
+
+## E09：2c7672a 真实自动目录确认与统一收尾
+
+2026-09-18 00:43 UTC 起运行提交 `2c7672a7049cb614e30e3f8a85f0f6b309b0b6a4` 的 macOS arm64 SEA，SHA256 `d9a9d2204580aa7e1400d08c10cacaac8d42a06a87c220b7f94331f5cccee7cc`。256 项本地检查通过；该提交 macOS arm64、Linux arm64/amd64 CI 的检查及 SEA smoke 均成功。仍不据此声明以下全部业务通过。
+
+- `.cache/live/auto-directory-trust-r2.json`：新目录 `validation-auto-trust-0918-r2`，任务 `task_5c5871dda88726eae273ee987ab4b326`，Bypass=true。Claude `w16:p1` 首次 stale_guard 明确未按键，重读后成功；Codex `w17:p1` 一次成功。各恰有一条 done 信任回执，实际信任菜单消失，手动审批卡均为零。此前卡住的 Claude `w13:p1` 同样自动恢复。**自动目录信任 R-P；双人讨论尚未通过。**
+- `.cache/live/cleanup-ac.json`：A 经真实群文字确认完成，C 经飞书原生任务详情的“完成任务”按钮手动完成。两者远端 completed_at 非零、本地 destroyed、群 GET dissolved、herdr 原 panes `w15:p1`/`w12:p1` 均缺失。各最终群回复与解散前通知都已送达，并早于 delete-group done；herdr close done 也早于删群。**两条默认收尾路径 R-P。**
+- `.cache/live/external-disband-cleanup.json`：经飞书 REST 外部解散 SVG 专用测试群后，程序轮询确认、通过 herdr 清理 `wZ:p1`；本地 destroyed，远端任务仍未验收（completed_at=0），没有因群解散伪造验收完成。**外部解散轮询收尾 R-P；不等同于已验证真实解散事件订阅。**
+- `.cache/live/concurrent-ac-products.json`：A/C 的独立 `index.html` 分别只含 `CONCURRENT_A_OK` / `CONCURRENT_C_OK`，有唯一初始回执。两者旧版目录提示由用户在群里手动点过，所以该轮不计为自动信任通过。
+
+本轮新增真实失败继续追踪：Claude native 状态 done 且屏幕已有回答，但 herdr 未返回 sessionId，旧读取路径无法采集输出，Codex 尚未收到首轮，通知却误称讨论结束。已定位并准备收据关联恢复及通知事实约束，真实双人轮转待新构建复验。
+
+真实飞书群 `/clear` 已拒绝且任务绑定未变。主私聊 `/clear`（消息 `om_x100b65fce081d4acb369c2a68a03c10`）却复述旧历史“私聊不支持”而未调用工具、未新建 session，明确记 **R-F**。用户再次明确：主私聊应归档旧 pi session 并开启新 session，只有群聊不支持；继续修正并真实复验，不以 E07 内存探针替代。
+
+CLI 逐入口的旧构建实测见 [CLI 证据](live-cli-evidence-2026-09-18.md)，保留 setup 未测和诊断部分失败边界。
+
+## E10：旧历史污染修复与通知事实探针
+
+`scripts/live/entry-history-probe.ts` 用 SQLite `readOnly:true` 读取 E09 失败的生产主会话，共 26 条历史，复制到内存 Store，保留原文和已有摘要。真实配置的 pi 模型仅获得实际 `session_clear` 工具，所有写入只在内存；无飞书消息、herdr 操作或生产数据库写入。模型实际调用一次 `session_clear`，内存服务在答复持久后归档旧 session、创建并选中新 session。断言旧 generation 不变、26 条旧记录保留、新历史为空、旧答复仍能开始投递，全部通过。回复正确说明“已安排归档当前会话并开启全新会话”，没有复读旧拒绝。
+
+修复将历史助手输出作为有来源的历史数据，不再作为当前 assistant 的示范发言；摘要移出 system 层，当前系统规则、服务端绑定和工具定义决定能力。未新增关键词执行分支或强制工具选择。主入口私聊和 Web 聊天的模型 `session_clear` 均归档旧会话并新建；Web 显式清空按钮仍使用 generation 重置。旧会话尚未执行的排队消息保留旧绑定并因归档拒绝，不能误称仍会继续执行或迁移至新会话。
+
+`node --import tsx --test tests/runtime/*.test.ts tests/app/session-tools.test.ts tests/app/conversations.test.ts` 共 34 项通过，涵盖旧队列拒绝、不重复建新 session、旧 ACK 可达、Web 选择清除归档目标、后续消息进入新会话、显式清空按钮保持原语义、失败不归档和群聊拒绝。此项为真实模型加内存效果 **R-部分**；新构建真实飞书入站仍须复验，不抹去 E09 的失败。
+
+`scripts/live/discussion-notice-probe.ts` 使用真实 `kimi-k2.5` / `openai-responses` 和三组合成讨论记录，无工具与外部副作用。缺输出且 0/1 轮场景没有虚构双方发言、讨论结束或群内结果；单方输出、另方未轮到场景明确区分；1/1 轮暂停场景只称自动暂停，未称已验收。修订提示词后不再因未采集输出建议补发/重新触发。`tests/app/notification-facts.test.ts` 验证真实 Application 通知上下文包含输出是否存在、初始投递、原生 session ID 和轮次事实。通知探针不证明真实 Claude transcript 采集与双人轮转已通过；模型措辞仍需在生产复验。

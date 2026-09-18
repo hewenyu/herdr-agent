@@ -265,7 +265,7 @@ test("task session selection ignores imported archived generations", () => {
   }
 });
 
-test("historical assistant claims remain quoted assistant data while stored history and visible advice are preserved", async () => {
+test("historical assistant claims are data, not current assistant examples; stored history and visible advice are preserved", async () => {
   const { store, sessions, inputs } = setup();
   try {
     const session = sessions.current("owner", "entry");
@@ -292,12 +292,13 @@ test("historical assistant claims remain quoted assistant data while stored hist
     assert.ok(input);
     assert.equal(input.prompt, "按刚才建议创建新项目，交给Codex，不测试。");
     const previous = input.messages[0];
-    assert.equal(previous?.role, "assistant");
-    assert.ok(previous && Array.isArray(previous.content));
-    const block = previous.content[0];
-    assert.ok(block && block.type === "text");
-    assert.notEqual(block.text, historical);
-    assert.equal(JSON.parse(block.text.slice(block.text.indexOf("\n") + 1)), historical);
+    assert.equal(previous?.role, "user");
+    assert.ok(previous && typeof previous.content === "string");
+    assert.notEqual(previous.content, historical);
+    assert.equal(
+      JSON.parse(previous.content.slice(previous.content.indexOf("\n") + 1)),
+      historical,
+    );
     assert.ok(!JSON.stringify(input.messages).includes("用户尚未看见的方案B"));
     assert.equal(store.get<{ text: string }>("messages", imported.id)?.text, historical);
     assert.deepEqual(sessions.history("owner", session.id).slice(0, 2), before);

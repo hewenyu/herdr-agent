@@ -9,6 +9,7 @@ export async function captureInputBaseline(
 ): Promise<void> {
   if (!participant.execution)
     throw new OperationError("participant_unavailable", "参与者尚未就绪。");
+  participant.execution.transcriptReceipt = participant.initialReceipt;
   try {
     const legacy = context.store.get<Record<string, unknown>>("legacy_imports", participant.id);
     if (participant.cursor === undefined || (legacy && !legacy.baseline)) {

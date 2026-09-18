@@ -2,7 +2,7 @@
 
 日期：2026-09-17。本文描述 Node 实现及采用的默认决策；[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
 
-2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。手动 `/clear` 由 pi 选择 `session_clear`，当轮回复持久后创建并选中新 pi session；旧回执及已接收排队消息仍绑定旧 session，后续消息进入新 session。任务群和普通群均不支持该操作。Web 的清空按钮仍重置同一 session 的 generation，任务及 herdr 原生 session 均不随此操作清理。
+2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。主入口私聊/Web聊天的 `/clear` 由 pi 选择 `session_clear`，当轮回复持久后归档旧 pi session、创建并选中新 pi session；旧回执仍可投递，已接收排队消息保留旧绑定并因归档拒绝执行，不改投新会话；后续消息进入新 session。任务群和普通群均不支持该操作。Web 的显式清空按钮仍重置同一 session 的 generation，任务及 herdr 原生 session 均不随此操作清理。
 
 ## 核心职责
 
@@ -53,7 +53,7 @@ flowchart LR
 
 `state.sqlite` 中业务对象、消息、工具操作、输入/输出回执分别保存。写操作先记录意图，再调用外部系统，再保存结果。`not_executed` 可在明确重试操作后继续；pending/unknown 保留待核对状态，不把超时当作重试许可。任务生命周期与消息送达是不同记录。飞书任务描述按内容和回执对账，不因每次轮询更新时间不同而重复 PATCH；未知写入先查询确认。关闭前再次读取并保存尚未轮询到的最终 transcript，包括执行器已退出但原生记录仍可读的情况。
 
-用户可见历史只接纳完整确认送达的答复。Web 先渲染，再提交 ACK；飞书分片逐条留回执。clear 增加 pi 会话代数并保留原文与回执，不清任务、不清 herdr session；旧代迟到结果不能回填新代。压缩只影响模型上下文，不删除原始消息。
+用户可见历史只接纳完整确认送达的答复。Web 先渲染，再提交 ACK；飞书分片逐条留回执。Web 显式清空按钮增加 pi 会话代数并保留原文与回执，不清任务、不清 herdr session；旧代迟到结果不能回填新代。压缩只影响模型上下文，不删除原始消息。
 
 默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`herdr-agent.pid`；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，项目页修改写 SQLite。不要靠编辑旧 JSON 更新已运行的新 catalog。
 

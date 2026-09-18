@@ -97,7 +97,7 @@ export class HerdrRuntime implements HerdrPort {
       return { ...ref, sessionId: agent.sessionId ?? ref.sessionId };
     } catch (error) {
       // Final transcript content survives a native agent exiting normally.
-      if (missing(error) && ref.sessionId) return ref;
+      if (missing(error) && (ref.sessionId || ref.transcriptReceipt)) return ref;
       throw error;
     }
   }

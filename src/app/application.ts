@@ -25,6 +25,7 @@ import { Inbox, type InboxRecord } from "./inbox.js";
 import { LegacyBridge } from "./legacy.js";
 import { createLogger } from "./logger.js";
 import { handleMessage, messageActor } from "./messages.js";
+import { notificationParticipants } from "./notifications.js";
 import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
 import { applicationTools } from "./tools.js";
@@ -365,7 +366,7 @@ export class Application implements ApplicationContext {
             prompt: JSON.stringify({
               event: kind,
               task,
-              participants: this.tasks.records.participants(task),
+              participants: notificationParticipants(this.tasks.records.participants(task)),
             }),
             tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
             signal: this.signal,

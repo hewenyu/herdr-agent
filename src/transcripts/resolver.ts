@@ -3,22 +3,24 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionRef } from "../core/types.js";
+import { receiptSource, type TranscriptSource } from "./receipt.js";
 
 export class TranscriptResolver {
   private readonly cache = new Map<string, { path?: string; checked: number }>();
   constructor(private readonly home = homedir()) {}
 
-  async resolve(ref: ExecutionRef): Promise<string | undefined> {
-    if (!ref.sessionId || !/^[A-Za-z0-9_-]+$/.test(ref.sessionId)) return;
+  async resolve(ref: ExecutionRef): Promise<TranscriptSource | undefined> {
+    if (!ref.sessionId) return receiptSource(this.home, ref);
+    if (!/^[A-Za-z0-9_-]+$/.test(ref.sessionId)) return;
     const key = `${ref.kind}:${ref.sessionId}`;
     const cached = this.cache.get(key);
-    if (cached?.path) return cached.path;
+    if (cached?.path) return { path: cached.path };
     if (cached && Date.now() - cached.checked < 2_000) return;
     const root = join(this.home, ref.kind === "claude" ? ".claude/projects" : ".codex/sessions");
     const path = await this.find(root, ref.sessionId, ref.kind === "claude", 0, { visited: 0 });
     if (this.cache.size > 1_024) this.cache.delete(this.cache.keys().next().value ?? "");
     this.cache.set(key, { path, checked: Date.now() });
-    return path;
+    return path ? { path } : undefined;
   }
 
   private async find(

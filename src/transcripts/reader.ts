@@ -36,8 +36,9 @@ export class TranscriptReader {
   constructor(private readonly resolver: TranscriptResolver) {}
 
   async page(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage> {
-    const path = await this.resolver.resolve(ref);
-    if (!path) return { entries: [], cursor: cursor ?? "" };
+    const source = await this.resolver.resolve(ref);
+    if (!source) return { entries: [], cursor: cursor ?? "" };
+    const { path, afterOffset = 0 } = source;
     const previous = decodeCursor(cursor);
     const file = await open(path, "r");
     try {
@@ -66,6 +67,7 @@ export class TranscriptReader {
         return { entries: [], cursor: encodeCursor(state), path };
       }
       state.offset = previous.offset > size ? 0 : previous.offset;
+      state.offset = Math.max(afterOffset, state.offset);
       state.skipPartial = previous.offset > size ? false : previous.skipPartial;
       const buffer = Buffer.alloc(Math.min(maxRead, size - state.offset));
       const { bytesRead } = await file.read(buffer, 0, buffer.length, state.offset);
@@ -90,16 +92,18 @@ export class TranscriptReader {
   }
 
   async sampleLastReply(ref: ExecutionRef): Promise<TranscriptEntry | undefined> {
-    const path = await this.resolver.resolve(ref);
-    if (!path) return;
+    const source = await this.resolver.resolve(ref);
+    if (!source) return;
+    const { path, afterOffset = 0 } = source;
     const file = await open(path, "r");
     try {
       const info = await file.stat();
-      let offset = Math.max(0, info.size - 256 * 1_024);
+      let offset = Math.max(afterOffset, info.size - 256 * 1_024);
+      if (offset > info.size) return;
       const buffer = Buffer.alloc(info.size - offset);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
       let data = buffer.subarray(0, bytesRead);
-      if (offset > 0) {
+      if (offset > afterOffset) {
         const end = data.indexOf(10);
         if (end < 0) return;
         data = data.subarray(end + 1);

@@ -201,7 +201,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "session_clear",
-      "用户手动发送/clear或明确要求开启全新主入口上下文时调用。飞书主机器人私聊：本轮回复持久后创建并选中新pi session，旧历史/回执/排队消息原绑定保留；飞书群禁止。Web等其他入口仍只重置当前session上下文代数。自动压缩无需调用此工具，任务和herdr执行session不变。",
+      "用户手动发送/clear或明确要求开启全新主入口上下文时调用。飞书主机器人私聊或Web主入口聊天：本轮回复持久后归档旧pi session并创建、选中新session；旧历史/回执保留，尚未执行的旧会话排队消息因归档拒绝，不改投新会话，本轮回复仍可送达；飞书群禁止。Web显式清空按钮另行重置当前session代数，勿与聊天命令混同。自动压缩无需调用此工具，任务和herdr执行session不变。",
       false,
       {},
       [],

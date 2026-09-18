@@ -31,7 +31,7 @@
 | B13 验收关闭 | close 先确认完成，再通知/结果事实与受管资源清理；外部勾选完成也收尾 | `tests/tasks/lifecycle.test.ts` 远端完成确认前不清理、外部完成、保留群策略、关闭前保存未轮询最终结果（含 agent 已退出的原生记录）；`tests/app/presentation.test.ts` 最终结果/关闭通知不受进度冷却影响；`tests/app/workflows.test.ts` 通知只读权限 | 通知模型选择与飞书群可见效果 |
 | B14 销毁重开 | destroy 不自动验收；destroyed 不可重开，代码保留 | `tests/tasks/lifecycle.test.ts` 销毁临时拒绝恢复、结束任务边界；`tests/projects/catalog.test.ts` 文件保留 | 关闭后资源实际状态人工核对 |
 | B15 失败恢复 | `storage/operations.ts`、`app/inbox.ts`、`outbox.ts`、任务恢复；未知写操作冻结 | `tests/storage/store.test.ts` ledger/回滚；`tests/app/conversations.test.ts` 输入去重/部分投递；任务测试覆盖重启和未知响应 | 进程硬断电、磁盘满、长期网络抖动未做混沌测试 |
-| B16 会话记忆 | pi 多 session、私聊自动压缩与 /clear 新session、Web代数clear、可见上下文、原文保留、HTTP摘要隔离 | `tests/runtime/entry-reset.test.ts` 新session延迟切换/旧队列回执/失败与群拒绝/压缩后隔离；`sessions.test.ts` 重启/clear/延迟确认；`memory.test.ts` 压缩失败/代数竞态；`migration/conversations.test.ts` 旧归档隔离 | 真实飞书新session切换与外部memory服务SLA仍须现场核验 |
+| B16 会话记忆 | pi 多 session、私聊自动压缩与 /clear 归档旧session并新建、Web代数clear、可见上下文、原文保留、HTTP摘要隔离 | `tests/runtime/entry-reset.test.ts` 旧session归档及新session延迟切换/旧队列拒绝不改绑/旧回执可投递/失败与群拒绝/压缩后隔离；`sessions.test.ts` 重启/clear/延迟确认；`memory.test.ts` 压缩失败/代数竞态；`migration/conversations.test.ts` 旧归档隔离 | 真实飞书新session切换与外部memory服务SLA仍须现场核验 |
 | B17 已有 agent 桥 | `app/legacy.ts` 只在 tasks 关闭时启用；选择/回复绑定/镜像/解除选择 | `tests/app/legacy.test.ts` 回复优先于选中、迁移绑定核验、解除后不复活、notify_chat 基线；herdr control 与 migration 测试覆盖底层 | 旧卡片完整恢复不应推定；必须重新核对目标 |
 | B18 长期部署升级 | `cli/service.ts`、flock/SQLite、SEA、deploy 与 CI；停止服务不杀全部 agent | 锁/存储/迁移测试；`tests/tasks/lifecycle.test.ts` 停机等待已提交结果、不启动后续 agent/任务、不关闭 herdr；`scripts/smoke.ts` 空目录独立运行 | Linux runner 尚未执行；真实服务管理器重启、长期保留增长 |
 

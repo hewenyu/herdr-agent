@@ -84,6 +84,7 @@ export async function provisionParticipant(
     records.saveParticipant(participant);
   }
   const ref = participant.execution;
+  ref.transcriptReceipt = participant.initialReceipt;
   if (!participant.started) {
     const agent = await operations.run(
       `${participant.id}:start`,
