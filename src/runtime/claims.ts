@@ -29,11 +29,17 @@ export function hasUnverifiedToolClaim(text: string): boolean {
 export function requiresWriteEvidence(text: string): boolean {
   const value = text.trim();
   if (/[?？]\s*$/u.test(value)) return false;
+  const withoutNegatedAction = removeNegatedAction(value);
   const writeAction =
-    /(?:创建|登记|发送|启动|安排|转交|已(?:创建|登记|发送|启动|安排|转交)|\b(?:created|registered|sent|started|scheduled|assigned|dispatched|launched|provisioned|initialized|initialised|succeeded)\b)/iu;
+    /(?:创建|新建|登记|发送|启动|安排|转交|拉群|建群|建立|已(?:创建|登记|发送|启动|安排|转交)|\b(?:create|created|schedule|scheduled|send|sent|start|started|assign|assigned|dispatch|dispatched|launch|launched|provision|provisioned|initialize|initialise|initialized|initialised|succeeded)\b)/iu;
   const business =
     /(?:项目|任务|群|参与者|Codex|Claude|目录|会话|session|project|task|chat|group|participant|workspace)/iu;
-  return writeAction.test(removeNegatedAction(value)) && business.test(value);
+  return (
+    (writeAction.test(withoutNegatedAction) ||
+      futureChineseIntent.test(withoutNegatedAction) ||
+      futureEnglishIntent.test(withoutNegatedAction)) &&
+    business.test(value)
+  );
 }
 
 const negatedEnglishAction =

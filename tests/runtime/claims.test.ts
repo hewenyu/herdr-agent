@@ -58,6 +58,8 @@ test("Chinese failure and negation statements are not completion claims", () => 
 test("action claims require a write fact even when a read-only lookup ran", () => {
   assert.equal(requiresWriteEvidence("task created after lookup"), true);
   assert.equal(requiresWriteEvidence("已创建任务 task-1"), true);
+  assert.equal(requiresWriteEvidence("我会拉群并创建任务"), true);
+  assert.equal(requiresWriteEvidence("I will create a project"), true);
   assert.equal(requiresWriteEvidence("任务已完成，群已关闭"), false);
   assert.equal(requiresWriteEvidence("当前任务状态是 review"), false);
 });
