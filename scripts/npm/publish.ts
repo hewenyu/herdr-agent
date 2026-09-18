@@ -9,53 +9,11 @@ export interface RegistryPort {
   publish(item: PackedPackage, distTag: Distribution["distTag"]): Promise<void>;
 }
 
-export interface PublishConfirmationOptions {
-  /** Number of registry reads allowed after npm accepts a publish. */
-  confirmationAttempts?: number;
-  /** Delay between reads while the registry processes the package. */
-  confirmationDelayMs?: number;
-  /** Injectable delay for deterministic tests. */
-  pause?: (delayMs: number) => Promise<void>;
-}
-
-const defaultConfirmationAttempts = 60;
-const defaultConfirmationDelayMs = 5_000;
-
-async function confirmPublished(
-  item: PackedPackage,
-  port: RegistryPort,
-  options: Required<PublishConfirmationOptions>,
-): Promise<void> {
-  for (let attempt = 0; attempt < options.confirmationAttempts; attempt++) {
-    const actual = await port.integrity(item.name, item.version);
-    if (actual === item.integrity) return;
-    if (actual !== undefined)
-      throw new Error(`Published integrity did not match: ${item.name}@${item.version}`);
-    if (attempt + 1 < options.confirmationAttempts)
-      await options.pause(options.confirmationDelayMs);
-  }
-  throw new Error(
-    `Published package was not visible after ${options.confirmationAttempts} registry checks: ${item.name}@${item.version}`,
-  );
-}
-
 /** Preflight every immutable version before the first write. The launcher is always last. */
 export async function publishVerified(
   distribution: Distribution,
   port: RegistryPort,
-  options: PublishConfirmationOptions = {},
 ): Promise<string[]> {
-  const confirmation = {
-    confirmationAttempts: options.confirmationAttempts ?? defaultConfirmationAttempts,
-    confirmationDelayMs: options.confirmationDelayMs ?? defaultConfirmationDelayMs,
-    pause:
-      options.pause ??
-      ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs))),
-  };
-  if (confirmation.confirmationAttempts < 1)
-    throw new Error("confirmationAttempts must be at least 1");
-  if (confirmation.confirmationDelayMs < 0)
-    throw new Error("confirmationDelayMs must not be negative");
   const missing: PackedPackage[] = [];
   for (const item of distribution.packages) {
     const existing = await port.integrity(item.name, item.version);
@@ -68,7 +26,6 @@ export async function publishVerified(
   const published: string[] = [];
   for (const item of missing) {
     await port.publish(item, distribution.distTag);
-    await confirmPublished(item, port, confirmation);
     published.push(item.name);
   }
   return published;
