@@ -10,9 +10,9 @@ pi handles this tool's business: arranging work, routing messages, querying stat
 
 ## Release and acceptance status
 
-The latest published release is [v0.3.7](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.7). The public entry package and all three native optional packages are published at the same version. Install the entry package with `npm install -g @yuebanlaosiji/myrix@0.3.7`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
+The latest published release is [v0.3.8](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.8). The public entry package and all three native optional packages are published at the same version. Install the entry package with `npm install -g @yuebanlaosiji/myrix@0.3.8`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
 
-The tool-claim recovery changes from PR #28 are included in `v0.3.7`. The root `package.json` is the private source package and remains at version `0.3.0`; it is not the published npm entry package. The local SEA was rebuilt from merge commit `452aae9` and restarted as `v0.3.7` (PID `31577`, SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`).
+The tool-claim recovery changes from PR #28 and the legacy tool-count guard from PR #31 are included in `v0.3.8`. The root `package.json` is the private source package and remains at version `0.3.0`; it is not the published npm entry package. The local SEA evidence below was rebuilt from merge commit `452aae9` and restarted as `v0.3.7` (PID `31577`, SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`).
 
 The restarted instance and `doctor --json` checks are healthy, with no active herdr-managed participants. The current real-entry recheck marker, `LIVE-001-R3-20260918`, has not been observed in the Feishu/state readbacks, and sender-side evidence is not available, so its task, group, participant, and outbox state cannot be confirmed. This remains an open live acceptance item rather than a completed scenario; the absence of a persisted marker does not prove that ingress succeeded or failed.
 
