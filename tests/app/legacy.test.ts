@@ -112,6 +112,51 @@ test("invalid old selection does not prevent explicit picker or detach controls"
   }
 });
 
+test("legacy picker does not offer bare herdr shell panes", async () => {
+  const h = await existing();
+  try {
+    h.herdr.agents.set("shell", {
+      paneId: "shell",
+      workspaceId: "w-shell",
+      status: "idle",
+      cwd: h.directory,
+      stateSeq: "1",
+      interactiveReady: true,
+      launchPending: false,
+    });
+    await h.app.legacy.handle(message("pick-managed", "/ls"));
+    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
+    assert.ok(elements);
+    assert.equal(elements.filter((item) => (item as { tag?: string }).tag === "button").length, 2);
+    assert.ok(elements.every((item) => !JSON.stringify(item).includes("shell")));
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy picker explains when no managed agent is available", async () => {
+  const h = setup(false);
+  h.config.tasks.enabled = false;
+  try {
+    h.herdr.agents.set("shell", {
+      paneId: "shell",
+      workspaceId: "w-shell",
+      status: "idle",
+      cwd: h.directory,
+      stateSeq: "1",
+      interactiveReady: true,
+      launchPending: false,
+    });
+    await h.app.legacy.handle(message("pick-empty", "/ls"));
+    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
+    assert.deepEqual(elements, [
+      { tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" },
+    ]);
+  } finally {
+    await h.close();
+  }
+});
+
 test("legacy notify_chat observes all existing agents without replaying their old outputs", async () => {
   const h = await existing();
   try {

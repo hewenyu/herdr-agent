@@ -24,21 +24,26 @@ export class LegacyBridge {
       chatId: message.chatId,
     });
     if (command === "/ls") {
-      const agents = await this.context.herdr.list();
+      // herdr can expose plain shell panes alongside managed Claude/Codex
+      // agents. The legacy bridge can only route to a managed agent, so do
+      // not render an action that would fail after the user clicks it.
+      const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
       const card = {
         schema: "2.0",
         body: {
-          elements: agents.flatMap((agent) => [
-            {
-              tag: "markdown",
-              content: `${agent.kind ?? "unknown"} · ${agent.paneId} · ${agent.status}\n${agent.cwd}`,
-            },
-            {
-              tag: "button",
-              text: { tag: "plain_text", content: "选择" },
-              value: { action: "select", paneId: agent.paneId },
-            },
-          ]),
+          elements: agents.length
+            ? agents.flatMap((agent) => [
+                {
+                  tag: "markdown",
+                  content: `${agent.kind ?? "unknown"} · ${agent.paneId} · ${agent.status}\n${agent.cwd}`,
+                },
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "选择" },
+                  value: { action: "select", paneId: agent.paneId },
+                },
+              ])
+            : [{ tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" }],
         },
       };
       await this.context.platform?.sendCard(
