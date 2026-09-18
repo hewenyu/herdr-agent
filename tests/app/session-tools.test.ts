@@ -15,6 +15,7 @@ test("Web chat clear archives and selects a new session while the explicit clear
         assert.ok(tool);
         const result = await tool.execute({}, input.actor);
         assert.equal((result as { mode: string }).mode, "new_session");
+        assert.equal((result as { confirmation: string }).confirmation, "CLEAR_NEW_SESSION_OK");
         assert.equal(h.app.sessions.get("owner", old.id).archived, false);
       }
       return { text: "已安排会话操作", messages: [] };

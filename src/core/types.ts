@@ -132,6 +132,8 @@ export interface Task {
   requirements: string;
   directories: string[];
   directoryMode: DirectoryMode;
+  /** Original task-authorized directories, frozen before worktree substitution. */
+  sourceDirectories?: string[];
   bypass: boolean;
   status: TaskStatus;
   participantIds: string[];

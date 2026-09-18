@@ -53,7 +53,13 @@ export interface HerdrPort {
   trustDirectory?(
     ref: ExecutionRef,
     expectedDirectory: string,
-    guard: { stateSeq: string; sessionId?: string; expiresAt: string; signal?: AbortSignal },
+    guard: {
+      stateSeq: string;
+      sessionId?: string;
+      expiresAt: string;
+      signal?: AbortSignal;
+      worktreeRoot?: string;
+    },
   ): Promise<void>;
   close(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
   transcript(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage>;

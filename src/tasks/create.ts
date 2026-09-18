@@ -91,6 +91,7 @@ export async function createTask(
     title: input.title,
     requirements: input.requirements,
     directories,
+    sourceDirectories: [...directories],
     directoryMode: input.directoryMode ?? "shared",
     bypass: catalog.snapshot().bypass,
     status: "queued",

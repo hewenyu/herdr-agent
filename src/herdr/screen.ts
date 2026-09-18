@@ -41,6 +41,7 @@ export function directoryTrustKeys(
   kind: AgentKind,
   raw: string,
   expectedDirectory: string,
+  authorizedWorktreeRoot?: string,
 ): string[] | undefined {
   if (!expectedDirectory.startsWith("/") || /[\r\n]/.test(expectedDirectory)) return;
   const lines = cleanScreen(raw)
@@ -71,7 +72,23 @@ export function directoryTrustKeys(
       )
         return;
     }
-    const question = lines.slice(start + 1, -3).join(" ");
+    let body = lines.slice(start + 1, -3);
+    if (body[0]?.startsWith("Note:")) {
+      if (!authorizedWorktreeRoot?.startsWith("/") || /[\r\n]/.test(authorizedWorktreeRoot)) return;
+      const questionStart = body.findIndex((line) => line.startsWith("Do you trust the contents"));
+      const rootStart = body.findIndex((line) => line.startsWith("/"));
+      if (
+        questionStart < 0 ||
+        rootStart < 0 ||
+        rootStart >= questionStart ||
+        body.slice(0, rootStart).join(" ") !==
+          "Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:" ||
+        body.slice(rootStart, questionStart).join("") !== authorizedWorktreeRoot
+      )
+        return;
+      body = body.slice(questionStart);
+    }
+    const question = body.join(" ");
     if (
       ![
         "Do you trust the contents of this directory?",

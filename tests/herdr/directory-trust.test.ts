@@ -281,3 +281,32 @@ test("a remaining trust menu or truncated readback cannot claim successful direc
     assert.equal(client.strokes.length, 1);
   }
 });
+
+test("Codex worktree repository-root note requires separately verified exact root authorization", async () => {
+  const screen = await readFile(
+    new URL("../fixtures/native/codex-worktree-directory-trust.txt", import.meta.url),
+    "utf8",
+  );
+  const cwd = "/Users/yueban/.herdr-agent/worktrees/task_d563c47aa704fbc208c6391606d1972e";
+  const root = "/Users/yueban/herder-agent-code/validation-worktree-0918";
+  assert.deepEqual(directoryTrustKeys("codex", screen, cwd, root), ["enter"]);
+  assert.equal(directoryTrustKeys("codex", screen, cwd), undefined);
+  assert.equal(directoryTrustKeys("codex", screen, cwd, "/other"), undefined);
+  assert.equal(
+    directoryTrustKeys("codex", screen.replace("  0918", "  0918\n  /other"), cwd, root),
+    undefined,
+  );
+  assert.equal(
+    directoryTrustKeys(
+      "codex",
+      screen.replace("Trusting will apply", "Execute will apply"),
+      cwd,
+      root,
+    ),
+    undefined,
+  );
+  assert.equal(
+    directoryTrustKeys("codex", screen.replace("  Note:", "  Approve command. Note:"), cwd, root),
+    undefined,
+  );
+});

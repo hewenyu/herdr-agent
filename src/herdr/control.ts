@@ -1,6 +1,7 @@
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { OperationError } from "../core/errors.js";
 import type { AgentSnapshot, Delivery, ExecutionRef } from "../core/types.js";
+import { taskWorktreeRoot } from "../projects/worktree-trust.js";
 import type { HerdrClient } from "./client.js";
 import { composerOccupied, verifyEcho, verifyReceipt } from "./echo.js";
 import { cleanScreen, directoryTrustKeys, showsDialog, trustKeys } from "./screen.js";
@@ -191,7 +192,13 @@ export class AgentControl {
   async trustDirectory(
     ref: ExecutionRef,
     expectedDirectory: string,
-    guard: { stateSeq: string; sessionId?: string; expiresAt: string; signal?: AbortSignal },
+    guard: {
+      stateSeq: string;
+      sessionId?: string;
+      expiresAt: string;
+      signal?: AbortSignal;
+      worktreeRoot?: string;
+    },
   ): Promise<void> {
     if (
       !isAbsolute(expectedDirectory) ||
@@ -218,12 +225,20 @@ export class AgentControl {
           throw new OperationError("stale_guard", "目录信任目标已变化或已越过启动阶段。");
         if (!isAbsolute(agent.cwd) || resolve(agent.cwd) !== resolve(expectedDirectory))
           throw new OperationError("directory_mismatch", "当前执行目录与授权目录不一致。");
+        if (
+          guard.worktreeRoot &&
+          (await taskWorktreeRoot(expectedDirectory, basename(expectedDirectory))) !==
+            guard.worktreeRoot
+        )
+          throw new OperationError("directory_mismatch", "任务 worktree 的原仓库归属已变化。");
         terminalId = agent.terminalId;
         return agent;
       };
       const before = await validate();
       const first = await this.client.read(ref.paneId, "visible", guard.signal);
-      const input = !first.truncated && directoryTrustKeys(ref.kind, first.text, before.cwd);
+      const input =
+        !first.truncated &&
+        directoryTrustKeys(ref.kind, first.text, before.cwd, guard.worktreeRoot);
       if (!input)
         throw new OperationError(
           "directory_trust_required",
@@ -261,6 +276,9 @@ export class AgentControl {
           !isAbsolute(after.cwd) ||
           resolve(after.cwd) !== resolve(expectedDirectory) ||
           after.terminalId !== terminalId ||
+          (guard.worktreeRoot &&
+            (await taskWorktreeRoot(expectedDirectory, basename(expectedDirectory))) !==
+              guard.worktreeRoot) ||
           (before.sessionId && after.sessionId !== before.sessionId) ||
           !["idle", "done", "blocked", "working"].includes(after.status)
         )
