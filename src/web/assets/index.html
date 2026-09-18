@@ -3,22 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
   <meta name="color-scheme" content="light">
-  <title>herdr · 会话记录</title>
+  <title>myrix · 本地工作台</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <main class="shell">
+  <div class="shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">h</span><div><span class="eyebrow">HERDR</span><h1>会话记录</h1></div></div>
-      <div class="connection-area"><span class="badge">仅查看</span><span id="connection" class="subtle" role="status">正在读取记录</span></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">m</span><div><span class="eyebrow">MYRIX LOCAL WORKSPACE</span><h1 id="page-title">会话记录</h1></div></div>
+      <div class="connection-area"><span class="badge">本地配置</span><span id="connection" class="subtle" role="status">正在读取记录</span></div>
     </header>
-    <p class="intro">查看飞书中的调度对话与处理记录。任务和会话操作请在飞书中完成。</p>
+    <p class="intro">查看会话记录并配置本地项目与模型连接。任务、讨论、审批和参与者控制仍在飞书中完成。</p>
+    <nav id="navigation" class="navigation" aria-label="工作台页面"></nav>
     <section id="filters" class="filters" aria-label="浏览范围"></section>
     <div id="feedback" role="status" aria-live="polite"></div>
     <section id="content" aria-label="会话记录"><div class="empty">正在读取会话历史…</div></section>
-    <footer>pi 调度 · herdr 托管 Claude / Codex</footer>
-  </main>
+    <footer>pi 调度 · herdr 托管 Claude / Codex · Web 仅维护本机配置</footer>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
 </body>
 </html>

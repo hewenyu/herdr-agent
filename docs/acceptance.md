@@ -6,9 +6,9 @@
 
 ## 当前范围纠正
 
-2026-09-18 最新范围纠正：真实业务全部从飞书私聊或任务群发起，Web 仅只读查看会话记录。网页可本地浏览、筛选历史，不改 active pi session 或服务端业务身份，不发消息、不建任务/项目、不审批/清理、不修改配置，无命令入口。只读实现已部署至 `a7e9ffb` 并完成限定 HTTP/Chrome 复验；旧 Web/API 业务证据保留，但不得算作飞书业务入口通过。
+2026-09-18 范围修正：真实业务全部从飞书私聊或任务群发起。Web 可查看、筛选会话记录，并维护本机项目（多目录，首目录保存时自动 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不发消息、不建任务、不管理参与者、不审批、不清理、不操作 pi session。配置写入由 CSRF/Origin/Host 和 action 白名单保护，旧 Web/API 业务证据不能算作飞书业务入口通过。
 
-业务通过必须同时对应真实飞书用户入站或群内交互、模型/工具和操作回执、herdr/远端资源事实及实际回读。旧 Web/API 创建、发送、切换、审批或清理只能作为历史实现与底层结果证据，不补足飞书入口。W01–W29 的业务扩展撤销，新的只读 Web 验收见矩阵 WR01–WR09。只读边界已实现，具体通过范围和未测分支按 WR01–WR09 分项记录，不代表业务全链路或全部页面分支验收通过。
+业务通过必须同时对应真实飞书用户入站或群内交互、模型/工具和操作回执、herdr/远端资源事实及实际回读。Web/API 的业务创建、发送、切换、审批或清理只能作为历史实现与底层结果证据，不补足飞书入口。W01–W29 的业务扩展撤销，新的 Web 配置与历史验收见矩阵 WR01–WR09。配置 action 白名单和历史浏览边界按 WR01–WR09 分项记录，不代表业务全链路或全部页面分支验收通过。
 
 E19 撤销范围前的历史样本（原失败保留，以下“仍未通过真实模型复验”指当时快照）：E19 仅通过 Web 创建了单 Claude 父讨论，未继续 Web 子开发。旧本地 API 维护清理后的独立回读已确认该任务 destroyed、远端完成、群解散、准确窗口不存在、群 outbox 无待发送，专用 Web session 已归档并恢复旧选择（`.cache/live/e19-cleanup-readback.json`，11 项通过）。该新增资源单独记账，不能计作真实飞书入口通过，也不能套用 E17 快照。“等待验收”被模型误转为 keepGroup:true 的 R-F 仍未通过真实模型复验。
 
@@ -48,14 +48,14 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 
 ## B：既有业务
 
-本表保留代码与历史自动化依据；其中 Web/API 写路径已撤销，不继续作为当前验收任务，相关业务改从飞书验证。已完成的旧浏览器测试不是新只读页面验收。
+本表保留代码与历史自动化依据；其中 Web/API 业务写路径已撤销，不继续作为当前验收任务，相关业务改从飞书验证。Web 配置写入和历史浏览按新的页面边界验收。
 
 | 场景 | 新实现与行为 | 自动化依据 / 实际覆盖 | 未覆盖的现场部分 |
 | --- | --- | --- | --- |
 | B01 安装授权 | `cli/setup.ts`、`onboarding/`；选对应用，保存凭据，消息和精确 nonce 卡片往返 | `tests/cli/run.test.ts` 复用/冲突/部分成功退出码；`tests/onboarding/` 权限、取消、超时、同应用与卡片身份 | 飞书租户真实注册、发布、收到私聊并点击 |
 | B02 启动补授权 | `cli/service.ts`；锁→迁移→Web→授权与 herdr 核验→唯一飞书连接 | `tests/cli/run.test.ts` 授权前 Web、网络错误不注册、同应用补授权、启动失败清理；`tests/storage/lock.test.ts` 排它与 inode | 真实 herdr 不兼容/断线、长连接恢复和权限传播 |
 | B03 本机诊断 | `cli/diagnostics.ts`、`host-checks.ts`；配置/协议/可执行文件/权限、hooks、继承环境、检测配置、可见内容宽度 | `tests/cli/run.test.ts` 只读且不建立平台连接；`tests/cli/host-checks.test.ts` hook/环境脱敏/manifest、不可读/短内容UNKNOWN、宽内容估算、doctor文本/JSON退出码 | hook 文件存在不证明执行器已信任；内容宽度是估算，不是终端物理尺寸保证 |
-| B04 已有项目 | `projects/catalog.ts` 与飞书 pi 项目工具（旧 Web 项目表单已撤销）；多目录有序、默认项目、独立任务快照 | `tests/projects/catalog.test.ts` 验证全部目录再初始化 Git；`tests/config/load.test.ts` JSON 覆盖与 bypass 继承 | 本机权限、具体执行器附加目录行为 |
+| B04 已有项目 | `projects/catalog.ts`、Web 项目配置页与飞书 pi 项目工具；多目录有序、默认项目、保存时主目录自动 Git 初始化、独立任务快照 | `tests/projects/catalog.test.ts` 验证全部目录再初始化 Git；`tests/config/load.test.ts` JSON 覆盖与 bypass 继承 | 本机权限、具体执行器附加目录行为 |
 | B05 新建项目 | 明确 `newProject`/项目创建动作；固定 home 子目录；删除仅移除登记 | `tests/projects/catalog.test.ts` 路径穿越/目录占用拒绝、Git、删除后原文件保留 | 无自动清理用户工作目录 |
 | B06 建立任务 | `tasks/create.ts`、`provision.ts`；完整要求/参与者/群/远端任务/资源绑定 | `tests/app/workflows.test.ts` pi 工具到任务编排；`tests/tasks/lifecycle.test.ts` 未知创建不重复、平台不可用仍保留建群/远端 task 意图、显式本地任务可运行；`tests/feishu/platform.test.ts` bot-owned 私群与幂等 key；`tests/cli/integration.test.ts` 现由离线飞书适配器驱动真实 pi 循环和 fake herdr，Web 仅读取历史；原 pi/Web 建任务属于历史证据 | 真实平台资源创建及 herdr UI |
 | B07 首次启动 | `herdr/lifecycle.ts`、`tasks/baseline.ts`；显示名映射合法原生名、明确名称拒绝not_executed；确认argv/身份，先基线再投递唯一初始回执 | `tests/herdr/lifecycle.test.ts` blocked 启动、明确 busy 重试、未知不重放、多目录 argv；`tests/tasks/lifecycle.test.ts` 不采前一轮回复 | 真实 CLI 版本提示、目录信任菜单 |
@@ -77,9 +77,9 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 
 | 场景 | 实现与默认行为 | 证据与边界 |
 | --- | --- | --- |
-| N01 工具总览 | 飞书中 pi `tasks_list/task_get` 查询事实；Web 只读会话记录 | `tests/app/workflows.test.ts`、`tests/runtime/engine.test.ts`；不能仅凭历史摘要报告实时完成 |
+| N01 工具总览 | 飞书中 pi `tasks_list/task_get` 查询事实；Web 配置与会话记录 | `tests/app/workflows.test.ts`、`tests/runtime/engine.test.ts`；不能仅凭历史摘要报告实时完成 |
 | N02 单人需求讨论 | discussion 任务，Claude/Codex 按专用提示处理业务；可无项目 | `tasks/create.ts`、`prompts.ts` 与任务流程测试；无项目使用独立目录，提示约束不等于文件系统沙箱 |
-| N03 双参与者群讨论 | 一个机器人署名，多实例 ID，有界轮转 | `tests/tasks/discussion.test.ts` 逐轮、预算、不可用暂停、未知 relay 不重放；`tests/app/workflows.test.ts` 同名拒绝歧义；`tests/cli/integration.test.ts` 现由离线飞书适配器驱动真实 pi、fake herdr 双参与者轮转，Web 只读结果；原 pi/Web 与 ACK 检查保留为历史证据。未据此完成真实双 CLI 群聊验收 |
+| N03 双参与者群讨论 | 一个机器人署名，多实例 ID，有界轮转 | `tests/tasks/discussion.test.ts` 逐轮、预算、不可用暂停、未知 relay 不重放；`tests/app/workflows.test.ts` 同名拒绝歧义；`tests/cli/integration.test.ts` 现由离线飞书适配器驱动真实 pi、fake herdr 双参与者轮转，Web 配置与记录结果；原 pi/Web 与 ACK 检查保留为历史证据。未据此完成真实双 CLI 群聊验收 |
 | N04 讨论后开发/评审 | 新关联任务 `parentTaskId`，要求快照，执行任务参与者串行；显式 worktree | `tests/tasks/lifecycle.test.ts` 验证冻结 parentContext 背景且本次用户要求优先，`tests/projects/catalog.test.ts` 验证 worktree；完整“业务结论→用户确认→实现→评审”需真实模型行为验收，不由字段存在推定 |
 | N05 切回 pi session | 独立选择与上下文恢复；编码资源不随选择变化 | `tests/runtime/sessions.test.ts` 重启/身份隔离，`tests/app/conversations.test.ts` durable inbox 固定接收时 session；归档任务会话不被选作活跃会话 |
 | N06 暂停继续 | pause 停未来调度；interrupt 单人/全部；归档只影响 pi；resume 重置已明确的轮转预算 | `tests/tasks/discussion.test.ts` 时间/轮数停止和恢复回执；迟到输出可记录，不成为新授权；暂停不等于终止运行中的编码工作 |

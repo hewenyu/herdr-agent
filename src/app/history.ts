@@ -58,6 +58,8 @@ export function historySnapshot(context: ApplicationContext, requestedOwner?: st
   }
   const result: WebState = {
     activeOwnerId: ownerId,
+    catalog: context.projects.snapshot(),
+    projects: context.projects.snapshot().projects,
     identities: allowed.map((id) => ({
       id,
       sessionCount: context.sessions.list(id, { archived: true }).length,
@@ -79,6 +81,21 @@ export function historySnapshot(context: ApplicationContext, requestedOwner?: st
     ),
     runtime: context.runtime,
     authorization: { status: context.authorization.status, message: context.authorization.message },
+    model: {
+      provider: context.config.ai.provider,
+      enabled: context.config.ai.enabled,
+      baseUrl: context.config.ai.baseUrl,
+      model: context.config.ai.model,
+      keyConfigured: Boolean(context.config.ai.apiKey),
+    },
+    config: {
+      ai: {
+        api: context.config.ai.provider,
+        baseUrl: context.config.ai.baseUrl,
+        model: context.config.ai.model,
+        apiKeyConfigured: Boolean(context.config.ai.apiKey),
+      },
+    },
   };
   const secrets = [
     context.config.feishu.appSecret,

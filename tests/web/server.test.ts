@@ -6,7 +6,8 @@ import { parseListen } from "../../src/web/security.js";
 import { startWeb } from "../../src/web/server.js";
 
 const assets: WebAssets = {
-  "index.html": '<html><script src="/app.js"></script></html>',
+  "index.html":
+    '<html><meta name="csrf-token" content="__CSRF_TOKEN__"><script src="/app.js"></script></html>',
   "styles.css": "body{color:green}",
   "app.js": 'console.log("workspace")',
 };
@@ -14,12 +15,17 @@ const assets: WebAssets = {
 function backend() {
   let listener: (() => void) | undefined;
   let released = false;
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
   const port: WebBackend = {
     history: (ownerId) => ({
       ...(ownerId === undefined ? {} : { activeOwnerId: ownerId }),
       sessions: [],
       authorization: { status: "setup_required" },
     }),
+    dispatch: async (action, input) => {
+      calls.push({ action, input });
+      return { action, input };
+    },
     subscribe: (callback) => {
       listener = callback;
       return () => {
@@ -27,7 +33,7 @@ function backend() {
       };
     },
   };
-  return { port, notify: () => listener?.(), released: () => released };
+  return { port, calls, notify: () => listener?.(), released: () => released };
 }
 
 test("loopback address validation rejects network listeners", () => {
@@ -50,7 +56,8 @@ test("serves read-only assets and owner-scoped history with CSP and no cache", a
     const response = await fetch(web.url);
     const html = await response.text();
     assert.equal(response.status, 200);
-    assert.equal(html, assets["index.html"]);
+    assert.match(html, /name="csrf-token" content="[a-f0-9]{64}"/);
+    assert.doesNotMatch(html, /__CSRF_TOKEN__/);
     assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
@@ -104,7 +111,7 @@ test("rejects Host rebinding and cross-origin state reads", async () => {
   }
 });
 
-test("all write methods and historical action names are unavailable", async () => {
+test("configuration writes require CSRF and business actions stay in Feishu", async () => {
   const mock = backend();
   let reads = 0;
   const history = mock.port.history;
@@ -114,44 +121,67 @@ test("all write methods and historical action names are unavailable", async () =
   };
   const web = await startWeb({ listen: "127.0.0.1:0", backend: mock.port, assets });
   try {
+    const html = await (await fetch(web.url)).text();
+    const csrf = html.match(/name="csrf-token" content="([^"]+)"/)?.[1];
+    assert.ok(csrf);
+    const write = (action: string, input: Record<string, unknown> = {}) =>
+      fetch(`${web.url}/api/actions`, {
+        method: "POST",
+        headers: {
+          Origin: web.url,
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+        },
+        body: JSON.stringify({ action, input }),
+      });
+    assert.equal((await write("project.save", { name: "demo" })).status, 200);
+    assert.equal((await write("config.ai", { model: "test" })).status, 200);
+    assert.deepEqual(
+      mock.calls.map(({ action }) => action),
+      ["project.save", "config.ai"],
+    );
     for (const action of [
-      "identity.select",
       "session.create",
-      "session.select",
-      "session.archive",
-      "session.clear",
-      "session.restore",
       "chat.send",
-      "chat.ack",
       "task.create",
       "task.action",
       "participant.answer",
-      "participant.send",
-      "participant.interrupt",
-      "project.save",
-      "config.ai",
-    ])
-      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-        const response = await fetch(`${web.url}/api/actions`, {
-          method,
-          headers: {
-            Origin: web.url,
-            "Content-Type": "application/json",
-            "X-CSRF-Token": "old-page-token",
-          },
-          body: JSON.stringify({ action, input: { text: "/clear" } }),
-        });
-        assert.equal(response.status, 405, `${method} ${action}`);
-        assert.equal(response.headers.get("allow"), "GET");
-        assert.deepEqual(await response.json(), {
-          ok: false,
-          error: {
-            code: "read_only",
-            message: "Web 仅供查看会话记录。",
-            outcome: "not_executed",
-          },
-        });
-      }
+      "approval.answer",
+    ]) {
+      const response = await write(action, { text: "/clear" });
+      assert.equal(response.status, 403, action);
+      assert.equal((await response.json()).error.code, "web_action_forbidden");
+    }
+    assert.equal(
+      (
+        await fetch(`${web.url}/api/actions`, {
+          method: "POST",
+          headers: { Origin: web.url, "Content-Type": "application/json", "X-CSRF-Token": "wrong" },
+          body: JSON.stringify({ action: "project.default", input: { name: "demo" } }),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetch(`${web.url}/api/actions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+          body: JSON.stringify({ action: "project.default", input: { name: "demo" } }),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetch(`${web.url}/api/actions`, {
+          method: "POST",
+          headers: { Origin: web.url, "X-CSRF-Token": csrf },
+          body: JSON.stringify({ action: "project.default", input: { name: "demo" } }),
+        })
+      ).status,
+      400,
+    );
     assert.equal(
       (await fetch(`${web.url}/api/state`, { method: "POST", body: "not-json" })).status,
       405,
