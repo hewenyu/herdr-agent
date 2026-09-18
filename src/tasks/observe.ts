@@ -2,6 +2,7 @@ import { OperationError } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
 import type { AgentSnapshot, Participant, Task, TranscriptEntry } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { recoverInitialInputs } from "./input-recovery.js";
 import { relayDiscussion } from "./send.js";
 
 interface PendingOutput {
@@ -18,6 +19,7 @@ interface PendingRelay {
 
 export async function observeTask(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
+  await recoverInitialInputs(context, task);
   await flushPendingTaskEvents(context, task);
   if (
     task.discussion.mode === "round_robin" &&

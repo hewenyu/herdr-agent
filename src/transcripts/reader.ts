@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import { OperationError } from "../core/errors.js";
 import type { ExecutionRef, TranscriptEntry, TranscriptPage } from "../core/types.js";
+import { readInitialInput } from "./input.js";
 import { parseLines } from "./parser.js";
 import type { TranscriptResolver } from "./resolver.js";
 
@@ -34,6 +35,11 @@ const encodeCursor = (value: Cursor) => Buffer.from(JSON.stringify(value)).toStr
 
 export class TranscriptReader {
   constructor(private readonly resolver: TranscriptResolver) {}
+
+  async initialInput(ref: ExecutionRef, receipt: string): Promise<string | undefined> {
+    const source = await this.resolver.resolve({ ...ref, transcriptReceipt: receipt });
+    return source ? readInitialInput(source, ref, receipt) : undefined;
+  }
 
   async page(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage> {
     const source = await this.resolver.resolve(ref);

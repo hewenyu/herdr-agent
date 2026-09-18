@@ -3,10 +3,12 @@ import { now } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { recoverInitialInputs } from "./input-recovery.js";
 import { participantPrompt, taskDescription } from "./prompts.js";
 
 export async function provision(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
+  await recoverInitialInputs(context, task);
   const { records, platform, operations, catalog } = context;
   task.status = "starting";
   records.save(task);

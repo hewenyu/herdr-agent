@@ -127,3 +127,17 @@ CLI 逐入口的旧构建实测见 [CLI 证据](live-cli-evidence-2026-09-18.md)
 `node --import tsx --test tests/runtime/*.test.ts tests/app/session-tools.test.ts tests/app/conversations.test.ts` 共 34 项通过，涵盖旧队列拒绝、不重复建新 session、旧 ACK 可达、Web 选择清除归档目标、后续消息进入新会话、显式清空按钮保持原语义、失败不归档和群聊拒绝。此项为真实模型加内存效果 **R-部分**；新构建真实飞书入站仍须复验，不抹去 E09 的失败。
 
 `scripts/live/discussion-notice-probe.ts` 使用真实 `kimi-k2.5` / `openai-responses` 和三组合成讨论记录，无工具与外部副作用。缺输出且 0/1 轮场景没有虚构双方发言、讨论结束或群内结果；单方输出、另方未轮到场景明确区分；1/1 轮暂停场景只称自动暂停，未称已验收。修订提示词后不再因未采集输出建议补发/重新触发。`tests/app/notification-facts.test.ts` 验证真实 Application 通知上下文包含输出是否存在、初始投递、原生 session ID 和轮次事实。通知探针不证明真实 Claude transcript 采集与双人轮转已通过；模型措辞仍需在生产复验。
+
+## E11：主入口 clear、自动压缩、并发与关联评审/测试
+
+本轮运行基线为 `54ae61622da1bf8001c75de81a356546d3a924a4`，主验收核对 PID `91716`、macOS arm64 SEA SHA256 `c41667b0848c3c80f0234a14c035d710e50ae7934d482678a754cfeaf687d1dd`，263 项测试及 macOS arm64、Linux arm64/amd64 三平台 CI 全部通过。此处构建与 CI 信息由主验收提供；以下各业务结论分别来自实际记录，不将后续未提交修复继承为该构建已通过。
+
+| 场景与证据 | 实际观察 | 判定及边界 |
+| --- | --- | --- |
+| 主私聊 `/clear`：`.cache/live/private-clear-success.json`，01:06 UTC | 真实飞书消息 `om_x100b65fc9325a4b4b175771a614d091` 触发一次 `session_clear`；旧 `legacy_s_bc25…` 已归档、generation=0，原 26 条历史保留，加本轮输入/答复共 28 条；选择新 `s_7539947a…`。后续消息进入新会话，实际回复 `CLEAR_NEW_SESSION_OK`，输入与回复均有 delivered 回执 | **R-P：该主私聊归档、切换与后续送达链路。** E09 旧历史拒绝的 R-F 原样保留；旧队列与失败边界仍引用离线测试，不把本次正常链路扩张为全部异常通过 |
+| Web 聊天 `/clear`：`.cache/live/web-clear-success.json`，01:09 UTC | 实际模型/API 操作后旧 `s_24ce5cfb…` 已归档、generation=0，新 `s_0b69151e…` 被选中且历史为空 | **R-P：服务端归档与新会话效果；R-部分：Web 完整链路。** 回复为 prepared，`visibilityAcknowledged=false`；没有伪造 ACK，不能标浏览器已渲染或用户已见 |
+| 自动压缩：`.cache/live/web-compaction.json`，01:03–01:05 UTC | 正在运行的 Web API、真实 `kimi-k2.5`、contextTokens=50000；4 批合成材料共 132052 bytes，第 4 批产生 1213-byte 摘要和 cursor。回忆答复保留验收代号与两条禁止外部操作的约束；原输入完整、共 10 条消息保存，其他 session 历史/摘要无代号串入；无业务工具调用 | **R-P：该配置下自动压缩、原文与约束保留、session 隔离。** 所有 API 答复仍 sending，未调用 chat.ack；不是浏览器可见性或真实长期业务质量验收。最初超 12000 字符输入明确 not_executed 后修正，专用会话验收后已归档 |
+| 双 pi session 并发：`.cache/live/parallel-pi-queries.json`，00:55 UTC | 两个真实模型 `pi.turn_started` 日志相差 3ms，处理区间重叠，各实际调用 `projects_list` 一次并完成 | **R-P：独立 session 的该只读查询并发。** 答复 prepared、未 ACK；不等同多项目开发全部调度/恢复已过。记录未固定 commit/PID，不将该较早记录擅自归属于 54ae616 |
+| 关联评审与测试：`.cache/live/related-review-test.json`，01:11 UTC | review 任务 `task_1a332…` 保存父讨论的要求、Claude 发言及参与者快照，Codex `w18:p1` 输出明确未执行验收；test 任务 `task_d65e…` 的 Codex `w19:p1` 实际执行只读 Python 断言，工具回执 exit_code=0，项目文件 hash 未变。两任务结果均在群观察到，均停在 review | **R-P：本次父讨论快照→评审及独立只读测试。** 关联评审不是父讨论已达成共识，也不是用户已验收；不代替讨论→开发、worktree、完整恢复或浏览器表单操作验收 |
+
+双人讨论继续记 **R-F/待修复复验**：Claude 输出现已恢复，但第二参与者首次转交缺少 receipt，随后状态为 unknown。正在以原 user 正文与 fingerprint 匹配进行只读确认和安全恢复；缺少确认前不得重发，也不能把双方进程 done、单方输出、关联评审或上述 263 项测试当作完整轮转通过。E09/E10 的历史失败与探针边界保留。

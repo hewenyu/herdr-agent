@@ -181,3 +181,36 @@ test("local web task access keeps owner and task boundaries without a Feishu gro
     f.close();
   }
 });
+
+test("long first relay supplies its durable receipt while subsequent inputs do not reuse it", async () => {
+  const f = setup();
+  const received: Array<string | undefined> = [];
+  const send = f.herdr.send.bind(f.herdr);
+  f.herdr.send = async (ref, text, options?: { receipt?: string }) => {
+    received.push(options?.receipt);
+    return send(ref, text);
+  };
+  try {
+    const task = await f.service.create(actor, {
+      ...discussion,
+      requirements: "较长讨论上下文".repeat(500),
+      discussion: { maxRounds: 2 },
+    });
+    await f.service.tick();
+    const first = f.service.get(actor, task.id).participants[0];
+    const second = f.service.get(actor, task.id).participants[1];
+    assert.ok(first?.execution);
+    assert.ok(second?.execution);
+    f.herdr.finish(first.execution.paneId, "方案细节".repeat(500));
+    await f.service.tick();
+    assert.equal(received[1], second.initialReceipt);
+    assert.ok((f.herdr.sends[1]?.text.length ?? 0) > 5000);
+    assert.ok(f.herdr.sends[1]?.text.includes(second.initialReceipt));
+    f.herdr.finish(second.execution.paneId, "第二轮反馈");
+    await f.service.tick();
+    assert.equal(received.length, 3);
+    assert.equal(received[2], undefined);
+  } finally {
+    f.close();
+  }
+});

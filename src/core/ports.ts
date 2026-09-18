@@ -58,6 +58,8 @@ export interface HerdrPort {
   close(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
   transcript(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage>;
   sampleLastReply(ref: ExecutionRef): Promise<TranscriptEntry | undefined>;
+  /** Exact native user input, with receipt and session/cwd identity verified read-only. */
+  initialInput?(ref: ExecutionRef, receipt: string): Promise<string | undefined>;
 }
 
 export interface RemoteTask {

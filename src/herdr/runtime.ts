@@ -107,6 +107,23 @@ export class HerdrRuntime implements HerdrPort {
   async sampleLastReply(ref: ExecutionRef) {
     return this.transcripts.sampleLastReply(await this.liveRef(ref));
   }
+
+  async initialInput(ref: ExecutionRef, receipt: string): Promise<string | undefined> {
+    const before = await this.control.current(ref);
+    if (before.cwd !== ref.cwd || (ref.sessionId && ref.sessionId !== before.sessionId)) return;
+    const text = await this.transcripts.initialInput(
+      { ...ref, sessionId: before.sessionId },
+      receipt,
+    );
+    const after = await this.control.current(ref);
+    if (
+      after.cwd !== before.cwd ||
+      after.sessionId !== before.sessionId ||
+      after.terminalId !== before.terminalId
+    )
+      return;
+    return text;
+  }
 }
 
 function missing(error: unknown): boolean {

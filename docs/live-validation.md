@@ -36,14 +36,15 @@
 | LIVE-004 / E05：阶段事实错误 | 创建刚 accepted/queued 就声称远端资源和投递完成；welcome 未启动即称已开始；blocked 称仍在处理中；用户完成后通知仍称等待验收 | **R-F 历史保留**；提示词/工具描述和通知 participants 已修。E02/E03 真实模型+合成回执/事件通过，修正后真实服务同阶段复验 U |
 | REST-001/002 / E04 | 第二轮真实创建任务/群、发消息、更新描述、完成/重开/再完成、解散，各有 GET；两轮测试群已清理、任务已完成 | 独立 REST 阶段 R-P；成员查询权限不足仍 R-F，不能宣称整轮通过或全部 TaskService 生命周期通过 |
 | MODEL-001 / E01–E03 | 15 次主协议首步决策、1 次另一协议查询、1 次修订后首步；2 场景×2 轮状态追问、welcome/blocked/completed 通知 | 仅模型决策/事实措辞 R-P；原工具未执行，不能充当外部资源或执行器验收 |
+| E11：54ae616 主入口与任务补验 | 263测试/三平台CI；真私聊clear及后续送达，Web/API clear与50000预算自动压缩，双模型查询并发，关联review/只读test | 各记录限定步骤 R-P，Web渲染未ACK、双讨论receipt unknown仍未过；旧R-F保留，见E11具体边界 |
 
-**已确认群策略：新任务 completed 确认后默认自动解散群，明确 keepGroup:true 保留，review 不触发；明确保留证据继续有效；旧默认/未知来源保留值在收尾时采用解散，不批量改写活跃旧任务。** complete（含飞书手动完成）默认经herdr清对应执行器；任意群解散也清执行资源。明确keepExecution:true保留执行器时，有群任务须同时keepGroup:true；解散前通知和清理回执分别核验，不能把登记完成当成群已删除。明确配置retain或显式操作证据仍保留；groupRetentionSource区分explicit/default/legacy，旧未知任务进入完成/关闭时按默认解散。新增策略实现/验证中，不把旧 REST 删除证据充当新自动链路通过。
+**已确认群策略：新任务 completed 确认后默认自动解散群，明确 keepGroup:true 保留，review 不触发；明确保留证据继续有效；旧默认/未知来源保留值在收尾时采用解散，不批量改写活跃旧任务。** complete（含飞书手动完成）默认经herdr清对应执行器；任意群解散也清执行资源。明确keepExecution:true保留执行器时，有群任务须同时keepGroup:true；解散前通知和清理回执分别核验，不能把登记完成当成群已删除。明确配置retain或显式操作证据仍保留；groupRetentionSource区分explicit/default/legacy，旧未知任务进入完成/关闭时按默认解散。E09 已有两条真实默认完成收尾及外部解散轮询回收证据；旧 REST 删除不替代它们，例外与未知结果仍分项验收。
 
-**已确认连续创建要求：不同项目和 pi session 独立推进。** 一项任务运行或 blocked 时，后续任务仍须登记、创建资源并启动执行器；真实至少三项目及多 session 场景正在安排，未回读的步骤不提前通过。
+**已确认连续创建要求：不同项目和 pi session 独立推进。** 一项任务运行或 blocked 时，后续任务仍须登记、创建资源并启动执行器；E09 已有 A/C 独立产物，E11 双 pi session 实际只读查询并发通过；B 双人讨论仍失败，不能把局部并发扩张为全部任务调度通过。
 
-**已确认主入口会话语义：私聊自动压缩，主入口私聊/Web聊天的 /clear 归档旧 pi session 并开启新 session。** 当轮回复持久后归档与切换，旧历史/回执保留；旧排队消息不改绑且因归档拒绝执行，当前 clear 答复仍可投递；群聊拒绝，Web 显式清空按钮继续使用原 session generation 重置。E07 早期内存探针通过；后续真实私聊因旧拒绝污染未调用工具，记 R-F，修复后真实模型只读旧历史的内存重放通过，飞书现场仍须复验。
+**已确认主入口会话语义：私聊自动压缩，主入口私聊/Web聊天的 /clear 归档旧 pi session 并开启新 session。** 当轮回复持久后归档与切换，旧历史/回执保留；旧排队消息不改绑且因归档拒绝执行，当前 clear 答复仍可投递；群聊拒绝，Web 显式清空按钮继续使用原 session generation 重置。E09 旧拒绝污染的 R-F 保留；E10 只读旧历史探针通过后，E11 真实飞书归档切新及后续送达通过。Web/API归档切新和实际50000预算自动压缩通过，未据API响应伪造浏览器ACK。
 
-**已确认审批规则：保留现有 Bypass，只处理仍出现的确认。** 当前任务绑定工作目录的启动信任由专用 pi 流程识别并经受限工具确认；其余确认必须任务群内用户选择。目录范围含已有项目新参与者、worktree、无项目讨论，不限新建项目。新自动流程仍需独立真实验收，不能用既有手动信任记录代替。
+**已确认审批规则：保留现有 Bypass，只处理仍出现的确认。** 当前任务绑定工作目录的启动信任由专用 pi 流程识别并经受限工具确认；其余确认必须任务群内用户选择。目录范围含已有项目新参与者、worktree、无项目讨论，不限新建项目。E09 全新目录的 Claude/Codex 专用自动信任已有真实通过；其余确认菜单和全部异常仍单独验收，既有手动记录不替代自动证据。
 
 优先顺序：先修 LIVE-001 并证明“真实请求→自主工具决策→持久任务→真实资源→结果可见”；再逐项核验入口差异、身份、生命周期和恢复。发现新问题时登记缺陷及关联场景，不用整体 tests 数字替代单项关闭。
 
@@ -90,24 +91,24 @@
 | B03 | `doctor [--json]`、debug ls/screen/transcript 分别核对实际宿主结果 | 不启动编码、不建立第二平台长连接；不可读报 unknown；脱敏，宽度仅估算 | I；O-H cli/host-checks | U |
 | B04 | 登记已有项目，验证全部有序目录与默认 agent/default project；任务冻结目录快照 | F1/F2；第二目录无效不先改首目录；A1/A2；bypass仅影响新执行器 | I；O-H projects/config | R-部分：E05 新项目目录和 Codex 配置进入任务；已有多目录/default/冻结快照各组合 U |
 | B05 | 明确新项目指令→创建目录/Git/登记；普通新任务只复用项目；连续不同项目独立创建 | 名称穿越/占用拒绝；F3/F4；删除登记不删代码 | I；O-H projects；LIVE-001 | R-P：E05 Web 新项目创建及 HTML 产物；LIVE-001 飞书调度历史 R-F；穿越/占用/恢复现场 U |
-| B06 | 讨论/开发/评审/测试四类任务各创建；关联要求、参与者、可选群/远端任务；三项目中一项运行/一项blocked不阻塞后续登记 | F1/F3/F4、A1/A2、D1；无平台时保留用户建群意图；显式本地任务能运行 | I；O-H app/tasks/feishu/cli integration | R-部分：E05 开发任务、真实飞书任务/群；E01 discussion 仅首步决策通过，另外类型与异常现场 U |
-| B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt；前任务blocked不阻塞其它执行器启动 | 保留 Bypass；仅当前任务绑定启动目录信任可由专用pi确认，其余群用户选；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | R-P：E05 真实 Codex 手动目录信任后执行并产物；新 pi 自动信任、Claude、多目录/仅一次投递的完整现场 U；保留 Bypass |
+| B06 | 讨论/开发/评审/测试四类任务各创建；关联要求、参与者、可选群/远端任务；三项目中一项运行/一项blocked不阻塞后续登记 | F1/F3/F4、A1/A2、D1；无平台时保留用户建群意图；显式本地任务能运行 | I；O-H app/tasks/feishu/cli integration | R-部分：E05 开发；E11 真实关联review与只读test及群结果通过；讨论已恢复Claude输出，但第二参与者firstsend缺receipt→unknown，完整讨论未过；异常现场未全验 |
+| B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt；前任务blocked不阻塞其它执行器启动 | 保留 Bypass；仅当前任务绑定启动目录信任可由专用pi确认，其余群用户选；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | R-部分：E09 新目录Claude/Codex专用pi自动信任通过、保留Bypass；E05 Codex开发产物通过。双讨论第二人首发回执恢复未过，多目录/仅一次投递完整组合 U |
 | B08 | 在绑定群续聊/引用、非任务群 @机器人、修订/否定/含糊输入各一例 | A1/A2/A3，F6；完整约束转交、unsupported资源不虚构；D1/D3 | I；O-H app/conversations、runtime | U |
 | B09 | 多 owner/多任务/多 session 查未结束和 all，核对真实状态与链接 | A1/A2、F6；任务不存在不得编造；query readError不可说运行正常 | I；O-H app/tasks/runtime；LIVE-002 | R-部分：E02 查询后阶段答复正确（合成回执）；LIVE-001 历史 R-F；真实飞书入站查询进行中，Web owner 组合 U/D |
-| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-P：E05 Codex 最终结果群 GET、真实文件、远端描述核对；阶段通知历史 R-F，修正后真实通知/Claude/恢复 U |
+| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-部分：E05 Codex文件/群结果/描述通过；E11 Claude输出已恢复，关联review/test群结果观察到；阶段通知历史R-F保留，双讨论unknown恢复及完整投递/迟到组合未过 |
 | B11 | 目录信任以外的实际 blocked→任务群用户选项→Guard验证→执行；单人/all中断 | A1/A3；回调竞态/双击/过期/换现场；显示裁剪不改完整Guard；D1/D3 | I；O-H approvals/herdr/legacy fixtures | R-部分：E05 真实 Codex 手动信任处理后继续；不等于新自动信任或群内用户卡片点击。其余菜单群审批/过期/替换现场 U |
-| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description | R-P：E04 真实 REST complete/reopen 及 GET；新默认TaskService completed→通知→解散及明确保留/旧快照/review不解散/未知结果恢复仍 U |
-| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E04 REST 完成和解散群已回读；真实 TaskService close 顺序、外部勾选与最后结果收尾 U |
-| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E04 仅测试群解散可确认；TaskService destroy、pane/workspace 清理和恢复 U |
+| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description | R-P：E09 群文字确认与飞书手动完成后herdr关闭、最终回复/解散前通知送达、群GET dissolved顺序均实证；明确保留/旧快照/unknown等完整组合仍未全验 |
+| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E09 外部勾选完成的实际收尾顺序通过；显式close及最后结果/未知同步等完整组合仍 U |
+| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E09 外部群解散后只清对应pane、本地destroyed且远端未冒充验收通过；显式destroy及部分失败恢复仍未全验 |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | U |
-| B16 | session创建/选择/重命名/归档/恢复；私聊自动压缩及主入口/clear归档旧session并新建；Web按钮generation清空；provider切换 | A1/A2；失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P entry-reset三边界测试 | R-部分：E01首步、E05独立session；E07真实模型+内存服务压缩/clear通过，真实飞书切换及跨入口完整组合 U |
+| B16 | session创建/选择/重命名/归档/恢复；私聊自动压缩及主入口/clear归档旧session并新建；Web按钮generation清空；provider切换 | A1/A2；失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P entry-reset三边界测试 | R-部分：E11 真飞书/clear归档旧开新、后续正确回复delivered；Web/API clear及50000预算自动压缩/原文/隔离通过；E09旧R-F保留；Web渲染ACK、外部memory/provider及完整异常组合未全验 |
 | B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration | U |
-| B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | 运行启动证据需补；长期运行/Linux现场 U |
+| B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | R-部分：E11 54ae616运行PID91716及SEA hash已核对，263测试和三平台CI通过；较早CLI证据单列。Linux真实宿主/长期故障/全部升级回退 U |
 | N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | R-部分：E01 查询自主调用 tasks_list；E02 多轮查询事实措辞通过（合成回执）；真实飞书查询进行中，LIVE-001 历史 R-F |
 | N02 | 明确仅讨论→无项目或已有项目→单Claude/Codex参与需求讨论 | pi不能自行替项目写方案；禁止编码的要求完整保留；D3/D4；F6 | I；O-H tasks/prompts | R-部分：E01 创建只讨论任务的参数含 discussion/Claude/Codex；真实单参与者讨论与禁止编码行为 U |
-| N03 | Claude+Codex同群轮流讨论，署名可辨、ID可定位；同种多实例另测 | 手动/轮询、轮数/时限、迟到输出、同名拒歧义、未知relay暂停；F3/A2/D4 | I；O-H discussion/app/cli integration | R-部分：E01 仅证实真实模型安排两类参与者；实际双方群内多轮/轮转/同种实例 U |
-| N04 | 讨论→用户明确转开发/评审→`parentTaskId`冻结上下文→共享目录或worktree | 后续修订优先、不漏禁止事项、不读错owner；完整真实模型交接；F6/A1/A3 | I；O-H lifecycle/projects | U |
-| N05 | 主入口切换pi session后继续；多个pi session并行创建不同项目，运行/blocked互不拖住；herdr原生session保持托管 | 已接收排队消息不改道；任务群不可切换；A1/A2，归档与clear分别验证 | I；O-H runtime/app | R-部分：E01 session_select 首步正确；实际切换、队列绑定、归档恢复和 herdr session 保持现场 U |
+| N03 | Claude+Codex同群轮流讨论，署名可辨、ID可定位；同种多实例另测 | 手动/轮询、轮数/时限、迟到输出、同名拒歧义、未知relay暂停；F3/A2/D4 | I；O-H discussion/app/cli integration | R-F/待修复复验：E09丢Claude输出和误报结束；E11 Claude输出已恢复，但第二参与者firstsend缺receipt→unknown。完整双方轮转未通过，禁止以done或关联评审替代 |
+| N04 | 讨论→用户明确转开发/评审→`parentTaskId`冻结上下文→共享目录或worktree | 后续修订优先、不漏禁止事项、不读错owner；完整真实模型交接；F6/A1/A3 | I；O-H lifecycle/projects | R-部分：E11 真实parentContext冻结父讨论要求/发言/参与者，Codex关联review完成并有群结果；讨论→开发、worktree、修订与owner完整组合 U |
+| N05 | 主入口切换pi session后继续；多个pi session并行创建不同项目，运行/blocked互不拖住；herdr原生session保持托管 | 已接收排队消息不改道；任务群不可切换；A1/A2，归档与clear分别验证 | I；O-H runtime/app | R-部分：E11 真私聊clear切换后继续成功；两个真实pi session起始相差3ms且各projects_list，处理区间重叠。只读并发不代表多项目创建/blocked/恢复全组合通过 |
 | N06 | pause停止后续调度，interrupt影响选定执行器，resume恢复有界轮转 | pause不宣称已停止正在编码；迟到结果保留不转发；F3/F4/D4 | I；O-H discussion/lifecycle | U |
 | N07 | 结束讨论但保留关联开发、分别完成/关闭与保留群 | 不级联未授权任务，不由pi代判业务结论；A2/A3/D4 | I；O-H lifecycle | U |
 
@@ -136,7 +137,7 @@
 
 ## 6. Web 全入口矩阵
 
-I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/` 与历史Chromium假后端QA，不能据此认定每个真实表单已测。除 E05 的 Web 新建会话、chat.send 和现场信任处理部分外，页面全场景仍 U；该 API/实际业务证据不能替代桌面与移动布局、ACK及每个表单点击验收。W01/W27 的owner表现关联 LIVE-002/D，身份组合仍待复验。本轮要为每行分别记录桌面和390px可见结果，以及浏览器console/pageerror。
+I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/` 与历史Chromium假后端QA，不能据此认定每个真实表单已测。E05 的 Web 新建会话、chat.send 和现场信任处理已有部分业务证据，E11 新增 clear、自动压缩、并发查询与关联review/test的服务效果；这些 API/实际业务证据不能替代桌面与移动布局、ACK及每个表单点击验收，未确认渲染的页面场景仍 U。W01/W27 的owner表现关联 LIVE-002/D，身份组合仍待复验。本轮要为每行分别记录桌面和390px可见结果，以及浏览器console/pageerror。
 
 | ID / 页面或API | 正常执行与预期可见结果 | 失败/恢复/身份/回执 |
 | --- | --- | --- |
@@ -150,7 +151,7 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | W08 `session.archive` / `session.restore` | 各执行一次，归档历史可读、恢复后可选 | 活动回合取消、迟到reply/ACK、任务现场保留；恢复不是新建session |
 | W09 `session.clear` | 新generation、历史归档、当前上下文清空 | 任务绑定session/并发回合/重复操作核对；不得清除herdr session或任务 |
 | W10 `session.history` | 活动/归档历史按session/owner返回并展示 | 选择别的session不能混入；未知ID/A1；未送达消息标记真实 |
-| W11 `chat.send` | 明确操作请求走真实模型工具；回复先显示 | F6/F7；API成功不代表业务已执行；输入保留、重复请求与并发行为 |
+| W11 `chat.send` | 明确操作请求走真实模型工具；回复先显示 | E11 clear/压缩/并发API业务效果通过但未ACK，不计渲染；F6/F7，输入保留、重复请求与完整并发组合另验 |
 | W12 `chat.ack` | 当前实际显示的回复/参与者输出记delivered | A1/sessionId匹配、重复ACK幂等、失败仅重试ACK、隐藏session不ACK |
 | W13 `task.create`表单 | 四类、1–8参与者、已有/新建项目/无项目讨论、可选关联讨论、独立session、shared/worktree、建群/远端task/保留选项 | 默认round_robin/4轮/30分；50轮/240分边界；绑定task session排除、空session明确；F1/F3/D3 |
 | W14 `task.get`、任务列表/详情/历史 | 状态、错误、参与者、结果、链接正确 | 其他owner/无ID/同名歧义；无group/remoteTask的本地任务不显示假链接 |
@@ -168,9 +169,9 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | W26 授权/运行状态、错误反馈、确认弹窗 | 配置待修/授权链接/未知结果有实际可操作说明 | 自动刷新不覆盖用户输入；不凭runtime=ready宣称任务已执行 |
 | W27 `identity.select`（本轮新增） | 在允许owner A/B间显式选择；查看各自session/task，不移动或合并旧记录 | 未允许owner拒绝；expectedOwnerId拦旧页面操作；切换中的ACK/迟到回复/草稿/缓存不可跨身份显示；重启保存的选择撤销授权后失效 |
 | W28 新建项目表单（本轮新增） | 显式选择新建，输入名称，task.create提交project与newProject=true；切回已有/无项目不带残留新建字段 | 同名、穿越、空名/超长拒绝；选择已有项目不创建目录；O-P：本轮task-form.test.ts输入边界通过，真实目录/浏览器U |
-| W29 关联讨论表单（本轮新增） | 只列当前owner的discussion任务，显示title与ID；选择后提交parentTaskId，必须填写本次完整要求 | 他人/非discussion/陈旧选择拒绝；旧要求/结论不替代本次输入；O-P：本轮task-form.test.ts通过，真实交接/浏览器U |
+| W29 关联讨论表单（本轮新增） | 只列当前owner的discussion任务，显示title与ID；选择后提交parentTaskId，必须填写本次完整要求 | 他人/非discussion/陈旧选择拒绝；旧要求/结论不替代本次输入；O-P：task-form.test.ts通过；E11实际关联review的parentContext与输出通过，浏览器表单/讨论转开发仍U |
 
-`project.create`、`task.get`等 API 无独立UI按钮不等于功能不存在；反之页面可操作不表示 pi 自然语言有对应工具。本轮任务表单已接入 `newProject/parentTaskId`，采用已有task.create语义；真实页面点击和服务创建仍待验收。
+`project.create`、`task.get`等 API 无独立UI按钮不等于功能不存在；反之页面可操作不表示 pi 自然语言有对应工具。本轮任务表单已接入 `newProject/parentTaskId`，采用已有task.create语义；E11已核对关联review的服务效果，真实页面点击及完整任务类型组合仍待验收。
 
 ## 7. pi 工具全量矩阵（当前工作区20个）
 
@@ -189,9 +190,9 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | T09 `project_save` | 已有多目录、agent、makeDefault，准确登记 | F1/F2；不擅自把新任务变成新目录；既有任务冻结快照 |
 | T10 `project_create` | 只有明确新项目才创建并初始化 | 重复名称/占用/穿越/权限错误；F3；LIVE-001未进入此路径 |
 | T11 `project_remove` | 移除登记，明确代码仍保留 | 不误删文件/任务，默认项目失效处理 |
-| T12 `session_clear` | 主入口飞书私聊/Web聊天的/clear由模型选工具，答复持久后归档旧session并创建、选择新session；Web显式清空按钮仍重置generation | 群拒绝；旧历史/回执保留、旧排队原绑定拒绝、失败不切换、重复event不重复创建；E07内存服务+真实模型通过，飞书现场失败后已修复，须重新验收 |
-| T13 `projects_list` | 查询目录/default agent/Bypass实际值 | 无配置返回事实空态；不读项目源码代做需求 |
-| T14 `task_create` | 四种kind、完整requirements、participants、目录模式、newProject/parentTaskId、建群/远端task、讨论预算 | F1/F3/F4/F6，A1/A2/D1/D3；accepted仅已登记；**LIVE-001 历史失败保留；E05 Web 真实开发创建通过，accepted 时事实答复失败；四类型及恢复未全验** |
+| T12 `session_clear` | 主入口飞书私聊/Web聊天的/clear由模型选工具，答复持久后归档旧session并创建、选择新session；Web显式清空按钮仍重置generation | 群拒绝；旧历史/回执保留、旧排队原绑定拒绝、失败不切换、重复event不重复创建；E11真飞书clear与后续delivered通过、Web/API效果通过但未ACK；旧R-F保留，完整异常未全验 |
+| T13 `projects_list` | 查询目录/default agent/Bypass实际值 | E11两个真实模型各projects_list成功且并发；无配置/身份异常仍需分验，不读项目源码代做需求 |
+| T14 `task_create` | 四种kind、完整requirements、participants、目录模式、newProject/parentTaskId、建群/远端task、讨论预算 | F1/F3/F4/F6，A1/A2/D1/D3；accepted仅已登记；**LIVE-001 历史失败保留；E05 Web 真实开发创建通过，accepted 时事实答复失败；E11关联review和独立test通过；双讨论仍失败，四类型恢复未全验** |
 | T15 `sessions_list` | 当前owner活动/archived=true列表 | 群内无此工具；A1；不混淆pi与Codex/Claude原生session |
 | T16 `session_create` | 名称及select布尔，切换仅后续消息 | 不创建task/agent；A2与排队actor，失败不误切 |
 | T17 `session_select` | 选存在的独立session，Web/飞书入口分别核对 | 他人/归档/task绑定拒绝，已接收消息不重路由 |
@@ -209,7 +210,7 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | FSH02 群/身份 | 任务群、非任务群@/不@、异owner、回调非owner | owner与chat绑定；当前任务群不能跳转其它任务；callback等同严格验证 | I/O-H，现场U |
 | FSH03 AI关闭、tasks启用 | `/help /doctor /projects /tasks [all] /sessions`；`/session new\|switch\|rename\|archive\|restore` | 返回确定性控制结果；任务群禁止切换；无AI不冒充pi沟通 | I/O-H，现场U |
 | FSH04 AI关闭、tasks启用 | `/new <项目> [agent] <要求>`、自然“新建任务”、`/task`七动作、`/screen /stop` | 完整参数/默认agent；关闭/确认关闭中文别名与否定区分；多参与者明确ID | I/O-H，现场U |
-| FSH05 `/clear`跨模式 | AI启用由模型session_clear为主入口私聊/Web聊天归档旧pi session并新建，自动压缩无需clear；AI关闭仍拒绝ai_disabled | 所有群拒绝；旧history/receipt保留，queued消息不改绑且拒绝执行；Web显式按钮generation语义独立 | O-P边界测试，E07/E10真实模型+内存服务通过；真实飞书失败后待新构建复验 |
+| FSH05 `/clear`跨模式 | AI启用由模型session_clear为主入口私聊/Web聊天归档旧pi session并新建，自动压缩无需clear；AI关闭仍拒绝ai_disabled | 所有群拒绝；旧history/receipt保留，queued消息不改绑且拒绝执行；Web显式按钮generation语义独立 | R-P：E11真实主私聊归档切新及后续delivered，旧R-F保留；Web/API效果通过但无渲染ACK；群拒绝已有真例，队列/失败边界另有O-P |
 | FSH06 tasks关闭兼容桥 | `/ls`选中；引用优先；`/card /say /stop /mirror on\|off /close /help`，普通文本续聊 | 只按已有herdr agent发送；/close仅解除选中；notify_chat只选可信owner；旧路由核验 | I/O-H，现场U |
 | FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | I/O-H，LIVE-001仅证明一条文本outbox回执，完整范围U |
 
@@ -226,14 +227,14 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | GAP07 / P1 | unknown/uncertain、重启和迟到结果只已有离线机制证据 | 在隔离实服务对象上做F3/F4/F5；恢复无重复群/task/pane/terminal输入 |
 | GAP08 / P1 | E04 REST完成/重开/解散通过，E05结果描述经主验收核对；应用生命周期仍未全验 | B12–B14补TaskService操作顺序/未知结果/资源保留；descriptionMatchesOutput:false为Markdown归一化比较问题，不误记漏传缺陷 |
 | GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672，卡片/引用/分片未全验 | 只确认邀请请求及user_count=1；补roster权限与群客户端/卡片回调/引用/分片证据，不能把GET代替全部用户可见验收 |
-| GAP10 / P1 | E01合成虚假历史3次均实际选择创建；E02多轮纠正状态前提通过，真实历史/重启仍未全验 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
+| GAP10 / P1 | E09真实旧拒绝污染失败保留；E10旧26条历史只读重放、E11真实私聊clear及后续送达通过，真实历史其他指令/重启仍未全验 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
 | GAP11 / P1 | config.ai保存与运行配置/生效时间、密钥遮蔽需完整验证 | 保存→重启→实际endpoint/model核对；错误key/重定向拒绝不泄露key；Web不误报已连通 |
 | GAP12 / P1 | Web async刷新、归档历史、并行操作与ACK竞态 | 当前页面/隐藏session/切页/断网/重试ACK各执行，不能因HTTP200提前记可见 |
 | GAP13 / P1 | 本机项目目录、非Git/多目录/worktree、Bypass及清理风险 | 全目录先校验、冻结快照、已有worktree保护；删除登记/销毁均不删用户代码 |
 | GAP14 / P1 | setup应用选择/补权与服务唯一连接的真实路径 | 不新建无关app、不污染现用凭据；部分成功与重试阶段精确，B01/B02 |
-| GAP15 / P2 | HTTP记忆隔离/超时/迁移provider、长上下文边界 | 新旧provider不静默回退，摘要不成为授权，单条超预算失败保留已执行receipt |
-| GAP16 / P2 | 三平台发行、依赖原生ABI/许可证/版本、旧部署参数 | 各平台原生CI证据和空目录smoke；安装文件hash等于测试产物；可回退而不反向伪迁移 |
-| GAP17 / P2 | 长期与资源故障 | 真并发/大任务量/磁盘满/DB损坏/日志增长/WS抖动；逐项记录降级与恢复，不声称仅启动即稳定 |
+| GAP15 / P2 | HTTP记忆隔离/超时/迁移provider、长上下文边界 | E11实际50000预算、4批132052bytes自动压缩、原文/约束/session隔离通过；HTTP/provider及超时/失败边界仍分验，不能以Web/API答复代替可见性 |
+| GAP16 / P2 | 三平台发行、依赖原生ABI/许可证/版本、旧部署参数 | E11 54ae616的263测试、三平台CI和运行SEA hash通过；Linux真实宿主、全部升级回退仍未验，不反向伪迁移 |
+| GAP17 / P2 | 长期与资源故障 | E11双真实模型只读并发已证实；大任务量/磁盘满/DB损坏/日志增长/WS抖动仍未验，不声称仅并发查询通过即长期稳定 |
 | GAP18 / D | API有实现但UI没入口/模型无工具、诊断输出语义 | W23及W28/W29新项目/关联讨论、T19/T20新增session动作、debug transcript语义逐项决定承诺，文档与实现一致 |
 
 ## 10. 每轮关闭流程与记录模板

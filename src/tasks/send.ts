@@ -38,6 +38,7 @@ export async function sendParticipant(
       const result = await context.herdr.send(
         participant.execution as NonNullable<Participant["execution"]>,
         prompt,
+        initial ? { receipt: participant.initialReceipt } : undefined,
       );
       if (result.status === "not_executed")
         throw new OperationError("delivery_not_executed", "本次未发送；可核对参数后重试。");
