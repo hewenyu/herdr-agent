@@ -25,6 +25,8 @@ export interface EngineInput {
   sessionId: string;
   signal?: AbortSignal;
   onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
+  /** Internal summaries do not represent user-visible business claims. */
+  enforceClaims?: boolean;
 }
 
 export interface EngineResult {
@@ -34,6 +36,13 @@ export interface EngineResult {
   toolCalls?: number;
   /** Number of write tools that actually started during this run. */
   writeCalls?: number;
+  /** Tool-result provenance used to reject success claims after failed or unknown effects. */
+  toolEvidence?: {
+    successful: number;
+    successfulWrites?: number;
+    unknown: number;
+    notExecuted: number;
+  };
 }
 export interface SummaryInput {
   messages: AgentMessage[];

@@ -5,7 +5,7 @@ import { isNotExecuted, OperationError } from "../core/errors.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { ActorContext, Session, StoredMessage } from "../core/types.js";
 import type { Store } from "../storage/store.js";
-import { hasUnverifiedToolClaim } from "./claims.js";
+import { hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
 import { estimateTokens } from "./engine.js";
 import { type MemoryProvider, MemoryService, memoryEntry } from "./memory.js";
 import { NOTIFICATION_PROMPT, ORCHESTRATOR_PROMPT } from "./prompts.js";
@@ -397,15 +397,33 @@ export class SessionService {
           });
         },
       });
-      // Treat an omitted tool count as zero so custom engines cannot bypass the
-      // provenance guard by returning the legacy EngineResult shape. The guard
-      // only applies when business tools are available; without tools, a model
-      // cannot execute a claim and ordinary conversational text remains valid.
-      if ((result.toolCalls ?? 0) === 0 && tools.length > 0 && hasUnverifiedToolClaim(result.text))
+      // A business completion claim needs a current machine fact. An omitted
+      // tool count is treated as zero for compatibility with custom engines;
+      // with no tools there is no possible fact at all. Real PiEngine runs also
+      // expose outcome-aware evidence so read-only calls and unknown effects
+      // cannot be mistaken for a successful write.
+      const claim = hasUnverifiedToolClaim(result.text);
+      const evidence = result.toolEvidence;
+      const needsWrite = requiresWriteEvidence(result.text);
+      const hasCredibleEvidence =
+        tools.length > 0 &&
+        (result.toolCalls ?? 0) > 0 &&
+        (evidence
+          ? evidence.unknown === 0 &&
+            evidence.notExecuted === 0 &&
+            (needsWrite ? (evidence.successfulWrites ?? 0) > 0 : evidence.successful > 0)
+          : needsWrite
+            ? (result.writeCalls ?? 0) > 0
+            : (result.toolCalls ?? 0) > 0);
+      if (claim && !hasCredibleEvidence)
         throw new OperationError(
           "model_failed",
-          "pi 调度模型未调用工具，本轮业务未执行；请重试。",
-          "not_executed",
+          evidence?.unknown
+            ? "pi 调度模型未取得可确认的工具事实，本轮业务结果未知；请查询状态。"
+            : evidence?.notExecuted
+              ? "pi 调度模型调用的工具未执行，本轮业务未执行；请重试。"
+              : "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+          evidence?.unknown ? "unknown" : "not_executed",
         );
       if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)
         throw new OperationError(
