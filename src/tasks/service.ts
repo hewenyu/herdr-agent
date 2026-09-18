@@ -54,7 +54,11 @@ export class TaskService {
   }
 
   create(actor: ActorContext, input: TaskCreateInput): Promise<Task> {
-    return this.locks.run(`create:${actor.ownerId}:${actor.messageId}`, () =>
+    // A message identity is scoped to the selected pi session. Keeping the
+    // creation lock at that same scope prevents a slow project registration
+    // in one session from blocking an independent task in another session
+    // that happens to reuse the request/message id.
+    return this.locks.run(`create:${actor.ownerId}:${actor.sessionId}:${actor.messageId}`, () =>
       createTask(this.context, actor, input),
     );
   }
