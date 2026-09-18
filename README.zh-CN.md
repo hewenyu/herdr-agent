@@ -14,13 +14,13 @@
 
 当前最新公开版本是 [v0.3.9](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.9)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.9`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
 
-PR #28 的工具事实护栏修正、PR #31 的旧版工具计数护栏修正，以及当前源码的结果感知证据检查，均已包含在 `v0.3.9`。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。下面记录的本机 SEA 证据从合并提交 `452aae9` 重建并重启为 `v0.3.7`（PID `31577`，SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`）。
+PR #28 的工具事实护栏修正、PR #31 的旧版工具计数护栏修正，以及结果感知证据检查已包含在公开版本 `v0.3.9`。当前 checkout 的后续修复分支为 `d6bc5ac`，并新增了“我会创建项目”“I will create a project”这类第一人称承诺的回归护栏；该后续修复需要独立发布，不能从已经发布的 `v0.3.9` 推断。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。当前运行的本机二进制应通过 `version --json` 核对；若 stamp 为 `dev/unknown`，只能作为开发证据，不能当作发布版本或提交匹配证明。
 
 重启后的实例和 `doctor --json` 检查均正常，当前没有活动的 herdr 托管参与者。当前真实入口复验 marker `LIVE-001-R3-20260918` 尚未在飞书和状态回读中观察到，且没有发送端证据，因此无法确认对应任务、群、参与者或 outbox 状态；它仍是待完成的现场验收项，不能判定为已完成。没有持久化 marker 不能证明入口已经成功或失败。
 
 Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herdr 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herdr 和外部状态回读，才能把某个场景视为已验收。
 
-当前工具事实护栏修正前的源码基线通过了 422 项检查。本分支现在 `npm run check` 通过 437 项测试；macOS arm64 的 `build`、`binary` 和 `smoke` 也已通过，但下面的现场二进制证据仍明确对应单独记录的 `v0.3.7` 构建。此前的本地二进制已通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
+当前工具事实护栏修正前的源码基线通过了 422 项检查。本 checkout 的 `npm run check` 通过 439 项测试；后续提交需要重新运行 macOS arm64 的 `build`、`binary` 和 `smoke` 后，才能声明新的发布证据。此前的本地二进制已通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
 
 ## 运行前置
 
@@ -60,7 +60,7 @@ npm run smoke
 ./dist/herdr-agent version --json
 ```
 
-`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/herdr-agent.cjs`；`binary` 在当前系统生成 `dist/herdr-agent`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、只读历史和旧写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
+`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/herdr-agent.cjs`；`binary` 在当前系统生成 `dist/herdr-agent`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、历史浏览、受保护的配置写入和业务写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
 
 开发时可用 `npm run dev -- help`；本地 Web 资源以构建后的程序为验收入口。后续示例假定可执行文件已放入 PATH；也可把 `herdr-agent` 替换为 `./dist/herdr-agent`。
 

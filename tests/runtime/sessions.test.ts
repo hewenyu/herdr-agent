@@ -264,6 +264,47 @@ test("business completion claims are rejected when no tool context exists", asyn
   }
 });
 
+test("future action promises are rejected without tool evidence", async () => {
+  const store = new Store(":memory:");
+  const engine: ConversationEngine = {
+    contextTokens: 50000,
+    summarize: async () => "",
+    run: async () => ({
+      text: "我会创建一个新项目并拉群。",
+      messages: [],
+      toolCalls: 0,
+      writeCalls: 0,
+    }),
+  };
+  const sessions = new SessionService(store, engine, {
+    tools: () => [
+      {
+        name: "task_create",
+        description: "create",
+        parameters: { type: "object", properties: {} },
+        readOnly: false,
+        execute: async () => ({ accepted: true }),
+      },
+    ],
+  });
+  try {
+    const session = sessions.current("owner", "entry");
+    await assert.rejects(
+      sessions.reply(
+        { ownerId: "owner", chatId: "entry", sessionId: session.id, messageId: "future-claim" },
+        "创建项目并拉群",
+      ),
+      /未调用工具/,
+    );
+    assert.equal(
+      store.list<{ role: string }>("messages").some((message) => message.role === "assistant"),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("outcome-aware evidence rejects read-only, unknown, and not-executed completion claims", async () => {
   for (const [name, tool, evidence, outcome] of [
     [

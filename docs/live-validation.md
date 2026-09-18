@@ -1,14 +1,18 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-18。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
-2026-09-18 当前运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
+2026-09-19 当前源码检查：本 checkout 的 `fix/future-claim-guard-readme` HEAD 为 `d6bc5ac`；`npm run check` 通过 439/439 项（单文件行数、typecheck、Biome lint 和测试）。这只是当前源码与离线检查基线，没有新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
+
+2026-09-19 当前本机重启：提交 `d6bc5ac8f51dca5ad1dd64c91bc4703db4c0c374` 构建的 macOS arm64 SEA `0.3.10-dev` 已重启，PID `95032`，SHA256 `2e4f3e5e8b3c0d1cce2b74f9e3db66a9aac7cd7aa09028da1448cbb9da2d5323`，构建时间 `2026-09-19T00:00:00Z`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 只证明本机开发构建与提交匹配，不代表 `v0.3.9` 已被覆盖或新的真实飞书业务场景已经通过。
+
+2026-09-18 历史运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新当时的现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
 
 本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，本轮 pi 工具事实修正见[现场证据](live-evidence-pi-tool-recovery-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
 2026-09-18 E23 发布后重启：仓库 `master`/`origin/master` 为 `452aae9`；macOS arm64 SEA `v0.3.7` 已从该提交重建并重启，PID `31577`，SHA256 `f717b402b2cc82f6fc815046d0b20eef4287c751238cb5593a2f0a4a9a412aec`。`version --json`、`/api/state`、runtime/authorization ready 和 `npm run smoke` 均已回读。状态库仍为 23 个 `destroyed` 任务、177 个已 `delivered` outbox；本条只更新部署基线，不把 LIVE-001 或其余未覆盖矩阵行标记为通过。
 
-2026-09-18 用户纠正后的范围：**真实业务全部在飞书发生；Web 只做会话记录。** 网页可本地浏览、筛选已有历史，不改 active pi session 或服务端业务身份，不发消息，不创建任务/项目，不审批、清理或配置，不提供 `/clear` 等命令入口。只读实现已部署至 `a7e9ffb`，HTTP 拒写、身份/历史浏览和轮询菜单修复已有真实证据；后续390×728和刷新后Console已有E20限定检查，未覆盖断线/竞态分支仍未验，不将整组标为通过。
+2026-09-18 范围纠正后的当前边界：**真实业务全部在飞书私聊或任务群发生。** Web 可浏览、筛选会话记录，并维护受保护的本机配置：本机身份、项目及多目录、默认项目、Bypass、模型连接；不能发消息、创建任务或参与者、审批、清理资源或操作 pi session，不提供业务 `/clear` 入口。配置 action 仅接受 loopback、Host/Origin 和 CSRF 校验并通过 allowlist；浏览历史本身不得改变 active pi session、任务或投递事实。旧版只读页面的部署与检查仍保留在下文作为历史，不能证明当前配置页面已经完成现场验收。
 
 业务入口验收必须由真实飞书用户入站/群内交互触发，再关联工具与操作回执、执行器现场、平台资源和实际回读。旧 Web/API 成功、故障、产物和清理事实继续保留，但不得计为飞书业务入口通过；历史 R-P 只在原证据范围内有效。CLI 安装维护、离线故障测试和只读 API 核对仍分别记账。
 
@@ -172,9 +176,9 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | --- | --- | --- |
 | C01 `help` / `-h` / `--help` | 核对主命令、诊断命令和当前flags | 不打开state/网络；未知命令/多余参数退出2；帮助不承诺未暴露功能 |
 | C02 `version` / `-v` / `--version` / `--json` | JSON与文本同时核对commit/date/version/实际安装文件 | 不读生产state；旧二进制路径不得当新版本；BUILD-001是历史通过 |
-| C03 默认无命令/`serve` | 记录Web地址、authorization/runtime、唯一连接与停止退出码 | F2/F4/F7；herdr探测失败不得开始任务；凭据不足在CLI/服务状态说明等待，Web不提供配置写入口 |
+| C03 默认无命令/`serve` | 记录Web地址、authorization/runtime、唯一连接与停止退出码 | F2/F4/F7；herdr探测失败不得开始任务；凭据不足在CLI/服务状态说明等待；Web可提供受保护的本机配置写入口，但不提供业务任务、聊天、审批或清理写入口 |
 | C04 `serve --config-listen` / `--no-config-ui` / `--open` | 指定回环/关闭UI/尝试浏览器分别运行 | 非回环/端口占用/浏览器失败明确；后台服务不意外打开浏览器 |
-| C05 `configure --listen` / `--open` | 保留为不连接飞书的本机会话记录页；旧 Web 管理范围撤销 | 当前源码 HTTP 无写入，仍有状态打开/迁移与既有后台 tick；浏览无副作用不等于 CLI 启动无副作用，按 WR05/WR06 核对 |
+| C05 `configure --listen` / `--open` | 提供不连接飞书的本机会话记录和配置页；旧 Web 业务管理范围撤销 | HTTP 仅允许 allowlist 配置 action（identity/project/default/Bypass/model），且必须通过 Host/Origin/CSRF；浏览无副作用不等于 CLI 启动无副作用，仍有状态打开/迁移与既有后台 tick，按 WR05/WR06 核对 |
 | C06 `setup` | 新注册与复用应用分别完成授权和消息/卡片往返 | 超时/取消/错误brand/权限延迟；凭据已存但验证未完退出3；A1/A3/D1 |
 | C07 `setup --app ID` / `--update-permissions` | 明确选应用、给原应用补授权 | 多凭据来源冲突必须明确选；失败不误换app或自动新建 |
 | C08 `setup --reregister --yes` | 仅明确替代应用流程执行 | 未带yes、与app/update冲突拒绝；失败不覆盖正确旧凭据 |
@@ -187,9 +191,9 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | C15 `migrate` | 导入task/session/receipt/archive、备份、再次执行幂等 | F4；迁移后不自动重放未知写入，不采旧final当新结果 |
 | C16 全局 `--state-dir` / `--json` / `--key=value` | 独立目录、路径展开与命令参数组合 | 多余位置/不适用flag/单横线旧flag/缺值/未知flag拒绝；实际JSON契约单测 |
 
-## 6. Web 只读会话记录验收
+## 6. Web 会话记录与本机配置验收
 
-W01–W29 原业务页面/API 计划停止扩展。历史列表中的聊天、会话管理、任务/项目、审批和配置写路径全部撤销；旧通过或失败记录保留，不继续验收这些产品入口。新页面只检查下表；状态基于 acb/a7 的真实检查和当前源码离线证据，未覆盖分支明确保留，不沿用旧业务页面的移动端或 ACK 通过结果。离线依据为 `tests/web/server.test.ts`、`tests/app/identity.test.ts`、`tests/cli/integration.test.ts` 及独立 SEA smoke；378 项检查对应 `0ccfff2`，没有将测试总数当成各行全部分支通过。
+W01–W29 中聊天、任务、参与者、审批、清理和 pi session 的业务写路径计划停止扩展；本机配置写路径保留且仅限 `identity.select`、`project.save/create/delete/default`、`catalog.bypass`、`config.ai`，统一受 loopback、Host/Origin 和 CSRF 保护。旧通过或失败记录保留，不继续验收已撤销的业务页面/API；WR01–WR09 检查会话记录浏览，配置写入另按 allowlist、输入校验、重启生效和密钥遮蔽验收。状态基于旧部署的真实检查和当前源码离线证据，未覆盖分支明确保留，不沿用旧业务页面的移动端或 ACK 通过结果。离线依据为 `tests/web/server.test.ts`、`tests/app/identity.test.ts`、`tests/cli/integration.test.ts` 及独立 SEA smoke；378 项检查对应 `0ccfff2`，没有将测试总数当成各行全部分支通过。
 
 | ID | 只读要求 | 验收事实与边界 | 状态 |
 | --- | --- | --- | --- |
@@ -197,8 +201,8 @@ W01–W29 原业务页面/API 计划停止扩展。历史列表中的聊天、�
 | WR02 | 本地浏览、筛选历史 | a7 实际切换 A/B、归档筛选和 `s_be0b138d…` 的 12 条旧历史；身份菜单跨 12:50–12:52 轮询保持打开。受检 selection、identity、session、命令回执未变；返回、重连及快速切换竞态仍 U | O-P / R-部分 |
 | WR03 | 飞书新增记录可读 | a7 可读取真实飞书产生的会话记录及 `/clear` 前历史；切换只读视图没有新增消息、pi checkpoint 或 outbox。新增消息到 SSE 自动刷新的实时过程和断线补读尚未单独验收 | O-P / R-部分 |
 | WR04 | 历史和投递事实准确 | 真实 Chrome 查看用户、pi、参与者署名和工具记录；HTTP 历史含投递状态，浏览前后 messages/outbox 不变，旧 chat.ack 请求被拒绝。未知/部分送达等全部样本的视觉表达仍 U | O-P / R-部分 |
-| WR05 | 无 Web 业务控件 | 已部署页面仅有身份/范围筛选、刷新、会话浏览及记录展开；无聊天/命令、会话管理、任务/项目、审批/清理或配置控件。源代码与独立构建均无业务 action/ACK 请求 | O-P / R-P（所测页面） |
-| WR06 | 服务端拒绝旧写入口 | acb/a7 实际 11 类旧 POST action（含发送、ACK、session、task、审批、项目、配置）均 405，GET /api/actions 为 404；HTTP 前后 11 个受检 namespace 一致。配置/凭据文件与外部资源未另作这一组前后快照 | O-P / R-部分 |
+| WR05 | 无 Web 业务操作控件（本机配置除外） | 旧部署页面没有聊天/命令、任务/参与者、审批、清理或 pi session 控件；当前项目/默认/Bypass/模型/身份配置控件属于允许范围，只能调用 allowlist 配置 action，不发送业务消息或 ACK。旧页面证据不证明当前配置页面的现场可用性 | O-P / R-部分（当前配置现场待补） |
+| WR06 | 服务端拒绝业务写入口、保护配置写入口 | `chat.send`、`task.*`、`participant.*`、`approval.*` 和 pi session 等业务 action 必须拒绝；allowlist 配置 action 需合法 Host/Origin/CSRF，未知 action 和坏输入拒绝。当前测试覆盖 `project.save`/`config.ai` 合法 200 及业务 action 403；旧 acb/a7 的11类405结果仅为历史只读部署证据 | O-P / R-部分 |
 | WR07 | 本机只读访问边界 | acb/a7 实际未允许 owner 请求 403，/state.sqlite 为 404；A/B 只读投影隔离。loopback/Host/Origin、敏感字段脱敏另有离线覆盖；撤权竞态和所有恶意路径未穷尽 | O-P / R-部分 |
 | WR08 | 页面可用性与分发 | acb/a7 独立二进制加载只读页面，a7 桌面中文长记录截图无明显问题，轮询菜单失焦已实测修复。后续0ccfff2已部署，390×728中文长记录与刷新后Console限定检查通过；全部空态/加载失败/断线界面仍 U | O-P / R-部分 |
 | WR09 | 查看无业务副作用 | acb HTTP+Chrome 前后 11 项一致；a7 HTTP 11 项一致，Chrome 阶段 tasks/participants 的 hash 变化且未定因，其余 9 项一致。保留原 browserReadOnly:false，限定证明会话、选中、消息、checkpoint、outbox、审批未因浏览改写；后续b53、测试任务均关闭后的独立基线HTTP+Chrome前后11项全一致（e20-web-readonly-final.json）；未采完整网络追踪，不扩大到所有竞态 | O-P / R-部分 |
@@ -295,7 +299,7 @@ W01–W29 原业务页面/API 计划停止扩展。历史列表中的聊天、�
 | --- | --- | --- |
 | GAP01 / P0 | 真实模型没用工具却声称执行成功（LIVE-001） | E17原核心输入+新scope的B完整创建/产物/结果可见限定链路通过，C独立请求并行完成；不覆盖原历史上下文和A启动失败。新收尾措辞R-F仍需部署后独立验证，整体目标不关闭 |
 | GAP02 / P0 | 成功定义过度依赖inbox done/outbox delivered | E17 B/C各阶段及最终清理已分别核验；B首句“已完成收尾”发生在群解散前，新增措辞R-F保留。E18提示修正已部署、真实受控probe单样本通过，尚未生产重验；不以最终成功覆盖先前夸大 |
-| GAP03 / P1 | Web 历史筛选不得改变服务端业务身份或 active session | 旧 W27 身份写操作及成功记录只作历史；按 WR02/WR07 检查只读视图隔离、未知身份/记录拒绝，不继续扩展 identity.select |
+| GAP03 / P1 | Web 历史筛选不得改变服务端业务身份或 active pi session | `identity.select` 是有意保留的本机 Web 查看身份配置，只切换历史投影 owner，不改变飞书/任务绑定；需继续验证允许 owner、expectedOwner、撤权及 in-flight 回复隔离。WR02/WR07 的历史浏览检查不应改写 active session 或投递回执 |
 | GAP04 / P1 | AI session归档/恢复基线入口能力不对齐，工作区已补工具 | T19/T20继续验证真实模型调用、权限、当前回合延迟归档和恢复；实现新增不等于现场通过 |
 | GAP05 / P1 | 新项目与讨论→开发交接需飞书真实入口完整证据 | L01/N04/T14以飞书讨论→用户明确授权→关联开发→产物/群结果验收；W28/W29撤销。E19仅Web单Claude父讨论，未继续Web子开发；维护清理独立回读通过，不算飞书通过，误推断keepGroup的R-F待真实复验 |
 | GAP06 / P1 | E05 Codex 既有手动信任链路通过，新 pi 自动目录信任及其他群审批未全验 | E09专用自动信任、E13本人普通标记A菜单8项已证；保留Bypass，其他菜单/重复/换现场/未知写入仍分验，不扩大为所有审批通过 |
@@ -303,7 +307,7 @@ W01–W29 原业务页面/API 计划停止扩展。历史列表中的聊天、�
 | GAP08 / P1 | E04 REST完成/重开/解散通过，E05结果描述经主验收核对；应用生命周期仍未全验 | B12–B14补TaskService操作顺序/未知结果/资源保留；descriptionMatchesOutput:false为Markdown归一化比较问题，不误记漏传缺陷 |
 | GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672，卡片/引用/分片未全验 | 只确认邀请请求及user_count=1；补roster权限与群客户端/卡片回调/引用/分片证据，不能把GET代替全部用户可见验收 |
 | GAP10 / P1 | E09旧拒绝失败保留；E13一次model-no-reset异常在原历史/原提示隔离重放6/6选clear，未稳定复现，无源码bug或缓存错配证据；E14旧模型私聊额度失败保留，E15新机械命令私聊/Web均独立通过且无需模型 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
-| GAP11 / P1 | 本地配置与运行生效时间、密钥遮蔽需验证；Web 配置入口撤销 | 配置文件/CLI维护→重启→实际endpoint/model核对；错误key/重定向不泄密；Web不展示密钥或发起保存，旧config.ai API按WR06拒绝 |
+| GAP11 / P1 | 本地配置与运行生效时间、密钥遮蔽需验证；Web配置入口保留但受保护 | 配置文件/CLI/Web→重启→实际 endpoint/model 核对；错误 key/重定向不泄密；allowlist 配置 action 需通过 Host/Origin/CSRF 与输入校验，业务 action 仍须在飞书，删除旧 `config.ai` 全拒绝断言 |
 | GAP12 / P1 | 旧 Web 不可见 ACK 失败及修复记录保留；新页面不发送 ACK | WR03/WR04/WR06核对飞书记录展示、不伪造送达、不因打开历史补发或改状态；旧模型历史约束失败继续独立保留 |
 | GAP13 / P1 | 本机项目目录、非Git/多目录/worktree、Bypass及清理风险 | E13非法第二目录save拒绝且首目录未初始化Git已证；E13 source-root模板拒绝未按键R-F保留，E14修复后worktree实际执行/原项目及附加目录隔离通过，E15通知unavailable后授权收尾已独立回读通过，未伪造通知送达。冻结快照/旧worktree保护/代码保留仍逐项核对 |
 | GAP14 / P1 | setup应用选择/补权与服务唯一连接的真实路径 | 不新建无关app、不污染现用凭据；部分成功与重试阶段精确，B01/B02 |

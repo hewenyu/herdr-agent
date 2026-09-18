@@ -100,6 +100,43 @@ test("a text-only business turn is retried with required tool selection before s
   assert.equal(writes, 1);
 });
 
+test("a future action promise is retried with required tool selection", async () => {
+  let requests = 0;
+  const messages = [
+    response("我会创建一个新项目并拉群。"),
+    response("", [
+      { type: "toolCall", id: "create", name: "create", arguments: { title: "新项目" } },
+    ]),
+    response("已根据工具结果登记。"),
+  ];
+  const stream = scripted(messages);
+  let writes = 0;
+  const engine = new PiEngine(config, {
+    streamFn: (model, context, options) => {
+      requests++;
+      return stream(model, context, options);
+    },
+  });
+  const result = await engine.run(
+    input([
+      {
+        name: "create",
+        description: "create",
+        parameters: schema,
+        readOnly: false,
+        execute: async () => {
+          writes++;
+          return { accepted: true };
+        },
+      },
+    ]),
+  );
+  assert.equal(requests, 3);
+  assert.equal(result.text, "已根据工具结果登记。");
+  assert.equal(result.toolCalls, 1);
+  assert.equal(writes, 1);
+});
+
 test("ordinary text-only conversation remains a model reply when tools are available", async () => {
   const engine = new PiEngine(config, {
     streamFn: scripted([response("你好，我可以帮你梳理需求。")]),
