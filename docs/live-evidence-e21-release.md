@@ -25,3 +25,25 @@
 启动阶段末尾具有确认提示和选中编号选项的菜单标记为 blocked，禁止向其发送任务正文，并向人工审批提供完整可见屏幕。该菜单不属于自动目录信任白名单。新增启动菜单测试使用合成 fixture，不冒充缺失的 E21 投递前真实屏幕。
 
 集成 421 项测试、严格类型、格式化、lint、1000 行限制通过，两个修复路径交叉评审通过。新版本部署、原任务收尾恢复、正常任务事件与发布结果另行追加；完整验收目标仍 active，未测边界沿用逐项矩阵。
+
+## 真实事件闭环复验（R2）
+
+本节追加的是订阅发布后的独立现场证据，保留上面的 E21 首次失败记录。运行实例为提交 `71ffd7a`、PID `8171`、SEA SHA256 `6ee3f05d65c413fd24f52be453cd2a8f624b0d7e64bc6fdb5b889a5e8c1a952`，本地时间 2026-09-18 16:11:58 启动；runtime 与 authorization 均为 `ready`。飞书应用版本 `1.0.3` 已发布并包含 `task.task.update_user_access_v2` 订阅。
+
+R2 任务为“验收-E21-R2-任务事件与正常输出”：本地任务 `task_c187bda719bbd61e74d27b1a861e79f5`，远端 GUID `f9c4f240-0692-41bd-921c-7c3d92fb60b5`，群 `oc_f39bf17b46551403fec0440cc11d6245`，Codex pane `w1P:p1`。用户在飞书原生任务详情点击“完成任务”，页面随后显示“任务已完成”；飞书“已完成”列表可见该任务。
+
+事件与收尾时间线（UTC；北京时间为 UTC+08:00）：
+
+- 08:21:23.727：远端 `completedAt` 写入；
+- 08:21:24.313：收到 `task.task.update_user_access_v2` 后写入 task inbox；
+- 08:21:24.749：开始处理 task inbox；
+- 08:21:25.054：事件触发的强制 `remote_poll task`，绕过约 30 秒普通轮询冷却；
+- 08:21:25.710：远端完成状态读回并写入 `remoteCheckedAt`；
+- 08:21:35.826：通过 herdr 关闭 Codex pane/session，参与者状态为 `gone`；
+- 08:21:47.690：删除任务群完成，飞书群 `chat_status=dissolved`、`user_count=0`；
+- 08:21:47.692：最终任务描述同步完成；
+- 08:21:48.680：首个 task inbox 记录完成；随后重复事件在 08:21:48.722 入队并于 08:21:48.771 幂等完成。
+
+最终本地任务状态为 `destroyed`、`closeRequested=true`、`groupDeleted=true`、参与者 `gone`，结果保留 `SUBSCRIPTION_E21_R2_OK`；对应 6 条群通知/输出及收尾通知全部 `delivered`。herdr `agent list` 为空，`api snapshot` 不再包含 `w1P`，证明 Codex/Claude 执行现场已关闭。只读证据来自 `build/serve-live.log`、`/Users/yueban/.herdr-agent/state.sqlite`、herdr API snapshot 和飞书群 GET；汇总快照见 `.cache/live/e21-r2-event-closure-2026-09-18.json`。
+
+判定：**R-P（任务事件订阅、事件驱动强制刷新、默认收尾和资源清理均通过）**。本证据只关闭 R2 这条场景；旧 E21 首次未确认投递、其他任务类型、其他确认菜单、异常恢复和完整权限组合仍按逐项矩阵单独计账。

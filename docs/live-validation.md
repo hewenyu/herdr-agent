@@ -1,6 +1,6 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-18。状态：**本轮目标进行中；功能闭环尚未验收通过。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-18。状态：**本轮目标仍进行中；E21-R2 事件订阅与默认收尾已完成真实闭环验收，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
 本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
@@ -86,6 +86,8 @@ E17 部署与验收记录：`.cache/live/e17-deployment.json` 固定运行源码
 
 E17后续独立证据已确认B/C从真实飞书请求到原生执行、产物、署名群结果、远端描述与review等待验收的限定链路通过，见 `cli-e17-r2-completion.json`、`independent-e17-completion.json`。C入站和创建时A仍attention，B原生回合尚未结束；A的原生名称拒绝及误unknown历史R-F保留。03:03模型已恢复200/精确标记，不继续沿用旧额度阻塞。任务群owner无@ exact `/clear`拒绝也为限定R-P。
 
+E21-R2 已完成订阅发布后的真实事件闭环：提交 `71ffd7a`、PID `8171`、SEA SHA256 `6ee3f05d65c413fd24f52be453cd2a8f624b0d7e64bc6fdb5b889a5e8c1a952`；用户在飞书原生任务详情点击完成后，`task.task.update_user_access_v2` 在约0.6秒内进入 task inbox，约1.3秒内强制读回远端完成状态并绕过30秒轮询冷却。随后 herdr 关闭 `w1P:p1`，任务描述同步、群解散和所有 outbox 送达均完成；本地任务 `destroyed`、参与者 `gone`、群 `dissolved`，飞书“已完成”列表可见。证据：`docs/live-evidence-e21-release.md`、`.cache/live/e21-r2-event-closure-2026-09-18.json`。该条为 B12/B13 的 R-P 子场景，不能扩张为其他任务类型、权限或恢复组合均已通过。
+
 随后A/B/C均完成已授权资源清理，`e17-cleanup-readback.json`最终快照全true；B通过真实任务群无@完成指令调用task_action，回复送达和herdr close均早于删群。原9加本轮3共12群dissolved、panes缺失、pending outbox为0；inventory-e17两次remote GET400在03:45串行回读均200/completed，原失败保留且原因不确定，见 `test-resource-inventory-e17-read-errors.json`。
 
 新增措辞R-F仍未关闭：B回复首句“已完成收尾”早于群解散，尽管正文说明尚未解散；实际最终清理成功不能覆盖该阶段事实错误。提示修正已在E18部署并通过345项check、真实受控回执probe单样本；尚未重验生产收尾答复，详见E18。a6018ec部署和345项测试/CI证据保留；整体目标active，详见[现场矩阵](live-validation.md)及[版本化证据 E17](live-evidence-2026-09-18.md)。
@@ -139,10 +141,10 @@ E17后续独立证据已确认B/C从真实飞书请求到原生执行、产物�
 | B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt；前任务blocked不阻塞其它执行器启动 | 保留 Bypass；仅当前任务绑定启动目录信任可由专用pi确认，其余群用户选；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | R-部分：E09/E13/E14证据保留。E17 B/C同中文显示名映射不同合法native名称，自动目录信任、唯一初始输入/一次verified投递及真实产物通过；A名称拒绝/误unknown原R-F保留 |
 | B08 | 在绑定群续聊/引用、非任务群 @机器人、修订/否定/含糊输入各一例 | A1/A2/A3，F6；完整约束转交、unsupported资源不虚构；D1/D3 | I；O-H app/conversations、runtime | R-部分：E17绑定任务群owner无@ exact /clear拒绝，正文远端/CUA可见，session/selection/status不变且无checkpoint；普通续聊/引用及其他身份组合仍分验 |
 | B09 | 多 owner/多任务/多 session 查未结束和 all，核对真实状态与链接 | A1/A2、F6；任务不存在不得编造；query readError不可说运行正常 | I；O-H app/tasks/runtime；LIVE-002 | R-部分：E02 查询后阶段答复正确（合成回执）；LIVE-001 历史 R-F；真实飞书入站查询进行中，E16 Web A/B列表隔离与17项API边界通过，完整身份竞态仍U |
-| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；控制/通知简洁说用户可见结果，默认无scheduled/持久化/排队回执术语，追问再给诊断；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-部分：E17 B/C native final、参与者输出、署名群结果及远端描述匹配，通过后停review等待验收；B完成回复首句提前称“已完成收尾”为新增R-F，正文承认群未解散不抵消错误，E18提示修正已部署且受控样本通过，生产收尾答复待复验 |
+| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；控制/通知简洁说用户可见结果，默认无scheduled/持久化/排队回执术语，追问再给诊断；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-部分：E17 B/C native final、参与者输出、署名群结果及远端描述匹配；E21-R2 的最终描述、结果、收尾通知和飞书已完成列表逐一匹配。B完成回复首句提前称“已完成收尾”为历史R-F，其他输出类型和异常投递仍分验 |
 | B11 | 目录信任以外的实际 blocked→任务群用户选项→Guard验证→执行；单人/all中断 | A1/A3；回调竞态/双击/过期/换现场；显示裁剪不改完整Guard；D1/D3 | I；O-H approvals/herdr/legacy fixtures | R-P（本次普通标记A）：E13真实owner/group/card/nonce/key=1 callback done→consumed→native AskUserQuestion答案→群GET输出，8项通过；由用户本人选择，期间directory-trust操作0；其他权限/过期/替换/重复组合未全验；E16补记9a86e40真实pause与native interrupted、重复请求不重复stop；非全部子进程退出证明 |
-| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description；O-P E15 cleanup-notification：生成不可用审计、未知发送与最后结果屏障 | R-部分：E15/E16默认/保留/unknown恢复证据保留。E17 A/B/C清理最终检查全true，B群无@完成指令→task_action，reply与herdr close先于delete；共12群dissolved/panes缺失/outbox0。B提前声称收尾的措辞R-F仍在 |
-| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：既有完整结果后关闭/外部完成分支保留。E17三任务已授权收尾，最终本地destroyed/远端completed/群dissolved/pane缺失、消息与close早于delete；B群回复提前宣称收尾仍R-F |
+| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description；O-P E15 cleanup-notification：生成不可用审计、未知发送与最后结果屏障 | R-部分：E21-R2 原生完成→事件→herdr close→群 dissolved、全部 outbox delivered 的子场景为 R-P；E15/E16/E17 既有默认/保留/unknown 恢复证据继续有效，keepExecution、权限、异常组合仍未全验 |
+| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E21-R2 已核对事件驱动强制刷新、最终 description sync、远端完成、本地 destroyed、pane gone、群 dissolved 和消息先于删群；E17三任务旧收尾事实保留，B提前声称收尾的历史R-F及其他未知/失败恢复仍需单验 |
 | B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E09 外部群解散后只清对应pane、本地destroyed且远端未冒充验收通过；显式destroy及部分失败恢复仍未全验 |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | R-部分：E12初始输入只读恢复、E16隔离真实删群unknown-ack恢复保留。a6018ec补旧participant操作归属与retry事务，O-P；E17迁移故障4项O。outbox/建群/remote未知写入与硬断电仍未全验 |
 | B16 | 飞书中session创建/选择/重命名/归档/恢复；私聊自动压缩及飞书主入口exact /clear确定性归档旧session并新建选中，不调模型，事务成功后仅CLEAR_NEW_SESSION_OK；Web无命令/清空入口；provider通过本地安装配置维护 | A1/A2；事务失败不送成功标记、失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P E15 clear-command/session-tools：AI关闭、正文匹配、旧队列、Web无sessionId重复请求；既有entry-reset | R-部分：E15真实私聊及Chromium机械clear均无checkpoint、source command、实际归档切新和精确marker送达；私聊4条旧历史保留，Web可见ACK/归档历史/390px通过。旧模型两次失败及全部R-F保留；新命令故障组合仅离线通过；E16 memory 15项真实loopback HTTP及11针对性测试O-P，外部生产memory/TLS/ACL仍U |
@@ -303,6 +305,7 @@ W01–W29 原业务页面/API 计划停止扩展。历史列表中的聊天、�
 | GAP16 / P2 | 三平台发行、依赖原生ABI/许可证/版本、旧部署参数 | E17 a6018ec/345tests/SEA及CI35303089613三平台成功，运行PID32000/SHA87cf…8505已核对；旧E15/E16记录保留。真实旧副本迁移4项R-local-copy/4项O，Linux宿主和完整生产回退未验 |
 | GAP17 / P2 | 长期与资源故障 | E11双真实模型只读并发已证实；大任务量/磁盘满/DB损坏/日志增长/WS抖动仍未验，不声称仅并发查询通过即长期稳定 |
 | GAP18 / P1 | 飞书业务能力与只读 Web 边界不一致 | 旧W23/W28/W29表单需求撤销；当前业务缺口在飞书/pi工具中核对，Web/API拒绝写入，诊断保持只读；不能以补网页按钮继续扩大范围 |
+| GAP19 / P1 | 任务完成事件订阅曾未到达，只能依赖30秒轮询 | E21-R2 在发布 `task.task.update_user_access_v2` 后已由飞书原生完成触发真实事件，强制刷新和默认资源清理均 R-P；重复事件幂等通过。其他事件类型、订阅失效/重连与权限组合仍未验 |
 
 ## 10. 每轮关闭流程与记录模板
 
@@ -329,4 +332,4 @@ R：通过 / 失败 / 部分 / 未测，不能跨层推定
 
 撤销范围前的历史离线记录 DOC-UI-01：`node --import tsx --test tests/web/task-form.test.ts`，7通过/0失败，验证项目模式切换不残留写意图、名称边界、当前owner讨论筛选、关联必须保留本次要求，以及与真实taskInput解析器兼容。该记录未启动浏览器、服务或构建，不能作为W28/W29真实通过；现已撤销这两个业务表单的范围，不继续补验。
 
-当前结论：**未完成本轮整改目标。** E05已证实一条Web到真实Codex产物和飞书群结果链路，E04证实指定REST生命周期，E01–E03只证实真实模型在所测输入/受控回执上的决策和措辞。LIVE-001及LIVE-004失败历史保留；E17 B/C真实飞书入站至产物/可见结果已获限定证据；后续清理的飞书指令路径仅B有证据，A/C应用操作只保留清理事实；新收尾措辞R-F、其他群审批、多参与者完整组合、恢复和权限组合等仍需逐项补证。上一阶段170项测试不能替代这些现场验收。
+当前结论：**本轮整改目标仍未全部完成。** E21-R2 的任务事件订阅、原生完成、强制刷新、herdr 关闭、群解散、最终描述和 outbox 已有独立 R-P；E05/E17 继续提供限定的飞书创建与产物证据，LIVE-001及LIVE-004失败历史保留。仍未关闭的包括其他任务类型和多参与者完整组合、审批与权限边界、异常/未知写入恢复、订阅重连、完整 session/archive/restore 组合、长期资源故障、三平台安装回退，以及若干消息格式与投递边界。上一阶段测试总数不能替代这些现场验收。
