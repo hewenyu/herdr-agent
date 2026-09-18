@@ -38,6 +38,46 @@ test("legacy reply binding outranks selected pane and imported bindings verify a
   }
 });
 
+test("legacy reply binding outranks an explicit pane argument", async () => {
+  const h = await existing();
+  try {
+    const ref = await h.herdr.get("p1");
+    h.store.set("legacy_routes", "reply-p1", {
+      paneId: ref.paneId,
+      workspaceId: ref.workspaceId,
+      kind: ref.kind,
+      cwd: ref.cwd,
+      sessionId: ref.sessionId,
+    });
+    await h.app.legacy.handle({
+      ...message("reply-with-explicit-pane", "/say p2 继续 p1"),
+      replyToMessageId: "reply-p1",
+    });
+    assert.equal(h.herdr.sends.at(-1)?.pane, "p1");
+    assert.equal(h.herdr.sends.at(-1)?.text, "继续 p1");
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy raw reply route is rejected after the pane session is replaced", async () => {
+  const h = await existing();
+  try {
+    const ref = await h.herdr.get("p1");
+    h.store.set("legacy_routes", "stale-reply", ref);
+    const current = h.herdr.agents.get("p1");
+    assert.ok(current);
+    current.sessionId = "replacement-session";
+    await assert.rejects(
+      h.app.legacy.handle({ ...message("stale", "不要误发"), replyToMessageId: "stale-reply" }),
+      /已变化/,
+    );
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("migrated selection resumes from current output baseline and close cannot resurrect it", async () => {
   const h = await existing();
   try {

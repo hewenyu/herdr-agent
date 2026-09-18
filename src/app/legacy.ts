@@ -65,7 +65,7 @@ export class LegacyBridge {
       fail("unknown_command", "未知或已精简的命令，请发送 /help；没有向终端投递。");
     }
     let target = message.replyToMessageId ? await this.route(message.replyToMessageId) : undefined;
-    if (args[0] && command.startsWith("/")) target = await this.ref(args[0]);
+    if (!target && args[0] && command.startsWith("/")) target = await this.ref(args[0]);
     if (!target) target = (await this.selection(message.ownerId, message.chatId))?.ref;
     if (!target) {
       const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
@@ -241,7 +241,7 @@ export class LegacyBridge {
   private async route(messageId: string): Promise<ExecutionRef | undefined> {
     const route = this.context.store.get<ExecutionRef | { p: string }>("legacy_routes", messageId);
     if (!route) return undefined;
-    if ("paneId" in route) return route;
+    if ("paneId" in route) return this.verifyRoute(route);
     let binding: { p?: string; k?: string };
     try {
       binding = JSON.parse(route.p);
@@ -252,6 +252,22 @@ export class LegacyBridge {
     const ref = await this.ref(binding.p);
     if (ref.kind !== binding.k) fail("target_changed", "被引用的 agent 已变化，未投递。");
     return ref;
+  }
+
+  private async verifyRoute(route: ExecutionRef): Promise<ExecutionRef> {
+    if (!route.paneId || !route.workspaceId || !route.kind || !route.cwd || !route.sessionId)
+      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+    const agent = await this.context.herdr.get(route.paneId);
+    if (
+      !agent.kind ||
+      agent.paneId !== route.paneId ||
+      agent.workspaceId !== route.workspaceId ||
+      agent.kind !== route.kind ||
+      agent.cwd !== route.cwd ||
+      agent.sessionId !== route.sessionId
+    )
+      fail("target_changed", "被引用的 agent 已变化，未投递。");
+    return this.fromSnapshot(agent);
   }
 
   private async ref(paneId: string): Promise<ExecutionRef> {
