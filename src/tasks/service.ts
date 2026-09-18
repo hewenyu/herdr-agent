@@ -1,6 +1,7 @@
 import { fail, OperationError, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
+import type { RemoteTask } from "../core/ports.js";
 import type { ActorContext, AgentKind, Participant, Task, TaskCreateInput } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
@@ -345,6 +346,32 @@ export class TaskService {
             syncCompletion(this.context, task),
           );
         else await syncCompletion(this.context, task);
+        let remote: RemoteTask | undefined;
+        let remoteError: unknown;
+        let remotePolled = completionPolled;
+        const readRemote = async () => {
+          if (
+            remotePolled ||
+            !task.remoteTaskId ||
+            !this.context.platform ||
+            task.completionRequest ||
+            (task.status === "completed" && task.closeRequested) ||
+            ["destroying", "destroyed"].includes(task.status)
+          )
+            return;
+          try {
+            // Read lifecycle facts before local execution recovery can fail. Reuse
+            // this snapshot for the later description instead of issuing another GET.
+            await this.remotePolls.run(task.id, "task", forceRemote, async () => {
+              remotePolled = true;
+              remote = await this.readRemote(task);
+            });
+          } catch (error) {
+            if (error instanceof OperationError && error.code === "stopping") throw error;
+            remoteError = error;
+          }
+        };
+        await readRemote();
         if (task.status === "completed" && !task.completionRequest) {
           resolveCompletedRetention(this.context, task);
           this.records.save(task);
@@ -372,8 +399,22 @@ export class TaskService {
           await provision(this.context, task);
         await observeTask(this.context, task);
         assertActive(this.context);
-        if (task.remoteTaskId && this.context.platform && !completionPolled)
-          await this.remotePolls.run(task.id, "task", forceRemote, () => this.syncRemote(task));
+        // Newly provisioned tasks did not have a remote ID during the early read.
+        await readRemote();
+        if (remoteError) throw remoteError;
+        if (remote) {
+          try {
+            await syncDescription(
+              this.context,
+              task,
+              remote,
+              taskDescription(task, this.records.participants(task)),
+            );
+          } catch (error) {
+            this.remotePolls.recordFailure(task.id, "task", error);
+            throw error;
+          }
+        }
         assertActive(this.context);
         await this.context.hooks.notice?.(task, "progress");
         if (!task.completionRequest) task.syncError = this.remotePolls.error(task.id);
@@ -425,10 +466,11 @@ export class TaskService {
     );
   }
 
-  private async syncRemote(task: Task): Promise<void> {
+  private async readRemote(task: Task): Promise<RemoteTask | undefined> {
     const platform = this.context.platform;
     if (!platform || !task.remoteTaskId) return;
     const remote = await platform.getTask(task.remoteTaskId);
+    assertActive(this.context);
     task.remoteCheckedAt = now();
     if (remote.completedAt && remote.completedAt !== "0" && !task.completedAt) {
       resolveGroupRetention(this.context, task);
@@ -436,12 +478,9 @@ export class TaskService {
       task.status = "completed";
       task.closeRequested = true;
       task.discussion.paused = true;
-      this.records.save(task);
-      return;
     }
-    const description = taskDescription(task, this.records.participants(task));
-    assertActive(this.context);
-    await syncDescription(this.context, task, remote, description);
+    this.records.save(task);
+    return remote;
   }
 
   private selectParticipant(task: Task, id?: string): Participant {

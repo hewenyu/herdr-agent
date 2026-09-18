@@ -1,7 +1,7 @@
 import { OperationError } from "../core/errors.js";
 import type { AgentSnapshot } from "../core/types.js";
 import { object, snapshot, string } from "./protocol.js";
-import { directoryTrustKeys, trustKeys } from "./screen.js";
+import { directoryTrustKeys, showsStartupMenu, trustKeys } from "./screen.js";
 import type { HerdrTransport } from "./transport.js";
 
 export interface ScreenRead {
@@ -43,7 +43,8 @@ export class HerdrClient {
         const screen = await this.read(agent.paneId, "visible", signal);
         if (
           !screen.truncated &&
-          (directoryTrustKeys(agent.kind, screen.text, agent.cwd) ||
+          (showsStartupMenu(screen.text) ||
+            directoryTrustKeys(agent.kind, screen.text, agent.cwd) ||
             (agent.kind === "codex" && trustKeys(screen.text)))
         )
           agent.status = "blocked";

@@ -6,7 +6,13 @@ import { TranscriptResolver } from "../transcripts/resolver.js";
 import { HerdrClient } from "./client.js";
 import { AgentControl } from "./control.js";
 import { createWorkspace, startAgent } from "./lifecycle.js";
-import { cleanScreen, directoryTrustKeys, parseOptions, trustKeys } from "./screen.js";
+import {
+  cleanScreen,
+  directoryTrustKeys,
+  parseOptions,
+  showsStartupMenu,
+  trustKeys,
+} from "./screen.js";
 import { resolveSocketPath } from "./socket-path.js";
 import { HerdrTransport } from "./transport.js";
 
@@ -50,7 +56,8 @@ export class HerdrRuntime implements HerdrPort {
       const visible = await this.client.read(ref.paneId, "visible", signal);
       if (
         !visible.truncated &&
-        (directoryTrustKeys(ref.kind, visible.text, ref.cwd) ||
+        (showsStartupMenu(visible.text) ||
+          directoryTrustKeys(ref.kind, visible.text, ref.cwd) ||
           (ref.kind === "codex" && trustKeys(visible.text)))
       )
         read = visible;
@@ -109,20 +116,43 @@ export class HerdrRuntime implements HerdrPort {
   }
 
   async initialInput(ref: ExecutionRef, receipt: string): Promise<string | undefined> {
-    const before = await this.control.current(ref);
-    if (before.cwd !== ref.cwd || (ref.sessionId && ref.sessionId !== before.sessionId)) return;
-    const text = await this.transcripts.initialInput(
-      { ...ref, sessionId: before.sessionId },
-      receipt,
-    );
-    const after = await this.control.current(ref);
+    const before = await this.inputIdentity(ref);
+    if (before && (before.cwd !== ref.cwd || (ref.sessionId && ref.sessionId !== before.sessionId)))
+      return;
+    // A stopped native process can leave its exact input on disk. Missing input
+    // remains unknown delivery; only the native user record can prove a receipt.
+    const target = { ...ref, sessionId: before?.sessionId ?? ref.sessionId };
+    const text = await this.transcripts.initialInput(target, receipt);
+    const after = await this.inputIdentity(target);
+    if (!before && after)
+      throw new OperationError("target_changed", "恢复输入期间执行目标已变化。");
     if (
-      after.cwd !== before.cwd ||
-      after.sessionId !== before.sessionId ||
-      after.terminalId !== before.terminalId
+      before &&
+      after &&
+      (after.cwd !== before.cwd ||
+        after.sessionId !== before.sessionId ||
+        after.terminalId !== before.terminalId)
     )
       return;
     return text;
+  }
+
+  private async inputIdentity(ref: ExecutionRef) {
+    try {
+      return await this.control.current(ref);
+    } catch (error) {
+      if (!missing(error)) throw error;
+      const pane = await this.client.pane(ref.paneId).catch((failure: unknown) => {
+        if (missing(failure)) return undefined;
+        throw failure;
+      });
+      if (
+        pane &&
+        (pane.pane_id !== ref.paneId || pane.workspace_id !== ref.workspaceId || pane.agent)
+      )
+        throw new OperationError("target_changed", "恢复输入的执行位置已变化，未读取其他会话。");
+      return undefined;
+    }
   }
 }
 

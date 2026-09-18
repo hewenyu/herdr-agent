@@ -12,6 +12,7 @@ export interface TranscriptSource {
 export async function receiptSource(
   home: string,
   ref: ExecutionRef,
+  strictIO = false,
 ): Promise<TranscriptSource | undefined> {
   if (
     ref.kind !== "claude" ||
@@ -48,7 +49,8 @@ export async function receiptSource(
       found = { path, afterOffset };
     }
     return found;
-  } catch {
+  } catch (error) {
+    if (strictIO && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     // Missing/inaccessible/changing directories cannot safely identify a transcript.
     return;
   }

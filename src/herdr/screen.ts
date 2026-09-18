@@ -118,10 +118,23 @@ export function directoryTrustKeys(
 }
 
 export function showsDialog(raw: string): boolean {
-  if (trustKeys(raw)) return true;
+  if (trustKeys(raw) || showsStartupMenu(raw)) return true;
   const compact = cleanScreen(raw).toLowerCase().replace(/\s/g, "");
   return ["doyouwanttoproceed?", "↑/↓tonavigate", "esctocancel"].some((marker) =>
     compact.includes(marker),
+  );
+}
+
+/** A native numbered startup menu requires a human choice, never a task prompt. */
+export function showsStartupMenu(raw: string): boolean {
+  const lines = cleanScreen(raw)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.at(-1) !== "Press enter to continue") return false;
+  return (
+    lines.some((line) => /^[❯›>]\s+[1-9][.)]\s+\S/.test(line)) &&
+    parseOptions(lines.slice(0, -1).join("\n")).length >= 2
   );
 }
 

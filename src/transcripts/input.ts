@@ -8,6 +8,7 @@ export async function readInitialInput(
   source: TranscriptSource,
   ref: ExecutionRef,
   receipt: string,
+  strictIO = false,
 ): Promise<string | undefined> {
   if (!/^HERDR_RECEIPT_[a-f0-9]{32}$/.test(receipt)) return;
   const id = ref.sessionId ?? (ref.kind === "claude" ? basename(source.path, ".jsonl") : "");
@@ -70,7 +71,8 @@ export async function readInitialInput(
       if (input !== undefined) return;
       input = text;
     }
-  } catch {
+  } catch (error) {
+    if (strictIO && !(error instanceof SyntaxError)) throw error;
     return;
   } finally {
     await file.close();

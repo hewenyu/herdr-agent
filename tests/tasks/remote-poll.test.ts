@@ -202,10 +202,10 @@ test("a task update event forces refresh inside cooldown and final cleanup proje
     assert.equal(h.service.get(actor, task.id).completedAt, undefined);
     // Application's durable task/group event handler calls this immediate entry point.
     await h.service.reconcile(task.id);
-    assert.equal(reads(), 2);
+    assert.equal(reads(), 3, "completion and final projection finish in the same reconciliation");
     assert.equal(h.service.get(actor, task.id).completedAt, "external-confirmation");
-    await h.service.tick();
     assert.equal(h.service.get(actor, task.id).status, "destroyed");
+    await h.service.tick();
     assert.equal(reads(), 3, "new final projection is not delayed behind the ordinary cooldown");
     assert.match(remote.description, /状态：destroyed/);
     assert.equal(h.herdr.closes, 2);

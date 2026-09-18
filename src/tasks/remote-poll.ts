@@ -31,9 +31,19 @@ export class RemotePolls {
       this.store.set<PollAttempt>("remote_poll", id, { at });
       return true;
     } catch (error) {
-      this.store.set<PollAttempt>("remote_poll", id, { at, error: safeError(error).message });
+      this.recordFailure(taskId, kind, error);
       throw error;
     }
+  }
+
+  /** A description PATCH uses the same fetched snapshot and polling attempt as the earlier GET. */
+  recordFailure(taskId: string, kind: PollKind, error: unknown): void {
+    const id = `${taskId}:${kind}`;
+    const previous = this.store.get<PollAttempt>("remote_poll", id);
+    this.store.set<PollAttempt>("remote_poll", id, {
+      at: previous?.at ?? Date.now(),
+      error: safeError(error).message,
+    });
   }
 
   error(taskId: string): string | undefined {

@@ -37,8 +37,13 @@ export class TranscriptReader {
   constructor(private readonly resolver: TranscriptResolver) {}
 
   async initialInput(ref: ExecutionRef, receipt: string): Promise<string | undefined> {
-    const source = await this.resolver.resolve({ ...ref, transcriptReceipt: receipt });
-    return source ? readInitialInput(source, ref, receipt) : undefined;
+    try {
+      const source = await this.resolver.resolve({ ...ref, transcriptReceipt: receipt }, true);
+      return source ? await readInitialInput(source, ref, receipt, true) : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
   }
 
   async page(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage> {
