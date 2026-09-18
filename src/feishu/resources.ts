@@ -112,10 +112,19 @@ export class FeishuResources {
     throw new OperationError("feishu_group_status", "无法确认群状态，未推断群已解散。");
   }
   async subscribeTasks(): Promise<void> {
-    await this.api.call({
+    // tenant_access_token subscribes this application's assigned tasks, including
+    // those created above with the app as assignee. No user token or request body.
+    const body = await this.api.call({
       method: "POST",
       url: "/open-apis/task/v2/task_v2/task_subscription",
       params: { user_id_type: "open_id" },
     });
+    const result = object(body.data);
+    if (result.code !== undefined && result.code !== 0)
+      throw new OperationError(
+        "feishu_task_subscription",
+        "飞书任务更新事件订阅未确认。",
+        "unknown",
+      );
   }
 }

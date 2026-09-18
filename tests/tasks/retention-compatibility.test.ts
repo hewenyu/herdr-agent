@@ -48,7 +48,8 @@ test("legacy active retention stays unchanged until explicit complete, close or 
   }
 });
 
-test("external completion also removes legacy default retention while explicit retention remains", async () => {
+test("external completion also removes legacy default retention while explicit retention remains", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   for (const explicit of [false, true]) {
     const h = setup();
     try {
@@ -60,6 +61,7 @@ test("external completion also removes legacy default retention while explicit r
       const remote = h.platform.tasks.get(legacy.remoteTaskId ?? "");
       assert.ok(remote);
       remote.completedAt = "external-user-completion";
+      t.mock.timers.tick(h.config.tasks.pollIntervalMs);
       await h.service.tick();
       await h.service.tick();
       assert.equal(h.service.get(actor, task.id).status, "destroyed");

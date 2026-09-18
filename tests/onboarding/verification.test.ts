@@ -19,6 +19,7 @@ function fake() {
   let stopped = false;
   let card: Record<string, unknown> | undefined;
   const platform: PlatformPort = {
+    subscribeTasks: async () => {},
     start: async (value) => {
       handlers = value;
     },

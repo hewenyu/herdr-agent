@@ -193,6 +193,127 @@ test("authorized serve connects once and closes resources before releasing lock"
     h.cleanup();
   }
 });
+
+for (const tasksEnabled of [true, false]) {
+  test(`serve subscribes only after connection and before ready/ticks when tasks=${tasksEnabled}`, async () => {
+    const h = harness();
+    try {
+      h.config.feishu = {
+        appId: "cli_test",
+        appSecret: "secret",
+        allowedOpenIds: ["owner"],
+        notifyChatId: "",
+      };
+      h.config.tasks.enabled = tasksEnabled;
+      h.platform.start = async () => {
+        h.events.push("connect");
+      };
+      h.platform.subscribeTasks = async () => {
+        assert.notEqual(h.app.runtime.status, "ready");
+        assert.ok(!h.events.includes("tick"));
+        h.events.push("subscribe-tasks");
+      };
+      h.app.changed = () => {
+        if (h.app.runtime.status === "ready") h.events.push("ready");
+      };
+      h.app.tick = async () => {
+        h.events.push("tick");
+        h.control.abort();
+      };
+      assert.equal(await runCLI(["serve"], h.deps), 0);
+      assert.deepEqual(
+        h.events.filter((event) => ["connect", "subscribe-tasks", "ready", "tick"].includes(event)),
+        tasksEnabled
+          ? ["connect", "subscribe-tasks", "ready", "tick"]
+          : ["connect", "ready", "tick"],
+      );
+    } finally {
+      h.cleanup();
+    }
+  });
+}
+
+test("failed task subscription stops that connection and retries the same app before starting work", async () => {
+  const h = harness();
+  try {
+    h.config.feishu = {
+      appId: "cli_test",
+      appSecret: "secret",
+      allowedOpenIds: ["owner"],
+      notifyChatId: "",
+    };
+    h.config.tasks.enabled = true;
+    let attempts = 0;
+    h.platform.start = async () => {
+      h.events.push("connect");
+    };
+    h.platform.subscribeTasks = async () => {
+      h.events.push("subscribe-tasks");
+      if (++attempts === 1) throw new OperationError("feishu_subscription", "订阅未成功。");
+    };
+    h.deps.sleep = async () => {
+      assert.equal(h.app.runtime.status, "waiting");
+      assert.ok(!h.events.includes("tick"));
+      assert.equal(h.events.at(-1), "disconnect");
+      h.events.push("retry");
+    };
+    h.app.tick = async () => {
+      h.events.push("tick");
+      h.control.abort();
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 0);
+    assert.equal(attempts, 2);
+    assert.equal(h.config.feishu.appId, "cli_test");
+    assert.deepEqual(
+      h.events.filter((event) =>
+        ["connect", "subscribe-tasks", "disconnect", "retry", "tick"].includes(event),
+      ),
+      [
+        "connect",
+        "subscribe-tasks",
+        "disconnect",
+        "retry",
+        "connect",
+        "subscribe-tasks",
+        "tick",
+        "disconnect",
+      ],
+    );
+    assert.deepEqual(h.errors, ["订阅未成功。"]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+for (const abortedAt of ["connect", "subscribe"] as const) {
+  test(`abort during ${abortedAt} does not mark service ready or start tasks`, async () => {
+    const h = harness();
+    try {
+      h.config.feishu = {
+        appId: "cli_test",
+        appSecret: "secret",
+        allowedOpenIds: ["owner"],
+        notifyChatId: "",
+      };
+      h.config.tasks.enabled = true;
+      h.platform.start = async () => {
+        h.events.push("connect");
+        if (abortedAt === "connect") h.control.abort();
+      };
+      h.platform.subscribeTasks = async () => {
+        h.events.push("subscribe-tasks");
+        h.control.abort();
+      };
+      assert.equal(await runCLI(["serve"], h.deps), 0);
+      assert.equal(h.events.includes("subscribe-tasks"), abortedAt === "subscribe");
+      assert.notEqual(h.app.runtime.status, "ready");
+      assert.ok(!h.events.includes("tick"));
+      assert.ok(h.events.includes("disconnect"));
+    } finally {
+      h.cleanup();
+    }
+  });
+}
 test("authorization transport errors never create a new application", async () => {
   const h = harness();
   try {

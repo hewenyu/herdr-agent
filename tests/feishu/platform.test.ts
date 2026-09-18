@@ -14,6 +14,81 @@ const handlers: PlatformHandlers = {
   taskChanged: async () => {},
 };
 
+test("task subscription uses the app-assignee endpoint without a user token or body", async () => {
+  const calls: APIRequest[] = [];
+  const platform = new FeishuPlatform(credentials, {
+    request: async (input) => {
+      calls.push(input);
+      return { code: 0, data: { code: 0, msg: "success" } };
+    },
+  });
+  await platform.subscribeTasks();
+  assert.deepEqual(calls, [
+    {
+      method: "POST",
+      url: "/open-apis/task/v2/task_v2/task_subscription",
+      params: { user_id_type: "open_id" },
+    },
+  ]);
+  for (const response of [{ code: 99991672 }, { code: 0, data: { code: 1470400 } }]) {
+    const rejected = new FeishuPlatform(credentials, { request: async () => response });
+    await assert.rejects(rejected.subscribeTasks(), OperationError);
+  }
+});
+
+test("subscribed task updates use the existing dispatcher and await durable task acceptance", async () => {
+  let dispatcher: EventDispatcher | undefined;
+  const taskIds: string[] = [];
+  const calls: string[] = [];
+  const platform = new FeishuPlatform(credentials, {
+    request: async ({ url }) => {
+      calls.push(url);
+      return { code: 0, bot: { open_id: "bot" }, data: { code: 0 } };
+    },
+    connection: ({ onReady }) => ({
+      start: async (input) => {
+        dispatcher = input.eventDispatcher;
+        onReady();
+      },
+      close: () => {},
+    }),
+  });
+  try {
+    await platform.start(
+      {
+        ...handlers,
+        taskChanged: async (id) => {
+          taskIds.push(id);
+          if (id === "rejected-task") throw new Error("durable task enqueue failed");
+        },
+      },
+      new AbortController().signal,
+    );
+    await platform.subscribeTasks();
+    assert.deepEqual(calls, [
+      "/open-apis/bot/v3/info",
+      "/open-apis/task/v2/task_v2/task_subscription",
+    ]);
+    assert.ok(dispatcher);
+    const event = (id: string, appId = credentials.appId) => ({
+      schema: "2.0",
+      header: { event_type: "task.task.update_user_access_v2", app_id: appId },
+      event: { task_guid: id },
+    });
+    await dispatcher.invoke(event("task"), { needCheck: false });
+    await dispatcher.invoke(event("foreign-task", "cli_other"), { needCheck: false });
+    await assert.rejects(
+      dispatcher.invoke(event("rejected-task"), { needCheck: false }),
+      /enqueue/,
+    );
+    await platform.stop();
+    await dispatcher.invoke(event("after-stop"), { needCheck: false });
+    assert.deepEqual(taskIds, ["task", "rejected-task"]);
+  } finally {
+    await platform.stop();
+  }
+});
+
 test("task/group/message calls preserve stable idempotency and bot-owned group semantics", async () => {
   const calls: APIRequest[] = [];
   const platform = new FeishuPlatform(credentials, {

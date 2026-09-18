@@ -20,6 +20,7 @@ import { TaskOperations } from "./operations.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
 import { TaskRecords } from "./records.js";
+import { RemotePolls } from "./remote-poll.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
 
@@ -28,12 +29,14 @@ export type TaskServiceOptions = Omit<TaskContext, "records" | "operations" | "s
 export class TaskService {
   readonly records: TaskRecords;
   private readonly context: TaskContext;
+  private readonly remotePolls: RemotePolls;
   private readonly locks = new KeyedMutex();
   private readonly running = new Set<string>();
   private readonly queued = new Map<string, { start(): void; cancel(): void }>();
   private readonly control = new AbortController();
 
   constructor(options: TaskServiceOptions) {
+    this.remotePolls = new RemotePolls(options.store, () => options.config.tasks.pollIntervalMs);
     this.records = new TaskRecords(options.store, () => options.config.feishu.allowedOpenIds);
     this.context = {
       ...options,
@@ -99,7 +102,15 @@ export class TaskService {
       // Complete/reopen must finish their explicit transition before a follow-up
       // send in the same pi turn. Failed remote synchronization stays durable.
       try {
-        await syncCompletion(this.context, task);
+        if (
+          task.remoteTaskId &&
+          task.completionRequest &&
+          !["destroying", "destroyed"].includes(task.status)
+        )
+          await this.remotePolls.run(task.id, "task", true, () =>
+            syncCompletion(this.context, task),
+          );
+        else await syncCompletion(this.context, task);
       } catch (error) {
         task.syncError = safeError(error).message;
         this.records.save(task);
@@ -278,7 +289,7 @@ export class TaskService {
             cancel: resolve,
             start: () => {
               this.running.add(task.id);
-              void this.reconcile(task.id)
+              void this.reconcile(task.id, { forceRemote: false })
                 .finally(() => {
                   this.running.delete(task.id);
                   this.schedule();
@@ -307,18 +318,33 @@ export class TaskService {
     }
   }
 
-  async reconcile(id: string): Promise<void> {
+  /** Direct event/manual reconciliation is immediate; background ticks opt into remote polling. */
+  async reconcile(id: string, options: { forceRemote?: boolean } = {}): Promise<void> {
     await this.locks.run(id, async () => {
       if (this.control.signal.aborted) return;
       const task = this.context.store.get<Task>("tasks", id);
       if (!task || !this.context.config.feishu.allowedOpenIds.includes(task.ownerId)) return;
+      const forceRemote = options.forceRemote ?? true;
       try {
         if (task.status === "destroyed") {
-          await syncFinalDescription(this.context, task);
+          await this.syncFinalRemote(task, forceRemote);
           return;
         }
-        await syncGroupState(this.context, task);
-        await syncCompletion(this.context, task);
+        if (task.chatId && !task.groupDeleted && this.context.platform?.getGroupStatus)
+          await this.remotePolls.run(task.id, "group", forceRemote, () =>
+            syncGroupState(this.context, task),
+          );
+        else await syncGroupState(this.context, task);
+        let completionPolled = false;
+        if (
+          task.remoteTaskId &&
+          task.completionRequest &&
+          !["destroying", "destroyed"].includes(task.status)
+        )
+          completionPolled = await this.remotePolls.run(task.id, "task", forceRemote, () =>
+            syncCompletion(this.context, task),
+          );
+        else await syncCompletion(this.context, task);
         if (task.status === "completed" && !task.completionRequest) {
           resolveCompletedRetention(this.context, task);
           this.records.save(task);
@@ -326,7 +352,7 @@ export class TaskService {
         if (task.closeRequested || task.status === "destroying")
           await closeTask(this.context, task);
         if (["destroyed", "destroying"].includes(task.status)) {
-          await syncFinalDescription(this.context, task);
+          await this.syncFinalRemote(task, forceRemote);
           return;
         }
         const legacyPending = this.context.store.get<OperationReceipt>(
@@ -346,10 +372,11 @@ export class TaskService {
           await provision(this.context, task);
         await observeTask(this.context, task);
         assertActive(this.context);
-        if (task.remoteTaskId && this.context.platform) await this.syncRemote(task);
+        if (task.remoteTaskId && this.context.platform && !completionPolled)
+          await this.remotePolls.run(task.id, "task", forceRemote, () => this.syncRemote(task));
         assertActive(this.context);
         await this.context.hooks.notice?.(task, "progress");
-        task.syncError = undefined;
+        if (!task.completionRequest) task.syncError = this.remotePolls.error(task.id);
         if (task.status !== "attention") task.error = undefined;
         if (
           task.status === "completed" &&
@@ -361,7 +388,7 @@ export class TaskService {
           task.closeRequested = true;
           this.records.save(task);
           await closeTask(this.context, task);
-          await syncFinalDescription(this.context, task);
+          await this.syncFinalRemote(task, forceRemote);
         }
         this.records.save(task);
       } catch (error) {
@@ -389,6 +416,13 @@ export class TaskService {
         this.context.hooks.changed?.(task);
       }
     });
+  }
+
+  private async syncFinalRemote(task: Task, force: boolean): Promise<void> {
+    if (task.status !== "destroyed" || !hasFinalDescription(this.context, task)) return;
+    await this.remotePolls.run(task.id, "final_description", force, () =>
+      syncFinalDescription(this.context, task),
+    );
   }
 
   private async syncRemote(task: Task): Promise<void> {

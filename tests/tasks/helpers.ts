@@ -124,6 +124,7 @@ export class FakePlatform implements PlatformPort {
   getError?: Error;
   updateError?: Error;
   async start() {}
+  async subscribeTasks() {}
   async stop() {}
   async sendText() {
     return "message";

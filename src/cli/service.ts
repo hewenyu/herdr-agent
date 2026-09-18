@@ -90,6 +90,9 @@ export async function service(
           platform = deps.createPlatform(config);
           runningApp.attachPlatform(platform);
           await platform.start(runningApp.handlers(), signal);
+          signal.throwIfAborted();
+          if (config.tasks.enabled) await platform.subscribeTasks();
+          signal.throwIfAborted();
           runningApp.runtime = { status: "ready", message: "飞书连接与任务调度已启动。" };
           runningApp.changed();
           startTicks();

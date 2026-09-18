@@ -33,7 +33,8 @@ test("confirmed completion description supersedes an older unknown projection af
   }
 });
 
-test("confirmation of completedAt alone cannot resolve an unknown description or trigger a replay", async () => {
+test("confirmation of completedAt alone cannot resolve an unknown description or trigger a replay", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const h = setup();
   try {
     const task = await h.service.create(actor, discussion);
@@ -55,6 +56,7 @@ test("confirmation of completedAt alone cannot resolve an unknown description or
     assert.equal(h.service.get(actor, task.id).status, "completed");
     assert.equal(h.store.get<{ state: string }>("description_sync", task.id)?.state, "uncertain");
     const writes = h.platform.updates;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     await h.service.tick();
     await h.service.tick();
     assert.equal(h.platform.updates, writes);

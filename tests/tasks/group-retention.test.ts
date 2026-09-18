@@ -346,7 +346,8 @@ test("unknown herdr cleanup after external group closure freezes without replay 
   }
 });
 
-test("polling confirms external group closure without events, group notifications or a delivery barrier", async () => {
+test("polling confirms external group closure without events, group notifications or a delivery barrier", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const notices: string[] = [];
   const h = setup({
     canDeleteGroup: () => false,
@@ -369,6 +370,7 @@ test("polling confirms external group closure without events, group notification
     await h.service.tick();
     assert.equal(h.herdr.closes, 0);
     status = "dissolved";
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     const before = notices.length;
     await h.service.tick();
     const closed = h.service.get(actor, task.id);

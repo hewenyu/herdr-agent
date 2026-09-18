@@ -59,7 +59,7 @@ poll_interval = "30s"
 enabled = false
 provider = "openai-responses" # or "anthropic-messages"
 model = ""
-base_url = "" # version root, e.g. https://api.openai.com/v1
+base_url = "" # required when AI is enabled; version root, e.g. https://api.openai.com/v1
 api_key = "" # model key is read from TOML; keep this file private
 # HTTPS required except loopback HTTP; no credentials/query/fragment in URL.
 # Changing model configuration requires service restart.

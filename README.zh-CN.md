@@ -56,7 +56,7 @@ npm run smoke
 
 1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（默认 `~/.herdr-agent/config.toml`），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
 2. 运行 `herdr-agent setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
-3. 在本地配置文件设置 `[ai]` 的 `enabled/provider/model/base_url/api_key`，AI 要求任务功能启用；配置修改后重启。业务项目登记通过飞书提出，不通过网页表单。
+3. 在本地配置文件设置 `[ai]` 的 `enabled/provider/model/base_url/api_key`，AI 要求任务功能启用；启用时必须显式填写 `base_url`，留空不采用供应商默认端点。配置修改后重启。业务项目登记通过飞书提出，不通过网页表单。
 4. 运行 `herdr-agent serve --open`，打开日志打印的本机地址。Web 仅用于查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
 
 ```sh

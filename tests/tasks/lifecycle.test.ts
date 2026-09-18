@@ -165,7 +165,8 @@ test("complete preserves execution; reopen works; close confirms remote completi
   }
 });
 
-test("external Feishu completion closes on reconciliation, retained groups remain", async () => {
+test("external Feishu completion closes on reconciliation, retained groups remain", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const f = setup();
   try {
     const task = await f.service.create(actor, { ...discussion, keepGroup: true });
@@ -174,6 +175,7 @@ test("external Feishu completion closes on reconciliation, retained groups remai
     const remote = f.platform.tasks.get(current.remoteTaskId ?? "");
     assert.ok(remote);
     remote.completedAt = "1234";
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
     await f.service.tick();
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).status, "destroyed");
@@ -205,7 +207,8 @@ test("unknown workspace creation and initial delivery never repeat across servic
   }
 });
 
-test("transient herdr and remote read failures recover without manual reset", async () => {
+test("transient herdr and remote read failures recover without manual reset", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const f = setup();
   try {
     const task = await f.service.create(actor, discussion);
@@ -215,9 +218,11 @@ test("transient herdr and remote read failures recover without manual reset", as
     assert.ok(f.service.get(actor, task.id).syncError);
     f.herdr.getError = undefined;
     f.platform.getError = new OperationError("http_read", "temporary read failure");
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
     await f.service.tick();
     assert.ok(f.service.get(actor, task.id).syncError);
     f.platform.getError = undefined;
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).syncError, undefined);
     assert.equal(f.herdr.starts, 2);
@@ -227,7 +232,8 @@ test("transient herdr and remote read failures recover without manual reset", as
   }
 });
 
-test("unknown completion PATCH is resolved by query without repeating the completion write", async () => {
+test("unknown completion PATCH is resolved by query without repeating the completion write", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const f = setup();
   try {
     const task = await f.service.create(actor, discussion);
@@ -239,14 +245,19 @@ test("unknown completion PATCH is resolved by query without repeating the comple
     });
     const updates = f.platform.updates;
     f.platform.updateError = undefined;
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
     await f.service.tick();
     assert.equal(f.platform.updates, updates);
     const remoteId = f.service.get(actor, task.id).remoteTaskId;
     const remote = f.platform.tasks.get(remoteId ?? "");
     assert.ok(remote);
     remote.completedAt = "resolved";
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).status, "completed");
+    assert.equal(f.platform.updates, updates);
+    t.mock.timers.tick(f.config.tasks.pollIntervalMs);
+    await f.service.tick();
     // Retained completed tasks now keep observing late output and project their
     // completed description. That separate write must not set completion again.
     assert.equal(f.platform.updates, updates + 1);

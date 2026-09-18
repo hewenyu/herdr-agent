@@ -84,6 +84,8 @@ export interface PlatformHandlers {
 
 export interface PlatformPort {
   start(handlers: PlatformHandlers, signal: AbortSignal): Promise<void>;
+  /** Subscribe the current application to changes of tasks it is assigned to. */
+  subscribeTasks(): Promise<void>;
   stop(): Promise<void>;
   sendText(chatId: string, text: string, key: string, replyTo?: string): Promise<string>;
   sendCard(chatId: string, card: Record<string, unknown>, key: string): Promise<string>;

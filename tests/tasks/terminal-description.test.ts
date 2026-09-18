@@ -43,7 +43,8 @@ test("completion projects completed immediately and cleaned resources in the fin
   }
 });
 
-test("manual Feishu completion projects closed resources without writing the completion field", async () => {
+test("manual Feishu completion projects closed resources without writing the completion field", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   for (const keepGroup of [false, true]) {
     const h = setup();
     try {
@@ -52,6 +53,7 @@ test("manual Feishu completion projects closed resources without writing the com
       const remote = h.platform.tasks.get(h.service.get(actor, task.id).remoteTaskId ?? "");
       assert.ok(remote);
       remote.completedAt = "1234";
+      t.mock.timers.tick(h.config.tasks.pollIntervalMs);
       await h.service.tick();
       await h.service.tick();
       assert.equal(h.service.get(actor, task.id).status, "destroyed");
@@ -70,7 +72,8 @@ test("manual Feishu completion projects closed resources without writing the com
   }
 });
 
-test("final description GET and known-not-executed PATCH failures do not block cleanup and recover after restart", async () => {
+test("final description GET and known-not-executed PATCH failures do not block cleanup and recover after restart", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   for (const stage of ["get", "patch"]) {
     const h = setup();
     try {
@@ -91,6 +94,7 @@ test("final description GET and known-not-executed PATCH failures do not block c
       h.platform.getError = undefined;
       h.platform.updateError = undefined;
       const restored = new TaskService(h.options);
+      t.mock.timers.tick(h.config.tasks.pollIntervalMs);
       await restored.tick();
       assert.equal(restored.get(actor, task.id).syncError, undefined);
       assert.match(
@@ -111,7 +115,8 @@ test("final description GET and known-not-executed PATCH failures do not block c
   }
 });
 
-test("unknown final description is never replayed and exact GET resolves it across restart", async () => {
+test("unknown final description is never replayed and exact GET resolves it across restart", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const h = setup();
   try {
     const task = await h.service.create(actor, discussion);
@@ -126,6 +131,7 @@ test("unknown final description is never replayed and exact GET resolves it acro
     assert.equal(h.service.get(actor, task.id).status, "destroyed");
     h.platform.updateError = undefined;
     const restored = new TaskService(h.options);
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     await restored.tick();
     await restored.tick();
     assert.equal(h.platform.updates, writes);
@@ -133,6 +139,7 @@ test("unknown final description is never replayed and exact GET resolves it acro
     const remote = h.platform.tasks.get(submitted.id);
     assert.ok(remote);
     remote.description = submitted.description;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     await restored.tick();
     assert.equal(restored.get(actor, task.id).syncError, undefined);
     assert.equal(h.platform.updates, writes);
@@ -149,7 +156,8 @@ test("unknown final description is never replayed and exact GET resolves it acro
   }
 });
 
-test("older unknown description survives resource destruction until its exact content is observed", async () => {
+test("older unknown description survives resource destruction until its exact content is observed", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const h = setup();
   try {
     const task = await h.service.create(actor, discussion);
@@ -169,6 +177,7 @@ test("older unknown description survives resource destruction until its exact co
     const remote = h.platform.tasks.get(previous.id);
     assert.ok(remote);
     remote.description = previous.description;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     await restored.tick();
     assert.equal(h.platform.updates, writes + 1);
     assert.match(remote.description, /状态：destroyed/);
@@ -234,7 +243,8 @@ test("historical destroyed tasks without a final projection intent remain untouc
   }
 });
 
-test("abandoned unknown completion blocks a new terminal projection until exact readback, without accepting or replaying it", async () => {
+test("abandoned unknown completion blocks a new terminal projection until exact readback, without accepting or replaying it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const h = setup();
   try {
     const task = await h.service.create(actor, discussion);
@@ -255,9 +265,11 @@ test("abandoned unknown completion blocks a new terminal projection until exact 
     const remote = h.platform.tasks.get(h.service.get(actor, task.id).remoteTaskId ?? "");
     assert.ok(remote);
     remote.completedAt = completion.completedAt;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     await new TaskService(h.options).tick();
     assert.equal(h.platform.updates, writes, "completion bit alone is insufficient");
     remote.description = completion.description;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     h.platform.updateError = new OperationError("lost", "最终描述未确认", "unknown");
     await h.service.tick();
     assert.equal(h.platform.updates, writes + 1);
@@ -265,6 +277,7 @@ test("abandoned unknown completion blocks a new terminal projection until exact 
     assert.ok(terminal);
     assert.equal(terminal.completedAt, undefined);
     remote.description = terminal.description;
+    t.mock.timers.tick(h.config.tasks.pollIntervalMs);
     h.platform.updateError = undefined;
     const restored = new TaskService(h.options);
     await restored.tick();
