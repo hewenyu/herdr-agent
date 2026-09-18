@@ -220,6 +220,33 @@ test("a read-only lookup cannot authorize an action completion claim", async () 
   );
 });
 
+test("a read-only lookup cannot authorize a future action promise", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "read-1", name: "status", arguments: {} }]),
+      response("I will create a project and group"),
+      response("I will create a project and group"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run(
+      input([
+        {
+          name: "status",
+          description: "read status",
+          parameters: { type: "object", properties: {} },
+          readOnly: true,
+          execute: async () => ({ status: "completed", taskId: "t1" }),
+        },
+      ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
+});
+
 test("unknown tool result cannot support a successful completion claim", async () => {
   const engine = new PiEngine(config, {
     streamFn: scripted([
