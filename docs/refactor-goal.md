@@ -6,6 +6,8 @@
 
 2026-09-18 发布授权与约束：用户已授权在问题修复、必要验收及最终 HEAD CI 通过后自动合并 PR #16，自动打 tag、执行并检查 Release Action 和真实 npm 安装。重构版本从 **v0.3.x** 开始，首版计划 **v0.3.0**。npm 包名 **@yuebanlaosiji/myrix**，提供 `myrix` 命令及 `herdr-agent` 兼容命令；使用 GitHub environment **NPM** 的 **TOKEN**。发布失败不得覆盖既有 npm 版本或移动公开 tag。该授权不把未测项自动视为通过；发布状态与完整验收目标分别记录。
 
+2026-09-18 当前运行检查：`master`/`origin/master` 为 `e7e8b3e`，`v0.3.6` macOS arm64 SEA 已重新构建并重启，PID `91732`，构建提交 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`；`version --json`、`/api/state` 和授权状态均已回读。状态库 23 个任务均为 `destroyed`，177/177 个 outbox 已送达；23 个任务群及缓存中的 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这只是当前部署和资源清理证据，LIVE-001、B/N 矩阵中的 U/R-部分/R-F 仍保持原判定，不能以服务 ready 或测试资源为空替代真实用户入口验收。
+
 2026-09-18 E20进展：Web 配置与历史边界整改已实际部署，真实飞书主私聊机械clear、讨论→关联开发、关闭父而保留子、子默认资源清理均有独立证据。0ccfff2全量378项检查；b53b263终态描述修复386项、SEA通过并部署，子远端描述已精确匹配最终投影。首轮讨论字数超限保留R-F；群内明确修订60字符通过。详情及当前未解决项见[E20记录](live-evidence-e20-release.md)。主分支required checks已从4个失效Go名称迁移为3个平台Node/SEA检查，strict:true及其他全部保护逐字段确认不变；最终HEAD通过前不合并。
 
 ## 目标
