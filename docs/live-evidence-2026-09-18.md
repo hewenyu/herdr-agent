@@ -153,3 +153,79 @@ CLI 逐入口的旧构建实测见 [CLI 证据](live-cli-evidence-2026-09-18.md)
 - **真实浏览器 Web clear 整体 R-F，部分步骤通过。** `.cache/live/web-clear-browser.json`（01:21–01:22 UTC）使用真实 Chromium、现运行服务和真实模型，无响应替身。归档旧 session、选择空的新 session、后续输入隔离、新回复实际显示后 ACK、归档历史实际渲染均通过；390px 检查无横向溢出、pageErrors 为空。但 clear 回复仍属于旧 session，尚无可见 DOM 节点时程序尝试 chat.ack，`visibleBeforeRequest=false`，验收器阻止该 ACK；回复仍 sending。必须保留 status=FAIL，不能用其它回复可见、API 200 或会话切换成功改成整体通过。
 
 本轮待复验项：主验收另发现 R2 的首次 relay 仍先 unconfirmed 后只读恢复，原因是 receipt 放在本轮安排之前，而既有 verifyReceipt 要求正文末尾。正在修复末尾 receipt 及旧格式兼容；Web ACK 可见性和移除参与者后的 resume 也在修复。此处仅记录发现及待验证方向，尚未部署，不能提前标修复通过。E09/E11 的旧失败及本轮 Web R-F 均保留，后续复验须有独立记录。
+
+## E13：9a86e40 成员调度、收尾与真实浏览器复验
+
+部署提交 `9a86e4026e4145cb16d490fdbdf3c8567deb2915`，PID `97147`，macOS arm64 SEA SHA256 `e10e7e6e5998982302142ce7c77fa601babb6248fdac146019cf836708dbf454`，成员及浏览器证据均固定该版本。主验收报告 280 项测试、SEA 烟测和 [三平台 CI 35295605258](https://github.com/hewenyu/herdr-agent/actions/runs/35295605258) 成功。以下只确认对应分支，不以构建通过替代未执行的验收。
+
+- **移除后 resume 的本次调度 R-P。** `.cache/live/discussion-membership-readback.json`（01:35 UTC）九项检查全为 true：保留 Claude 获得新 native 输入与输出、输出匹配本地记录并在群可见；被移除 Codex 的 `w17:p1` 不存在，旧输出保留，移除后无新 relay 或 native 输入，activeParticipant 指向保留者。恢复投递即时 delivered/acked/verified、attempts=1；不需要先返回 unknown 再恢复。此记录 rounds=0、paused=false，不把这一次恢复发言当作新轮预算完整结束。
+- **新增参与者首次完整投递 R-P。** `.cache/live/participant-added-first-send.json`（01:35 UTC）七项检查全为 true：新增 Claude 的 3025 字 native user 正文内 initial receipt 恰好一次且位于末尾，投递即时 verified/acked、attempts=1；有新输出，与参与者记录匹配且群消息真实可见。随后出现普通 `AskUserQuestion`，当前 task/participant 为 blocked，主验收已观察到发卡且未自动确认，等待群内用户本人选择；不能把首次投递通过扩张为普通审批端到端通过。
+- **原 B 保留后明确 close 的最终清理 R-P。** `.cache/live/discussion-b-cleanup.json`（01:28 UTC）保留显式 complete 的 keepGroup/keepExecution=true 回执，随后明确 close、keepGroup=false；远端完成、本地 destroyed、群 dissolved、`w13:p1`/`w14:p1` 均不存在，两个 close 与 delete 回执 done，群消息均 delivered 且通知/close 确认早于删群，十项检查全 true。证据早于 9a86e40 部署，不写成该新提交的执行记录。
+- **外部解散测试远端待办的后续清理已单独完成。** `.cache/live/external-disband-task-finalized.json`（01:32 UTC）明确为专用验收任务清理，remote completedAt 从 0 改为非零，localStatusUnchanged=true。这不是外部解散自动验收；E09“群解散后远端仍未完成、未伪造验收”的原证据与结论不变。
+
+Web clear 使用真实 Chromium、正在运行的服务与真实模型，保留三次独立记录：
+
+| 记录 | 实际结果与边界 |
+| --- | --- |
+| `.cache/live/web-clear-browser-9a86e40-model-no-reset.json`，01:31–01:32 UTC | **R-F 保留。** 前一条合成输入包含无明确时限的“只回复标记、不要调用工具”；随后 `/clear` 模型复读前一条标记，checkpoint 无工具调用，未发生归档切换。答复可见 ACK 正常，后续 session 归档只是验收器清理，不能误当 clear 成功。该失败与 E12 不可见 ACK 是不同问题 |
+| `.cache/live/web-clear-browser-9a86e40-scoped-canary-pass.json`，01:33 UTC | **R-P：明确限制只适用前一条消息的该输入链路。** `/clear` 实际调用一次 session_clear；旧会话归档、新会话初始空且服务端/UI选中、clear 回复先可见再 ACK 且最终 delivered、归档链接与历史可见、后续回复隔离并 delivered。全部 ACK 前有可见节点，390px 无横向溢出，pageErrors 为空。旧/新测试 session 均已归档 |
+| `.cache/live/web-clear-browser-9a86e40-natural-pass.json`，01:34 UTC | **R-P：普通自然对话后的 `/clear` 真实链路。** 首句仅要求记住验收标记，随后模型调用一次 session_clear；上述归档、切新、空上下文、可见 clear 回复/ACK、历史链接、后续隔离与移动布局检查均通过，全部 ACK 有可见节点，clear 最终 delivered。两测试 session 均已归档 |
+
+E12 未显示 clear 回复却尝试 ACK 的历史 R-F 保留，9a86e40 两次相应真实浏览器正常链路通过；本轮无 scope 的禁止工具历史仍导致模型未执行 clear，因此不宣称所有历史约束下必定调用。以下补充 R2 清理与用户本人处理普通菜单的独立回读；不改写上述旧失败。
+
+
+E13 后续收尾证据：
+
+- **R2 默认 complete 最终收尾 R-P。** `.cache/live/r2-cleanup.json`（01:36 UTC）十项检查均为 true：远端完成、本地 destroyed、群 dissolved、`w16:p1`/`w17:p1` 均不存在，两份 close 与 delete 回执 done，全部群消息 delivered，消息和关闭确认及解散前通知均早于删群。被移除 Codex 保持 removed，保留 Claude 最终 gone，无 error/syncError 或读取失败。
+- **普通用户菜单本次标记 A 链路 R-P。** `.cache/live/ordinary-menu-completed.json`（01:39 UTC）八项检查均为 true：真实 callback 的 owner/group/card/message/nonce 与审批匹配，key=1；inbox action 回执 done，卡片 consumed；native AskUserQuestion 的对应 toolUseId 得到“标记 A”答案，Claude 随后输出“用户选择：标记 A。等待后续安排。”，该结果有 delivered 回执且群 GET 实际可见。问题期间 directory-trust 操作数为零；主验收仅只读观察，选择由用户本人完成。只确认本次普通菜单链路，不扩张为所有权限菜单、过期/替换现场或重复回调均通过。主验收随后移除新增 Claude 并 complete review，review 最终清理仍待单独回读。
+- **多目录前置拒绝边界 R-P，worktree 执行待证据。** `.cache/live/worktree-create.json`（01:39 UTC）仅确认新项目登记与 task_d563… 对应任务创建记录，以及非法第二目录导致 save 被拒绝、首目录没有提前初始化 Git。该记录不含工作树/多目录执行产物或清理证据，任务 `task_d563c47aa704fbc208c6391606d1972e` 仍在执行，不提前标通过。
+
+E13 进一步定位记录：
+
+- `.cache/live/web-clear-model-probe.json` 与 `web-clear-model-probe-warm.json` 使用原失败历史、原系统提示的真实模型隔离重放，合计六次 clear 决策均选择 session_clear（两次直接、四次先正常首轮再 clear）。实际请求顺序正确，最后用户输入为 `/clear`；保留或移除客户端 cache/affinity 字段均通过，但 provider 仍报告 cacheRead，不能声称已关闭供应商缓存。记录工具意图后即停止，不执行生产会话切换。原一次 model-no-reset 继续保留为未稳定复现异常，目前没有证据确认源码缺陷或缓存错配，不因此改动 prompt；此前对历史约束影响的描述是输入条件与观察，不是已证根因。
+- `.cache/live/worktree-trust-failure.json`（01:43 UTC）固定 9a86e40：工作树操作 done，任务目录包含新 worktree 和额外目录；Codex 原生信任菜单同时呈现 source repository root。当前严格模板/授权目录识别拒绝，两次结果分别为 stale_guard 与 directory_trust_required，均 not_executed；未发送确认按键，initialSent=false、任务 blocked。**该 worktree 自动信任执行链 R-F**，最小安全修复与新构建复验尚待完成。另一个暂停/中断专用任务正在验证独立推进，不因已创建便标其暂停、中断或并发全部通过。
+
+本轮之后用户新增回复规范：主入口 clear 实际归档旧 pi、创建并选中新 pi 成功后，只回复模型生成的 `CLEAR_NEW_SESSION_OK`；一般控制与通知默认只简洁说明用户可见结果，不展示内部术语。E11/E13 旧版冗长成功回复原样保留，新规范待新版本真实复验；旧证据中的后续同名验收标记不等于当时 clear 回复已符合新规范。
+
+新规范部署前的隔离真实模型证据（不是生产验收，暂不新增 E14）：
+
+- `.cache/live/clear-exact-model-validation-r2.json`（01:55–01:56 UTC）使用真实配置的 PiEngine、完整二十个工具 schema 和隔离临时 Application/SQLite；只有 session_clear 允许调用真实本地处理器，其他工具拒绝，没有生产数据库、飞书或 herdr 写入。Web、主私聊以及历史已包含同名成功标记三种场景，均实际调用一次工具、由模型生成准确 `CLEAR_NEW_SESSION_OK`，实际归档旧会话并创建/选中新空会话，事务提交后才返回 prepared 回复。工具返回时旧会话尚未归档，不能把工具受理本身当作完成；本地事务与返回结果已分别核验。
+- 工具明确失败和 unconfirmed 两种场景均无成功标记、无会话切换。注入模型已生成成功文本之后的新会话事务失败，实际 rollback，旧会话未归档、无标记存储、没有返回可投递答复。此为隔离故障验证通过，不是生产故障注入。unconfirmed 模型仍建议“稍后重试”，保留措辞限制；实际没有重复工具调用，不能把不重发程序约束通过说成建议措辞也正确。
+- **该报告整体 FAIL，不能写全通过。** 原 restrictive BEFORE 历史场景未调用任何工具，却输出 AFTER 标记，旧会话保持不变；记真实模型隔离 **R-F**。`.cache/live/clear-exact-model-validation-r1-failure.json` 早期直接复读成功标记却未调用工具的失败也保留。R2 的 same-marker 历史通过不抹去 R1，也不抹去 restrictive 历史失败。
+- `.cache/live/notification-tone-probe.json` 三种合成事件由真实模型生成通知，分别为 62、73、59 字，未展示 scheduled/持久化/内部回执字段，未把等待创建的外部资源说成已创建，也区分即将解散与已经解散。三种限定事件的措辞检查通过；无外部投递，不能据此记生产通知已送达或全部事件均已验收。
+
+提示与工具确认方案已冻结待新构建。主验收正在完成全量检查，尚不将预期测试数量记为已通过；新规范的生产私聊与真实浏览器送达待部署后独立验收。
+
+## E14：2aa5337 精确 clear 回复、worktree 执行及模型额度阻塞
+
+生产二进制提交 `2aa53375f20e425d97182157a84559b9286daa68`，PID `11008`，macOS arm64 SEA SHA256 `e1b2b82546425f01467f38a92eac6e7037421bd77666e553656cee6847314e9f`。主验收报告 285 项测试及 [三平台 CI 35297564515](https://github.com/hewenyu/herdr-agent/actions/runs/35297564515) 通过。下列记录均固定实际版本，旧 R-F 保留，不能由测试总数关闭未完成现场验收。
+
+- **真实 Web 新规范 clear 链路 R-P。** `.cache/live/web-clear-concise-success.json`（02:01 UTC）使用真实 Chromium、生产服务和真实模型；输入 `/clear` 后模型实际调用一次 session_clear，答复严格等于 `CLEAR_NEW_SESSION_OK`，实际归档旧会话、创建并选中新空会话。clear 回复有可见节点后才 ACK、最终 delivered；归档链接/历史实际可见，后续消息进入新会话且 delivered、原文保留，上下文隔离，390px 无溢出、pageErrors 为空。两个测试 session 最终均归档。此证据中的 marker 是 clear 本轮答复，区别于 E11 的后续 canary。
+- **真实私聊新规范尚未通过，模型故障记录保留。** 主验收记录两次真实私聊 `/clear` 均 model_failed，未切换也未产生成功答复；其中 `.cache/live/private-clear-concise-model-failure.json` 保存首轮真实入站、checkpoint terminal=error、工具调用为空、旧 session 未归档且 generation=0。不能将 E11 旧私聊切换后的 `CLEAR_NEW_SESSION_OK` canary 写成新规范 clear 答复通过。隔离模型 private/same-marker 通过也不替代本次生产送达验收。
+- **503 的已确认上游原因与边界。** `.cache/live/model-service-failure.json`（02:07 UTC）是一次无工具、无生产状态修改的真实 PiEngine 健康请求；HTTP 503 报 `auth_unavailable`，其中上游 Kimi 明确 `access_terminated_error`、五小时使用额度耗尽。恢复时间未知，不能从“五小时窗口”推算确定恢复时刻；这证明当时服务不可用，不将模型故障伪报为 clear 成功，也不据此抹去早前模型未调用工具的 R-F。
+- **worktree 自动目录信任及本次多目录执行 R-P。** `.cache/live/worktree-success.json`（02:02 UTC）中原信任失败回执仍保留；新专用确认 done，用户审批 callback 为 0，初始输入一次。Codex 实际 cwd 为任务 worktree，分支为 `herdr/task_d563…`，读取主工作树 seed 与额外目录文件，仅在 worktree 产出 `WORKTREE_OK_0918`；原项目状态干净、额外目录未变，群输出一次。修复后的执行产物与隔离检查通过，不等于收尾通过。
+- **worktree 默认收尾仍受阻。** `.cache/live/worktree-cleanup-before-command.json`（02:05 UTC，原 worktree-cleanup.json 的保留快照）回读：远端已完成、本地 destroying、syncErrorPresent=true，群仍 normal，`w1B:p1` 仍存在，close/delete 回执尚无 done。主验收确认通知生成受当前模型故障阻塞。不能写全部测试群或执行器已清理；后续清理由主验收继续处理并补独立回读。
+
+新规范仍为：实际归档旧 pi、创建并选中新 pi 成功后，只送达 pi 自主生成的 `CLEAR_NEW_SESSION_OK`；程序不加关键词业务路由或固定回复替换，事务失败不送成功。E14 仅将真实 Web 分支标通过，真实私聊成功送达仍受模型额度限制。E09–E13 历史失败、R1/R2 隔离失败及 unconfirmed 建议重试的措辞限制全部保留。
+
+**E14 之后用户明确覆盖旧要求：** 主入口飞书私聊/Web聊天的 exact `/clear` 改为确定性会话命令，不由大模型接管。程序机械归档旧 pi、创建并选中新 pi，事务成功后仅返回 `CLEAR_NEW_SESSION_OK`；失败不得送成功，群聊不支持，不清任务/herdr。普通业务沟通继续由 AI。主验收正在实现并安排真实私聊复验，尚无新机械轮转证据；上段模型自主工具要求仅描述当时方案，已被本条最新要求替代。E14 旧模型 Web 通过与私聊额度失败保留，不能当作新方案通过或失败。
+
+
+## E15：ab79cc0 机械会话命令与通知故障收尾真实复验
+
+`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已按原部署运行，PID `20390`，构建时间 `2026-09-18T02:25:03.576Z`，SEA SHA256 `04d14c861c91c980038c9e659de68a86b531216c39f6c2b971444700adf20358`。`npm run format`、`npm run check`（315 项测试）及 SEA smoke 通过；[CI 35299218668](https://github.com/hewenyu/herdr-agent/actions/runs/35299218668) 已在同一源码提交的 linux_amd64、linux_arm64、darwin_arm64 三任务通过 check 与 SEA。E15 已独立回读真实私聊/Web机械轮转及本轮 9 个测试任务的资源清理；未测的整体功能项仍保留，目标 active。
+
+修复同时覆盖 AI 关闭时旧归档 session 的排队命令拒绝，以及 Web 省略 sessionId 后用相同 requestId 重试造成重复轮转：按 owner/chat/messageId 加命令锁，命令回执与轮转同事务写入，重复请求复用原答复。`before_close` / `before_group_delete` 仅在通知生成失败、尚未发送时写入 `unavailable` 审计并继续已授权清理；不生成固定替代通知，不记录虚假送达。已尝试但结果未知的发送、未完成输入/输出和原生最后结果的投递屏障仍保留，不能借模型故障跳过。
+
+离线回归对应 `tests/app/clear-command.test.ts`、`tests/app/session-tools.test.ts`、`tests/app/cleanup-notification.test.ts`，包含精确正文与引用边界、AI 开/关和模型不可用、事务失败、重复及并发请求、旧队列、未知投递恢复、通知模型/格式失败、未知发送不降级和最后结果/停机屏障。315 项全部通过属于 O-P，不是飞书、真实浏览器或资源清理 R-P。E14 worktree 阻塞及旧模型 clear 的全部 R-F 保留。以下是新版本独立现场证据，目标仍 active。
+
+
+- **真实飞书主私聊机械轮转 R-P。** `.cache/live/private-clear-command-success.json`（02:28 UTC）记录主验收通过 CUA 实际发送 `/clear`：旧会话归档、4 条旧历史保留且主验收比对 hash 一致，新会话被选中且为空；答复 `source:command`，没有模型 checkpoint 或工具调用，轮转回执与旧/新 ID 对应。远端 GET 正文准确为 `CLEAR_NEW_SESSION_OK`，本地 delivered；证据中的 nativeUIReadback 另记录主验收在飞书界面确认 10:28（Asia/Shanghai）可见单行标记。此标记就是该命令回复，不是后续 canary。
+- **真实 Web 机械轮转 R-P。** `.cache/live/web-clear-command-success.json`（02:26 UTC）使用真实 Chromium 与部署二进制，无模型请求及 API mock。八项检查均通过：无模型 checkpoint、旧归档、新选中且空、精确成功文本、显示后 ACK、归档历史可见、390px 无溢出；pageErrors 为空，答复 source=command 且 delivered；主验收已肉眼检查新空会话及移动宽度截图。旧测试 session 已由命令归档，新测试 session 随后也归档。
+- **worktree 模型通知不可用后的已授权清理 R-P。** `.cache/live/worktree-cleanup.json`（02:26 UTC）独立回读本地 destroyed、远端 completed、群 dissolved、`w1B:p1` 不存在，close/delete 回执 done，已有群消息均 delivered，消息及 close 确认早于删群。两类收尾通知均记 `unavailable / generation_failed / model_failed`，没有生成决策、发送尝试或送达记录；它们的 acknowledged 检查为 false 是如实未发送，不应改成“通知已送达”。旧阻塞快照保留在 `worktree-cleanup-before-command.json`。
+- **本轮已知测试资源清理 R-P。** `.cache/live/test-resource-inventory.json`（02:26 UTC）只读核对 runId `node-pi-live-20260918` 的全部 9 个已知任务：均本地 destroyed、远端 completed、群 dissolved，所有已知受管 pane 不存在；pending outbox、error/syncError、readErrors 均为零，awaitingCleanup、stillUsedForValidation 与 unownedValidationAgents 均为空。该结论仅覆盖本轮已知任务和对应资源，不代表所有功能已验收或用户代码目录已删除。
+- **历史失败完整保留。** `.cache/live/private-clear-model-failures-before-command.json` 保存 02:02、02:05 UTC 两次旧模型路径的 uncertain/model_failed、空工具调用与 checkpoint error。旧失败不被机械命令重放；新 `/clear` 无需模型，不能继续将其成功验收标为被模型额度阻塞。普通 AI 业务仍依赖模型，额度恢复时间未确认。
+
+离线的 AI 关闭、事务回滚、群拒绝、无 sessionId 并发去重、未知投递等证据不冒充真实环境故障注入。setup/补授权、外部 memory、完整未知写入与长期故障等未测项仍按矩阵保留；E15 不关闭整体目标。
+
+部署版本说明：上述运行二进制对应源码提交 ab79cc0；后续仅文档提交可能改变仓库 HEAD，不表示运行产物已按文档提交重新构建。

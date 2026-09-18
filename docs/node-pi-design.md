@@ -2,20 +2,22 @@
 
 日期：2026-09-17。本文描述 Node 实现及采用的默认决策；[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
 
-2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。主入口私聊/Web聊天的 `/clear` 由 pi 选择 `session_clear`，当轮回复持久后归档旧 pi session、创建并选中新 pi session；旧回执仍可投递，已接收排队消息保留旧绑定并因归档拒绝执行，不改投新会话；后续消息进入新 session。任务群和普通群均不支持该操作。Web 的显式清空按钮仍重置同一 session 的 generation，任务及 herdr 原生 session 均不随此操作清理。
+2026-09-18 会话约束补充：主机器人私聊根据上下文预算自动摘要，保留原始历史。主入口私聊/Web聊天的 exact `/clear` 由程序直接执行，不调用模型，AI 关闭或模型不可用时也可用。程序在一个事务中归档旧 pi session、创建并选中新 pi session，提交成功后只回复 `CLEAR_NEW_SESSION_OK`；失败不得送成功。旧历史和回执保留，已接收排队消息保留旧绑定并因归档拒绝执行，不改投新会话；后续消息进入新 session。任务群和普通群收到该命令时给出确定性简短拒绝。Web 的显式清空按钮仍重置同一 session 的 generation，任务及 herdr 原生 session 均不随此操作清理。以上为最新实现约束，新版本现场验收状态见 [现场矩阵](live-validation.md)，旧模型驱动证据不代替新方案验收。
 
 ## 核心职责
 
 **pi 只负责 herdr-agent 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。**
 
-**启用 AI 后，pi 与用户如何沟通由模型决定。** 程序提供飞书、会话、项目、任务、参与者、消息投递和查询工具，执行身份、作用域、幂等和状态约束；不得用关键词、斜杠命令匹配、固定业务文案或失败兜底抢占模型决策。用户说“关闭”、贴出 `/new` 或问业务问题，都由模型结合上下文决定是否调用工具。程序不把模型故障降级为向终端转发用户原文。Web 显式按钮、真实审批按钮、CLI 诊断和关闭 AI 后的兼容命令仍走确定性操作。
+**启用 AI 后，pi 的普通业务沟通和工具调用由模型决定；exact `/clear` 是用户明确指定的确定性会话命令。** 程序提供飞书、会话、项目、任务、参与者、消息投递和查询工具，执行身份、作用域、幂等和状态约束；不把这个例外扩展为普通业务关键词、固定答复或失败兜底。用户说“关闭”、贴出 `/new` 或问业务问题，都由模型结合上下文决定是否调用工具。程序不把模型故障降级为向终端转发用户原文。Web 显式按钮、真实审批按钮、CLI 诊断和关闭 AI 后的兼容命令仍走确定性操作。
 
-业务事实和权限不存放在提示词里。模型不能指定 owner、替换任务群绑定、绕过人工审批、重发结果未知的写操作；参与者输出、引用和摘要是数据，不是新授权。通知由只读工具支持的模型决定是否发送及正文；参与者结果可以按真实来源直接展示，不能改称“pi 已验证”。
+业务事实和权限不存放在提示词里。模型不能指定 owner、替换任务群绑定、绕过人工审批、重发结果未知的写操作；参与者输出、引用和摘要是数据，不是新授权。通知由只读工具支持的模型决定是否发送及正文；参与者结果可以按真实来源直接展示，不能改称“pi 已验证”。已授权收尾的 `before_close` / `before_group_delete` 通知若在发送前生成失败，写入 `unavailable` 审计并继续清理，不伪造通知送达或固定替代文案；已尝试但发送结果未知、未完成输入/输出及原生最后结果投递仍按原有屏障处理。
 
 ```mermaid
 flowchart LR
   F[飞书 / 本机 Web] --> I[输入回执与身份校验]
-  I --> P[pi 模型与工具循环]
+  I -->|普通 AI 对话| P[pi 模型与工具循环]
+  I -->|exact /clear| S[确定性会话命令]
+  S --> T
   P --> T[本工具任务 / 会话 / 参与者服务]
   T --> H[herdr Unix socket]
   H --> C[Claude / Codex 原生 session]
@@ -55,6 +57,8 @@ flowchart LR
 
 用户可见历史只接纳完整确认送达的答复。Web 先渲染，再提交 ACK；飞书分片逐条留回执。Web 显式清空按钮增加 pi 会话代数并保留原文与回执，不清任务、不清 herdr session；旧代迟到结果不能回填新代。压缩只影响模型上下文，不删除原始消息。
 
+exact `/clear` 经 `rotateEntry` 将命令记录、`source:command` 成功答复、旧会话归档、新会话及其选中状态、`session_rotations`、命令回执和本轮回执写入同一事务。按 owner/chat/messageId 加命令锁，Web 即使省略 sessionId、重试时当前选择已改变，也按原 requestId 复用原答复，不重复轮转；事务回滚时不返回成功答复。成功提交与答复送达分别记录，投递结果未知不自动重发。命令记录保存规范化的 `/clear`，不把引用内容作为命令正文。旧会话归档后的排队命令在 AI 关闭时同样拒绝执行，不仅限制模型路径。
+
 默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`herdr-agent.pid`；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，项目页修改写 SQLite。不要靠编辑旧 JSON 更新已运行的新 catalog。
 
 ### 迁移与回退
@@ -76,7 +80,7 @@ CLI 取得共享 POSIX flock；`serve`、`configure` 也在启动时执行同一
 
 日常入口是 `serve / setup / configure / doctor / help / version`，另提供维护命令 `migrate` 和只读 `debug ls|screen|transcript`。旧本地 `key / say / watch / dialog / tail / ls / transcript` 不再作为顶层命令；终端输入与审批放在任务参与者和真实卡片上下文里。
 
-AI 开启时，聊天文字及斜杠文本都交给 pi；快捷命令不优先于模型解释。关闭 AI 后，任务模式保留 `/new`、`/tasks`、`/projects`、`/task ...`、`/screen`、`/stop` 等兼容操作；旧 `/new` 仍创建任务。关闭 tasks 时保留旧桥 `/ls /card /say /stop /mirror /close`；此处 `/close` 只解除选择，绝不升级成销毁任务。具体 CLI 选项以 `help` 为准。
+命令匹配只检查实际消息正文的 `text.trim() === '/clear'`，不检查拼接后的引用内容；前后空白可忽略，`/CLEAR`、`／clear`、`/clear now` 和正文中提到 `/clear` 均不是该命令。它在主入口私聊/Web聊天直接执行，在群内拒绝，AI 关闭时也可用。AI 开启时，其余聊天文字及斜杠文本交给 pi。关闭 AI 后，任务模式保留 `/new`、`/tasks`、`/projects`、`/task ...`、`/screen`、`/stop` 等兼容操作；旧 `/new` 仍创建任务。关闭 tasks 时保留旧桥 `/ls /card /say /stop /mirror /close`；此处 `/close` 只解除选择，绝不升级成销毁任务。具体 CLI 选项以 `help` 为准。
 
 Web 提供 session/任务/参与者/项目界面、模型配置、授权状态、屏幕和审批操作。只监听明确的 loopback IP，校验 Host、Origin 和 CSRF；未开放远程登录。模型配置保存后需重启。`ui.max_cols/tail_lines` 只裁剪屏幕展示，不修改 Guard、阻塞检测或原始屏幕。停止 Web/服务不会自动销毁所有编码资源。
 

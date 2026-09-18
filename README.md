@@ -4,7 +4,7 @@
 
 A personal orchestration tool built with **Node, TypeScript and pi**. Use Feishu or the local Web interface to manage projects, tasks, participants and multiple pi sessions. **herdr continues to host Claude/Codex and their native sessions.**
 
-pi handles this tool's business: arranging work, routing messages, querying state and managing lifecycles. Claude/Codex handle your project's requirements, design, implementation, tests and reviews. With AI enabled, the model decides conversational responses and tool calls; keyword handlers and fixed business replies must not replace that decision. The application enforces identity, scope, human approval and durable receipts.
+pi handles this tool's business: arranging work, routing messages, querying state and managing lifecycles. Claude/Codex handle your project's requirements, design, implementation, tests and reviews. With AI enabled, the model decides ordinary conversational responses and tool calls. The exact `/clear` session command runs directly without a model. The application enforces identity, scope, human approval and durable receipts.
 
 ## Build and run
 
@@ -55,7 +55,9 @@ New tasks dissolve their group after confirmed completion by default; explicitly
 
 The everyday CLI is `serve / setup / configure / doctor / version / help`. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
 
-With AI enabled, all conversational text, including slash syntax, goes to the model. With AI disabled, task-mode compatibility commands remain available. With tasks disabled, the existing-agent bridge retains `/ls /card /say /stop /mirror /close`; its `/close` only clears selection and never destroys a task. See `help` for exact CLI options.
+Send `/clear` in the main private conversation or Web chat to archive the current pi session and select a new one. Only after the transaction succeeds does the program reply `CLEAR_NEW_SESSION_OK`. This works with AI disabled or unavailable, preserves history and tasks, and leaves herdr sessions intact. Groups reject the command. Matching uses only the actual message body, with surrounding whitespace removed; quoted text, `/CLEAR`, `/clear now` and mentions of `/clear` do not trigger it. The Web clear button separately resets context within the same session.
+
+With AI enabled, other conversational text, including slash syntax, goes to the model. With AI disabled, task-mode compatibility commands remain available. With tasks disabled, the existing-agent bridge retains `/ls /card /say /stop /mirror /close`; its `/close` only clears selection and never destroys a task. See `help` for exact CLI options.
 
 Exit codes: 0 success; 1 failure; 2 usage error; 3 setup credentials saved but verification incomplete; 130 cancellation. The Go CLI's historical exit codes are not all preserved.
 
