@@ -46,7 +46,7 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`，无需手动选择 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)。组件调用不替代真实用户从飞书进入的完整链路。
+全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)。这些记录不替代真实用户从飞书进入的完整链路。
 
 ## 运行前置
 

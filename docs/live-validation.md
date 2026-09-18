@@ -8,6 +8,8 @@
 
 2026-09-19 E25：修复 ready 后飞书长连接 terminal failure 不会触发服务级重连的问题，增加连接代次、一次性故障通知、旧平台停止、授权/订阅重试和 shutdown 取消回归；同时修复 tasks 关闭时旧兼容桥的回复路由覆盖和 pane/session 替换校验。最终 `npm run check` 457/457，定向 Feishu/CLI/legacy 回归 31 项通过。[E25 记录](live-evidence-e25-transport-legacy.md)仅记本地注入式故障与兼容路径，不关闭真实飞书断线或用户入口验收。
 
+2026-09-19 E26：使用当前服务应用凭据运行真实 REST 生命周期脚本，创建唯一测试任务和群，读回任务/群/消息，完成→重开→再完成，删除群并确认 `dissolved`；服务同步收到 5 个对应任务更新事件且未生成本地 pi 任务，原有 23 个任务、27 个参与者和 177 条 outbox 未改变。群成员列表因应用缺少 `im:chat.members:read` 返回 `99991672`，记录为明确权限缺口。该证据只关闭限定的 Feishu REST 资源步骤，不代表真实用户私聊、模型工具选择、pi 建项目或 B/N 完整组合。[E26 记录](live-evidence-e26-feishu-rest-lifecycle.md)
+
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
 2026-09-19 E24 前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
