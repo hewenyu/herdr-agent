@@ -7,13 +7,19 @@ import type { Operations } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { TaskRecords } from "./records.js";
 
+export interface NoticeUnavailable {
+  status: "unavailable";
+  reason: "generation_failed";
+  errorCode: string;
+}
+
 export interface TaskHooks {
   changed?(task: Task): void;
   output?(task: Task, participant: Participant, entry: TranscriptEntry): Promise<void>;
   notice?(
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
-  ): Promise<void>;
+  ): Promise<NoticeUnavailable | undefined> | Promise<void>;
   canDeleteGroup?(task: Task): boolean | Promise<boolean>;
   blocked?(task: Task, participant: Participant): Promise<void>;
 }

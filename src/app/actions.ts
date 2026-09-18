@@ -3,6 +3,7 @@ import { modelProvider, validateConfig } from "../config/validate.js";
 import { fail } from "../core/errors.js";
 import { newId } from "../core/ids.js";
 import type { ActorContext, Session, StoredMessage } from "../core/types.js";
+import { isClearCommand } from "../runtime/commands.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { ApplicationContext } from "./context.js";
 import { presentScreen } from "./presentation.js";
@@ -164,10 +165,13 @@ export async function dispatch(
       result = context.sessions.history(actor.ownerId, string(input, "id"));
       break;
     case "chat.send": {
-      if (!context.config.ai.enabled) fail("ai_disabled", "pi 尚未启用，请先配置模型并重启。");
-      const reply = await context.sessions.reply(actor, string(input, "text"), {
-        signal: context.signal,
-      });
+      const text = string(input, "text");
+      const command = isClearCommand(text);
+      if (!command && !context.config.ai.enabled)
+        fail("ai_disabled", "pi 尚未启用，请先配置模型并重启。");
+      const reply = command
+        ? await context.sessions.rotateEntry(actor, { signal: context.signal })
+        : await context.sessions.reply(actor, text, { signal: context.signal });
       context.sessions.beginDelivery(actor.ownerId, reply.id);
       result = reply;
       break;

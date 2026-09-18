@@ -1,6 +1,7 @@
 import { fail, OperationError } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { ActorContext, IncomingMessage, StoredMessage } from "../core/types.js";
+import { isClearCommand } from "../runtime/commands.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { ApplicationContext } from "./context.js";
 import type { LegacyBridge } from "./legacy.js";
@@ -42,6 +43,18 @@ export async function handleMessage(
     actor.chatId !== message.chatId
   ) {
     fail("message_scope", "消息所属任务已变化，未执行排队消息。");
+  }
+  const clearCommand = !message.unsupportedType && isClearCommand(message.text);
+  if (!clearCommand && context.sessions.get(actor.ownerId, actor.sessionId).archived)
+    fail("invalid_scope", "会话已归档，未执行旧会话的排队请求。");
+  if (clearCommand) {
+    if (actor.taskId || message.chatType !== "private") {
+      await reply(context, message, "/clear 仅用于主入口私聊或 Web 聊天。");
+      return;
+    }
+    const answer = await context.sessions.rotateEntry(actor, { signal: context.signal });
+    await deliverReply(context, actor, message, answer);
+    return;
   }
   if (context.config.ai.enabled) {
     let prompt = message.unsupportedType
@@ -147,24 +160,14 @@ async function command(
         [
           "直接用文字安排任务，pi 负责调度，Claude/Codex 负责讨论和执行。",
           "/tasks [all] · /projects · /sessions · /session new|switch|rename|archive|restore",
-          "AI启用时，主机器人私聊 /clear 由pi开启新会话；/screen [参与者] 看现场；/stop [参与者|all] 中断。",
+          "主机器人私聊 /clear 直接开启新会话，无需模型；/screen [参与者] 看现场；/stop [参与者|all] 中断。",
           "/task complete|close|destroy|reopen|retry|pause|resume [任务编号] 保留人工操作入口。",
           "旧 /new <项目> [codex|claude] <要求> 继续表示创建任务，不表示新会话。",
         ].join("\n"),
       );
       return true;
     case "/clear":
-      if (args.length) fail("command_args", "请单独发送 /clear，再发送新要求。");
-      if (actor.taskId || message.chatType !== "private")
-        fail("clear_scope", "/clear 仅用于主应用私聊。");
-      if (!context.config.ai.enabled) fail("ai_disabled", "pi 尚未启用。");
-      context.sessions.clear(actor.ownerId, actor.sessionId);
-      await reply(
-        context,
-        message,
-        "已开启新的调度上下文。旧历史、任务和 herdr 托管的执行会话保留。",
-      );
-      return true;
+      return fail("command_args", "请单独发送 /clear，再发送新要求。");
     case "/doctor": {
       const status = await context.herdr.ping();
       await reply(

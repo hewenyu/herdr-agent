@@ -120,6 +120,92 @@ export class SessionService {
     });
   }
 
+  /** Rotate an entry conversation atomically, without consulting or compacting with a model. */
+  async rotateEntry(actor: ActorContext, options: Pick<ReplyOptions, "signal"> = {}) {
+    this.checkActor(actor, true);
+    const commandId = key(actor.ownerId, actor.chatId, actor.messageId);
+    return this.mutex.run(`entry-command:${commandId}`, () =>
+      this.mutex.run(actor.sessionId, async () => {
+        const session = this.checkActor(actor, true);
+        if (
+          session.taskId ||
+          (actor.source !== "web" && !(actor.source === "feishu" && actor.chatType === "private"))
+        )
+          throw new OperationError("clear_scope", "/clear 仅用于主入口私聊或 Web 聊天。");
+        if (options.signal?.aborted) throw new OperationError("cancelled", "本轮会话已取消。");
+        // Bind command identity independently of the current selection: a Web retry
+        // may omit sessionId after the first request already selected its replacement.
+        const bound = this.database.get<{ replyId: string }>("session_command_receipts", commandId);
+        if (bound) {
+          const reply = this.messageForOwner(actor.ownerId, bound.replyId);
+          if (reply.source !== "command")
+            throw new OperationError("state_invalid", "会话命令回执损坏。", "unknown");
+          return reply;
+        }
+        const receiptId = key(actor.ownerId, session.id, actor.messageId);
+        const existing = this.database.get<TurnReceipt>("turn_receipts", receiptId);
+        if (existing) {
+          if (existing.status !== "finished")
+            throw new OperationError(
+              "turn_unconfirmed",
+              "前次操作未确认，不能重复执行。",
+              "unknown",
+            );
+          const reply = this.database.get<MessageRecord>("messages", existing.replyId);
+          if (!reply || reply.source !== "command")
+            throw new OperationError("duplicate_identity", "消息标识已用于其他操作。");
+          return reply;
+        }
+        if (session.archived)
+          throw new OperationError("invalid_scope", "会话已归档，未执行旧会话的排队请求。");
+        return this.database.transaction(() => {
+          const createdAt = new Date().toISOString();
+          this.append({
+            id: `user_${receiptId}`,
+            sessionId: session.id,
+            role: "user",
+            source: "user",
+            text: "/clear",
+            createdAt,
+            delivery: "delivered",
+            deliveryIds: [actor.messageId],
+            generation: session.generation,
+          });
+          const reply = this.append({
+            id: `reply_${receiptId}`,
+            sessionId: session.id,
+            role: "assistant",
+            source: "command",
+            text: "CLEAR_NEW_SESSION_OK",
+            createdAt,
+            delivery: "prepared",
+            deliveryIds: [],
+            generation: session.generation,
+          });
+          const next = this.create(actor.ownerId);
+          this.select(actor.ownerId, actor.chatId, next.id);
+          if (actor.source === "web") this.database.set("web_selection", actor.ownerId, next.id);
+          this.update(session, { archived: true });
+          this.database.delete("session_reset_requests", session.id);
+          this.database.delete("session_archive_requests", session.id);
+          this.database.set("session_command_receipts", commandId, { replyId: reply.id });
+          this.database.set("session_rotations", receiptId, {
+            previousSessionId: session.id,
+            nextSessionId: next.id,
+            replyId: reply.id,
+            at: createdAt,
+          });
+          this.database.set<TurnReceipt>("turn_receipts", receiptId, {
+            generation: session.generation,
+            status: "finished",
+            replyId: reply.id,
+          });
+          return reply;
+        });
+      }),
+    );
+  }
+
   /** A model-requested reset takes effect only after this turn has a durable final answer. */
   requestReset(actor: ActorContext): {
     scheduled: true;

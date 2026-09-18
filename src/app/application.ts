@@ -15,6 +15,7 @@ import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
 import type { Store } from "../storage/store.js";
+import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
 import { Approvals } from "./approvals.js";
@@ -338,7 +339,7 @@ export class Application implements ApplicationContext {
   private async notice(
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
-  ): Promise<void> {
+  ): Promise<NoticeUnavailable | undefined> {
     const signature = stableId(
       task.id,
       kind,
@@ -371,13 +372,23 @@ export class Application implements ApplicationContext {
             tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
             signal: this.signal,
           });
+          if (this.signal.aborted)
+            throw new OperationError("stopping", "服务正在停止，通知未发送。");
           const parsed = JSON.parse(answer.text) as { notify?: unknown; text?: unknown };
           if (typeof parsed.notify !== "boolean" || typeof parsed.text !== "string")
             throw new Error("invalid decision");
           decision = { notify: parsed.notify, text: parsed.text };
         } catch (error) {
+          if (this.signal.aborted) throw error;
           this.logger.warn("生命周期通知决策未完成", { code: safeError(error).code });
-          if (kind === "before_close" || kind === "before_group_delete") throw error;
+          // Only generation failed: no message send was attempted. An unavailable
+          // optional notice must not veto cleanup the user already authorized.
+          if (kind === "before_close" || kind === "before_group_delete")
+            return {
+              status: "unavailable",
+              reason: "generation_failed",
+              errorCode: safeError(error).code,
+            };
           return;
         }
       } else decision = { notify: true, text: this.noticeText(task, kind) };

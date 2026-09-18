@@ -156,7 +156,7 @@ const action: Action = async (name, input) => {
     if (name === "session.archive") activeSession = "";
     if (result.sessionId) activeSession = result.sessionId;
     if (name === "chat.send" && result.id && result.sessionId && typeof result.text === "string") {
-      // A model-requested reset may have archived the reply's session before
+      // A session rotation may have archived the reply's session before
       // the HTTP response arrives. Read that transition before choosing a view.
       const latest = await fetchState();
       if (version !== identityVersion) return undefined;

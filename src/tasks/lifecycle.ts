@@ -252,8 +252,12 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
   // Destroying state prevents this observation from starting another discussion turn.
   await observeTask(context, task);
   if (!task.groupDeleted && !context.store.get("task_close_notice", task.id)) {
-    await context.hooks.notice?.(task, "before_close");
-    context.store.set("task_close_notice", task.id, { at: now() });
+    const outcome = await context.hooks.notice?.(task, "before_close");
+    assertActive(context);
+    context.store.set("task_close_notice", task.id, {
+      at: now(),
+      outcome: outcome ?? { status: "processed" },
+    });
   }
   // Persist results and intent before any resource deletion.
   context.records.save(task);
@@ -303,8 +307,12 @@ export async function deleteTaskGroup(context: TaskContext, task: Task): Promise
   };
   if (!(await ready())) return false;
   if (!context.store.get("task_group_delete_notice", task.id)) {
-    await context.hooks.notice?.(task, "before_group_delete");
-    context.store.set("task_group_delete_notice", task.id, { at: now() });
+    const outcome = await context.hooks.notice?.(task, "before_group_delete");
+    assertActive(context);
+    context.store.set("task_group_delete_notice", task.id, {
+      at: now(),
+      outcome: outcome ?? { status: "processed" },
+    });
   }
   // The notice can introduce a new pending delivery; inspect the barrier again.
   if (!(await ready())) return false;
