@@ -21,7 +21,15 @@ export function requestAction(
   action: TaskAction,
   options: TaskActionOptions = {},
 ): Task {
-  if (task.status === "destroyed")
+  const closeRetainedGroup =
+    task.status === "destroyed" &&
+    !!task.chatId &&
+    !task.groupDeleted &&
+    options.keepGroup === false &&
+    options.keepExecution === undefined &&
+    (action === "destroy" ||
+      (action === "close" && !!task.completedAt && task.completedAt !== "0"));
+  if (task.status === "destroyed" && !closeRetainedGroup)
     fail("task_destroyed", "执行资源已关闭，不能重开；可创建关联的新任务。");
   if (
     options.keepExecution !== undefined &&
@@ -52,6 +60,16 @@ export function requestAction(
       "task_retention_conflict",
       "有任务群时，保留执行现场必须同时保留群；群关闭后必须通过 herdr 关闭执行资源。",
     );
+  if (closeRetainedGroup) {
+    // Execution is already gone. Reuse its close receipts and the normal group
+    // deletion barrier without reopening work or changing acceptance history.
+    task.status = "destroying";
+    task.completionRequest = undefined;
+    task.closeRequested = false;
+    task.discussion.paused = true;
+    context.records.save(task);
+    return task;
+  }
   // A repeated completion/close continues the already-confirmed cleanup; it must not
   // create another completion intent or reject the user's retry.
   if (
@@ -161,7 +179,10 @@ export async function syncGroupState(context: TaskContext, task: Task): Promise<
   const updated: Task = {
     ...task,
     groupDeleted: true,
-    status: "destroying",
+    // A task that already finished executor cleanup has no remaining local
+    // resource to destroy. An externally dissolved retained group only updates
+    // the group fact; never reopen or re-enter the cleanup lifecycle.
+    status: task.status === "destroyed" ? "destroyed" : "destroying",
     completionRequest: undefined,
     closeRequested: false,
     discussion: { ...task.discussion, paused: true },
@@ -169,6 +190,11 @@ export async function syncGroupState(context: TaskContext, task: Task): Promise<
   context.store.transaction(() => {
     if (observedDissolved) confirmGroupDeletion(context, updated);
     context.records.save(updated);
+    if (observedDissolved && task.status === "destroyed")
+      // The terminal projection may already have been marked done while the
+      // retained group was alive. Rebuild it so remote task text no longer
+      // advertises a dissolved group link.
+      queueFinalDescription(context, updated);
   });
   Object.assign(task, updated);
 }

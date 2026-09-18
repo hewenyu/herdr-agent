@@ -1,51 +1,59 @@
-# herdr-agent
+# myrix
 
-[English](README.md)
+[English](README.md) · [npm](https://www.npmjs.com/package/@yuebanlaosiji/myrix) · [下载 Release](https://github.com/hewenyu/herdr-agent/releases)
 
-用 pi 调度本工具的项目、任务、参与者和多个会话，通过 **herdr 托管的 Claude/Codex** 讨论需求、开发、测试和评审。真实业务在飞书私聊和任务群内发生；本机 Web 用于查看会话记录，也用于维护本地项目、模型连接和 Bypass 等配置。
+基于 **Node、TypeScript 和 pi** 的本地调度工具，通过 **@yuebanlaosiji/myrix** 分发。在飞书中创建项目、组织需求讨论和开发任务、跟进结果；本机 Web 用于配置项目和模型、查看会话记录。
 
-**pi 只做 herdr-agent 的业务调度。** 用户项目的需求讨论和实际开发交给 Claude/Codex；它们的原生 session 由 herdr 管理。AI 开启时，模型决定普通业务沟通和工具调用。普通闲聊、解释和澄清可以直接由模型回复，不要求工具调用；但在相关业务工具可用时，只要答复声称某项业务动作已经发生（例如已经创建项目、任务或群，已经启动或关闭参与者），程序就要求存在真实工具调用及其返回事实。动作性声称必须有成功的写工具证据；只读查询可以支撑状态说明，但不能证明写操作已经发生。同一轮中只要出现 `unknown` 或 `not_executed` 结果，成功声称仍然无效，即使另一个工具调用成功。旧版引擎如果省略工具计数，按没有工具调用处理。模型缺少可信事实时，pi 会用“必须调用工具”的约束重试一次；重试仍无法取得所需事实时，本轮失败，不保存成功式 assistant 消息，也不产生成功投递候选。这个护栏只审计答复的事实来源，不按关键词路由请求，也不替模型生成答复。精确匹配 `/clear` 时直接执行，不调用模型；程序同时会按预算自动压缩主入口私聊的长上下文。应用会执行身份、范围、必要的人工作确认和持久回执约束。
+**pi 管理本工具的项目、任务、参与者和会话；herdr 托管 Claude/Codex 及其原生 session。** 用户项目的需求讨论、设计、开发、测试和评审交给 Claude/Codex。可以让它们进入同一个任务群，也可以启动同类模型的多个参与者，为不同项目分别创建任务。
 
-后端、前端均为 TypeScript，使用 Node SEA 一体打包。普通用户运行可执行文件，无需另装 Node 或放置前端资源。设计与取舍见 [实施设计](docs/node-pi-design.md)，实际验证范围见 [验收证据](docs/acceptance.md)。
+AI 开启时，普通回复、生命周期通知和工具选择由模型决定。程序提供工具、权限检查和持久化操作回执；对已经执行的业务动作要求真实写入证据，生命周期通知以当前任务与参与者快照为依据，仅开放只读工具。精确的 `/clear` 命令由程序直接轮转主私聊 pi session，不调用模型。
 
-**2026-09-18 范围纠正：** Web 只维护本机配置和浏览会话记录。可以配置本地项目（支持多目录，首目录保存时自动确保 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不能发消息、创建任务、管理参与者、审批、清理资源或操作 pi session。飞书仍是所有业务交互入口；配置写入口受 loopback、Origin、Host 和 CSRF 保护。
-
-## 发布与验收状态
-
-当前最新公开版本是 [v0.3.11](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.11)。主入口包和三个原生可选平台包已按同一版本发布。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.11`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
-
-PR #35 和 PR #37 增加了第一人称未来业务承诺及写证据护栏和回归测试，并与之前的工具事实检查一起包含在公开版本 `v0.3.11`。v0.3.11 的功能发布基线是 `2a5bbd0`。当前 `master` 为 `9c62b79`，其中包含该功能提交之后的发布记录文档；已发布的 Release 和 npm 包仍由 `2a5bbd0` 构建。仓库根目录的 `package.json` 是私有源码包，版本仍为 `0.3.0`，不是公开发布的 npm 主入口包。当前运行的本机二进制应通过 `version --json` 核对；若 stamp 为 `dev/unknown`，只能作为开发证据，不能当作发布版本或提交匹配证明。
-
-重启后的实例和 `doctor --json` 检查均正常，当前没有活动的 herdr 托管参与者。当前真实入口复验 marker `LIVE-001-R3-20260918` 尚未在飞书和状态回读中观察到，且没有发送端证据，因此无法确认对应任务、群、参与者或 outbox 状态；它仍是待完成的现场验收项，不能判定为已完成。没有持久化 marker 不能证明入口已经成功或失败。
-
-Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herdr 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herdr 和外部状态回读，才能把某个场景视为已验收。
-
-当前工具事实护栏修正前的源码基线通过了 422 项检查。本 checkout 的 `npm run check` 通过 440 项测试。v0.3.11 Release Action 已重新构建并 smoke 测试 macOS arm64、Linux x64 和 Linux arm64，发布三个可选原生包，并验证全局 npm 安装。此前的本地二进制已通过真实飞书完成一次讨论链路：创建任务和群、启动 Codex、投递 `LIVE_RACE_R2_OK`、用户手动确认完成、关闭 herdr 执行器并解散群。该结果只覆盖讨论和默认收尾场景，其余未验收项继续记录在[现场验收矩阵](docs/live-validation.md)。
-
-## 运行前置
-
-- 本机 herdr 可用，其 Unix socket 可访问。
-- 需要的 Claude/Codex CLI 已安装并完成登录；Git 可用。
-- 飞书国内版自建应用，通过 `setup` 注册或复用。当前 CLI 不接纳 Lark 海外应用。
-- 使用 pi 时配置支持工具调用的 OpenAI Responses 或 Anthropic Messages 模型服务。
-- 目标平台：macOS arm64、Linux x64/arm64。使用对应平台的原生构建；不能把 macOS 包复制到 Linux 使用。原生 flock 扩展仍依赖兼容的系统 C++ 运行库。
-
-这是单人单机工具。本机页面只监听 loopback IP，允许按已有授权范围筛选会话记录和维护本机配置；筛选不能改变服务端业务身份或飞书活跃会话。这不是远程 Web 登录或多租户管理。
+前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。仓库名、独立二进制名和状态目录继续保留 `herdr-agent`、`~/.herdr-agent`，兼容已有安装。
 
 ## 安装
 
-Node/pi 重构版本从 **v0.3.0** 开始，npm 包名为 **@yuebanlaosiji/myrix**，支持 macOS arm64、Linux x64 和 Linux arm64。
+Node/pi 重构版本从 **v0.3.0** 开始，支持 macOS arm64、Linux x64 和 Linux arm64。npm 启动器需要 Node >=18；独立二进制已内置 Node。
 
 ```sh
 npm install -g @yuebanlaosiji/myrix
 myrix version --json
-myrix setup
-myrix serve
+myrix help
 ```
 
-npm 安装需要 Node >=18 来运行薄启动器，实际业务执行对应平台的独立二进制。请安装 **`@yuebanlaosiji/myrix`**，不要直接安装平台包。`@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-arm64` 和 `@yuebanlaosiji/myrix-linux-x64` 是 npm 自动选择的实现依赖，为当前平台提供原生可执行文件，虽然会单独发布但不作为用户入口。保留 optional dependencies；没有下载代码的安装脚本。兼容 `herdr-agent` 命令，现有状态目录仍为 `~/.herdr-agent`。无需 Node 的安装方式是从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包。
+npm 自动选择当前平台的原生依赖：`@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-x64` 或 `@yuebanlaosiji/myrix-linux-arm64`。请保留 optional dependencies。平台包负责提供二进制，**用户统一安装 @yuebanlaosiji/myrix**；安装过程没有 postinstall 下载或编译。npm 同时提供 `myrix` 和兼容命令 `herdr-agent`。
 
-Release Action 仅在发布步骤使用 GitHub environment `NPM` 的 `TOKEN`。它会在发布前用离线全局安装校验完整 npm 分发，然后创建 GitHub Release；npm 将新版本暴露到公共 registry 可能需要几分钟。失败恢复见[发布说明](docs/releasing.md)。
+查看可用版本、安装指定版本或升级稳定版：
+
+```sh
+npm view @yuebanlaosiji/myrix versions --json
+npm install -g @yuebanlaosiji/myrix@0.3.11
+npm install -g @yuebanlaosiji/myrix@latest
+```
+
+无需安装 Node 的方式：从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包，解压并核对随包发布的 `SHA256SUMS`，再使用包内可执行文件：
+
+```sh
+./herdr-agent version --json
+./herdr-agent setup
+./herdr-agent serve
+```
+
+启用任务调度前请完成下文配置。两种安装方式都需要本机 herdr、Git，以及已登录的 Claude/Codex CLI。Linux 需要兼容的系统库；macOS 包使用 ad-hoc 签名，尚未公证。平台要求和校验命令见对应 Release 说明。
+
+## 发布与验收状态
+
+最新稳定版见 [Releases](https://github.com/hewenyu/herdr-agent/releases/latest)，安装版本、源码提交和构建时间通过 `myrix version --json` 查看。本文说明当前源码行为，各已发布版本包含的改动以对应 Release 为准。根目录的 `package.json` 是私有源码包，不是公开发布的 npm 主入口包。
+
+推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`，无需手动选择 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
+
+全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；最近的保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)。组件调用不替代真实用户从飞书进入的完整链路。
+
+## 运行前置
+
+- 本机 herdr 可用，其 Unix socket 可访问；需要的 Claude/Codex CLI 已安装并完成登录，Git 可用。
+- 飞书国内版自建应用，通过 `setup` 注册或复用；当前 CLI 不接纳 Lark 海外应用。
+- 使用 pi 时配置支持工具调用的 OpenAI Responses 或 Anthropic Messages 模型服务。
+- 这是单人单机工具，Web 只监听 loopback IP。Web 身份选择仅用于已有授权范围内的历史和配置，不改变飞书发送者或活跃会话。
 
 ## 从源码构建
 
@@ -60,27 +68,27 @@ npm run smoke
 ./dist/herdr-agent version --json
 ```
 
-`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/herdr-agent.cjs`；`binary` 在当前系统生成 `dist/herdr-agent`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、历史浏览、受保护的配置写入和业务写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
+`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/herdr-agent.cjs`；`binary` 会重新构建应用并在当前系统生成 `dist/herdr-agent`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、历史浏览、受保护的配置写入和业务写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
 
-开发时可用 `npm run dev -- help`；本地 Web 资源以构建后的程序为验收入口。后续示例假定可执行文件已放入 PATH；也可把 `herdr-agent` 替换为 `./dist/herdr-agent`。
+开发时可用 `npm run dev -- help`；本地 Web 资源以构建后的程序为验收入口。后续示例使用 npm 安装后的 `myrix`；源码构建时可替换为 `./dist/herdr-agent`。
 
 ## 配置与启动
 
 1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（默认 `~/.herdr-agent/config.toml`），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
-2. 运行 `herdr-agent setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
+2. 运行 `myrix setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
 3. 可在 Web 的“项目配置”页登记项目目录、设置默认项目和 Bypass；第一个目录是主目录，保存时自动检查并初始化 Git，附加目录按顺序传递给 Claude/Codex。模型连接也可在 Web 的“模型设置”页保存；启用时必须显式填写 `base_url`，配置修改后重启。任务、讨论和审批仍通过飞书提出。
-4. 运行 `herdr-agent serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
+4. 运行 `myrix serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
 
 ```sh
-herdr-agent setup --app cli_EXISTING_APP
-herdr-agent setup --update-permissions
-herdr-agent serve --config-listen 127.0.0.1:18790
-herdr-agent doctor --json
+myrix setup --app cli_EXISTING_APP
+myrix setup --update-permissions
+myrix serve --config-listen 127.0.0.1:18790
+myrix doctor --json
 ```
 
 已有应用启用任务功能时，需在飞书开发者后台配置事件订阅方式，添加 `task.task.update_user_access_v2` 并发布应用版本，才能让手动完成任务的事件送达服务。逐任务调用 API 订阅不能替代后台事件配置与应用发布；setup 的 scope 检查不检查后台事件订阅。
 
-`configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机会话记录页；网页及 HTTP 接口只开放受保护的本机配置写入口，不开放业务操作。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
+`myrix configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机配置和会话记录页；网页及 HTTP 接口只开放受保护的本机配置写入口，不开放业务操作。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`myrix serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
 
 飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型 key 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
 
@@ -94,7 +102,7 @@ herdr-agent doctor --json
 
 参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
 
-新任务在 completed 完成确认后默认自动解散群；用户明确保留时使用 `keepGroup: true`。review 不触发解散，明确保留证据继续有效；旧默认或来源不明的保留值在完成/关闭时采用解散，不批量改写活跃旧任务。`complete`（含飞书手动完成）默认通过 herdr 关闭对应执行器并按快照处理群；无论因何种原因解散群，都会关闭对应的 herdr Claude/Codex session。明确 `keepExecution: true` 保留执行器是例外，有群任务必须同时 `keepGroup: true`；`close` 确认完成后关闭受管执行资源；`destroy` 不自动验收；`reopen` 用于保留现场的已完成任务。任务结束和 pi session 归档是独立操作。默认共享项目目录；显式 worktree 只隔离首目录，其余附加目录仍共享，关闭时不删除代码或 worktree。
+新任务在 completed 完成确认后默认自动解散群；用户明确保留时使用 `keepGroup: true`。review 不触发解散，明确保留证据继续有效；旧默认或来源不明的保留值在完成/关闭时采用解散，不批量改写活跃旧任务。`complete`（含飞书手动完成）默认通过 herdr 关闭对应执行器并按快照处理群；无论因何种原因解散群，都会关闭对应的 herdr Claude/Codex session。明确 `keepExecution: true` 保留执行器是例外，有群任务必须同时 `keepGroup: true`；`close` 确认完成后关闭受管执行资源；`destroy` 不自动验收；`reopen` 用于保留现场的已完成任务。若执行器已关闭而群仍保留，之后可明确要求解散该群：pi 使用 `destroy` 加 `keepGroup: false`，已验收任务也可使用 `close`。这不会重启执行器或改写原验收事实。任务结束和 pi session 归档是独立操作。默认共享项目目录；显式 worktree 只隔离首目录，其余附加目录仍共享，关闭时不删除代码或 worktree。
 
 主入口飞书私聊达到配置的上下文预算时会自动压缩 pi 历史，保留原始记录和持久化操作回执。只有用户需要手动开启新会话时，才在主入口私聊单独发送 `/clear`；程序直接归档旧 pi session 并创建、选中新 session，事务成功后只回复 `CLEAR_NEW_SESSION_OK`。关闭 AI 或模型不可用时也可用；保留历史、任务和 herdr session，群聊拒绝。只匹配实际正文去掉前后空白后恰好为 `/clear` 的消息；引用内容、`/CLEAR`、`／clear`、`/clear now` 或正文中提到 `/clear` 不触发。Web 没有聊天框、`/clear` 或清空按钮；查看另一段历史不改变飞书活跃 session。
 
@@ -107,9 +115,9 @@ AI 开启时，其余聊天文本由模型理解，包括斜杠形式。关闭 A
 **停止旧服务及自动重启后再迁移；同一应用不要运行两条事件消费连接。**
 
 ```sh
-herdr-agent migrate --state-dir /absolute/state --dry-run
-herdr-agent migrate --state-dir /absolute/state
-herdr-agent serve --state-dir /absolute/state
+myrix migrate --state-dir /absolute/state --dry-run
+myrix migrate --state-dir /absolute/state
+myrix serve --state-dir /absolute/state
 ```
 
 迁移先校验，再备份到 `backups/`，事务导入任务、资源引用、可见会话与防重放回执；旧文件不改写。服务启动执行同一幂等导入，显式维护使用 `migrate`。坏状态或迁移后变化的旧业务源会拒绝覆盖。旧 pending 操作保持待核对，不重放旧模型工具或历史结果。
@@ -120,6 +128,6 @@ herdr-agent serve --state-dir /absolute/state
 
 自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
 
-[当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。所有 B/N 场景、尚待核对项目和部署证据见 [acceptance.md](docs/acceptance.md)。
+[当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。B/N 场景的早期离线证据见 [acceptance.md](docs/acceptance.md)，当前尚待核对项目和部署证据见[现场验收矩阵](docs/live-validation.md)。
 
 本项目采用 MIT，见 [LICENSE](LICENSE)。发布包另带 `LICENSES/`，保留嵌入 npm 依赖、原生扩展和 Node 的许可及第三方声明；重新分发请一并保留。生成规则见 [licenses](licenses/README.md)。

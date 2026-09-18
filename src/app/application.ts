@@ -387,6 +387,11 @@ export class Application implements ApplicationContext {
             }),
             tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
             signal: this.signal,
+            // Lifecycle notices are generated from the authoritative task and
+            // participant snapshot above. They may describe an already-created
+            // resource without replaying a write tool; ordinary user turns keep
+            // the default claim/evidence guard in SessionService/PiEngine.
+            enforceClaims: false,
           });
           if (this.signal.aborted)
             throw new OperationError("stopping", "服务正在停止，通知未发送。");
