@@ -11,11 +11,60 @@ let tab: RecordTab = "messages";
 let requestVersion = 0;
 let refreshing = false;
 let refreshPending = false;
+let rendered = false;
+let identityOptions = "";
 
 function node<T extends HTMLElement>(selector: string): T {
   const found = document.querySelector<T>(selector);
   if (!found) throw new Error(`页面缺少 ${selector}`);
   return found;
+}
+
+const identity = select("查看身份", []);
+const status = select(
+  "会话范围",
+  [
+    ["all", "全部会话"],
+    ["active", "活动会话"],
+    ["archived", "归档会话"],
+  ],
+  filter,
+);
+const refreshButton = button("刷新记录", refresh);
+node("#filters").replaceChildren(identity.wrapper, status.wrapper, refreshButton);
+identity.input.disabled = true;
+identity.input.addEventListener("change", () => {
+  selectedOwner = identity.input.value;
+  selectedSession = "";
+  requestVersion++;
+  current = { identities: current.identities, sessions: [], messages: [], records: [] };
+  node("#feedback").textContent = "";
+  render();
+  void refresh();
+});
+identity.input.addEventListener("blur", () => syncIdentity());
+status.input.addEventListener("change", () => {
+  filter = status.input.value as SessionFilter;
+  render();
+});
+
+function syncIdentity() {
+  // Native select menus must retain their node and options while focused.
+  if (document.activeElement === identity.input) return;
+  const identities = current.identities ?? [];
+  const signature = JSON.stringify(identities);
+  if (identityOptions !== signature) {
+    identity.input.replaceChildren(
+      ...identities.map(({ id, sessionCount }) => {
+        const option = el("option", "", `${id} · ${sessionCount} 个会话`);
+        option.value = id;
+        return option;
+      }),
+    );
+    identityOptions = signature;
+  }
+  identity.input.value = selectedOwner;
+  identity.input.disabled = !identities.length;
 }
 
 function render() {
@@ -27,38 +76,8 @@ function render() {
       (entry) => entry.dataset.recordId,
     ),
   );
-  const identities = current.identities ?? [];
-  const identity = select(
-    "查看身份",
-    identities.map(({ id, sessionCount }) => [id, `${id} · ${sessionCount} 个会话`]),
-    selectedOwner,
-  );
-  identity.input.disabled = !identities.length;
-  identity.input.addEventListener("change", () => {
-    selectedOwner = identity.input.value;
-    selectedSession = "";
-    requestVersion++;
-    current = { identities, sessions: [], messages: [], records: [] };
-    node("#feedback").textContent = "";
-    render();
-    void refresh();
-  });
-  const status = select(
-    "会话范围",
-    [
-      ["all", "全部会话"],
-      ["active", "活动会话"],
-      ["archived", "归档会话"],
-    ],
-    filter,
-  );
-  status.input.addEventListener("change", () => {
-    filter = status.input.value as SessionFilter;
-    render();
-  });
-  const refreshButton = button("刷新记录", refresh);
-  refreshButton.disabled = refreshing;
-  node("#filters").replaceChildren(identity.wrapper, status.wrapper, refreshButton);
+  syncIdentity();
+  rendered = true;
   const visible = (current.sessions ?? []).filter(
     (session) => filter === "all" || session.archived === (filter === "archived"),
   );
@@ -92,13 +111,18 @@ async function refresh(): Promise<void> {
     return;
   }
   refreshing = true;
+  refreshButton.disabled = true;
+  let changed = false;
   const version = requestVersion;
   const owner = selectedOwner;
   try {
     const next = await fetchState(owner || undefined);
     if (version !== requestVersion) return;
+    const nextOwner = owner || next.activeOwnerId || next.identities?.[0]?.id || "";
+    changed =
+      !rendered || nextOwner !== selectedOwner || JSON.stringify(next) !== JSON.stringify(current);
     current = next;
-    selectedOwner = owner || next.activeOwnerId || next.identities?.[0]?.id || "";
+    selectedOwner = nextOwner;
     node("#connection").textContent = `已更新 ${time(new Date().toISOString())}`;
     node("#feedback").replaceChildren();
   } catch (error) {
@@ -109,7 +133,8 @@ async function refresh(): Promise<void> {
     );
   } finally {
     refreshing = false;
-    if (version === requestVersion) render();
+    refreshButton.disabled = false;
+    if (version === requestVersion && changed) render();
     if (refreshPending) {
       refreshPending = false;
       void refresh();
