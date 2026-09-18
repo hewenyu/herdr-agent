@@ -18,7 +18,7 @@ export interface PublishConfirmationOptions {
   pause?: (delayMs: number) => Promise<void>;
 }
 
-const defaultConfirmationAttempts = 30;
+const defaultConfirmationAttempts = 60;
 const defaultConfirmationDelayMs = 5_000;
 
 async function confirmPublished(
