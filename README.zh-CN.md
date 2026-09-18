@@ -100,6 +100,8 @@ myrix doctor --json
 
 多参与者讨论默认最多 4 轮、30 分钟；可以指定参与者或暂停。多个同种模型实例有不同 participant ID。普通文本不是权限菜单批准，审批使用实际卡片/屏幕选项；结果未知时不能自动重发。
 
+任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后仍保留历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。
+
 参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
 
 新任务在 completed 完成确认后默认自动解散群；用户明确保留时使用 `keepGroup: true`。review 不触发解散，明确保留证据继续有效；旧默认或来源不明的保留值在完成/关闭时采用解散，不批量改写活跃旧任务。`complete`（含飞书手动完成）默认通过 herdr 关闭对应执行器并按快照处理群；无论因何种原因解散群，都会关闭对应的 herdr Claude/Codex session。明确 `keepExecution: true` 保留执行器是例外，有群任务必须同时 `keepGroup: true`；`close` 确认完成后关闭受管执行资源；`destroy` 不自动验收；`reopen` 用于保留现场的已完成任务。若执行器已关闭而群仍保留，之后可明确要求解散该群：pi 使用 `destroy` 加 `keepGroup: false`，已验收任务也可使用 `close`。这不会重启执行器或改写原验收事实。任务结束和 pi session 归档是独立操作。默认共享项目目录；显式 worktree 只隔离首目录，其余附加目录仍共享，关闭时不删除代码或 worktree。
