@@ -48,7 +48,8 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_get",
-      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialSent才证明初始要求投递已确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。",
+      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialSent才证明初始要求投递已确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
+        "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。",
       true,
       { taskId },
       [],
@@ -97,7 +98,8 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_action",
-      "管理本工具任务：任务、群、herdr执行session统一生命周期，complete确认完成后默认通过herdr关闭对应Codex/Claude并解散群，任何原因群解散都须清对应执行资源。明确保留群传keepGroup:true；明确保留执行现场传keepExecution:true（仅complete支持），有群任务还必须同时keepGroup:true，无群任务除外。保留群不自动保留执行器。keepGroup省略按策略来源处理，明确保留证据有效，旧默认/来源不明值在收尾时采用解散。close验收后清理；destroy不验收；reopen仅适用仍保留执行资源的已完成任务；retry仅明确失败；pause停止调度；resume恢复。review不是完成，不收尾。清理成功须查询实际回执。",
+      "管理本工具任务：任务、群、herdr执行session统一生命周期，complete确认完成后默认通过herdr关闭对应Codex/Claude并解散群，任何原因群解散都须清对应执行资源。明确保留群传keepGroup:true；明确保留执行现场传keepExecution:true（仅complete支持），有群任务还必须同时keepGroup:true，无群任务除外。保留群不自动保留执行器。keepGroup省略按策略来源处理，明确保留证据有效，旧默认/来源不明值在收尾时采用解散。close验收后清理；destroy不验收；reopen仅适用仍保留执行资源的已完成任务；retry仅明确失败；pause停止调度；resume恢复。review不是完成，不收尾。清理成功须查询实际回执。" +
+        "completed/closeRequested仅确认任务完成或收尾意图，不证明执行器关闭、删群请求已发或全部收尾完成。答复按实际阶段简短说明，群待解散时首句不得抢报全部完成，也不展示completed/gone/排队回执等字段。",
       false,
       {
         taskId,

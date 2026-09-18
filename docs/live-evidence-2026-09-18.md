@@ -224,7 +224,7 @@ E13 进一步定位记录：
 - **真实 Web 机械轮转 R-P。** `.cache/live/web-clear-command-success.json`（02:26 UTC）使用真实 Chromium 与部署二进制，无模型请求及 API mock。八项检查均通过：无模型 checkpoint、旧归档、新选中且空、精确成功文本、显示后 ACK、归档历史可见、390px 无溢出；pageErrors 为空，答复 source=command 且 delivered；主验收已肉眼检查新空会话及移动宽度截图。旧测试 session 已由命令归档，新测试 session 随后也归档。
 - **worktree 模型通知不可用后的已授权清理 R-P。** `.cache/live/worktree-cleanup.json`（02:26 UTC）独立回读本地 destroyed、远端 completed、群 dissolved、`w1B:p1` 不存在，close/delete 回执 done，已有群消息均 delivered，消息及 close 确认早于删群。两类收尾通知均记 `unavailable / generation_failed / model_failed`，没有生成决策、发送尝试或送达记录；它们的 acknowledged 检查为 false 是如实未发送，不应改成“通知已送达”。旧阻塞快照保留在 `worktree-cleanup-before-command.json`。
 - **本轮已知测试资源清理 R-P。** `.cache/live/test-resource-inventory.json`（02:26 UTC）只读核对 runId `node-pi-live-20260918` 的全部 9 个已知任务：均本地 destroyed、远端 completed、群 dissolved，所有已知受管 pane 不存在；pending outbox、error/syncError、readErrors 均为零，awaitingCleanup、stillUsedForValidation 与 unownedValidationAgents 均为空。该结论仅覆盖本轮已知任务和对应资源，不代表所有功能已验收或用户代码目录已删除。
-- **历史失败完整保留。** `.cache/live/private-clear-model-failures-before-command.json` 保存 02:02、02:05 UTC 两次旧模型路径的 uncertain/model_failed、空工具调用与 checkpoint error。旧失败不被机械命令重放；新 `/clear` 无需模型，不能继续将其成功验收标为被模型额度阻塞。普通 AI 业务仍依赖模型，额度恢复时间未确认。
+- **历史失败完整保留。** `.cache/live/private-clear-model-failures-before-command.json` 保存 02:02、02:05 UTC 两次旧模型路径的 uncertain/model_failed、空工具调用与 checkpoint error。旧失败不被机械命令重放；新 `/clear` 无需模型，不能继续将其成功验收标为被模型额度阻塞。普通 AI 业务仍依赖模型；本节检查时恢复时间未确认，E17 的03:03 UTC独立健康请求随后确认模型恢复响应。
 
 离线的 AI 关闭、事务回滚、群拒绝、无 sessionId 并发去重、未知投递等证据不冒充真实环境故障注入。setup/补授权、外部 memory、完整未知写入与长期故障等未测项仍按矩阵保留；E15 不关闭整体目标。
 
@@ -252,7 +252,7 @@ provenance 固定检查时 HEAD `234cd22dbbd10a8d2c8c56b34991f5a53608630e` 和�
 | 场景 | 已有真实事实与原始证据 | 保留边界 |
 | --- | --- | --- |
 | B05/B06/T14/FSH01 | `.cache/live-validation-run.json` 的 concurrentRequest/concurrentToolCalls/concurrentObservations：00:18:29 UTC飞书入站done，3次task_create(newProject=true)，3个项目的任务/群/远端task与4名started参与者；`.cache/live/concurrent-ac-products.json` 另证A/C独立产物及唯一初始回执 | 三项目创建正常分支R-P；不关闭LIVE-001原HTML比武输入失败，也不证明已working/blocked时再次独立请求的完整时序。A/C旧信任为人工处理，不冒充自动信任 |
-| B03 | `.cache/live/cli-2026-09-18T00-16-12.656Z.json` 实际doctor、debug ls/screen/transcript与缺pane拒绝，详见CLI证据 | 限旧SHA793b9006…c982c098；pane-width真实fail保留，非ab79cc0当前诊断全绿 |
+| B03 | `.cache/live/cli-2026-09-18T00-16-12.656Z.json` 实际doctor、debug ls/screen/transcript与缺pane拒绝，详见CLI证据 | 限旧SHA793b9006…c982c098；保留pane-width旧fail输出，但未读实际终端列数，不能推断现场过窄；E17另记诊断修正 |
 | W06/W08/W10 | `.cache/live-web-session-fixed-0918.json`（00:16 UTC）真实部署浏览器：archiveAutoHistory、restorePersisted、explicitSelectionReconnect均true，恢复后服务端选中正确、390px无溢出且pageErrors空 | 补正常分支，不抹去recheck旧归档历史为空/恢复丢选中两失败；报告缺源码stamp，不写成当前版本复验；草稿/跨owner/迟到回执及T19/T20模型工具仍分验 |
 | B11/N06/W16/W19 | `.cache/live/pause-interrupt.json`（01:44 UTC，9a86e40）：pause前后Codex仍working、暂停send拒绝，真实native interrupted、2条stop done、重复请求不变、resume accepted、项目文件未变 | 服务及执行器限定分支R-P，非Web按钮点击或T06模型选择；Claude当时idle，不能说两位均被中断运行中任务，也不保证任意子进程退出 |
 | FSH02/FSH07/GAP09 | `.cache/live/ordinary-menu-completed.json`（01:39 UTC）8项true：本人匹配owner/group/card/nonce/key=1回调、inbox done、卡片consumed、native AskUserQuestion答案和群内结果可见；问题期间目录信任操作0 | 本次普通菜单链路R-P；非owner、过期/重复卡片、长分片及其他权限菜单仍U，不替代W20 Web审批 |
@@ -298,3 +298,99 @@ cleanup记录三个测试session均已归档、原主owner与A/B原选中均恢�
 
 
 `.cache/live/test-resource-inventory-e16.json`（02:58:39–02:58:40 UTC）在本次重启后只读核对生产专用runId的9个已知任务：9/9 destroyed、remote completed、groups dissolved、所有已知受管panes缺失；awaitingCleanup、stillUsedForValidation、unownedValidationAgents及readErrors为空，pendingOutbox为0。两个人工故障注入样本的群在独立state及各自ledger确认dissolved，不能并成“生产11个任务”。E15原库存保持不变。后续纯文档提交改变HEAD时，实际运行产物仍对应5d1e96f，不冒充文档提交构建。
+
+## E17：当前 CLI 与真实旧状态副本迁移
+
+以下 CLI、迁移与飞书业务检查对应二进制 `5d1e96f1698af95ad0fa2317b34b73441518e968`，构建时间 `2026-09-18T02:52:38.355Z`，macOS arm64 SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`，服务 PID26077。模型健康及工作区 helper 检查的执行方式另行说明；未部署的修复不计作该二进制已有能力。
+
+### C01/C02/C10–C13/C16：当前二进制只读分支
+
+`.cache/live/cli-e17-readonly.json`（03:05:30–03:05:35 UTC）28 项检查全部通过：help/version 别名、真实 debug ls、缺失 pane 的 screen/transcript、参数拒绝和 doctor 的 JSON／文本。前后生产数据库、配置和二进制 hash 相同。当时 herdr 没有运行中 agent，doctor 两种格式均 12 项 pass、退出 0；pane-width 仅为“无需测量”，不证明某个真实终端足够宽。本轮没有成功读取现存 pane 的 screen/transcript，保留旧版本该分支证据。
+
+help 带 `--json` 仍为文本，失败输出也仍为文本，debug 成功默认输出 JSON；不将退出码正确等同于统一 JSON 协议。setup、第二个 serve、配置写入和断线恢复不在本组范围。具体历史与本轮边界见 [CLI 证据](live-cli-evidence-2026-09-18.md)。
+
+旧 pane-width fail 的解释已修正：代码仅计算最长可见内容行，不曾取得 PTY 实际列数，短文本不能证明终端过窄。`.cache/live/cli-e17-pane-width-before.json` 保留合成 `ready` 误报 fail；`cli-e17-pane-width-fixed.json` 记录工作区 helper 将短文本、空屏和 60 列改为 unknown，较长 ASCII／CJK 内容保留估算通过。此为合成 O-P，修复源码 hash `67902a772e7bec02929c08dd7e2eb9d453e51cd23eb78f10de9dc2dbb5f1306b`，不是运行 5d1e96f 已含修复的证明，也不关闭真实终端几何检查。
+
+### C14/C15/B18：真实旧 JSON 的隔离迁移与备份恢复
+
+`.cache/live/migration-e17-summary.json` 汇总成功 ledger `migration-e17-2026-09-18T03-08-17.051Z.json`；脚本为 `migration-e17-audit.ts`。读取生产目录内 9 个既有迁移源文件后，仅在专用隔离副本运行当前 SEA 的 migrate。生产 JSON、配置和凭据源文件前后 hash 相同；迁移检查没有打开生产 SQLite、启动服务／WebSocket或调用模型、飞书、herdr。所有临时数据库、备份、凭据和二进制副本已删除。
+
+真实样本为 1 位 owner、3 个 destroyed 任务、3 组 task/group 绑定、2 个 native session 绑定及 1 份对话文件。导入后为 3 tasks、3 participants、4 pi sessions、18 messages、9 message receipts、2 legacy operations、10 event receipts、18 routes 和 1 selection；逐项核对 owner、任务／群／原生会话及回执绑定，正文只在内存中比对，ledger 不保存消息或密钥。没有生成可执行 inbox/outbox、pi operations 或 turn receipts。
+
+| 检查 | 结果与分类 |
+| --- | --- |
+| dry-run | R-local-copy：planned；原先不存在的 SQLite 和备份均未创建 |
+| 实际导入及绑定 | R-local-copy：migrated；上述对象数量、关联和历史内容一致 |
+| 再次执行 | R-local-copy：already_migrated；所有 records 不变，备份目录仍只有 1 个 |
+| 备份恢复 | R-local-copy：9 文件字节及 manifest hash 一致，文件／目录权限为 0600／0700；恢复到另一空目录后再次迁移，除迁移报告路径外全部 facts 一致 |
+| 已导入源被修改 | O：在副本修改 tasks.json 后拒绝覆盖，数据库 facts 不变 |
+| 坏回执与既有记录冲突 | O：合成坏 deliveries 拒绝且 records 为 0；合成同标识 SQLite 记录冲突拒绝，原记录不变；两者均未创建备份 |
+| 事务中途失败 | O：SQLite trigger 在 sessions 写入时注入 ABORT，此前 task/participant 写入全部回滚，records 为 0，源备份仍完整；移除故障后重迁移得到相同 facts |
+
+共 8 项通过，其中 4 项 R-local-copy、4 项合成 O。R-local-copy 只指真实旧数据与实际二进制的隔离验证，不能称生产正在执行迁移或已完成运行旧服务的回退。全部旧任务已 destroyed、无 pending；真实样本没有独立 memory、notifications、deliveries 文件，因此未知操作、运行中任务、多 owner及这些缺失类型不计为本轮真实覆盖。未执行断电／进程杀死测试，也未恢复或核对外部资源来完成生产回退。
+
+两次早期检查失败 ledger `migration-e17-2026-09-18T03-06-31.731Z.json`、`migration-e17-2026-09-18T03-07-05.644Z.json` 原样保留。原因是检查脚本直接读取 SQLite TEXT key，Node sqlite 在 NUL 处截短返回值，导致旧 `owner + NUL + request` key 的内存查找失败；SQLite 中完整 key 与参数查询均正常。检查脚本改用 `hex(key)` 解码后通过；这是验收器修正，不是迁移源码修改或真实数据丢失。
+
+### 模型恢复与 LIVE-001 新会话创建复验
+
+`.cache/live/model-health-e17.json`（03:03:35–03:03:38 UTC）使用真实 PiEngine 对 `kimi-k2.5 / openai-responses` 发起一次无工具健康请求：HTTP 200、无 assistant error、精确健康标记匹配，status=HEALTHY。E14 的503／额度耗尽仍为当时真实故障；03:03 的独立成功证明本轮已恢复响应，不能继续用旧额度问题解释以下新失败，也不据单次请求保证长期可用。
+
+`.cache/live/live001-e17.json` 保留原核心输入“创建一个新项目，使用codex，创建一个HTML，内容是SVG绘制一个双人比武的的2D动画，不用进行测试”，另加专用项目／任务名、仅在新目录工作及等待用户验收的范围。使用新 pi session，没有重放原失败的完整历史。正式请求正文与预期精确一致且只入站一次，03:14:10–03:14:45 UTC 的记录显示 inbox done、模型调用一次 `task_create(newProject=true)`，保留“不测试、等待验收”的要求。
+
+**创建到原生执行器启动仍为 R-F。** 新任务 `task_8482d7516c319328993601602e30262c` 已登记，新项目、远端任务和群创建回执均 done；群为 `oc_071458d11c8cf63e92ededb3cec8b32c`，远端任务为 `fe850195-fc58-4736-8673-a9d22c922628`。参与者显示名 `Codex` 被直接交给 herdr 的 agent.start，触发 `invalid_agent_name`：原生名称必须以小写字母开头且仅含小写字母、数字、连字符或下划线，长度1–32。程序又将该明确参数拒绝记为 unknown，start 回执 uncertain，任务 attention；started=false、initialSent=false，没有执行或产物通过证据。
+
+`.cache/live/cli-e17-pane-width-live.json`（03:15:49 UTC）仅只读访问这个已授权目标：`agent.get` 返回 agent_not_found／not_executed，`pane.get` 确认 `w1E:p1` 存在于 `w1E`、目录匹配、agent=null。没有读取 screen；宽度记 unknown。这支持“工作区／pane 创建、agent 未启动”的分阶段判断，不能当作终端宽度已测或执行器已经工作。
+
+同一 ledger 的 harnessIssue 另保留两条正式请求之前的损坏输入：CUA `typeText` 中文丢字／换行提前提交导致碎片文字，其中一条仅调用 projects_list，另一条无工具，均只澄清、未创建。这两条不是有效 LIVE-001 请求，不能把它们的未创建归因于正式完整请求。正式请求的 agent 名称拒绝是独立产品失败；原历史 LIVE-001 与本次 R-F 都保留。
+
+截至本段最后检查，任务、群和空 pane 暂留作阻塞样本，尚未记已关闭。合法原生名称生成及错误分类正在修复；尚无修复部署后真实通过证据，不能把本轮 task_create 决策正确扩大为端到端成功。
+
+### FSH05：任务群无 @ 的 exact `/clear` 拒绝
+
+`.cache/live/group-clear-e17.json`（03:20:39 UTC）固定上述运行版本，任务 owner 在本次 attention 任务群发送无 @ 的 exact `/clear`。八项检查均 true：inbox done，拒绝回复 delivered，远端正文精确为“/clear 仅用于主入口私聊或 Web 聊天。”且原生飞书 UI 可见；task session、入口选中和 task status 未变，未生成模型 checkpoint。记为此任务群／owner／无 @ 分支 R-P；不扩张为无关群、其他 owner 或全部聊天权限场景。
+
+
+### E17 修复部署与原生启动核验
+
+修复源码提交为 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`。format、check 的 345 项测试及 SEA smoke 通过；[CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613) 的 macOS arm64、Linux x64/arm64 全部成功。`.cache/live/e17-deployment.json` 固定运行 PID32000、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`，runtime/authorization ready；原 herdr PID39037 保留。后续纯文档提交不改变实际二进制版本。
+
+修复保留参与者展示名；不符合 herdr 名称规则的中文、大写或过长名称，根据 pane 与完整展示名生成稳定原生名称。合法名称兼容原样，只有 herdr 明确未执行的重名拒绝才回退一次；unknown 不改名重发。响应 ID 先核对，再将 agent.start 的 invalid_agent_name／agent_name_taken 归为明确未执行。旧失败 A 的 uncertain 回执原样保留，没有手工改数据库。独立核对 herdr 源码确认这些拒绝发生在启动副作用前。
+
+同提交还修复迁移参与者的操作归属：旧 participant ID 不必以 task ID 开头，删群恢复、未知操作提示及 retry 按 task 与其实际 participant ID 的精确前缀判定；多前缀 retry 同事务，遇 unknown 整体回滚。7 项新增回归属于 O-P，真实迁移样本均已 destroyed，不能写成真实旧 pending 已恢复。doctor 的可见内容长度只提供估算下界；短文本改 unknown，不冒充 PTY 实际列数。
+
+`.cache/live/cli-e17-r2-native.json`（03:30:17 UTC）限定读取修复后 B 任务的 `w1F:p1`：展示名保留“编码者 Codex”，原生名 `agent-c57164c1f59d9be147331e7329` 与 pane／展示名映射一致，start 回执 done、指纹匹配。herdr 官方 pane process-info 独立确认实际 Codex 与 Node 进程参数包含 Bypass 及专用目录，cwd 一致；正文／原始 argv 未保存。此时 native working、interactiveReady=true、launchPending=false，初始投递已确认。可见最长内容 54 列时报告 unknown，符合修复后的诊断边界。
+
+主入口机械 `/clear` 的代码与 E15 实测版本逐文件对比一致：实际正文精确匹配在模型分支之前执行，事务内归档、新建、选中并写命令回执，提交成功后才投递 `CLEAR_NEW_SESSION_OK`。E15 私聊和真实浏览器证据继续有效；本轮另补上文任务群无 @ 拒绝。普通非任务群未 @ 时按消息路由忽略，不声称所有群输入都会收到拒绝文字。模型关闭、事务回滚、队列与未知投递等故障组合仍属离线验证。
+
+
+### E17 真实飞书创建、连续独立项目与唯一投递
+
+`.cache/live/live001-e17-r2.json` 记录 B 的正式入站 `om_x100b65feb90d50b0b27104d0efd2b1e`，原始核心要求保持不变，仅追加专用名称、目录范围与等待验收。真实模型调用 task_create，项目、远端任务与群均实际创建。任务 `task_fabf92c58fbbbdcccba3c8abfa86b99e`、群 `oc_adde953d324976833bb71c73baccb0ef`、远端任务 `14132626-ac33-4210-9155-fdce9e460d54` 对应同一条链路；本次调用与执行成功不抹去最早“零工具却虚报”的失败，也不能证明已从机制上消除所有模型虚报。
+
+`.cache/live/cli-e17-r2-completion.json` 独立核验：目录信任144为 stale_guard/not_executed，重读后的145确认成功，pi checkpoint有对应真实工具结果；原生 transcript 仅一条用户初始输入，时间03:28:57.317 UTC，全文与 participantPrompt 一致、唯一receipt、投递attempts=1且verified/acked。原生final与participant.lastOutput一致，署名群结果 `om_x100b65ff5c9a88b0b36f3582e966263` 全文与outbox一致，远端task描述与当前投影精确一致。产物 index.html 为19563 bytes，SHA256 `3730333c86323f57d3113e468469f1acb62964dd37e6c32b166fb3e34a4813f8`，源码含SVG、动画与展示名。群客户端也实际看到了署名结果和待验收通知。按请求没有运行作品测试或渲染验收，产物内容检查不等同于视觉质量保证。
+
+第三个独立项目 C `validation-independent-e17-0918` 在03:33:30.660 UTC从主私聊发送，03:33:54.811登记任务 `task_4f7da18ad66422fd3a4760053ca5d449`。B的匹配原生final在03:33:56.474、task_complete在03:33:57.649，均晚于C入站和创建；这些时间来自匹配原生session的transcript，agent.get不提供finishedAt。创建C时A仍attention，B原生回合尚未结束，C未被两者阻塞。此证据覆盖“异常任务存在＋另一任务执行时创建新项目”，不扩张为所有working／native blocked时序组合。
+
+C群 `oc_440e59d0945fa1a2188d766e390647f9`、远端任务 `3d8e3c9f-0ed1-4df8-90d5-831a75d68c3a`、pane `w1G:p1`。`.cache/live/independent-e17-completion.json` 20项通过：同展示名“编码者 Codex”映射到另一稳定原生名 `agent-4a4335e40b2e4f59501402c5c1`；目录信任150明确stale拒绝、151确认成功；初始投递1次，原生输入唯一。index.html源码含蓝色／橙色两个SVG圆和INDEPENDENT_E17_OK，SHA256 `f5f90a7b28c474449ead65faaeb03349f8a8a7dc4a44ca28d1dcec256ad2a1b0`；最终原生输出、task结果、唯一署名群消息与规范化后的远端描述一致。没有运行作品测试。B/C均先停review、远端completed_at=0、群normal、执行器保留，满足等待验收的要求。
+
+### E17 完成确认与资源收尾
+
+A通过真实应用task.action close退役失败样本；远端测试任务标完成只用于清理，不计作原业务交付成功，原start uncertain和错误审计仍保留。B由任务owner在真实飞书群无@发送明确完成确认，C通过应用Web API complete接受专用产物。三条收尾都通过应用流程执行，没有直接手改数据库或绕开herdr杀进程。
+
+`.cache/live/e17-b-group-completion.json` 保存B唯一入站 `om_x100b65ff651c8c40b1d59faf08f1f4f`，模型实际调用一次task_action complete。herdr close done在03:41:28.814；最终pi回复03:42:25.962 delivered，解散前GET读到精确远端正文；before_group_delete通知03:42:39.637 delivered；delete-group done03:42:40.582。群删除等待本轮回复完成，关闭与回复均先于删群。解散后message GET的HTTP400不当作消息丢失，保留解散前已核对的正文；最终解散通知未抢到远端正文，只能确认本地delivered回执。
+
+**新措辞R-F保留：** B回复开头说“任务已完成收尾”，但该时刻群仍normal，正文又说明群尚未解散；“解散指令已发出”也先于真实DELETE。程序没有提前删群，资源最终确已清理，但不能用后来的完成抹去当时措辞过满。后续提示修正与复验另记，不称本轮所有答复均正确。
+
+`.cache/live/e17-cleanup-readback.json` 的03:42:42最终快照核对三任务均destroyed、远端completed、群dissolved、各受管pane缺失、herdr close和delete回执done；全部群outbox delivered，并且最后消息及herdr close均早于删除。B产物hash不变，任务与会话历史保留。以上三个新样本与E15/E16的原九个测试任务分别记账，不覆盖早期库存快照。
+
+
+`.cache/live/test-resource-inventory-e17.json`（03:43:27 UTC）独立复查原9个加新增3个专用任务：12个群均dissolved，全部已知pane缺失，没有未归属测试agent、待发送群消息或仍保留作验证的执行器。10个remote task GET当场确认completed；另外2个GET返回HTTP400，原报告如实保留。当时错误封装未保留响应body，原因不能确定，不能写成限频、权限变化或任务未完成。`.cache/live/test-resource-inventory-e17-read-errors.json` 在03:45对两目标各串行GET一次，均HTTP200／Feishu code0，completed_at与E16一致。结合两份快照，12个测试任务均已确认清理；原失败报告及E15/E16库存没有覆盖。
+
+
+## E18：收尾答复的阶段事实修正
+
+E17群完成答复提前概括“已完成收尾”，实际群尚未解散。`runtime/prompts.ts` 与 `app/tools.ts` 的说明已加强：首句和明细保持同一阶段；任务已完成、执行器已关闭、群待解散分别说明；没有已提交DELETE的事实不声称“解散指令已发出”。当群正等待本轮回复送达时，不用反复task_get等待自己；其他unknown或错误不得一概当作只等回复。普通业务答复继续由pi模型自主生成，没有关键词替换、固定收尾文案或新增审批。
+
+`.cache/live/e17-cleanup-stage-probe.json`（03:46:50 UTC开始）使用实际配置PiEngine、完整应用工具schema，所有execute handler替换为内存回执：先给合成review状态，再给B真实completed动作返回及destroying/groupDeleted:false查询返回。真实工具序列为task_get→task_action complete→task_get，之后结束并答复，没有重复轮询自身。答复区分“任务已确认完成”“Codex执行器已关闭”“这条回复送达后群将解散”，说明文件与历史保留，没有提前声称全部收尾或删群指令已发，也未展示completed/gone/排队回执字段。判定PASS_SINGLE_SAMPLE。
+
+该探针没有创建Application、打开生产数据库、调用飞书／herdr或执行任何外部业务写操作；只证明这个受控回执样本的真实模型措辞，不是生产投递验收，也不保证未来所有模型回复。E17原R-F保留。此次format/check全部345项测试、类型／lint／1000行检查通过（`.cache/live/e18-full-check.log`），后续构建和部署单独固定版本，不借E17部署冒充。

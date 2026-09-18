@@ -39,7 +39,7 @@
 | C07 setup 选应用／补授权 | U | 本组没有执行 `setup --app` 的有效流程或 `--update-permissions` | 应用选择、凭据来源冲突与真实补授权流程 |
 | C08 setup 替代注册 | R-部分 | `setup --reregister` 缺 `--yes` 退出 2；`--reregister --yes --app cli_test` 冲突退出 2，均在参数解析阶段拒绝 | 有效替代注册、与 `--update-permissions` 冲突、失败后旧凭据保留未在本组实测 |
 | C09 setup 超时／不打开浏览器 | R-部分 | `--timeout 0`、`--timeout 2h` 退出 2；`--timeout invalid` 非零退出（该二进制为 1）；均未开始注册 | 负数、合法时长、`--no-open` 的有效授权流程、实际到期停止后台操作 |
-| C10 doctor | R-部分 | 真实宿主 `doctor --json` 输出检查列表并退出 1；11 项 pass，`pane-width` fail，退出码与失败状态一致。诊断命令行为通过，不能声称宿主全部健康 | 文本模式、每种 unknown／不可读条件、全部脱敏边界；pane-width 现场整改后复验 |
+| C10 doctor | R-部分 | 旧二进制 `doctor --json` 输出 11 项 pass、`pane-width` fail 并退出 1；保留这个实际输出。E17 后续确认旧宽度算法仅测可见内容，不能据此判定终端过窄 | E17 补文本／JSON及无 agent 正常分支；真实终端列数、每种 unknown／不可读条件、全部脱敏边界仍未覆盖 |
 | C11 debug ls | R-P | 真实 herdr `debug ls` 退出 0，返回当时 1 个 agent；只查询已有执行器 | herdr 不可用／身份未知分支未在本组验证 |
 | C12 debug screen | R-部分 | 读取已授权验证用 Codex pane 退出 0，返回身份匹配、464 字符现场；缺失 pane 退出 1；未保存正文 | 非 coding agent、身份替换、Guard 使用完整菜单的功能须看其他专门证据 |
 | C13 debug transcript | R-P | 同一真实 Codex pane 退出 0，返回 0 entries 且 cursor 存在，符合初读默认取尾部基线的语义 | 此结果不证明返回全部历史，也不证明之后的增量事件或 Claude transcript 路径 |
@@ -53,8 +53,25 @@
 
 C05 第一次失败来自测试提交空 model，被 HTTP 400 正确拒绝；没有据此判定产品故障。第二次提交非空 model 但使用无效 provider `openai`，HTTP 保存曾成功，随后 configure 重启失败。代码核对发现保存路径遗漏 provider 枚举验证，与启动读取只接受 `openai-responses`／`anthropic-messages` 不一致。这是真实暴露的输入验证缺陷；工作区已加入修复和 `tests/app/model-config.test.ts`，本报告中的旧 SHA 不包含该后续修复，不能把合法 provider 补验当成修复的真实二进制验收。
 
-doctor 的 PASS 指检查程序正确报告了现场失败。原始检查结果是 config、herdr、codex、claude、authorization、owner、pi、claude-hook、codex-hook、server-environment、detection-manifest 通过，pane-width 失败。没有将失败项改写为通过。
+doctor 的原始记录确实为 config、herdr、codex、claude、authorization、owner、pi、claude-hook、codex-hook、server-environment、detection-manifest 通过，pane-width 失败，退出码与该输出一致。但 E17 代码核对发现，旧算法把最长可见内容行不超过 60 列直接判 fail，并未读取终端实际列数；短文本也可能出现在宽终端。因此撤回“正确报告现场过窄”的解释，保留旧 fail 输出，不能反向把它改写为通过或要求据此调整窗口。
+
+## E17：当前二进制只读补验与宽度诊断修正
+
+`.cache/live/cli-e17-readonly.json`（03:05:30–03:05:35 UTC）固定 `5d1e96f1698af95ad0fa2317b34b73441518e968`，SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`，当时服务 PID26077。实际执行 help/version 别名、debug ls、缺失 pane 的 screen/transcript、参数拒绝和 doctor 的 JSON／文本入口；报告全部检查通过，生产数据库／配置与二进制前后 hash 不变。
+
+当时真实 herdr agent 数为 0，doctor 两种格式均为 12 项 pass、退出 0；pane-width 的含义只是“没有运行中的 agent，无需测量”。这不证明旧 pane 已调整宽度，也不提供本版本成功读取真实 screen/transcript 的新证据。缺失 pane 均退出 1，错误仍为文本；help 带 `--json` 仍输出文本，debug 成功默认即为 JSON，不宣称全局统一 JSON 错误协议。setup、serve、配置写入及断线恢复未在这组执行。
+
+`.cache/live/cli-e17-pane-width-before.json` 与 `cli-e17-pane-width-fixed.json` 使用合成屏幕文本验证源码 helper：短文本 `ready` 从 fail 改为 unknown，空白与 60 列为 unknown，61 列 ASCII／62 列 CJK 为可见内容估算通过。修复源码 SHA256 为 `67902a772e7bec02929c08dd7e2eb9d453e51cd23eb78f10de9dc2dbb5f1306b`；此处记 O-P，不是已部署二进制真实终端几何验证。报告中的运行 5d1e96f stamp 仅用于区分当时部署，不表示该部署包含宽度修复。
+
+后续 `.cache/live/cli-e17-pane-width-live.json`（03:15:49 UTC）只读访问本轮明确授权的 `w1E:p1`：agent.get 返回 agent_not_found／not_executed，pane.get 确认 pane 存在、目录匹配、agent=null。未读取 screen，诊断 unknown，不能计作真实宽度测量或当前二进制成功 screen/transcript 复验。该空 pane 来自正式 LIVE-001 请求：群／远端任务已创建，但显示名 `Codex` 被 herdr 以 invalid_agent_name 拒绝，程序误分类 unknown；该业务链路保留 R-F。完整证据与同群 `/clear` 拒绝的独立通过分支见 E17 主记录。
+
+迁移另见 [E17 本地副本证据](live-evidence-2026-09-18.md#e17当前-cli-与真实旧状态副本迁移)。它使用同一 5d1e96f 二进制和真实旧 JSON 的隔离副本；C14/C15 可补限定的 R-local-copy，不能写成生产迁移或完整回退已通过。
 
 ## 对主矩阵的更新建议
 
 CLI 章节原来的“本轮执行与真实状态均 U”已经过期，应引用本表逐项状态。C06、C07 继续 U；C08、C09 仅参数拒绝分支有证据，不能写成 setup 流程通过。C01、C02、C11、C13、C14 可在上述限定范围标 R-P，其余行标 R-部分并保留未覆盖项。当前发布候选重新构建后，应至少重新执行受代码变更影响的配置保存／启动、状态恢复和迁移检查，再注明新的 SHA。
+
+
+### E17 修复后的真实专用 pane
+
+源码 `a6018ec`、运行 PID32000、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505` 已包含宽度诊断修复。`.cache/live/cli-e17-r2-native.json`（03:30:17 UTC）仅核验本轮 B 任务 `w1F:p1`：agent.get/read 与 pane process-info 证实原生名称、专用目录、Bypass／add-dir 启动参数及 working 状态；短内容估算 54 列正确返回 unknown。此为真实受管 pane 的专用读取，不是全部 doctor 或 debug CLI 入口重跑，也没有读取 PTY 实际 columns；原 C12/C13 缺口按入口保留。
