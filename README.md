@@ -10,7 +10,7 @@ pi handles this tool's business: arranging work, routing messages, querying stat
 
 ## Release and acceptance status
 
-The latest published release is [v0.3.5](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.5). Install that exact release with `npm install -g @yuebanlaosiji/myrix@0.3.5`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
+The latest published release is [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6). Install that exact release with `npm install -g @yuebanlaosiji/myrix@0.3.6`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
 
 Automated checks and native packaging are run by the release workflow. End-to-end acceptance is still tracked per scenario: a green build does not prove that a real Feishu message, model tool call, herdr resource, group message, or cleanup readback happened. Check [live validation](docs/live-validation.md) for the current `U`, `R-部分`/`R-partial`, and `R-P` evidence, including retained historical unknown results. Treat a scenario as accepted only when its corresponding Feishu, pi, model, herdr, and external readbacks are present.
 
