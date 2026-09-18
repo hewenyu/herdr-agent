@@ -1,173 +1,28 @@
-# herdr-agent.service — the Feishu <-> herdr bridge (`herdr-agent serve`).
-#
-# A systemd USER unit, and the Linux counterpart of
-# deploy/com.hewenyu.herdr-agent.plist. It is per-user rather than system-wide
-# for the same reasons the macOS job is a LaunchAgent and not a LaunchDaemon:
-# everything it touches lives in your home directory (~/.herdr-agent for config,
-# credentials and state, ~/.config/herdr/herdr.sock to reach herdr), and the
-# agents it drives run as you. A system unit would need every one of those paths
-# spelled out again and would run the bridge as a user who owns none of them.
-#
-# ---------------------------------------------------------------------------
-# INSTALL — a documented step, not a side effect. deploy/install.sh does NOT do
-# this: it drives launchctl, and on Linux it says so instead of pretending.
-#
-#   mkdir -p ~/.herdr-agent ~/.local/bin ~/.config/systemd/user
-#   chmod 700 ~/.herdr-agent
-#   install -m 755 herdr-agent ~/.local/bin/herdr-agent   # where the README puts it
-#
-#   ~/.local/bin/herdr-agent setup     # BEFORE enabling the unit
-#
-#   cp deploy/herdr-agent.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload
-#   systemctl --user enable --now herdr-agent.service
-#   loginctl enable-linger "$USER"      # see LINGERING below — do not skip it
-#
-# Check it:  herdr-agent doctor
-# Read it:   journalctl --user -u herdr-agent -f
-# Stop it:   systemctl --user stop herdr-agent
-#
-# `setup` is the step that produces everything this unit needs and cannot invent:
-# it writes ~/.herdr-agent/.env at mode 0600, creates config.toml from the same
-# example that ships in deploy/, fills in feishu.allowed_open_ids and
-# feishu.notify_chat_id, and then makes you send a real message and press a real
-# button — because each of those settings fails the same invisible way when it is
-# wrong. On a headless box it prints the confirmation link for you to open
-# somewhere else rather than claiming a browser opened. Enable the unit before
-# any of that exists and you get exactly the failure the RestartSec comment below
-# describes: the bridge exits at once on missing credentials or an empty
-# allowlist, every 30 seconds, forever.
-#
-# ---------------------------------------------------------------------------
-# THE MANUAL PATH — supported fallback, not a downgrade
-#
-# The registration endpoint `setup` uses is undocumented and could change without
-# notice (G18), so doing it by hand stays first class. It is two files:
-#
-#   cp deploy/config.example.toml ~/.herdr-agent/config.toml   # then edit it:
-#                                    # feishu.allowed_open_ids must not be empty
-#   printf 'FEISHU_APP_ID=cli_xxx\nFEISHU_APP_SECRET=xxx\n' > ~/.herdr-agent/.env
-#   chmod 600 ~/.herdr-agent/.env
-#
-# Both values come from the Feishu open platform console, 凭证与基础信息 — the
-# same page install.sh names on macOS. On this path, and only on this path, a
-# change you make in the console (a permission, an event, the interactive-card
-# toggle) takes effect only after you create and publish a version: token works,
-# WebSocket connects, not one event arrives. An app that came out of `setup`
-# arrived with its scopes granted and a version already published, so there is
-# nothing to publish there (G12, G18).
-#
-# ---------------------------------------------------------------------------
-# LINGERING is the one step everyone loses an evening to
-#
-# A user unit lives inside your user's systemd manager, and by default that
-# manager is torn down when your last session ends. So: the bridge dies when you
-# close the SSH connection you installed it from, and nothing starts at boot.
-# `loginctl enable-linger "$USER"` keeps the manager (and therefore this unit)
-# running with nobody logged in. It is the exact Linux counterpart of the plist's
-# note that LaunchAgents start at GUI login rather than at boot — except that
-# here you can actually fix it, and this product assumes the machine is up and
-# reachable, because there is no offline compensation anywhere in the bridge.
-#
-# ---------------------------------------------------------------------------
-# DO NOT RUN A SECOND BRIDGE — not even briefly, not even to test something
-#
-# Feishu's long-connection delivery is cluster mode: one app may hold up to 50
-# connections at once, and each event is handed to a RANDOM one of them (G15).
-# Two `herdr-agent serve` processes on the same app_id therefore do not conflict,
-# do not error and do not disconnect each other — they each receive roughly half
-# the events, and the phone simply becomes unreliable with nothing to point at.
-# `serve` takes an flock'd pid file in ~/.herdr-agent before any network IO for
-# exactly this reason, so the second one refuses to start rather than quietly
-# stealing half your messages. To run one by hand, stop the unit first:
-#
-#   systemctl --user stop herdr-agent
-#
-# ---------------------------------------------------------------------------
-# WHY THIS UNIT DOES NOT SCRUB ITS ENVIRONMENT
-#
-# deploy/herdr-server.service runs herdr through `env -i`, because herdr passes
-# its own environment to every pane it spawns and an inherited
-# CLAUDE_CODE_CHILD_SESSION makes claude switch transcript saving off, silently
-# (G7). The bridge spawns no panes — it only speaks to the herdr socket — so it
-# needs no scrub, exactly as the macOS plist says. It does need PATH: `doctor`
-# shells out to pgrep and ps to read the herdr server's real environment, which
-# is how you confirm that scrub actually happened.
-
+# User service: copy to ~/.config/systemd/user/, then daemon-reload and enable.
+# Install the standalone binary at ~/.local/bin/herdr-agent; run setup first.
+# For unattended operation, explicitly enable lingering for your user.
+# herdr and its Claude/Codex processes remain a separately managed service.
 [Unit]
-Description=herdr-agent: Feishu bridge for herdr coding agents
+Description=herdr-agent: pi orchestration for herdr coding agents
 Documentation=https://github.com/hewenyu/herdr-agent
-
-# Ordering only, and only if you also installed herdr-server.service: start
-# after herdr, and stop before it. Deliberately NOT Wants= or Requires= —
-# starting the bridge must not start a herdr server as a side effect, and the
-# bridge tolerates herdr arriving later anyway (it opens no connection until it
-# has something to ask). An After= naming a unit that is not installed is
-# simply ignored.
+# Ordering only: starting this service does not start or stop herdr.
 After=herdr-server.service
-
-# systemd's default rate limiter gives up after 5 starts in 10s and leaves the
-# unit failed until somebody notices. That is the wrong end state here: a bridge
-# that is down looks exactly like an agent with nothing to say, and there is no
-# other path to a blocked agent. With this at 0 the unit retries for as long as
-# it takes, one readable line in the journal every RestartSec.
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-
-# %h is the user's home directory; systemd expands it, the shell is not
-# involved. ~/.local/bin is where the README's install step leaves the binary;
-# change this line if yours is elsewhere (deploy/install.sh prefers
-# ~/.herdr-agent/bin/herdr-agent on macOS, so that is the other likely answer).
-# The path is absolute and PATH is not searched, on purpose: an upgrade should be
-# something you did, not something a shadowed PATH entry did for you.
-#
-# -state-dir is explicit for the same reason it is explicit in the plist: the
-# bridge would derive the same path from HOME, but a unit that somehow lost HOME
-# would quietly read a different config.toml — a different open_id allowlist —
-# instead of failing. State is: config.toml, .env, dedup.json, routes.json,
-# mirrors.json, herdr-agent.pid, log/.
-ExecStart=%h/.local/bin/herdr-agent -state-dir %h/.herdr-agent serve
-
+ExecStart=%h/.local/bin/herdr-agent serve --state-dir %h/.herdr-agent
 WorkingDirectory=%h
-
-# pgrep and ps live in /usr/bin and /bin; `herdr-agent doctor` needs both to
-# read the herdr server's environment (G7). herdr itself is reached over the
-# unix socket, never by exec, so nothing else belongs here.
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-
-# FEISHU_APP_ID / FEISHU_APP_SECRET are deliberately absent, and there is
-# deliberately no EnvironmentFile= either. The bridge reads them itself from
-# ~/.herdr-agent/.env, which is mode 0600; a unit file is world-readable and
-# `systemctl --user cat herdr-agent` prints every line of it.
-#
-# Restart=on-failure, not always: the bridge exits non-zero for everything that
-# is a fault (no credentials, empty allowlist, herdr too old), and exits 0 only
-# when it was asked to stop. systemd already declines to restart a unit that an
-# admin stopped, so on-failure keeps `systemctl --user stop` meaning stop while
-# still covering every way the bridge can die.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# Credentials load from private state-dir/.env and config.toml, never this unit.
+# Missing authorization leaves local Web available while the service waits.
+# The shared POSIX state lock prevents two instances from splitting events.
 Restart=on-failure
-
-# 30s, matching the plist's ThrottleInterval. A misconfigured bridge exits at
-# once and on purpose; this makes that one readable line every half minute in
-# the journal instead of a spin.
 RestartSec=30
-
-# The journal, which rotates on its own — unlike the log files the macOS job
-# writes, which nothing rotates.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=herdr-agent
-
-# Free and true. Nothing more than this: driving a coding agent is equivalent to
-# shell access on this machine by design (G1, G17), so ProtectHome= or a
-# ReadOnlyPaths= sandbox here would be theatre — and ProtectHome in particular
-# would break the L2 transcript mirror, which reads ~/.claude/projects.
 NoNewPrivileges=yes
 
 [Install]
-# Enabling is your explicit `systemctl --user enable herdr-agent.service`.
-# Shipping this section does not enable anything; it only says what enabling
-# would mean.
 WantedBy=default.target

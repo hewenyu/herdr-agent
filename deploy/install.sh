@@ -277,7 +277,7 @@ if [ "$env_mode" != "600" ]; then
 fi
 for key in FEISHU_APP_ID FEISHU_APP_SECRET; do
   if ! grep -Eq "^[[:space:]]*$key[[:space:]]*=[[:space:]]*[^[:space:]]" "$ENV_FILE"; then
-    warn "$ENV_FILE has no non-empty $key; the bridge will refuse to start"
+    warn "$ENV_FILE has no non-empty $key; Feishu connection will wait for setup"
   fi
 done
 
@@ -286,7 +286,7 @@ done
 if [ "$do_bridge" -eq 1 ]; then
   bridge_bin="${HERDR_AGENT_BIN:-}"
   if [ -z "$bridge_bin" ]; then
-    for candidate in "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
+    for candidate in "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../dist/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
       if [ -x "$candidate" ]; then bridge_bin="$candidate"; break; fi
     done
   fi
@@ -295,7 +295,7 @@ if [ "$do_bridge" -eq 1 ]; then
   fi
   if [ -z "$bridge_bin" ] || [ ! -x "$bridge_bin" ]; then
     die "cannot find the herdr-agent binary.
-     build it:     (cd $(dirname "$SCRIPT_DIR") && go build -o $STATE_DIR/bin/herdr-agent ./cmd/herdr-agent)
+     build it:     (cd $(dirname "$SCRIPT_DIR") && npm ci && npm run binary)
      or point at it: HERDR_AGENT_BIN=/path/to/herdr-agent $0"
   fi
   bridge_bin=$(abspath "$bridge_bin")
@@ -373,8 +373,7 @@ fi
 
 if grep -Eq '^[[:space:]]*allowed_open_ids[[:space:]]*=[[:space:]]*\[[[:space:]]*\]' "$CONFIG_FILE"; then
   warn "feishu.allowed_open_ids is empty in $CONFIG_FILE."
-  warn "That is a hard startup error by design: default deny, because driving an"
-  warn "agent is equivalent to shell access on this Mac. Put your own open_id in it."
+  warn "Feishu connection will wait for setup. Add your own open_id; local Web stays available."
 fi
 
 # --------------------------------------------------------------- plists -----
@@ -443,23 +442,14 @@ cat <<EOF
 next steps
 
   1. ${bridge_bin:-herdr-agent} doctor
-     The bar is: no FAIL for the agents you actually use. Two non-PASS results
-     are expected on a correct install, and doctor exits 1 on the first of them:
-       * "claude integration installed" / "codex integration installed" FAIL for
-         the agent you do not use. Only the one you run has to pass.
-       * "herdr detection manifests pinned" stays WARN until you set
-         [update] manifest_check = false in HERDR's own config.toml — not this
-         product's. doctor prints the exact command for your machine.
-     The check that matters most is "herdr server environment is clean": it
-     reads the running server's real environment, so it proves the scrub in the
-     plist actually happened.
+     Check configuration, herdr, installed executors and Feishu permissions.
+     Fix failures for the executors you actually use.
 
   2. tail -f $LOG_DIR/herdr-agent.err.log
-     Wait for the WebSocket to report ready. If you see the bridge exiting every
-     30 seconds, the log line above the exit says why — usually an empty
-     allowed_open_ids or a credential that did not load.
+     Open http://127.0.0.1:18790/ for local management and authorization status.
 
-  3. From your phone, message the bot:  /ls
+  3. From your phone, message the bot: /help
+     With pi configured, describe a discussion, development or review task.
 
 worth knowing
 

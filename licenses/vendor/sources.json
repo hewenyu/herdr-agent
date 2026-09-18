@@ -1,0 +1,27 @@
+{
+  "@earendil-works/pi-agent-core@0.85.1": {
+    "file": "pi-0.85.1-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+    "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+  },
+  "@earendil-works/pi-ai@0.85.1": {
+    "file": "pi-0.85.1-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+    "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+  },
+  "@earendil-works/chord@0.85.1": {
+    "file": "pi-0.85.1-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+    "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+  },
+  "@earendil-works/pi-telemetry@0.85.1": {
+    "file": "pi-0.85.1-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+    "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+  },
+  "standardwebhooks@1.1.1": {
+    "file": "standardwebhooks-1.1.1-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/b4d2c14fc5b4ccff3ff271e3b087dff812254c59/libraries/LICENSE",
+    "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
+  }
+}

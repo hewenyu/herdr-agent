@@ -1,212 +1,189 @@
-# Release herdr-agent on a pushed v* tag.
-#
-# Three targets and no more: macOS on Apple Silicon, and Linux on arm64 and
-# x86_64. There is deliberately no darwin/amd64 and no windows target — the
-# product is measured on Apple Silicon and runs as a service on Linux, and an
-# asset nobody tested is a support request waiting to happen.
-#
-# The version comes from the tag and from nowhere else. There is no fallback that
-# invents one: an unstamped build reports "dev", which is the honest answer.
 name: release
-
 on:
   push:
     tags: ['v*']
-
 permissions:
   contents: read
-
 jobs:
-  release:
-    name: build, package and publish
-    runs-on: ubuntu-latest
+  build:
+    name: Native SEA · ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin_arm64
+            platform: darwin
+            arch: arm64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            platform: linux
+            arch: arm64
+          - runner: ubuntu-22.04
+            target: linux_amd64
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+      - name: Validate tag and native target
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          node --experimental-strip-types --input-type=module -e 'import {releaseVersion} from "./scripts/npm/config.ts"; releaseVersion(process.env.GITHUB_REF_NAME)'
+          node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
+      - run: npm ci
+      - run: npm run check
+      - name: Build, verify, and package
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          export BUILD_DATE=$(git show -s --format=%cI "$GITHUB_SHA")
+          npm run binary
+          npm run smoke
+          mkdir -p build/release
+          cp dist/herdr-agent README.md README.zh-CN.md LICENSE build/release/
+          cp -R dist/LICENSES build/release/LICENSES
+          cp -R docs deploy licenses build/release/
+          export COPYFILE_DISABLE=1
+          tar -czf "dist/herdr-agent_${VERSION}_${TARGET}.tar.gz" -C build/release herdr-agent README.md README.zh-CN.md LICENSE LICENSES docs deploy licenses
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/herdr-agent_*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  npm-publish:
+    # Recovery: rerun failed publish/downstream jobs in this run, reusing successful build artifacts.
+    # Existing versions are immutable; never repoint the public tag or overwrite published packages.
+    name: Verify and publish npm distribution
+    needs: build
+    runs-on: ubuntu-22.04
+    environment: NPM
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
     permissions:
-      # The whole write scope this workflow needs: create the release and attach
-      # assets to it. No packages, no id-token, no pull-requests.
+      contents: read
+    env:
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Pack all targets and verify an offline global install
+        run: |
+          node --import tsx scripts/npm.ts prepare "$RELEASE_TAG" dist build/npm
+          node --import tsx scripts/npm.ts verify "$RELEASE_TAG" build/npm
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: npm-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
+          path: build/npm
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish verified platform packages, then myrix
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
+        run: node --import tsx scripts/npm.ts publish "$RELEASE_TAG" build/npm
+  npm-verify:
+    name: Download npm · ${{ matrix.target }}
+    needs: npm-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin_arm64
+            platform: darwin
+            arch: arm64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            platform: linux
+            arch: arm64
+          - runner: ubuntu-22.04
+            target: linux_amd64
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || 'myrix' }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_COMMIT: ${{ github.sha }}
+      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install exact version from public npm and execute both aliases
+        run: |
+          node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH)process.exit(1)'
+          node --import tsx scripts/npm.ts download "$RELEASE_TAG" "$RELEASE_COMMIT"
+  publish:
+    needs: [build, npm-publish, npm-verify]
+    runs-on: ubuntu-22.04
+    permissions:
       contents: write
     steps:
-      - name: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          go-version-file: go.mod
-          cache: true
-
-      # The tag is the version, so a tag that is not a version must stop here
-      # rather than produce assets whose names lie about what they contain.
-      - name: read the version out of the tag
-        id: v
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums and release notes
         run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::tag $tag is not vMAJOR.MINOR.PATCH[-prerelease]; nothing was released"
-            exit 1
-          fi
-          {
-            echo "tag=$tag"
-            echo "commit=$GITHUB_SHA"
-            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            # A tag with a prerelease part is published as a prerelease, so it
-            # does not become the "latest release" people land on.
-            if [[ "$tag" == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi
-          } >>"$GITHUB_OUTPUT"
+          cd dist
+          sha256sum herdr-agent_*.tar.gz > SHA256SUMS
+          cat > notes.md <<'MD'
+          Download the archive for your OS and architecture, unpack it, then run:
 
-      # One loop, one set of flags, three targets:
-      #   CGO_ENABLED=0  static, and the only way three targets build from one
-      #                  runner. Every dependency is pure Go.
-      #   -trimpath      keeps the builder's absolute paths out of the binary.
-      # DWARF is deliberately NOT stripped (-s -w): this product fails silently
-      # by nature, and 4 MB is a poor trade for being unable to debug a binary
-      # somebody downloaded. Panic traces stay readable either way.
-      - name: build and package
-        env:
-          VERSION: ${{ steps.v.outputs.tag }}
-          COMMIT: ${{ steps.v.outputs.commit }}
-          DATE: ${{ steps.v.outputs.date }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for target in darwin/arm64 linux/arm64 linux/amd64; do
-            os=${target%/*}
-            arch=${target#*/}
-            stage="build/${os}_${arch}"
-            mkdir -p "$stage"
+              ./herdr-agent setup
+              ./herdr-agent serve
 
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
-              -ldflags "-X main.buildVersion=$VERSION -X main.buildCommit=$COMMIT -X main.buildDate=$DATE" \
-              -o "$stage/herdr-agent" ./cmd/herdr-agent
+          Node.js, the frontend, SQLite, and the native locking addon are embedded in the executable. No Node installation or node_modules directory is needed. herdr and authenticated Claude/Codex executors remain separate prerequisites.
 
-            # Two things that are silent when they go wrong, so both are checked
-            # per target rather than assumed from the loop:
-            #   1. the binary is for the platform its name will claim
-            #   2. -X actually reached a variable that exists. A -X naming a
-            #      symbol that was renamed is ignored by the linker without any
-            #      diagnostic, and every asset would report "dev".
-            settings=$(go version -m "$stage/herdr-agent")
-            for want in "GOOS=$os" "GOARCH=$arch" "CGO_ENABLED=0"; do
-              case "$settings" in
-                *"$want"*) ;;
-                *) echo "::error::$stage/herdr-agent does not report $want"; exit 1 ;;
-              esac
-            done
-            if ! grep -qa -- "$VERSION" "$stage/herdr-agent"; then
-              echo "::error::$VERSION is not in the $os/$arch binary: -ldflags -X did not reach main.buildVersion"
-              exit 1
-            fi
+          Alternatively, with Node.js >=18 installed, run `npm install -g myrix`, then `myrix setup` and `myrix serve`. The `herdr-agent` command remains a compatibility alias. npm selects the matching native optional dependency; keep optional dependencies enabled. No postinstall script downloads or executes the binary. Prerelease npm versions use the `next` dist-tag; stable versions use `latest`.
 
-            # Both READMEs: they link to each other, so shipping one would put a
-            # dead relative link in every archive.
-            cp README.md README.zh-CN.md LICENSE "$stage/"
-            tar -czf "dist/herdr-agent_${VERSION}_${os}_${arch}.tar.gz" \
-              -C "$stage" herdr-agent README.md README.zh-CN.md LICENSE
-          done
+          The LICENSES directory contains the bundled runtime and dependency license notices and must accompany redistribution of the executable.
 
-          # End to end on the one target this runner can execute: the binary is
-          # asked what it is, and has to answer with the tag.
-          out=$(./build/linux_amd64/herdr-agent version)
-          echo "$out"
-          for want in "$VERSION" "$COMMIT" "$DATE"; do
-            case "$out" in
-              *"$want"*) ;;
-              *) echo "::error::the built binary does not report $want"; exit 1 ;;
-            esac
-          done
+          `./herdr-agent configure --open` opens read-only session records without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
 
-          # One file covering every archive, in the format both `sha256sum -c`
-          # and macOS `shasum -a 256 -c` read.
-          (cd dist && sha256sum herdr-agent_*.tar.gz >SHA256SUMS)
-          cat dist/SHA256SUMS
+          Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
 
-      # Run the packaged Linux executable without the checkout or any frontend
-      # files before publishing. The page and API must work from the binary.
-      - name: verify the packaged configuration page
-        env:
-          VERSION: ${{ steps.v.outputs.tag }}
-        run: python3 .github/scripts/check-embedded-ui.py --archive "dist/herdr-agent_${VERSION}_linux_amd64.tar.gz"
+          All three native targets also install the exact published npm version into an isolated prefix, execute both command aliases, and verify the build version and commit before this GitHub release is published.
 
-      # Written with a quoted heredoc and a placeholder: an unquoted one would
-      # run every `command` in backticks below as a command substitution.
-      - name: write the release notes
-        env:
-          TAG: ${{ steps.v.outputs.tag }}
-          COMMIT: ${{ steps.v.outputs.commit }}
-        run: |
-          set -euo pipefail
-          cat >notes.in <<'MD'
-          Download the archive for your machine from the Assets table below, unpack it, and run
-          two commands:
+          Verify downloads with `sha256sum --ignore-missing -c SHA256SUMS` (Linux) or `shasum -a 256 --ignore-missing -c SHA256SUMS` (macOS).
 
-              tar xzf herdr-agent___TAG___<os>_<arch>.tar.gz    # the name you downloaded
-
-              ./herdr-agent setup    # register the Feishu app and prove it works end to end
-              ./herdr-agent serve    # run the bridge, then message the bot /ls from your phone
-
-          The local project configuration page opens at http://127.0.0.1:18790/ while `serve`
-          runs. Its HTML, CSS and JavaScript are embedded in the Go binary; no Node.js runtime
-          or separate frontend files are needed. `./herdr-agent configure --open` runs the
-          configuration page on its own before starting the bridge. Task execution still
-          requires herdr and an installed, authenticated Codex or Claude Code CLI.
-
-          `./herdr-agent doctor` checks this machine for the things that silently break the
-          bridge if either of those does not do what you expected, and `./herdr-agent version`
-          says exactly which build you are running.
-
-          ### Verify what you downloaded
-
-              shasum -a 256 --ignore-missing -c SHA256SUMS   # macOS
-              sha256sum --ignore-missing -c SHA256SUMS       # Linux
-
-          SHA256SUMS covers all three archives, and `--ignore-missing` is what lets it verify the
-          one you downloaded instead of failing on the two you did not. Both tools take that flag.
-          The line for your own file has to say OK, and the exit status has to be 0. Without the
-          flag the two absent archives are reported as FAILED and the exit status is non-zero,
-          which is expected but tells you nothing.
-
-          ### macOS: these binaries are not signed and not notarised
-
-          There is no Apple Developer signature and no notarisation on any asset here. macOS
-          attaches a quarantine flag to anything a browser downloads, so the binary is refused
-          with "cannot be opened because the developer cannot be verified". Clear the flag
-          yourself:
-
-              xattr -d com.apple.quarantine ./herdr-agent
-
-          It prints `No such xattr` if the flag was never set — downloading with curl or wget
-          does not set one — and that is fine. Nothing here is signed either way.
-
-          ### Assets
-
-          | archive | machine |
-          | --- | --- |
-          | `herdr-agent___TAG___darwin_arm64.tar.gz` | macOS, Apple Silicon |
-          | `herdr-agent___TAG___linux_arm64.tar.gz` | Linux, arm64 |
-          | `herdr-agent___TAG___linux_amd64.tar.gz` | Linux, x86_64 |
-
-          Each archive holds the binary, both READMEs and LICENSE, and nothing else. The service
-          units are not in it: they live in the git repository, at
-          https://github.com/hewenyu/herdr-agent/tree/__TAG__/deploy — Linux users want the
-          systemd user unit `herdr-agent.service` there, plus `herdr-server.service`, because the
-          herdr server needs the scrubbed environment that one sets up. Read the comment at the
-          top of each before starting anything.
-
-          Built from __COMMIT__.
+          The macOS binary has an ad-hoc signature, with no Developer ID signature or notarization. A downloaded binary may need `xattr -d com.apple.quarantine ./herdr-agent` after you verify its source and checksum.
           MD
-          sed "s|__TAG__|$TAG|g; s|__COMMIT__|$COMMIT|g" notes.in >notes.md
-          cat notes.md
-
-      # gh is preinstalled on the runner, so there is no third-party action here
-      # to pin, review or trust. --verify-tag refuses to invent a tag that is not
-      # already on the remote.
-      - name: publish
+      - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.v.outputs.tag }}
-          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+          TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          args=(--verify-tag --title "herdr-agent $TAG" --notes-file notes.md)
-          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          args=(--verify-tag --title "herdr-agent $TAG" --notes-file dist/notes.md)
+          if [[ "$TAG" == *-* ]]; then args+=(--prerelease); fi
           gh release create "$TAG" "${args[@]}" dist/herdr-agent_*.tar.gz dist/SHA256SUMS

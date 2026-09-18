@@ -1,70 +1,22 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# The bridge binary: `go build ./cmd/herdr-agent` drops a 13 MB executable here,
-# and the deny list above only covers Windows and shared-library suffixes.
-/herdr-agent
-
-# Test binary, built with `go test -c`
-*.test
-
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
-*.coverprofile
-profile.cov
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
-.env
-
-# Editor/IDE
-# .idea/
-# .vscode/
-
-# --- herdr-agent ---
-
-# OS / editor
-.DS_Store
-.AppleDouble
-._*
-.idea/
-*.swp
-*~
-
-# Build output. `go build ./cmd/herdr-agent` drops the binary at the repo root,
-# and the acceptance scripts build it as ./ha.
-/herdr-agent
-/ha
-/bin/
+# Dependencies and generated output
+/node_modules/
 /dist/
 /build/
-*.test
+/bin/
+/.cache/
+/.runtime-test/
+/herdr-agent
+/ha
 *.exe
-
-# Coverage and profiles
+*.test
 *.out
-coverage.*
 *.prof
+coverage.*
 
-# Runtime and session state. None of this is source, and some of it is
-# sensitive: the bridge's own state directory holds the chat-to-agent bindings
-# and .env holds the Feishu app secret, while herdr's session.json describes
-# whatever panes happened to be open on one machine.
+# Local credentials, runtime state and logs
+.env
 .herdr-agent/
+config.toml
 session.json
 dedup.json
 routes.json
@@ -74,22 +26,16 @@ mirrors.json
 *.sock
 *.log
 log/
-
-# Local bridge config produced from deploy/config.example.toml — it names the
-# operator's Feishu open_id and notify chat id.
-config.toml
-
-# Claude Code local settings. Listed here rather than relying on a global
-# ignore, so a fresh clone on another machine is protected too.
 .claude/settings.local.json
 
-# Orchestration scaffolding: the workflow scripts this was built with and the
-# review findings they consumed. They embed absolute paths from the machine they
-# ran on, and they are process, not product.
-.workflows/
+# Editor and OS files
+.DS_Store
+.AppleDouble
+._*
+.idea/
+*.swp
+*~
 
-# Specs and acceptance scripts stay local: they quote absolute paths and
-# document one operator's Feishu app setup. The measured facts they record
-# (G1..G17) are what the code comments cite, so keep the local copy — the six
-# load-bearing ones are summarised in README.
+# Historical local acceptance material with machine-specific private values
+.workflows/
 specs/
