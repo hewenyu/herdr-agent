@@ -12,7 +12,7 @@
 
 ## 发布与验收状态
 
-当前最新公开版本是 [v0.3.5](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.5)。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.5`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
+当前最新公开版本是 [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6)。需要固定版本时执行 `npm install -g @yuebanlaosiji/myrix@0.3.6`；使用 `@latest` 可安装当前稳定版。npm 启动器和 Release 压缩包提供同一个 `myrix` 命令，同时保留 `herdr-agent` 兼容命令。
 
 Release Action 会执行自动化检查和各平台原生打包，但完整端到端验收仍按场景分别记录。构建通过不等于真实飞书消息、模型工具调用、herder 资源、群消息或清理回读已经发生。请查看[现场验收矩阵](docs/live-validation.md)中的 `U`、`R-部分` 和 `R-P` 证据；历史未知结果会继续保留。只有同时具备对应的飞书、pi、模型、herder 和外部状态回读，才能把某个场景视为已验收。
 
