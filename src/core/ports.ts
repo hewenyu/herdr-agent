@@ -49,6 +49,12 @@ export interface HerdrPort {
       signal?: AbortSignal;
     },
   ): Promise<void>;
+  /** Restricted startup directory trust; no caller-selected approval keys. */
+  trustDirectory?(
+    ref: ExecutionRef,
+    expectedDirectory: string,
+    guard: { stateSeq: string; sessionId?: string; expiresAt: string; signal?: AbortSignal },
+  ): Promise<void>;
   close(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
   transcript(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage>;
   sampleLastReply(ref: ExecutionRef): Promise<TranscriptEntry | undefined>;

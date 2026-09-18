@@ -136,8 +136,7 @@ const action: Action = async (name, input) => {
     const result = await dispatch(name, { ...input, expectedOwnerId: ownerId });
     if (version !== identityVersion) return undefined;
     if (name === "session.history" && Array.isArray(result)) {
-      current.messages = result as StoredMessage[];
-      if (typeof input.id === "string") historyBySession.set(input.id, current.messages);
+      if (typeof input.id === "string") historyBySession.set(input.id, result as StoredMessage[]);
       render();
       return {};
     }
@@ -227,7 +226,11 @@ function render() {
     node("#content").replaceChildren(el("div", "empty", "正在切换本机管理身份…"));
     return;
   }
-  const viewState = { ...current, activeSessionId: activeSession || current.activeSessionId };
+  const viewState = {
+    ...current,
+    activeSessionId: activeSession || current.activeSessionId,
+    messages: archived ? historyBySession.get(activeSession) : current.messages,
+  };
   const content =
     currentTab === "sessions"
       ? renderSessions(
@@ -240,7 +243,12 @@ function render() {
           archived,
           () => {
             archived = !archived;
+            activeSession = archived
+              ? (current.sessions?.find((session) => session.archived)?.id ?? "")
+              : (current.activeSessionId ?? "");
             render();
+            if (archived && activeSession) void action("session.history", { id: activeSession });
+            else void refresh(true);
           },
         )
       : currentTab === "tasks"
@@ -279,9 +287,6 @@ async function refresh(force: boolean) {
     const identityChanged = current.activeOwnerId !== next.activeOwnerId;
     if (identityChanged) clearIdentityView();
     current = next;
-    if (archived && activeSession && historyBySession.has(activeSession)) {
-      current.messages = historyBySession.get(activeSession);
-    }
     node("#connection").textContent = "● 本机已连接";
     const editing = document.activeElement?.matches("input,textarea,select") ?? false;
     if (force || identityChanged || !editing) render();

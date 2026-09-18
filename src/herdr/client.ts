@@ -1,7 +1,7 @@
 import { OperationError } from "../core/errors.js";
 import type { AgentSnapshot } from "../core/types.js";
 import { object, snapshot, string } from "./protocol.js";
-import { trustKeys } from "./screen.js";
+import { directoryTrustKeys, trustKeys } from "./screen.js";
 import type { HerdrTransport } from "./transport.js";
 
 export interface ScreenRead {
@@ -34,13 +34,19 @@ export class HerdrClient {
   async normalize(value: unknown, signal?: AbortSignal): Promise<AgentSnapshot> {
     const agent = snapshot(value);
     if (
-      agent.kind === "codex" &&
+      (agent.kind === "codex" || agent.kind === "claude") &&
       agent.status !== "working" &&
+      agent.status !== "blocked" &&
       !(agent.sessionId && agent.interactiveReady && !agent.launchPending)
     ) {
       try {
         const screen = await this.read(agent.paneId, "visible", signal);
-        if (!screen.truncated && trustKeys(screen.text)) agent.status = "blocked";
+        if (
+          !screen.truncated &&
+          (directoryTrustKeys(agent.kind, screen.text, agent.cwd) ||
+            (agent.kind === "codex" && trustKeys(screen.text)))
+        )
+          agent.status = "blocked";
       } catch {
         /* The status remains unconfirmed; control performs its own preflight. */
       }

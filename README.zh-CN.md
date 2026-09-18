@@ -16,7 +16,7 @@
 - 使用 pi 时配置支持工具调用的 OpenAI Responses 或 Anthropic Messages 模型服务。
 - 目标平台：macOS arm64、Linux x64/arm64。使用对应平台的原生构建；不能把 macOS 包复制到 Linux 使用。原生 flock 扩展仍依赖兼容的系统 C++ 运行库。
 
-这是单人单机工具。本机页面只监听 loopback IP，使用首个允许的用户身份，不提供远程 Web 登录或多租户管理。
+这是单人单机工具。本机页面只监听 loopback IP，可在配置白名单中的身份之间切换，默认使用首个允许身份；这不是远程 Web 登录或多租户管理。
 
 ## 从源码构建
 
@@ -86,6 +86,6 @@ herdr-agent serve --state-dir /absolute/state
 
 自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，不宣称已完成生产飞书、真实模型和真实 herdr 的全链路验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
 
-[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。所有 B/N 场景、尚待核对项目和部署证据见 [acceptance.md](docs/acceptance.md)。
+[当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。所有 B/N 场景、尚待核对项目和部署证据见 [acceptance.md](docs/acceptance.md)。
 
 本项目采用 MIT，见 [LICENSE](LICENSE)。发布包另带 `LICENSES/`，保留嵌入 npm 依赖、原生扩展和 Node 的许可及第三方声明；重新分发请一并保留。生成规则见 [licenses](licenses/README.md)。

@@ -6,7 +6,7 @@ import { TranscriptResolver } from "../transcripts/resolver.js";
 import { HerdrClient } from "./client.js";
 import { AgentControl } from "./control.js";
 import { createWorkspace, startAgent } from "./lifecycle.js";
-import { cleanScreen, parseOptions, trustKeys } from "./screen.js";
+import { cleanScreen, directoryTrustKeys, parseOptions, trustKeys } from "./screen.js";
 import { resolveSocketPath } from "./socket-path.js";
 import { HerdrTransport } from "./transport.js";
 
@@ -36,6 +36,8 @@ export class HerdrRuntime implements HerdrPort {
   send: HerdrPort["send"] = (ref, text, options) => this.control.send(ref, text, options);
   interrupt: HerdrPort["interrupt"] = (ref, signal) => this.control.interrupt(ref, signal);
   answer: HerdrPort["answer"] = (ref, key, guard) => this.control.answer(ref, key, guard);
+  trustDirectory: NonNullable<HerdrPort["trustDirectory"]> = (ref, directory, guard) =>
+    this.control.trustDirectory(ref, directory, guard);
 
   async screen(ref: ExecutionRef, signal?: AbortSignal): Promise<AgentScreen> {
     const agent = await this.control.current(ref, signal);
@@ -44,16 +46,31 @@ export class HerdrRuntime implements HerdrPort {
       agent.status === "blocked" ? "detection" : "visible",
       signal,
     );
-    if (ref.kind === "codex" && agent.status === "blocked") {
+    if (agent.status === "blocked") {
       const visible = await this.client.read(ref.paneId, "visible", signal);
-      if (!visible.truncated && trustKeys(visible.text)) read = visible;
+      if (
+        !visible.truncated &&
+        (directoryTrustKeys(ref.kind, visible.text, ref.cwd) ||
+          (ref.kind === "codex" && trustKeys(visible.text)))
+      )
+        read = visible;
     }
     const text = cleanScreen(read.text);
+    const options = read.truncated ? [] : parseOptions(text);
+    // Unnumbered native menus still need an explicit human navigation path.
+    // These choices never become automatic approval keys.
+    if (agent.status === "blocked" && !read.truncated && text.trim() && !options.length) {
+      options.push(
+        { key: "up", label: "上移选择（不确认）" },
+        { key: "down", label: "下移选择（不确认）" },
+        { key: "enter", label: "确认当前选项（Enter）" },
+      );
+    }
     return {
       agent,
       text: read.truncated ? `${text}\n[屏幕读取被截断]` : text,
       question: text,
-      options: read.truncated ? [] : parseOptions(text),
+      options,
     };
   }
 

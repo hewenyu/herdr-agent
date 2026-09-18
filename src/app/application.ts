@@ -19,6 +19,7 @@ import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
 import { Approvals } from "./approvals.js";
 import type { ApplicationContext } from "./context.js";
+import { DirectoryTrust } from "./directory-trust.js";
 import { Inbox, type InboxRecord } from "./inbox.js";
 import { LegacyBridge } from "./legacy.js";
 import { createLogger } from "./logger.js";
@@ -52,6 +53,7 @@ export class Application implements ApplicationContext {
   private readonly control = new AbortController();
   readonly signal = this.control.signal;
   private readonly engine: ConversationEngine;
+  private readonly directoryTrust: DirectoryTrust;
   private readonly active = new Set<Promise<unknown>>();
   authorization = {
     status: "checking",
@@ -86,6 +88,13 @@ export class Application implements ApplicationContext {
     });
     this.outbox = new Outbox(this.store, () => this.platform);
     this.approvals = new Approvals(this.store, this.herdr, () => this.platform, this.config.ui);
+    this.directoryTrust = new DirectoryTrust(
+      this.store,
+      this.herdr,
+      this.engine,
+      this.logger,
+      this.signal,
+    );
     this.tasks = this.taskService();
     this.legacy = new LegacyBridge(this);
     this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger);
@@ -239,13 +248,25 @@ export class Application implements ApplicationContext {
         output: (task, participant, entry) => this.output(task, participant, entry),
         notice: (task, kind) => this.notice(task, kind),
         blocked: async (task, participant) => {
+          if (!participant.execution) return;
+          let screen = await this.herdr.screen(participant.execution);
+          if (
+            this.config.ai.enabled &&
+            (await this.directoryTrust.handle(
+              task,
+              participant,
+              screen,
+              this.actor(task, `startup:${participant.id}:${screen.agent.stateSeq}`),
+            ))
+          ) {
+            this.changed();
+            return;
+          }
+          // Re-read after model evaluation: a user may have answered meanwhile.
+          screen = await this.herdr.screen(participant.execution);
+          if (screen.agent.status !== "blocked") return;
           if (task.chatId && !task.groupDeleted && participant.execution && this.platform) {
-            await this.approvals.publish(
-              task.ownerId,
-              task.chatId,
-              participant.execution,
-              await this.herdr.screen(participant.execution),
-            );
+            await this.approvals.publish(task.ownerId, task.chatId, participant.execution, screen);
           }
           this.changed();
         },
@@ -314,7 +335,11 @@ export class Application implements ApplicationContext {
             sessionId: `notice:${signature}`,
             messages: [],
             systemPrompt: NOTIFICATION_PROMPT,
-            prompt: JSON.stringify({ event: kind, task }),
+            prompt: JSON.stringify({
+              event: kind,
+              task,
+              participants: this.tasks.records.participants(task),
+            }),
             tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
             signal: this.signal,
           });

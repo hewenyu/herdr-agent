@@ -11,6 +11,9 @@ export type TaskAction = "complete" | "close" | "destroy" | "reopen" | "retry" |
 export function requestAction(context: TaskContext, task: Task, action: TaskAction): Task {
   if (task.status === "destroyed")
     fail("task_destroyed", "执行资源已关闭，不能重开；可创建关联的新任务。");
+  // A repeated close continues the already-confirmed cleanup; it must not
+  // create another completion intent or reject the user's retry.
+  if (task.status === "destroying" && action === "close" && task.closeRequested) return task;
   if (task.status === "destroying" && action !== "destroy")
     fail("task_destroying", "任务已进入资源清理，不能更改动作。");
   if (task.status === "completed" && ["pause", "resume", "retry"].includes(action))
@@ -48,6 +51,12 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
       break;
     case "destroy":
       task.status = "destroying";
+      // Destroy is resource cleanup, independently of remote task acceptance.
+      // Retain completion_sync and its operation receipt for auditing an unknown
+      // remote write, but stop driving that superseded lifecycle transition.
+      task.completionRequest = undefined;
+      task.closeRequested = false;
+      task.syncError = undefined;
       task.discussion.paused = true;
       break;
     case "reopen":
@@ -91,6 +100,8 @@ export function requestAction(context: TaskContext, task: Task, action: TaskActi
 
 export async function syncCompletion(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
+  // Also protects persisted cleanup from older versions with a pending intent.
+  if (["destroying", "destroyed"].includes(task.status)) return;
   if (!task.completionRequest) return;
   let target = context.store.get<{
     id: string;
@@ -214,6 +225,8 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
     task.groupDeleted = true;
   }
   task.status = "destroyed";
+  task.completionRequest = undefined;
   task.pending = undefined;
+  task.syncError = undefined;
   context.records.save(task);
 }

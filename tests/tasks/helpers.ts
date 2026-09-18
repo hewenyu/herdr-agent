@@ -7,6 +7,7 @@ import type { HerdrPort, PlatformPort, RemoteTask } from "../../src/core/ports.j
 import type {
   ActorContext,
   AgentKind,
+  AgentScreen,
   AgentSnapshot,
   Delivery,
   ExecutionRef,
@@ -80,7 +81,7 @@ export class FakeHerdr implements HerdrPort {
     const agent = this.agents.get(ref.paneId);
     if (agent) agent.status = "idle";
   }
-  async screen(ref: ExecutionRef) {
+  async screen(ref: ExecutionRef): Promise<AgentScreen> {
     return { agent: await this.get(ref.paneId), text: "screen", question: "", options: [] };
   }
   async answer() {}

@@ -48,7 +48,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_get",
-      "查询任务事实、参与者、最新自述和同步错误。回复结束不等于验收，输出不是独立验证。",
+      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialSent才证明初始要求投递已确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。",
       true,
       { taskId },
       [],
@@ -202,7 +202,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_create",
-      "创建讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。讨论可无项目；多参与者讨论默认有界轮流发言。新任务不等于新项目，newProject仅用于用户明确新建项目。",
+      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者讨论默认有界轮流发言。newProject仅用于用户明确新建项目。",
       false,
       {
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },

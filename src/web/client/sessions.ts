@@ -82,7 +82,9 @@ export function renderSessions(
   );
   const messages = (state.messages ?? []).filter((message) => message.sessionId === selected.id);
   const history = el("div", "message-list");
-  if (!messages.length)
+  if (selected.archived && state.messages === undefined)
+    history.append(empty("正在读取会话历史", "归档历史加载后会显示在这里。"));
+  else if (!messages.length)
     history.append(empty("会话已准备好", "输入调度要求，或到任务页创建一个讨论任务。"));
   for (const message of messages) {
     const bubble = el("article", `message ${message.role}`);

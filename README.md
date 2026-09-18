@@ -77,6 +77,7 @@ New state is stored in `state.sqlite` with WAL/SHM. TOML and legacy `projects.js
 
 Tests cover the real pi loop with protocol fixtures, SQLite/flock/Git, Feishu SDK dispatch, migration, delivery receipts and standalone packaging. They do not prove a live end-to-end flow through a production Feishu tenant, real model and real herdr. Supported inputs are text and text inside rich posts; image understanding, speech transcription and artifact hosting are outside the first release.
 
+- [Current business scenarios, command choices and gaps](docs/current-business-scenarios.md)
 - [Current design and D01–D16 decisions](docs/node-pi-design.md)
 - [B/N scenario mapping and acceptance evidence](docs/acceptance.md)
 - [Active refactor goal](docs/refactor-goal.md)

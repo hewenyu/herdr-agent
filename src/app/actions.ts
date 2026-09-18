@@ -148,9 +148,12 @@ export async function dispatch(
     case "session.archive":
       result = context.sessions.archive(actor.ownerId, string(input, "id"));
       break;
-    case "session.restore":
-      result = context.sessions.restore(actor.ownerId, string(input, "id"));
+    case "session.restore": {
+      const restored = context.sessions.restore(actor.ownerId, string(input, "id"));
+      context.store.set("web_selection", actor.ownerId, restored.id);
+      result = restored;
       break;
+    }
     case "session.clear": {
       const session = context.sessions.get(actor.ownerId, string(input, "id"));
       if (session.taskId) fail("task_session", "任务会话保留历史，不支持清空。");

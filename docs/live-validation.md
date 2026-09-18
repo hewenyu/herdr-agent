@@ -2,7 +2,7 @@
 
 更新时间：2026-09-18。状态：**本轮目标进行中；功能闭环尚未验收通过。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
-本轮文档盘点读取了当前 CLI、Web action、pi tools、消息路由、任务生命周期及测试源码；没有启动服务、建群、发送消息或读取生产凭据。下面的真实现场记录由主代理提供，尚未在本次文档任务中独立复核。
+本次更新独立读取了本地两轮飞书 REST ledger、Web 运行记录、生产回读记录及真实模型探针输出，并只读核对 HTML 产物。详见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md) E01–E06。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
 ## 1. 状态与证据规则
 
@@ -27,6 +27,17 @@
 | LIVE-001：用户经飞书要求新项目、Codex 制作 HTML 比武页面 | 提供的记录标注 `23:28`，原始事件日期/时区待补齐；inbox=`done`、outbox=`delivered`；checkpoint 没有 `toolCall`；所有 operations 为空；没有对应新 task/group；回复却引用了旧任务 ID 并声称排队 | **R-F：调度执行与事实答复失败；R-部分：接收和文本回复链路有回执。** 不能称新项目、建群或编码已开始。需保留原请求，修复后用实际模型重新执行并核对新对象；仅让 fixture 指定 `task_create` 不构成现场复验 |
 | LIVE-002：Web 未展示第二位允许用户的飞书任务 | 该次现象发生时 `snapshot/localActor` 使用 `allowedOpenIds[0]`；飞书按消息 owner 绑定。本轮工作区已新增本机管理身份选择，待验证 | **D：显示身份语义待明确，暂不定性为缺陷。** 分别核对“对象是否存在”和“当前 Web owner 是否有权看见”；不能用 owner 差异解释 LIVE-001 中所有新对象均未创建的事实。不得为消除空列表而直接取消 owner 隔离 |
 | BUILD-001：此前测试二进制 | `0.3.0-refactor`；commit `7689cee3163f7da0e02403645bd028c6066113ac`；UTC `2026-09-17T23:21:14Z`；macOS arm64；SHA256 `77f901b4eab28e845af7ba445c0332565dba825a53d667f76e0a2e25e6dc22d1` | 构建与隔离 smoke 的历史证据；不能证明当前运行实例仍为该二进制，也不能抵消 LIVE-001 |
+
+新增实测分层：**Web→真实 Codex→HTML 产物→飞书群结果已走通一条链路，原飞书入站完整创建路径仍待复验**。这不关闭 LIVE-001 的历史 R-F，也不掩盖本轮发现的阶段事实错误。
+
+| 记录 | 已观察事实 | 判定及后续验证 |
+| --- | --- | --- |
+| LIVE-003 / E05：Web 新项目 Codex 链路 | 真实新任务、herdr Codex、目录信任处理后产出 HTML；群 GET 存在署名最终结果；远端任务未自动完成 | 各阶段 R-P，完整功能组 R-部分；飞书入站创建、页面视觉验收、恢复/异常 U |
+| LIVE-004 / E05：阶段事实提前 | 创建刚 accepted/queued 就声称远端资源和投递完成；welcome 未启动即称已开始；blocked 称仍在处理中 | **R-F 历史保留**；提示词/工具描述和通知 participants 已修。E02/E03 真实模型+合成回执/事件通过，修正后真实服务同阶段复验 U |
+| REST-001/002 / E04 | 第二轮真实创建任务/群、发消息、更新描述、完成/重开/再完成、解散，各有 GET；两轮测试群已清理、任务已完成 | 独立 REST 阶段 R-P；成员查询权限不足仍 R-F，不能宣称整轮通过或全部 TaskService 生命周期通过 |
+| MODEL-001 / E01–E03 | 15 次主协议首步决策、1 次另一协议查询、1 次修订后首步；2 场景×2 轮状态追问、welcome/blocked 通知 | 仅模型决策/事实措辞 R-P；原工具未执行，不能充当外部资源或执行器验收 |
+
+**已确认审批规则：保留现有 Bypass，只处理仍出现的确认。** 当前任务绑定工作目录的启动信任由专用 pi 流程识别并经受限工具确认；其余确认必须任务群内用户选择。目录范围含已有项目新参与者、worktree、无项目讨论，不限新建项目。新自动流程仍需独立真实验收，不能用既有手动信任记录代替。
 
 优先顺序：先修 LIVE-001 并证明“真实请求→自主工具决策→持久任务→真实资源→结果可见”；再逐项核验入口差异、身份、生命周期和恢复。发现新问题时登记缺陷及关联场景，不用整体 tests 数字替代单项关闭。
 
@@ -58,7 +69,7 @@
 3. 在当轮 checkpoint 中核对 `project_create` 或 `task_create(newProject=true)` 等实际调用及结果；模型自行选择合理调用顺序，不通过测试预置 toolCall。
 4. 核对项目目录/Git、任务/参与者、operations 与初始投递；若需求包含飞书任务/群，核对实际创建并能打开的链接。没有操作时必须如实表示尚未执行。
 5. 在 herdr 核对 Codex pane/workspace、目录、完整初始要求与 receipt；读取本轮实际 transcript，不能拿旧任务 ID 充数。
-6. 由 Codex 产出页面与其测试/预览证据；用户或独立检查核对实际文件、页面与请求一致。pi 仅报告已观察事实与参与者自述的区别。
+6. 由 Codex 产出页面；保留用户“不测试”的约束，不追加测试任务。独立只读核对文件，视觉/交互验收另行记录。pi 区分已观察事实与参与者自述。
 7. 核对飞书结果可见、task/session 历史和进度查询；完成/关闭使用后续明确授权，不能因编码回复结束自动验收。
 8. 按 F3/F4 对同链路的隔离测试副本验证恢复。将每个检查点分别记通过/失败；只通过第 1 或第 2 步不得关闭 L01。
 
@@ -69,28 +80,28 @@
 | ID | 正常执行步骤与必要结果 | 失败/恢复/权限/投递检查 | 实现与历史离线依据 | 真实状态 |
 | --- | --- | --- | --- | --- |
 | B01 | `setup` 新注册、复用、明确 `--app`、补授权分别执行；保存正确应用，私聊与精确 nonce 卡片往返 | F1/F7；取消/超时/身份不匹配；保存成功但回调未完成返回部分成功；A1/A3/D1 | I；O-H `tests/onboarding/`、`tests/cli/run.test.ts` | U，不能拿已有机器人可发消息证明注册全流程 |
-| B02 | `serve` 获取排它锁→迁移→Web→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage | R-部分：LIVE-001 收到请求并有回复；启动/补授权/重连 U |
+| B02 | `serve` 获取排它锁→迁移→Web→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage | R-部分：LIVE-001 入站/回复及 E05 真实运行；启动补权/重连/唯一连接完整流程 U |
 | B03 | `doctor [--json]`、debug ls/screen/transcript 分别核对实际宿主结果 | 不启动编码、不建立第二平台长连接；不可读报 unknown；脱敏，宽度仅估算 | I；O-H cli/host-checks | U |
-| B04 | 登记已有项目，验证全部有序目录与默认 agent/default project；任务冻结目录快照 | F1/F2；第二目录无效不先改首目录；A1/A2；bypass仅影响新执行器 | I；O-H projects/config | U |
-| B05 | 明确新项目指令→创建目录/Git/登记；普通新任务只复用项目 | 名称穿越/占用拒绝；F3/F4；删除登记不删代码 | I；O-H projects；LIVE-001 | **R-F：新项目调度路径未执行；目录实际状态未独立核验**，工具本身现场 U |
-| B06 | 讨论/开发/评审/测试四类任务各创建；关联要求、参与者、可选群/远端任务 | F1/F3/F4、A1/A2、D1；无平台时保留用户建群意图；显式本地任务能运行 | I；O-H app/tasks/feishu/cli integration | **R-F：LIVE-001 无新 task/group/operations** |
-| B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt | blocked 信任菜单不得自动批准；仅明确 busy 重试；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | U |
+| B04 | 登记已有项目，验证全部有序目录与默认 agent/default project；任务冻结目录快照 | F1/F2；第二目录无效不先改首目录；A1/A2；bypass仅影响新执行器 | I；O-H projects/config | R-部分：E05 新项目目录和 Codex 配置进入任务；已有多目录/default/冻结快照各组合 U |
+| B05 | 明确新项目指令→创建目录/Git/登记；普通新任务只复用项目 | 名称穿越/占用拒绝；F3/F4；删除登记不删代码 | I；O-H projects；LIVE-001 | R-P：E05 Web 新项目创建及 HTML 产物；LIVE-001 飞书调度历史 R-F；穿越/占用/恢复现场 U |
+| B06 | 讨论/开发/评审/测试四类任务各创建；关联要求、参与者、可选群/远端任务 | F1/F3/F4、A1/A2、D1；无平台时保留用户建群意图；显式本地任务能运行 | I；O-H app/tasks/feishu/cli integration | R-部分：E05 开发任务、真实飞书任务/群；E01 discussion 仅首步决策通过，另外类型与异常现场 U |
+| B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt | 保留 Bypass；仅当前任务绑定启动目录信任可由专用pi确认，其余群用户选；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | R-P：E05 真实 Codex 手动目录信任后执行并产物；新 pi 自动信任、Claude、多目录/仅一次投递的完整现场 U；保留 Bypass |
 | B08 | 在绑定群续聊/引用、非任务群 @机器人、修订/否定/含糊输入各一例 | A1/A2/A3，F6；完整约束转交、unsupported资源不虚构；D1/D3 | I；O-H app/conversations、runtime | U |
-| B09 | 多 owner/多任务/多 session 查未结束和 all，核对真实状态与链接 | A1/A2、F6；任务不存在不得编造；query readError不可说运行正常 | I；O-H app/tasks/runtime；LIVE-002 | **R-F：LIVE-001 虚构旧ID/排队事实**；Web owner 语义 D |
-| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | U |
-| B11 | 实际 blocked 卡片/屏幕→用户选项→Guard验证→执行；单人/all中断 | A1/A3；回调竞态/双击/过期/换现场；显示裁剪不改完整Guard；D1/D3 | I；O-H approvals/herdr/legacy fixtures | U |
-| B12 | `complete` 同步远端完成，保留执行现场和群；reopen后方可追加 | F3：只回读确认，不重复PATCH；D4；完成≠销毁 | I；O-H tasks lifecycle/completion-description | U |
-| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | U |
-| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | U |
+| B09 | 多 owner/多任务/多 session 查未结束和 all，核对真实状态与链接 | A1/A2、F6；任务不存在不得编造；query readError不可说运行正常 | I；O-H app/tasks/runtime；LIVE-002 | R-部分：E02 查询后阶段答复正确（合成回执）；LIVE-001 历史 R-F；真实飞书入站查询进行中，Web owner 组合 U/D |
+| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-P：E05 Codex 最终结果群 GET、真实文件、远端描述核对；阶段通知历史 R-F，修正后真实通知/Claude/恢复 U |
+| B11 | 目录信任以外的实际 blocked→任务群用户选项→Guard验证→执行；单人/all中断 | A1/A3；回调竞态/双击/过期/换现场；显示裁剪不改完整Guard；D1/D3 | I；O-H approvals/herdr/legacy fixtures | R-部分：E05 真实 Codex 手动信任处理后继续；不等于新自动信任或群内用户卡片点击。其余菜单群审批/过期/替换现场 U |
+| B12 | `complete` 同步远端完成，保留执行现场和群；reopen后方可追加 | F3：只回读确认，不重复PATCH；D4；完成≠销毁 | I；O-H tasks lifecycle/completion-description | R-P：E04 真实 REST complete/reopen 及 GET；TaskService complete/reopen 全链和未知结果恢复仍 U |
+| B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E04 REST 完成和解散群已回读；真实 TaskService close 顺序、外部勾选与最后结果收尾 U |
+| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E04 仅测试群解散可确认；TaskService destroy、pane/workspace 清理和恢复 U |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | U |
-| B16 | session创建/选择/重命名/归档/恢复/clear、历史/摘要与provider切换 | A1/A2；未送达建议不进可见上下文；内存服务失败保留历史；代数/并发竞态；D2 | I；O-H runtime/migration | U |
+| B16 | session创建/选择/重命名/归档/恢复/clear、历史/摘要与provider切换 | A1/A2；未送达建议不进可见上下文；内存服务失败保留历史；代数/并发竞态；D2 | I；O-H runtime/migration | R-部分：E01 真实模型 switch/archive/restore 首步正确，E05 独立 pi session 使用；持久效果/跨入口/重启 U |
 | B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration | U |
 | B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | 运行启动证据需补；长期运行/Linux现场 U |
-| N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | **R-F：LIVE-001 无查询证据却报旧ID/排队** |
-| N02 | 明确仅讨论→无项目或已有项目→单Claude/Codex参与需求讨论 | pi不能自行替项目写方案；禁止编码的要求完整保留；D3/D4；F6 | I；O-H tasks/prompts | U |
-| N03 | Claude+Codex同群轮流讨论，署名可辨、ID可定位；同种多实例另测 | 手动/轮询、轮数/时限、迟到输出、同名拒歧义、未知relay暂停；F3/A2/D4 | I；O-H discussion/app/cli integration | U |
+| N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | R-部分：E01 查询自主调用 tasks_list；E02 多轮查询事实措辞通过（合成回执）；真实飞书查询进行中，LIVE-001 历史 R-F |
+| N02 | 明确仅讨论→无项目或已有项目→单Claude/Codex参与需求讨论 | pi不能自行替项目写方案；禁止编码的要求完整保留；D3/D4；F6 | I；O-H tasks/prompts | R-部分：E01 创建只讨论任务的参数含 discussion/Claude/Codex；真实单参与者讨论与禁止编码行为 U |
+| N03 | Claude+Codex同群轮流讨论，署名可辨、ID可定位；同种多实例另测 | 手动/轮询、轮数/时限、迟到输出、同名拒歧义、未知relay暂停；F3/A2/D4 | I；O-H discussion/app/cli integration | R-部分：E01 仅证实真实模型安排两类参与者；实际双方群内多轮/轮转/同种实例 U |
 | N04 | 讨论→用户明确转开发/评审→`parentTaskId`冻结上下文→共享目录或worktree | 后续修订优先、不漏禁止事项、不读错owner；完整真实模型交接；F6/A1/A3 | I；O-H lifecycle/projects | U |
-| N05 | 主入口切换pi session后继续；herdr原生session保持托管 | 已接收排队消息不改道；任务群不可切换；A1/A2，归档与clear分别验证 | I；O-H runtime/app | U |
+| N05 | 主入口切换pi session后继续；herdr原生session保持托管 | 已接收排队消息不改道；任务群不可切换；A1/A2，归档与clear分别验证 | I；O-H runtime/app | R-部分：E01 session_select 首步正确；实际切换、队列绑定、归档恢复和 herdr session 保持现场 U |
 | N06 | pause停止后续调度，interrupt影响选定执行器，resume恢复有界轮转 | pause不宣称已停止正在编码；迟到结果保留不转发；F3/F4/D4 | I；O-H discussion/lifecycle | U |
 | N07 | 结束讨论但保留关联开发、分别完成/关闭与保留群 | 不级联未授权任务，不由pi代判业务结论；A2/A3/D4 | I；O-H lifecycle | U |
 
@@ -119,7 +130,7 @@
 
 ## 6. Web 全入口矩阵
 
-I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/` 与历史Chromium假后端QA，不能据此认定每个真实表单已测。所有行现场 U；W01/W27 的owner表现关联 LIVE-002/D；W27为本轮新增入口，离线与真实均待复验。本轮要为每行分别记录桌面和390px可见结果，以及浏览器console/pageerror。
+I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/` 与历史Chromium假后端QA，不能据此认定每个真实表单已测。除 E05 的 Web 新建会话、chat.send 和现场信任处理部分外，页面全场景仍 U；该 API/实际业务证据不能替代桌面与移动布局、ACK及每个表单点击验收。W01/W27 的owner表现关联 LIVE-002/D，身份组合仍待复验。本轮要为每行分别记录桌面和390px可见结果，以及浏览器console/pageerror。
 
 | ID / 页面或API | 正常执行与预期可见结果 | 失败/恢复/身份/回执 |
 | --- | --- | --- |
@@ -157,7 +168,7 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 
 ## 7. pi 工具全量矩阵（当前工作区20个）
 
-工具清单来自 `src/app/tools.ts`：基线7689cee有18个，本轮工作区新增T19/T20，尚未据此标为测试通过。前8个可用于任务群；其余仅主入口。所有行均 I；历史 O-H 仅代表 engine/app/tasks/runtime 等测试存在相关机制覆盖；除 T01/T02/T14 的 LIVE-001 关联失败外，工具真实单项调用均 U。执行时先让真实模型自行选择工具，再补显式Web/API的确定性对照，不能把后者冒充前者。
+工具清单来自 `src/app/tools.ts`：基线7689cee有18个，本轮工作区新增T19/T20，尚未据此标为测试通过。前8个可用于任务群；其余仅主入口。所有行均 I；历史 O-H 仅代表 engine/app/tasks/runtime 等测试存在相关机制覆盖；E01 仅验证部分工具的首个真实模型决策，E02 验证多轮真实模型读取合成状态，E05 验证一次真实 Web 创建业务链；各行完整正常/异常组合仍 U。LIVE-001 关联失败保留历史。执行时先让真实模型自行选择工具，再补显式Web/API的确定性对照，不能把后者冒充前者。
 
 | ID / 工具 | 正常请求与要核对的工具参数/结果 | 失败/恢复/身份/投递 |
 | --- | --- | --- |
@@ -174,15 +185,15 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | T11 `project_remove` | 移除登记，明确代码仍保留 | 不误删文件/任务，默认项目失效处理 |
 | T12 `session_clear` | 用户明确clear，当轮回复持久后生效 | 不清任务群/编码session；generation与可见答复匹配；未完成回合失败不假称成功 |
 | T13 `projects_list` | 查询目录/default agent/Bypass实际值 | 无配置返回事实空态；不读项目源码代做需求 |
-| T14 `task_create` | 四种kind、完整requirements、participants、目录模式、newProject/parentTaskId、建群/远端task、讨论预算 | F1/F3/F4/F6，A1/A2/D1/D3；accepted仅已登记；**LIVE-001未调用且无对象，真实流程失败** |
+| T14 `task_create` | 四种kind、完整requirements、participants、目录模式、newProject/parentTaskId、建群/远端task、讨论预算 | F1/F3/F4/F6，A1/A2/D1/D3；accepted仅已登记；**LIVE-001 历史失败保留；E05 Web 真实开发创建通过，accepted 时事实答复失败；四类型及恢复未全验** |
 | T15 `sessions_list` | 当前owner活动/archived=true列表 | 群内无此工具；A1；不混淆pi与Codex/Claude原生session |
 | T16 `session_create` | 名称及select布尔，切换仅后续消息 | 不创建task/agent；A2与排队actor，失败不误切 |
 | T17 `session_select` | 选存在的独立session，Web/飞书入口分别核对 | 他人/归档/task绑定拒绝，已接收消息不重路由 |
 | T18 `session_rename` | 名称与已有session ID，刷新后准确 | 空/超长/外owner拒绝；不改变任务关系 |
-| T19 `session_archive`（本轮新增） | 归档主入口会话；当前回合答复持久后生效，历史/任务/herdr保留 | 当前回合异常不假报成功；异owner/task绑定拒绝；排队消息与迟到ACK不复活归档；本轮O/R均待验 |
-| T20 `session_restore`（本轮新增） | 恢复已有主入口归档，随后显式session_select，保留原历史 | 他人/任务绑定拒绝、不新建；与Web选中状态一致；本轮O/R均待验 |
+| T19 `session_archive`（本轮新增） | 归档主入口会话；当前回合答复持久后生效，历史/任务/herdr保留 | 当前回合异常不假报成功；异owner/task绑定拒绝；排队消息与迟到ACK不复活归档；E01真实模型首步正确；实际持久效果及本行异常现场仍待验 |
+| T20 `session_restore`（本轮新增） | 恢复已有主入口归档，随后显式session_select，保留原历史 | 他人/任务绑定拒绝、不新建；与Web选中状态一致；E01真实模型首步正确；实际持久效果及本行异常现场仍待验 |
 
-入口差异：基线缺少 `session_archive/session_restore` 工具，盘点期间工作区已新增T19/T20；必须补真实模型自然语言及旧 `/session` 文本的调用验证，不能仅因工具已加入就关闭缺口。没有独立 `project_default/catalog_bypass/config.ai` pi工具；`project_save(makeDefault)`可设置默认项目，但其它控制仅Web/API。没有任意shell/编辑/人工审批工具是职责边界，不作为缺失编码能力补回。
+入口差异：基线缺少 `session_archive/session_restore` 工具，盘点期间工作区已新增T19/T20；必须补真实模型自然语言及旧 `/session` 文本的调用验证，不能仅因工具已加入就关闭缺口。没有独立 `project_default/catalog_bypass/config.ai` pi工具；`project_save(makeDefault)`可设置默认项目，但其它控制仅Web/API。普通会话没有任意shell/编辑/人工审批工具是职责边界。另有专用启动上下文的 directory_trust_confirm，仅确认绑定目录的原生信任菜单；不计入上述20个普通工具，不作为通用审批能力。
 
 ## 8. 飞书入口与兼容模式
 
@@ -205,11 +216,11 @@ I 表示 action 或页面路径已存在；O-H 来自 `tests/web/`、`tests/app/
 | GAP03 / D | Web原先固定首owner，工作区新增显式选择但尚未现场验收 | 核对本机管理身份语义与W27；测试A1/陈旧请求/撤销授权/缓存隔离，不把原现象自动定性为缺陷 |
 | GAP04 / P1 | AI session归档/恢复基线入口能力不对齐，工作区已补工具 | T19/T20继续验证真实模型调用、权限、当前回合延迟归档和恢复；实现新增不等于现场通过 |
 | GAP05 / P1 | 新项目与讨论→开发交接缺少真实完整证据；Web入口本轮已补 | L01及N04/W28/W29；输入边界7测试通过仅属O-P，仍需实际页面→API→目录/任务→编码产物验收 |
-| GAP06 / P1 | 两种真实执行器的启动/信任/审批/queued尚未验收 | B07/B11每种CLI分别执行，记录版本/宽度/guard；原始fixture不能替代实际TUI |
+| GAP06 / P1 | E05 Codex 既有手动信任链路通过，新 pi 自动目录信任及其他群审批未全验 | 保留 Bypass；B07/B11各执行器分别验证专用自动信任、剩余菜单用户选择、重复/换现场/未知写入；E05不冒充新流程通过 |
 | GAP07 / P1 | unknown/uncertain、重启和迟到结果只已有离线机制证据 | 在隔离实服务对象上做F3/F4/F5；恢复无重复群/task/pane/terminal输入 |
-| GAP08 / P1 | 完成、关闭、销毁与远端描述一致性需现场区分 | B12–B14验证remote完成回读、最后结果、保留群与代码、无跨对象清理 |
-| GAP09 / P1 | 实际飞书群、任务面板、卡片、引用、消息分片未逐项勾验 | 记录真实远端ID/打开链接/用户可见画面，A1/A2/D1/D4 |
-| GAP10 / P1 | 回合历史中虚构旧ID/陈旧状态可能持续污染后续决策 | 查询事实覆盖历史状态但保留原始审计；新/旧session、clear、重启分别回归；不以删历史掩盖失败 |
+| GAP08 / P1 | E04 REST完成/重开/解散通过，E05结果描述经主验收核对；应用生命周期仍未全验 | B12–B14补TaskService操作顺序/未知结果/资源保留；descriptionMatchesOutput:false为Markdown归一化比较问题，不误记漏传缺陷 |
+| GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672，卡片/引用/分片未全验 | 只确认邀请请求及user_count=1；补roster权限与群客户端/卡片回调/引用/分片证据，不能把GET代替全部用户可见验收 |
+| GAP10 / P1 | E01合成虚假历史3次均实际选择创建；E02多轮纠正状态前提通过，真实历史/重启仍未全验 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
 | GAP11 / P1 | config.ai保存与运行配置/生效时间、密钥遮蔽需完整验证 | 保存→重启→实际endpoint/model核对；错误key/重定向拒绝不泄露key；Web不误报已连通 |
 | GAP12 / P1 | Web async刷新、归档历史、并行操作与ACK竞态 | 当前页面/隐藏session/切页/断网/重试ACK各执行，不能因HTTP200提前记可见 |
 | GAP13 / P1 | 本机项目目录、非Git/多目录/worktree、Bypass及清理风险 | 全目录先校验、冻结快照、已有worktree保护；删除登记/销毁均不删用户代码 |
@@ -244,4 +255,4 @@ R：通过 / 失败 / 部分 / 未测，不能跨层推定
 
 本轮新增离线记录 DOC-UI-01：`node --import tsx --test tests/web/task-form.test.ts`，7通过/0失败，验证项目模式切换不残留写意图、名称边界、当前owner讨论筛选、关联必须保留本次要求，以及与真实taskInput解析器兼容。该记录未启动浏览器、服务或构建，不能作为W28/W29真实通过。
 
-当前结论：**未完成本轮整改目标。** LIVE-001 是已知真实失败，LIVE-002 是待明确的身份语义；其余功能按本矩阵逐项补现场证据。上一阶段170项测试的历史通过保留，但不能关闭当前真实失败。
+当前结论：**未完成本轮整改目标。** E05已证实一条Web到真实Codex产物和飞书群结果链路，E04证实指定REST生命周期，E01–E03只证实真实模型在所测输入/受控回执上的决策和措辞。LIVE-001及LIVE-004失败历史保留；新版本真实通知、pi自动目录信任、其他群内审批、真实飞书入站完整创建、多参与者讨论、恢复和权限组合等仍需逐项补证。上一阶段170项测试不能替代这些现场验收。

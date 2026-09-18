@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { ScreenOption } from "../core/types.js";
+import type { AgentKind, ScreenOption } from "../core/types.js";
 
 export function cleanScreen(raw: string): string {
   return [...stripVTControlCharacters(raw)]
@@ -33,6 +33,70 @@ export function trustKeys(raw: string): string[] | undefined {
   if (lines.at(-3) === "› 1. Yes, continue" && lines.at(-2) === "2. No, quit") return ["enter"];
   if (lines.at(-3) === "1. Yes, continue" && lines.at(-2) === "› 2. No, quit")
     return ["up", "enter"];
+  return;
+}
+
+/** Exact native startup templates, never a general approval/question recognizer. */
+export function directoryTrustKeys(
+  kind: AgentKind,
+  raw: string,
+  expectedDirectory: string,
+): string[] | undefined {
+  if (!expectedDirectory.startsWith("/") || /[\r\n]/.test(expectedDirectory)) return;
+  const lines = cleanScreen(raw)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (kind === "codex") {
+    const input = trustKeys(raw);
+    if (!input) return;
+    const start = lines.findIndex((line) => line.startsWith("> You are in "));
+    const shown = lines[start]?.slice("> You are in ".length) ?? "";
+    if (shown !== expectedDirectory) {
+      // Native Codex clips this heading at the right edge without an ellipsis.
+      // Accept a prefix only when another native paragraph reaches the same
+      // column. The control layer separately verifies the full cwd from herdr.
+      const rawLines = cleanScreen(raw)
+        .split("\n")
+        .map((line) => line.trimEnd());
+      const heading = rawLines.find((line) => line.startsWith("> You are in ")) ?? "";
+      const width = heading.length;
+      if (
+        !shown.startsWith("/") ||
+        !expectedDirectory.startsWith(shown) ||
+        width < 40 ||
+        !/^[\x20-\x7e]+$/.test(heading) ||
+        rawLines.some((line) => line.length > width) ||
+        !rawLines.some((line) => line.startsWith("  ") && line.length === width)
+      )
+        return;
+    }
+    const question = lines.slice(start + 1, -3).join(" ");
+    if (
+      ![
+        "Do you trust the contents of this directory?",
+        "Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection. Trusting the directory allows project-local config, hooks, and exec policies to load.",
+      ].includes(question)
+    )
+      return;
+    return input;
+  }
+  if (/^─+$/.test(lines[0] ?? "")) lines.shift();
+  if (lines[0] !== "Accessing workspace:" || lines.at(-1) !== "Enter to confirm · Esc to cancel")
+    return;
+  const question = lines.findIndex((line) => line.startsWith("Quick safety check:"));
+  if (question < 2 || lines.slice(1, question).join("") !== expectedDirectory) return;
+  const warning = lines.slice(question, -4).join(" ").replace(/\s+/g, " ");
+  if (
+    warning !==
+    "Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first. Claude Code'll be able to read, edit, and execute files here."
+  )
+    return;
+  if (lines.at(-4) !== "Security guide") return;
+  if (lines.at(-3) === "❯ No, exit" && lines.at(-2) === "Yes, I trust this folder")
+    return ["down", "enter"];
+  if (lines.at(-3) === "No, exit" && lines.at(-2) === "❯ Yes, I trust this folder")
+    return ["enter"];
   return;
 }
 
