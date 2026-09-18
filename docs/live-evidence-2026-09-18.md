@@ -394,3 +394,6 @@ E17群完成答复提前概括“已完成收尾”，实际群尚未解散。`r
 `.cache/live/e17-cleanup-stage-probe.json`（03:46:50 UTC开始）使用实际配置PiEngine、完整应用工具schema，所有execute handler替换为内存回执：先给合成review状态，再给B真实completed动作返回及destroying/groupDeleted:false查询返回。真实工具序列为task_get→task_action complete→task_get，之后结束并答复，没有重复轮询自身。答复区分“任务已确认完成”“Codex执行器已关闭”“这条回复送达后群将解散”，说明文件与历史保留，没有提前声称全部收尾或删群指令已发，也未展示completed/gone/排队回执字段。判定PASS_SINGLE_SAMPLE。
 
 该探针没有创建Application、打开生产数据库、调用飞书／herdr或执行任何外部业务写操作；只证明这个受控回执样本的真实模型措辞，不是生产投递验收，也不保证未来所有模型回复。E17原R-F保留。此次format/check全部345项测试、类型／lint／1000行检查通过（`.cache/live/e18-full-check.log`），后续构建和部署单独固定版本，不借E17部署冒充。
+
+
+E18实际部署证据 `.cache/live/e18-deployment.json`（03:51:22 UTC）：源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。独立SEA smoke通过，飞书连接及授权ready，herdr原PID39037未重启；[同提交CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)的macOS arm64、Linux x64/arm64全部通过check与SEA。部署成功不替代上述生产收尾回复重验。此次没有为提示验证重建已清理的群或执行器，整体逐项目标继续active。后续文档HEAD不是新的二进制stamp。

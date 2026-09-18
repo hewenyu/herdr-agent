@@ -24,7 +24,9 @@
 
 2026-09-18 最新明确规范：主入口飞书私聊/Web聊天的 exact `/clear` 是确定性会话命令，不交给大模型，也不依赖模型额度。程序在事务内归档旧 pi session、创建并选中新 pi session，事务实际成功后只回复 `CLEAR_NEW_SESSION_OK`；失败或未完成不得送成功。该要求覆盖此前 `/clear` 必须由 pi 自主调用工具并生成文本的要求，普通业务沟通仍由 AI。所有群聊不支持，不清任务或 herdr 托管 session；旧历史和回执保留，旧排队消息不改绑且因归档拒绝执行。一般控制和通知简洁说明用户可见结果，内部诊断在用户追问时再给。旧模型驱动证据保留，新的机械轮转已在 E15 真实私聊及 Web 独立复验通过。
 
-最新进展（E17）：`.cache/live/e17-deployment.json` 固定运行源码 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`、PID `32000`、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`。format、check（345项测试）、SEA smoke 及[三平台 CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613)全部通过；飞书连接及授权 ready，herdr 原进程保留。
+最新进展（E18）：运行源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建时间 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。format/check（345项测试）、SEA smoke及[同提交三平台CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)通过；03:51回读飞书连接/授权ready，herdr PID39037保持。收尾阶段提示修正已部署，真实模型受控回执单样本通过，尚不称生产收尾回复重验；旧R-F保留。主入口无模型机械 `/clear` 语义不变。E17新增3任务及此前9任务均已确认资源清理，整体目标active。后续文档提交不冒充重新构建。
+
+E17 部署与验收记录：`.cache/live/e17-deployment.json` 固定运行源码 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`、PID `32000`、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`。format、check（345项测试）、SEA smoke 及[三平台 CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613)全部通过；飞书连接及授权 ready，herdr 原进程保留。
 
 本次修复区分参与者显示名与合法原生名称，将 agent.start 的明确名称拒绝归为 not_executed；只有明确重名拒绝才换用稳定名称重试。迁移参与者独立 ID 的操作归属统一纳入 retry事务、pending恢复、错误保留；短可见文本的宽度改为 unknown。E17 的5d1e96f二进制 CLI 28项只读及迁移8项证据保留原版本：迁移4项为真实旧数据的 R-local-copy、4项为合成故障 O，不是生产迁移／完整回退。旧样本仅3个destroyed任务，无pending。
 
@@ -32,7 +34,7 @@ E17后续独立证据已确认B/C从真实飞书请求到原生执行、产物�
 
 随后A/B/C均完成已授权资源清理，`e17-cleanup-readback.json`最终快照全true；B通过真实任务群无@完成指令调用task_action，回复送达和herdr close均早于删群。原9加本轮3共12群dissolved、panes缺失、pending outbox为0；inventory-e17两次remote GET400在03:45串行回读均200/completed，原失败保留且原因不确定，见 `test-resource-inventory-e17-read-errors.json`。
 
-新增措辞R-F仍未关闭：B回复首句“已完成收尾”早于群解散，尽管正文说明尚未解散；实际最终清理成功不能覆盖该阶段事实错误。提示修正已通过345项check，真实受控回执probe单样本通过；尚未部署，也不等于生产回复重验，详见E18。a6018ec部署和345项测试/CI证据保留；整体目标active，详见[现场矩阵](live-validation.md)及[版本化证据 E17](live-evidence-2026-09-18.md)。
+新增措辞R-F仍未关闭：B回复首句“已完成收尾”早于群解散，尽管正文说明尚未解散；实际最终清理成功不能覆盖该阶段事实错误。提示修正已在E18部署并通过345项check、真实受控回执probe单样本；尚未重验生产收尾答复，详见E18。a6018ec部署和345项测试/CI证据保留；整体目标active，详见[现场矩阵](live-validation.md)及[版本化证据 E17](live-evidence-2026-09-18.md)。
 
 E16 历史进展：运行二进制已更新为源码提交 `5d1e96f1698af95ad0fa2317b34b73441518e968`，PID `26077`，构建时间 `2026-09-18T02:52:38.355Z`，SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`。format、check（329项测试）、SEA smoke 和[同提交三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/35301019616)全部通过；重启后飞书连接及授权 ready，herdr 原进程未重启。两专用群真实复现并验证删群回执丢失后的跨进程恢复，各仅一次 DELETE，最终均 dissolved；恢复只凭匹配群的 fresh GET 事实，保留原错误审计及其他未决问题。Web 身份隔离、17项 API 作用域检查、会话创建/重命名/归档/恢复和显式清空已补验，三个测试会话已归档并恢复原选择。memory 15项 loopback 协议检查仅为 O-P，外部服务仍未测。重启后原9个测试任务清理状态再次回读通过；原失败和未覆盖分支保留，整体目标 active。详细边界见[现场矩阵](live-validation.md)和[版本化证据 E16](live-evidence-2026-09-18.md)。
 

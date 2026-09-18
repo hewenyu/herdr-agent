@@ -4,7 +4,9 @@
 
 ## 最新整改与现场证据
 
-最新进展（E17）：`.cache/live/e17-deployment.json` 固定运行源码 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`、PID `32000`、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`。format、check（345项测试）、SEA smoke 及[三平台 CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613)全部通过；飞书连接及授权 ready，herdr 原进程保留。
+最新进展（E18）：运行源码 `0b6966ff6509d3e7cdc0a26e5ba660d7b4e14392`，PID38264，构建时间 `2026-09-18T03:49:25.716Z`，SEA SHA256 `feb114e3c0fd08752533b48c85d07ff7072081e3af9b7b3824f7ccac95680069`。format/check（345项测试）、SEA smoke及[同提交三平台CI 35304636486](https://github.com/hewenyu/herdr-agent/actions/runs/35304636486)通过；03:51回读飞书连接/授权ready，herdr PID39037保持。收尾阶段提示修正已部署，真实模型受控回执单样本通过，尚不称生产收尾回复重验；旧R-F保留。主入口无模型机械 `/clear` 语义不变。E17新增3任务及此前9任务均已确认资源清理，整体目标active。后续文档提交不冒充重新构建。
+
+E17 部署与验收记录：`.cache/live/e17-deployment.json` 固定运行源码 `a6018ec1f51affce2b4160a0aea1a6e4483bcb1c`、PID `32000`、构建时间 `2026-09-18T03:24:39.516Z`、SEA SHA256 `87cfcebabb4957380713b7aa57440d3d79357727f1d8d33b0b06dfd2de168505`。format、check（345项测试）、SEA smoke 及[三平台 CI 35303089613](https://github.com/hewenyu/herdr-agent/actions/runs/35303089613)全部通过；飞书连接及授权 ready，herdr 原进程保留。
 
 本次修复区分参与者显示名与合法原生名称，将 agent.start 的明确名称拒绝归为 not_executed；只有明确重名拒绝才换用稳定名称重试。迁移参与者独立 ID 的操作归属统一纳入 retry事务、pending恢复、错误保留；短可见文本的宽度改为 unknown。E17 的5d1e96f二进制 CLI 28项只读及迁移8项证据保留原版本：迁移4项为真实旧数据的 R-local-copy、4项为合成故障 O，不是生产迁移／完整回退。旧样本仅3个destroyed任务，无pending。
 
@@ -12,7 +14,7 @@ E17后续独立证据已确认B/C从真实飞书请求到原生执行、产物�
 
 随后A/B/C均完成已授权资源清理，`e17-cleanup-readback.json`最终快照全true；B通过真实任务群无@完成指令调用task_action，回复送达和herdr close均早于删群。原9加本轮3共12群dissolved、panes缺失、pending outbox为0；inventory-e17两次remote GET400在03:45串行回读均200/completed，原失败保留且原因不确定，见 `test-resource-inventory-e17-read-errors.json`。
 
-新增措辞R-F仍未关闭：B回复首句“已完成收尾”早于群解散，尽管正文说明尚未解散；实际最终清理成功不能覆盖该阶段事实错误。提示修正已通过345项check，真实受控回执probe单样本通过；尚未部署，也不等于生产回复重验，详见E18。a6018ec部署和345项测试/CI证据保留；整体目标active，详见[现场矩阵](live-validation.md)及[版本化证据 E17](live-evidence-2026-09-18.md)。
+新增措辞R-F仍未关闭：B回复首句“已完成收尾”早于群解散，尽管正文说明尚未解散；实际最终清理成功不能覆盖该阶段事实错误。提示修正已在E18部署并通过345项check、真实受控回执probe单样本；尚未重验生产收尾答复，详见E18。a6018ec部署和345项测试/CI证据保留；整体目标active，详见[现场矩阵](live-validation.md)及[版本化证据 E17](live-evidence-2026-09-18.md)。
 
 E16 历史进展：运行二进制已更新为源码提交 `5d1e96f1698af95ad0fa2317b34b73441518e968`，PID `26077`，构建时间 `2026-09-18T02:52:38.355Z`，SEA SHA256 `c165c6424037337cda912bc4471731fb7d0dfdc250c9e083148e8922b2c39ec5`。format、check（329项测试）、SEA smoke 和[同提交三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/35301019616)全部通过；重启后飞书连接及授权 ready，herdr 原进程未重启。两专用群真实复现并验证删群回执丢失后的跨进程恢复，各仅一次 DELETE，最终均 dissolved；恢复只凭匹配群的 fresh GET 事实，保留原错误审计及其他未决问题。Web 身份隔离、17项 API 作用域检查、会话创建/重命名/归档/恢复和显式清空已补验，三个测试会话已归档并恢复原选择。memory 15项 loopback 协议检查仅为 O-P，外部服务仍未测。重启后原9个测试任务清理状态再次回读通过；原失败和未覆盖分支保留，整体目标 active。详细边界见[现场矩阵](live-validation.md)和[版本化证据 E16](live-evidence-2026-09-18.md)。
 
@@ -45,7 +47,7 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 | B09 多任务总览 | `tasks/records.ts`、pi 查询工具、Web；默认隐藏结束任务，all 显式读历史 | `tests/app/workflows.test.ts` 多对象事实；`tests/tasks/lifecycle.test.ts` 作用域；`tests/runtime/sessions.test.ts` 多 session 隔离 | 大量长期任务的性能上限未做压力测试 |
 | B10 进度产出 | `tasks/observe.ts`、`transcripts/`、`app/outbox.ts`；参与者署名、完整结果回执、review≠完成 | `tests/transcripts/reader.test.ts` Claude/Codex、UTF-8/截断/替换；`tests/tasks/discussion.test.ts` 结果投递恢复；`tests/tasks/lifecycle.test.ts` 完成/暂停后迟到结果只观察；`tests/tasks/description.test.ts` 描述按内容去重与精确回读确认；`tests/tasks/completion-description.test.ts` 完成描述覆盖旧投影、未知描述不重放；`tests/app/presentation.test.ts` 进度冷却合并最新状态；`tests/app/workflows.test.ts` Web ACK | 真实 transcript 新版本；供应商输出语义 |
 | B11 审批与中断 | `app/approvals.ts`、`herdr/control.ts`；完整 Guard、nonce、状态序号，正文不代批 | `tests/app/approvals.test.ts` 回调竞态/重复/外来身份；`tests/herdr/control.test.ts` 过期/目标变化/假 idle/queued 回显；`tests/app/presentation.test.ts` 显示裁剪不改变 Guard/选项、审批不受进度冷却影响；`tests/transcripts/legacy-fixtures.test.ts` 原始宽窄屏幕样例 | 真实各类 TUI 菜单与终端宽度 |
-| B12 完成与群策略 | `tasks/lifecycle.ts` complete；确认完成后默认经herdr关闭pane，群按keepGroup快照处理；新默认delete，群解散必清执行器；明确keepExecution例外须同时保留群，review不收尾 | 原历史 complete 保留测试不等于新策略验收；新增默认/覆盖/解散通知与恢复证据见 [本轮矩阵](live-validation.md)。`tests/tasks/completion-description.test.ts` 覆盖未知描述回执 | 新默认及平台一致性延迟需本轮复验 |
+| B12 完成与群策略 | `tasks/lifecycle.ts` complete；确认完成后默认经herdr关闭pane，群按keepGroup快照处理；新默认delete，群解散必清执行器；明确keepExecution例外须同时保留群，review不收尾 | 原历史 complete 保留测试不等于新策略验收；新增默认/覆盖/解散通知与恢复证据见 [本轮矩阵](live-validation.md)。`tests/tasks/completion-description.test.ts` 覆盖未知描述回执 | E15–E17默认收尾已有限定R-P；平台一致性延迟及未覆盖异常组合继续分验 |
 | B13 验收关闭 | close 先确认完成，再通知/结果事实与受管资源清理；外部勾选完成也收尾 | `tests/tasks/lifecycle.test.ts` 远端完成确认前不清理、外部完成、保留群策略、关闭前保存未轮询最终结果（含 agent 已退出的原生记录）；`tests/app/presentation.test.ts` 最终结果/关闭通知不受进度冷却影响；`tests/app/workflows.test.ts` 通知只读权限 | 通知模型选择与飞书群可见效果 |
 | B14 销毁重开 | destroy 不自动验收；destroyed 不可重开，代码保留 | `tests/tasks/lifecycle.test.ts` 销毁临时拒绝恢复、结束任务边界；`tests/projects/catalog.test.ts` 文件保留 | 关闭后资源实际状态人工核对 |
 | B15 失败恢复 | `storage/operations.ts`、`app/inbox.ts`、`outbox.ts`、任务恢复；未知写操作冻结，旧participant独立ID归属及retry事务 | `tests/storage/store.test.ts` ledger/回滚；`tests/app/conversations.test.ts` 输入去重/部分投递；任务测试覆盖重启和未知响应；`tests/tasks/migrated-operations.test.ts`、group-recovery对应旧participant回执与未决错误保留 | 进程硬断电、磁盘满、长期网络抖动未做混沌测试 |
