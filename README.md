@@ -10,9 +10,9 @@ pi handles this tool's business: arranging work, routing messages, querying stat
 
 ## Release and acceptance status
 
-The latest published release is [v0.3.6](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.6). The public entry package and all three native optional packages are published at the same version. Install the entry package with `npm install -g @yuebanlaosiji/myrix@0.3.6`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
+The latest published release is [v0.3.7](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.7). The public entry package and all three native optional packages are published at the same version. Install the entry package with `npm install -g @yuebanlaosiji/myrix@0.3.7`, or use `@latest` for the current stable version. The npm launcher and the release archives expose the same `myrix` command and the `herdr-agent` compatibility alias.
 
-This repair checkout is being validated on branch `fix/pi-tool-recovery`. The root `package.json` is the private source package and remains at version `0.3.0`; it is not the published npm entry package. The tool-claim recovery changes in this checkout are unreleased. The published `v0.3.6` binary remains the latest stable release until a later `v0.3.x` tag is created.
+The tool-claim recovery changes from PR #28 are included in `v0.3.7`. The root `package.json` is the private source package and remains at version `0.3.0`; it is not the published npm entry package. The locally running SEA, when present, may still be the earlier `v0.3.6` binary until it is rebuilt and restarted from the current source.
 
 Automated checks and native packaging are run by the release workflow. End-to-end acceptance is still tracked per scenario: a green build does not prove that a real Feishu message, model tool call, herdr resource, group message, or cleanup readback happened. Check [live validation](docs/live-validation.md) for the current `U`, `R-部分`/`R-partial`, and `R-P` evidence, including retained historical unknown results. Treat a scenario as accepted only when its corresponding Feishu, pi, model, herdr, and external readbacks are present.
 
