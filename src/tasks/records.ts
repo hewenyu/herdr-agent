@@ -46,6 +46,19 @@ export class TaskRecords {
       .find((task) => task.chatId === chatId && !task.groupDeleted);
   }
 
+  /**
+   * Return the durable task binding even after its group has been dissolved.
+   * Active routing must use byChat(); callbacks still need this historical
+   * binding so a late message or card cannot be treated as a new main-chat
+   * conversation after cleanup.
+   */
+  historyByChat(chatId: string): Task | undefined {
+    return this.store
+      .list<Task>("tasks")
+      .filter((task) => task.chatId === chatId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  }
+
   participants(task: Task): Participant[] {
     return task.participantIds
       .map((id) => this.store.get<Participant>("participants", id))
