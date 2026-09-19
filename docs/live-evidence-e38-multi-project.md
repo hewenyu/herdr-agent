@@ -1,6 +1,6 @@
 # E38：多项目、Web 配置和会话切换的真实验收记录
 
-日期：2026-09-19；下文时间均为 UTC。本轮从已发布的 **v0.3.13** 开始，组合验证真实 Web 项目配置、主私聊会话创建、默认项目执行，以及已有任务阻塞时创建另一个项目。**当前为进行中的部分记录，保留 Web 错误不可见、A1 需求改写和目录信任失败；没有全链路通过或资源清理完成的结论。** 本初稿的业务快照截止 `12:24:56.974193Z`，后续执行及修复复验需另行追加。
+日期：2026-09-19；下文时间均为 UTC。本轮从已发布的 **v0.3.13** 开始，组合验证真实 Web 项目配置、主私聊会话创建、默认项目执行，以及已有任务阻塞时创建另一个项目。**本轮部分验收已收尾：B1 在修复版上自动确认目录并完成产物与检查；测试群和绑定执行器已清理，默认项目已恢复。Web 错误呈现及新飞书任务的原文保真复验仍受桌面不可用阻塞，整体目标 active。** 下文初始业务快照截止 `12:24:56.974193Z`，保留原失败，修复和收尾证据见后续时序。
 
 ## 运行版本与证据来源
 
@@ -130,3 +130,15 @@ A1 审批记录仍为 consumed=false，过期时间 `12:29:27.579Z` 早于删群
 目录信任改为按 realpath 核验任务目录身份，向 pi 提供严格原生菜单、截断标题与完整目录事实。只有原生菜单和授权目录同时成立时，首个模型请求才要求调用受限工具；后续请求恢复普通工具选择。实际工具仍复核任务、执行器、目录、现场版本和菜单，普通审批规则不变。识别版本更新允许旧未执行决策重新评估，所有版本的 pending/done/unknown 操作仍冻结，避免重发按键。单参与者通知也不再按多人轮转生成提示。
 
 首次完整检查 639 项中 638 项通过：无原文的 parentContext 在创建时携带 undefined 键，JSON 回读后丢失，违反快照严格相等断言。修正为可选原文字段仅在有值时装配，保留原断言并补回读一致性验证。最终 `npm run check` 的行数、TypeScript、Biome 和 **639/639** 测试全部通过，日志 `.cache/e38-check-r2.log`；独立目录信任审核及相关 31 项测试通过。`git diff --check` 通过。该结果仍不是生产部署或完整业务验收。
+
+## 12:48–12:52 UTC：修复部署、B1 恢复与测试清理
+
+功能提交 `261771d6eea4810a58acb8f44e45d606bf0756fc` 构建为 macOS arm64 `0.3.14-dev`，构建时间 `2026-09-19T12:47:29.100Z`。独立 SEA 烟测通过，覆盖临时目录中的单二进制运行、锁、SQLite、嵌入页面、配置/历史边界与隔离双协议 pi 循环。运行路径 `build/e38/herdr-agent`，`dist/herdr-agent` 同步同一产物；PID `42319`，SHA256 `1b6f1ebdef91bd7f0819a7f94e7a329a4055ee641ac9db3d79399c64beed307f`。部署前确认无 queued/processing inbox、A1 已 destroyed，再停止旧 bridge；herdr PID `39037` 保留。版本记录 `.cache/live/e38-r2-deployment.json`，日志 `~/.herdr-agent/e38-r2-runtime.log`，后续文档提交不冒充重新构建。
+
+B1 在同一 `w24:p1`、同一旧任务上恢复。生产日志与操作回执确认：`12:48:24.141Z` pi 调用 `directory_trust_confirm`，`12:48:28.314Z` 返回成功，随后首次要求投递 verified。没有手动按键放行。`.cache/live/e38-b1-recovery-native.json` 及保存的原生 transcript 记录 Codex 的真实目录/Git 检查、写入 index.html 和 Python 标准库 HTMLParser 断言；原生检查 exit 0/PASS，Git 仅 `?? index.html`。独立 Python 回读同样确认 151 字节 HTML 的标题为 `MYRIX_E38_B_OK`，正文含 `Hello from project B`。任务随后 review，Codex done，closeRequested=false；没有自动代验收。这是旧任务恢复，不是新 `userRequest` 快照的飞书全链路证明。
+
+`.cache/live/e38-remote-result.json` 用生产应用独立 REST 读回署名输出 `om_x100b65dc03d054a4b1a8fa06cdc86a5` 和 review 通知 `om_x100b65dc036f4ca0b39c132225ece39`，远端任务未完成、群正常。也读回主私聊任务查询答复 `om_x100b65d3bb79c0a8b1f85288d62f3ef`，内容为查询时的两项 blocked 任务及正确链接；默认列表查询限定通过，原 blocked 内部术语措辞问题保留。没有把 REST 消息存在性称为本次 CUA 可见性复验。
+
+飞书及 Chrome 原生窗口复查仍为 `cgWindowNotFound`，无法继续新 A2、群内确认和浏览器错误呈现。按测试清理授权，生产应用 REST 于 `12:51:12.774Z` 删除 B1 群并独立回读 dissolved；服务观察后自动通过 herdr 关闭 `w24:p1`。`.cache/live/e38-after-b1-cleanup.json` 中 A1/B1 均 destroyed、groupDeleted=true、参与者 gone；这次清理没有完成远端任务，不能替代用户确认完成场景。
+
+`.cache/live/e38-config-cleanup.json` 记录受保护本机配置 API 的收尾：恢复 defaultProject=herdr-agent，移除两项 E38 测试登记，保留原 12 项项目及 Bypass=true，目录、输入和 HTML 产物不删除。herdr 受管 agent 列表为空；隔离组件 w25/w26 也已有各自关闭回读。pi 测试会话与历史保留，未通过后门更改 session selection。runtime/authorization ready 仅为运行状态回读。原 R-F、新建 A2 原文传递、Claude 别名自动确认的生产复验、Web 弹窗视觉/交互、切回/归档/恢复 pi 会话、三个项目并发组合和迟到审批卡仍继续跟踪。

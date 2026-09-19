@@ -50,7 +50,7 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 全量真实验收仍为 **R-部分，持续进行中**。[现场验收矩阵](docs/live-validation.md) 分开记录实现、自动化检查和真实飞书/herdr 证据。[E32](docs/live-evidence-e32-manual-discussion.md) 覆盖 Claude/Codex 手动讨论及资源清理；[E34](docs/live-evidence-e34-runtime-recovery.md) 覆盖用户审批、参与者输出、清理，以及错误任务编号明确失败后同轮恢复完成。历史失败继续保留，包括 [E33](docs/live-evidence-e33-n02-codex.md)。[E35](docs/live-evidence-e35-destroy-notices.md) 已验证明确取消任务时的两条收尾通知与资源销毁，远端任务仍保持未完成；[E36](docs/live-evidence-e36-completion-notices.md) 也已限定验证确认完成后的通知与清理，其创建答复误拒随后已修复，并经 [E37](docs/live-evidence-e37-create-delivery.md) 从创建到清理的限定链路复验通过；整体仍为部分通过。
 
-[E38](docs/live-evidence-e38-multi-project.md) 记录了 Web 多目录配置、独立 pi 会话，以及前一任务阻塞时继续创建第二个项目的结果；同时暴露了配置错误被弹窗遮挡、任务要求被改写和启动目录确认失败。当前源码已补修复及自动化、限定原生组件验证，真实飞书与浏览器复验仍未完成。
+[E38](docs/live-evidence-e38-multi-project.md) 记录了 Web 多目录配置、独立 pi 会话，以及前一任务阻塞时继续创建第二个项目的结果；同时暴露了配置错误被弹窗遮挡、任务要求被改写和启动目录确认失败。修复版已恢复第二项目的真实 Codex 执行，核对 HTML 产物、检查结果和飞书消息，并清理测试群及执行器；新任务的原文传递和浏览器错误显示仍待真实复验。
 
 本地接受或排队不代表远端任务、群聊已创建，也不代表要求已送达参与者；回复必须以工具回执为依据。发布版本与本地开发二进制可能不同，对照行为前请用 `myrix version --json` 核对。
 
