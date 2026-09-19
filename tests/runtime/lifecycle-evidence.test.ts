@@ -174,3 +174,44 @@ test("cleanup of an unprovisioned task does not claim nonexistent sessions were 
   assert.equal(unsupportedLifecycleClaim("Codex session 已关闭。", facts), true);
   assert.equal(unsupportedLifecycleClaim("群已解散。", facts), true);
 });
+
+test("trusted task title is data, not a cleanup-completion assertion", () => {
+  const facts = evidence();
+  const snapshot = { ...facts, task: { ...facts.task, title: "受控收尾通知验证" } };
+  const probe =
+    "任务“受控收尾通知验证”已完成。按照默认收尾策略，其任务群即将解散；任务记录、代码与历史内容会保留，不受影响。";
+  assert.equal(unsupportedLifecycleClaim(probe, snapshot), false);
+  assert.equal(
+    unsupportedLifecycleClaim("任务“受控收尾通知验证”已完成收尾，任务群即将解散。", snapshot),
+    true,
+  );
+});
+
+test("quoted title isolation preserves actual assertions and negations after the title", () => {
+  for (const [open, close] of [
+    ["“", "”"],
+    ["「", "」"],
+    ["《", "》"],
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"],
+  ]) {
+    for (const title of ["收尾", "群已解散", "尚未完成收尾", "cleanup"]) {
+      const facts = evidence();
+      const snapshot = { ...facts, task: { ...facts.task, title } };
+      const reference = `${open}${title}${close}`;
+      assert.equal(unsupportedLifecycleClaim(`任务${reference}已完成。`, snapshot), false);
+      assert.equal(unsupportedLifecycleClaim(`任务${reference}已完成收尾。`, snapshot), true);
+      assert.equal(unsupportedLifecycleClaim(`任务${reference}尚未完成收尾。`, snapshot), false);
+      assert.equal(unsupportedLifecycleClaim(`任务${reference}：群已解散。`, snapshot), true);
+    }
+  }
+});
+
+test("title isolation requires a matching quoted title instead of suppressing ordinary claims", () => {
+  const facts = evidence();
+  const snapshot = { ...facts, task: { ...facts.task, title: "收尾" } };
+  assert.equal(unsupportedLifecycleClaim("任务已完成收尾。", snapshot), true);
+  assert.equal(unsupportedLifecycleClaim("任务“别的收尾任务”已完成收尾。", snapshot), true);
+  assert.equal(unsupportedLifecycleClaim("任务“收尾”已完成收尾。", facts), true);
+});

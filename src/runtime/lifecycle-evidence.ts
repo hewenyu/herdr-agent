@@ -15,7 +15,7 @@ export interface LifecycleEvidence {
     | "pending"
     | "error"
     | "syncError"
-  >;
+  > & { title?: string };
   participants: Array<
     Pick<Participant, "id" | "name" | "kind" | "status" | "started"> & {
       execution?: unknown;
@@ -34,9 +34,10 @@ const executionClosed =
 
 /** Reject unsupported lifecycle assertions without selecting tools or composing a reply. */
 export function unsupportedLifecycleClaim(text: string, evidence: LifecycleEvidence): boolean {
+  const claims = withoutTaskTitle(text, evidence.task.title);
   // Preserve question punctuation. Commas and conjunctions keep a later future
   // stage from hiding an earlier assertion, as in "收尾已完成，群即将解散".
-  const segments = text.split(/(?<=[，,。！？!?；;\n])|(?:但是|不过|但|并且|而且|\bbut\b)/iu);
+  const segments = claims.split(/(?<=[，,。！？!?；;\n])|(?:但是|不过|但|并且|而且|\bbut\b)/iu);
   return segments.some((segment) => {
     if (/[?？]\s*$/u.test(segment) || /^\s*(?:是否|请问|Has\b|Have\b|Is\b|Are\b)/iu.test(segment))
       return false;
@@ -52,6 +53,23 @@ export function unsupportedLifecycleClaim(text: string, evidence: LifecycleEvide
     if (claimsExecution && !claimedExecutionsClosed(assertion, evidence)) return true;
     return claimsCleanup && !cleanupFinished(evidence);
   });
+}
+
+function withoutTaskTitle(text: string, title: string | undefined): string {
+  if (!title) return text;
+  // An exact, quoted service-owned title is reference data. Do not remove
+  // unquoted occurrences: a title such as "收尾" must not hide "已完成收尾".
+  for (const [open, close] of [
+    ["“", "”"],
+    ["「", "」"],
+    ["《", "》"],
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"],
+  ]) {
+    text = text.replaceAll(`${open}${title}${close}`, "【任务标题】");
+  }
+  return text;
 }
 
 function cleanupFinished({ task, participants }: LifecycleEvidence): boolean {
