@@ -10,11 +10,20 @@ import {
 } from "../runtime/provision-evidence.js";
 import type { ConversationEngine, EngineInput } from "../runtime/types.js";
 
+export interface NoticeRejection {
+  text: string;
+  /** One-based attempt within this notification decision. */
+  attempt: number;
+  lifecycle: boolean;
+  provision: boolean;
+}
+
 /** The model writes notices; this boundary only checks their current machine facts. */
 export async function noticeDecision(
   engine: ConversationEngine,
   input: EngineInput,
   facts: LifecycleEvidence,
+  onRejected?: (rejection: NoticeRejection) => void | Promise<void>,
 ): Promise<{ notify: boolean; text: string }> {
   const provisioning: ProvisionEvidence = { created: [], tasks: [] };
   recordProvisionEvidence(
@@ -39,12 +48,11 @@ export async function noticeDecision(
     const decision = JSON.parse(answer.text) as { notify?: unknown; text?: unknown };
     if (typeof decision.notify !== "boolean" || typeof decision.text !== "string")
       throw new OperationError("notice_format", "模型通知格式无效，尚未发送。");
-    if (
-      !decision.notify ||
-      (!unsupportedLifecycleClaim(decision.text, facts) &&
-        !unsupportedProvisionClaim(decision.text, provisioning))
-    )
-      return { notify: decision.notify, text: decision.text };
+    if (!decision.notify) return { notify: false, text: decision.text };
+    const lifecycle = unsupportedLifecycleClaim(decision.text, facts);
+    const provision = unsupportedProvisionClaim(decision.text, provisioning);
+    if (!lifecycle && !provision) return { notify: true, text: decision.text };
+    await onRejected?.({ text: decision.text, attempt: attempt + 1, lifecycle, provision });
     rejected = decision.text;
   }
   throw new OperationError("notice_fact_missing", "模型通知缺少对应事实，尚未发送。");

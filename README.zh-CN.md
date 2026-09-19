@@ -48,11 +48,9 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`。Actions 内部的 artifact 下载只是组装发布包的工作流步骤；用户直接从 npm 安装 `@yuebanlaosiji/myrix` 或下载 Release 压缩包，不需要选择 workflow 的 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28 模型探针](docs/live-evidence-e28-real-model-tool-decision.md)，生产应用身份与只读权限边界见 [E28 身份审计](docs/live-evidence-e28-identity-audit.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)，真实长消息分片与清理见 [E30](docs/live-evidence-e30-long-message.md)，主入口 `/clear` 机械轮转见 [E31](docs/live-evidence-e31-clear-command.md)，手动讨论通知修正见 [E32](docs/live-evidence-e32-manual-discussion.md)。E32 后续经真实任务群指令安排 Codex，两个 marker 均已看到；用户验收后，两个 herdr 执行目标和任务群已关闭。但后台通知仍提前声称“已完成收尾”，该失败继续保留。普通审批仍由用户处理。
+全量真实验收仍为 **R-部分，持续进行中**。[现场验收矩阵](docs/live-validation.md) 分开记录实现、自动化检查和真实飞书/herdr 证据。[E32](docs/live-evidence-e32-manual-discussion.md) 覆盖 Claude/Codex 手动讨论及资源清理；[E34](docs/live-evidence-e34-runtime-recovery.md) 覆盖用户审批、参与者输出、清理，以及错误任务编号明确失败后同轮恢复完成。历史失败继续保留，包括 [E33](docs/live-evidence-e33-n02-codex.md)。正常收尾通知的生成和送达仍待验；检查通过或资源清理成功不代表全部功能验收完成。
 
-[E33](docs/live-evidence-e33-n02-codex.md) 补充真实飞书入口的无项目、单 Codex 讨论：指定输出、原生零工具调用、群投递及用户确认后的资源清理已有证据。但完成回合最终被判为失败，错误报告“本轮业务未执行”，与实际清理成功矛盾；该问题继续记为失败，不能把整个场景标为验收完成。
-
-本地接受或排队不代表远端任务、群聊已创建，也不代表初始要求已送达参与者。[E34](docs/live-evidence-e34-runtime-recovery.md) 已验证首个部署版本拦截“已转交要求”的无依据声称，重新查询后发送正确答复，且未重复建任务。E34 仍等待用户在任务群处理 Codex 普通更新菜单审批，参与者输出和收尾尚未验收。后续通知护栏及标题边界修正已通过 557 项自动化测试，并以 `0b3c457` 的 `0.3.13-dev` 部署；真实模型加合成快照探针通过，生产收尾通知仍待复验；E33 完成误报的恢复也仍需专门现场复验。这些记录只覆盖指定场景，不代表全量验收通过。
+本地接受或排队不代表远端任务、群聊已创建，也不代表要求已送达参与者；回复必须以工具回执为依据。发布版本与本地开发二进制可能不同，对照行为前请用 `myrix version --json` 核对。
 
 ## 运行前置
 
@@ -82,7 +80,7 @@ npm run smoke
 
 1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（默认 `~/.herdr-agent/config.toml`），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
 2. 运行 `myrix setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
-3. 可在 Web 的“项目配置”页登记项目目录、设置默认项目和 Bypass；第一个目录是主目录，保存时自动检查并初始化 Git，附加目录按顺序传递给 Claude/Codex。模型连接也可在 Web 的“模型设置”页保存；启用时必须显式填写 `base_url`，配置修改后重启。任务、讨论和审批仍通过飞书提出。
+3. Web 可添加、编辑或删除项目登记，设置默认项目、默认参与者及新任务的 Bypass。按顺序填写已存在的目录；保存时检查全部目录，首目录需要时自动初始化 Git，附加目录按原顺序传给 Claude/Codex。删除登记不删除代码；项目和 Bypass 修改用于新任务，不改动已有执行会话。模型连接也可在 Web 保存，启用时必须显式填写 `base_url`，模型配置修改后重启服务。任务、讨论和审批仍通过飞书提出。
 4. 运行 `myrix serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
 
 ```sh
@@ -102,11 +100,11 @@ myrix doctor --json
 
 ## 使用方式
 
-在飞书中可对 pi 说：“开个讨论任务，让 Claude 和 Codex 一起讨论这个需求”“把已确认方案交给 Codex 实现，Claude 评审”“切回昨天的调度会话”。pi 调用工具组织工作，参与者负责业务内容。一个机器人在群内标明发言来源，Claude/Codex 不是另两个飞书账号。
+在飞书主私聊中创建项目、任务或切换 pi session，在对应任务群中续聊和处理审批。讨论可以不绑定项目；开发、评审和测试任务使用已配置项目。可对 pi 说：“开个讨论任务，让 Claude 和 Codex 一起讨论这个需求”“把已确认方案交给 Codex 实现，Claude 评审”“切回昨天的调度会话”。pi 调用工具组织工作，参与者负责业务内容。一个机器人在群内标明发言来源，Claude/Codex 不是另两个飞书账号。
 
 多参与者讨论默认最多 4 轮、30 分钟；可以指定参与者或暂停。多个同种模型实例有不同 participant ID。普通文本不是权限菜单批准，审批使用实际卡片/屏幕选项；结果未知时不能自动重发。
 
-任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后仍保留历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。飞书断线重连时，旧任务调度器会先停止，再由新连接启动调度器重新核对当前记录；旧连接不会继续对新连接的同一批记录执行操作。
+任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后，程序仍保留任务和会话历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。飞书断线重连时，旧任务调度器会先停止，再由新连接启动调度器重新核对当前记录；旧连接不会继续对新连接的同一批记录执行操作。
 
 参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。`manual` 讨论只自动尝试首位参与者；后续参与者等待用户或调度器安排。只有当前事实明确显示任务群已经发布仍有效的审批卡时，`blocked` 参与者才提示用户去群里处理；没有群或卡片发布事实时只说明参与者处于 blocked，不能假定存在审批卡。只有上一位参与者产生已核验输出后，`round_robin` 才会自动转交下一位。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
 

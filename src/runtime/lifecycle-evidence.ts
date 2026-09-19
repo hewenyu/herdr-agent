@@ -25,8 +25,9 @@ export interface LifecycleEvidence {
 
 const completed =
   /(?:已|成功|完毕|完了|结束了|关闭了|解散了|清理好了|\b(?:closed|terminated|deleted|dissolved|completed|finished|done)\b)/iu;
+// Blanket completion means all cleanup/resources, not all tests or discussion turns.
 const cleanup =
-  /(?:完成.{0,12}(?:收尾|清理)|(?:收尾|清理).{0,16}(?:完成|完毕|结束|好了)|(?:全部|所有|一切).{0,16}(?:处理完|完成|结束|关闭|清理完)|\b(?:cleanup|clean[ -]?up).{0,20}(?:complete|completed|finished|done)|\b(?:all|everything).{0,20}(?:done|finished|closed)\b)/iu;
+  /(?:完成(?:了)?(?:全部|所有|本次|相关)?(?:的)?(?:任务(?:的)?)?\s*(?:收尾|清理)|(?:收尾|清理).{0,16}(?:完成|完毕|结束|好了)(?!后|之后|以后|时|前)|(?:全部|所有|一切)(?:的)?(?:资源|执行资源|执行器|群聊|会话|进程)?(?:都|均|已经|已|现已|\s)*(?:处理完|完成|结束|关闭|清理完)(?!后|之后|以后|时|前)|\b(?:cleanup|clean[ -]?up).{0,20}(?:complete|completed|finished|done)|\b(?:all|everything)(?:\s+(?:is|are|has\s+been|have\s+been|now|already|fully))*\s+(?:done|finished|closed)\b)/iu;
 const groupClosed =
   /(?:群|\b(?:group|chat)\b).{0,20}(?:解散|删除|关闭|dissolved|deleted|closed)|(?:解散|删除|关闭|dissolved|deleted|closed).{0,20}(?:群|\b(?:group|chat)\b)/iu;
 const executionClosed =
@@ -37,16 +38,23 @@ export function unsupportedLifecycleClaim(text: string, evidence: LifecycleEvide
   const claims = withoutTaskTitle(text, evidence.task.title);
   // Preserve question punctuation. Commas and conjunctions keep a later future
   // stage from hiding an earlier assertion, as in "收尾已完成，群即将解散".
-  const segments = claims.split(/(?<=[，,。！？!?；;\n])|(?:但是|不过|但|并且|而且|\bbut\b)/iu);
+  const segments = claims.split(
+    /(?<=[，,。！？!?；;\n])|(?:但是|不过|但|并且|而且|且|并(?=已)|\bbut\b)/iu,
+  );
   return segments.some((segment) => {
     if (/[?？]\s*$/u.test(segment) || /^\s*(?:是否|请问|Has\b|Have\b|Is\b|Are\b)/iu.test(segment))
       return false;
+    // A completed task can precede a future resource action in the same
+    // segment. Likewise "已创建的群" describes the group, not its deletion.
+    // Keep the earlier assertion and remove only the pending action suffix.
     const assertion = segment.replace(
-      /(?:尚未|还没|没有|未能|无法|不能|不会|并未|未|等待|待|即将|将会|准备|计划|会(?=关闭|解散|清理|完成|结束))[^，,。！？!?；;\n]*|\b(?:not|never|pending|waiting|will|cannot|can't|going\s+to)\b[^,;.!?\n]*/giu,
+      /(?:尚未|还没|没有|未能|无法|不能|不会|并未|未|等待|待|即将|将(?=会|按|自动|直接|在|于|关闭|解散|清理|完成|结束)|准备|计划|会(?=(?:按.{0,12}策略|自动|直接|稍后|随后)?(?:关闭|解散|清理|完成|结束))|(?:开始|正在)(?=关闭|解散|清理|完成|结束))[^，,。！？!?；;\n]*|\b(?:not|never|pending|waiting|will|cannot|can't|going\s+to)\b[^,;.!?\n]*/giu,
       "",
     );
-    if (!completed.test(assertion)) return false;
     const claimsCleanup = cleanup.test(assertion);
+    // "收尾完成" is an assertion without an explicit "已". Do not generalize
+    // bare task completion to resource closure, e.g. "任务完成后关闭 Codex".
+    if (!completed.test(assertion) && !claimsCleanup) return false;
     const claimsGroup = groupClosed.test(assertion);
     const claimsExecution = executionClosed.test(assertion);
     if (claimsGroup && evidence.task.groupDeleted !== true) return true;

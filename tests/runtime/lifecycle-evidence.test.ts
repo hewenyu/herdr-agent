@@ -215,3 +215,120 @@ test("title isolation requires a matching quoted title instead of suppressing or
   assert.equal(unsupportedLifecycleClaim("任务“别的收尾任务”已完成收尾。", snapshot), true);
   assert.equal(unsupportedLifecycleClaim("任务“收尾”已完成收尾。", facts), true);
 });
+
+test("task completion and the start of cleanup do not assert resource cleanup is finished", () => {
+  for (const status of ["working", "gone"] as const) {
+    const facts = evidence();
+    for (const participant of facts.participants) participant.status = status;
+    for (const text of [
+      "已完成任务并进入收尾阶段。",
+      "任务已完成并进入自动清理流程。",
+      "任务已完成，随后将解散已创建的任务群。",
+      "任务已完成并将按策略关闭执行器和解散群聊。",
+      "任务已完成并会自动关闭 Codex 会话。",
+      "已确认任务完成并开始关闭 Codex 会话。",
+      "任务已完成，接下来将关闭已启动的执行器。",
+      "任务已完成，将按策略关闭执行器，然后解散群聊。",
+      "任务完成状态已同步，正在关闭执行器。",
+      "任务完成后关闭 Codex 会话。",
+      "收尾完成后发送通知。",
+    ]) {
+      assert.equal(unsupportedLifecycleClaim(text, facts), false, `${status}: ${text}`);
+    }
+  }
+});
+
+test("a future stage cannot hide a separate assertion about execution closure", () => {
+  const facts = evidence();
+  const codex = facts.participants[1];
+  assert.ok(codex);
+  codex.status = "working";
+  for (const text of [
+    "群即将解散且 Codex 已关闭。",
+    "群即将解散并已关闭 Codex。",
+    "群即将解散，Codex 已关闭。",
+  ]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), true, text);
+    assert.equal(
+      unsupportedLifecycleClaim(text, {
+        ...facts,
+        participants: facts.participants.map((participant) => ({ ...participant, status: "gone" })),
+      }),
+      false,
+      text,
+    );
+  }
+});
+
+test("plain completion language requires cleanup facts without the word already", () => {
+  const facts = evidence();
+  for (const text of [
+    "收尾完成。",
+    "全部收尾完成。",
+    "全部资源清理完成。",
+    "已完成全部收尾，接下来将解散群。",
+    "已完成任务收尾。",
+    "已完成本次任务的收尾。",
+    "任务已完成收尾并将按策略解散群。",
+  ]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), true, text);
+  }
+  for (const text of ["收尾完成。", "全部资源清理完成。", "已完成全部收尾。"]) {
+    assert.equal(
+      unsupportedLifecycleClaim(text, {
+        ...facts,
+        task: { ...facts.task, status: "destroyed", groupDeleted: true },
+      }),
+      false,
+      text,
+    );
+  }
+  for (const text of ["收尾未完成。", "全部资源清理尚未完成。", "收尾完成了吗？"]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), false, text);
+  }
+});
+
+test("resource-free completion permits cleanup statements but not fictional resource closure", () => {
+  const facts = evidence();
+  delete facts.task.chatId;
+  facts.task.status = "destroyed";
+  facts.participants = [];
+  for (const text of [
+    "任务已完成，无需关闭执行器或解散群。",
+    "已完成收尾，没有产生执行器或群聊。",
+    "全部资源清理完成。",
+  ]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), false, text);
+  }
+  assert.equal(unsupportedLifecycleClaim("群已解散。", facts), true);
+  assert.equal(unsupportedLifecycleClaim("Codex session 已关闭。", facts), true);
+});
+
+test("all tests and discussion turns completing do not claim all resources cleaned up", () => {
+  const facts = evidence();
+  for (const participant of facts.participants) participant.status = "done";
+  for (const text of [
+    "全部参与者本轮发言结束。",
+    "全部测试完成。",
+    "所有讨论轮次完成。",
+    "全部参与者本轮发言已结束。",
+    "所有测试已经完成。",
+    "All tests finished.",
+    "All discussion rounds are finished.",
+  ]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), false, text);
+  }
+  for (const text of [
+    "全部处理完毕。",
+    "全部都已经处理完毕。",
+    "全部资源清理完成。",
+    "所有资源已关闭。",
+    "全部执行器关闭。",
+    "所有会话已结束。",
+    "一切已完成。",
+    "Everything is done.",
+    "All finished.",
+  ]) {
+    assert.equal(unsupportedLifecycleClaim(text, facts), true, text);
+  }
+});

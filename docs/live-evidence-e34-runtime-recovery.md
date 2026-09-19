@@ -1,6 +1,6 @@
 # E34：真实业务请求与投递事实恢复
 
-日期：2026-09-19。以下时间均为 UTC。本记录只覆盖指定真实飞书主私聊请求的工具选择和事实校验恢复，不代表参与者输出、用户验收或清理已经完成。
+日期：2026-09-19。以下时间均为 UTC。本记录按时间保留创建事实恢复、普通审批阻塞及后续输出/验收/清理证据；最后一节为最新状态，早期待验快照不代表当前仍阻塞。
 
 ## 运行版本与资源
 
@@ -37,7 +37,7 @@ inbox 于 `10:47:13.109Z` 入队，最终 `done`。checkpoint `681df9498cd18830d
 
 另外保留通知措辞问题：`notice:72dcc27b0a35ac510557b3bcfb16ec14` 对这个只有一位参与者的任务写“之后会自动转交下一位参与者”，消息 `om_x100b65d2ca61f8a4b115e98c3ea0003` 已发送。不能据此推断存在第二位参与者或继续扩展任务。本轮主私聊事实恢复通过，不代表所有后台通知均正确；E32 收尾通知的独立 R-F 也继续保留。
 
-结论为 **R-部分**：真实入站、创建与查询、虚假投递声称恢复、最终回复送达已有证据；普通菜单用户确认、Codex marker、验收完成和资源清理仍未通过。E33 的“同轮先失败后成功仍误报未执行”需要单独真实复验，本轮创建恢复不能替它关闭。
+该时点结论为 **R-部分**：真实入站、创建与查询、虚假投递声称恢复、最终回复送达已有证据；普通菜单用户确认、Codex marker、验收完成和资源清理当时未通过。E33 的“同轮先失败后成功仍误报未执行”当时需要单独真实复验，本轮创建恢复不能替它关闭。后续实际结果见下节。
 
 ## 通知护栏追加修正与最终部署
 
@@ -55,6 +55,35 @@ E32 再次提前报告收尾后，新增基于服务端任务/参与者快照的
 - `npm run format`、`npm run check`（557/557）、独立 SEA smoke 均通过。
 - `version --json`、进程路径和 `10:58:42.375Z` 的 `feishu.connection_ready` 已回读。
 
-当前 E34 仍等待用户在真实群处理普通更新菜单。服务重启不代替审批，也不清理未完成验收的任务。原有审批卡可能过期，须使用群里的当前卡片。最终新版的生产通知、输出及完成收尾仍待验，PR #47 保持待验状态；完整目标 active。
+该部署时点 E34 仍等待用户在真实群处理普通更新菜单。服务重启不代替审批，也不清理未完成验收的任务。原有审批卡可能过期，须使用群里的当前卡片。该时点生产通知、输出及完成收尾尚未验收；后续实际验收结果见下节，完整目标仍 active。
 
 最终生产应用 REST 只读回读（`11:00:58.323Z`）：E32 飞书任务 `completedAt=1789814817000`、群 `dissolved`；E34 飞书任务 `completedAt=0`、群 `normal`。同期真实 herdr agent list 仅保留 E34 的 `w1Z:p1`，E32 `w1W:p1/w1X:p1` 均不在列表。原始结果存于 `.cache/live/e34-remote-readback.json`，此读取没有修改外部状态。
+
+## 11:00–11:05 UTC：用户审批、受控输出和错误编号恢复完成
+
+后续版本为 `0.3.13-dev`，提交 `0b3c457d308b1b0bc18a485991665f903118446c`，构建时间 `2026-09-19T10:57:57.361Z`，SHA256 `8cf504cc1d3966b25a5beb29e25cd506f62bae0c5a2d1774e1cba6b69906d42d`，服务 PID `98996`。以下更新先前待验快照；原草稿错误、单参与者通知及此前阻塞记录保留。
+
+用户已在真实任务群处理普通审批。`action:16eeada1aa7681f496c782b4752b24ea` 于 `11:00:37.995Z` 入队、`11:00:43.266Z` 为 `done`，绑定该任务群、当前 owner 和新卡片 `om_x100b65d2e47d40a4b2e96e4ac6fc122`，提交键 `3`。使用的是新 nonce `approval_50c4d53a20d24d66a77f7ebff054d4d7`，不能将早前已过期 nonce 当作本次点击对象。
+
+随后 `:p1:directory-trust:230` 于 `11:00:59.991Z` 为 `done/confirmed=true`；`:p1:initial` 于 `11:01:08.050Z` 为 `done/delivered/acked=true/verified=true/attempts=1`。群输出 outbox 于 `11:01:13.602Z` 为 `delivered`，正文为 `Codex (codex)：\nMYRIX_E34_OK`，消息 `om_x100b65d2f95a54a0b483883d80ac708`，本轮执行者通过真实飞书桌面 CUA 看到输出。
+
+用户随后在真实主私聊发送完成确认，并明确要求先试一个不存在的测试 task ID，取得明确未执行后再查询并完成真实 E34 任务，以复验 E33 的同轮失败后恢复。入站消息 `om_x100b65d28d1478a4b39a4b7a960acc9` 于 `11:04:30.228Z` 创建，最终 `11:04:59.238Z` 为 `done`。
+
+checkpoint `11fc132ca13fccb1d59df773030cbb5e0189c52d6ba755974dd7eb578b191f94` 的工具顺序为：
+
+1. 对不存在的编号调用 `task_action complete`，得到 `task_missing/outcome=not_executed`。
+2. `tasks_list` 找到真实 E34 任务、review 状态和 marker。
+3. 对 `task_7242cd5dd7032227ea0c82a1867e1cab` 调用 `task_action complete`，返回 `completed/groupDeleted=false`。
+4. 最终答复正确区分“已确认完成”和“资源收尾进行中”，没有把首个明确失败判成整轮未执行；turn receipt 为 `finished`，回复 outbox `reply_11fc132ca13fccb1d59df773030cbb5e0189c52d6ba755974dd7eb578b191f94` 为 `delivered`，消息 `om_x100b65d28b7c40a0b14f7a084141f8a`。
+
+| 后台操作 / 状态 | UTC 时间 | 结果 |
+| --- | --- | --- |
+| `:completion:c_e23a9b3a2e3f477fae5a74e95ac2bb17` | `11:04:50.312Z` | `done` |
+| `:p1:close` | `11:05:15.426Z` | `done`；participant `gone` |
+| `:delete-group` | `11:05:30.718Z` | `done` |
+| task | `11:05:32.050Z` | `destroyed/groupDeleted=true/closeRequested=true` |
+| 真实 herdr agent list | 清理后只读回读 | `agents=[]`，E34 目标不再存在 |
+
+最终真实生产应用 REST 回读保存在 `.cache/live/e34-remote-completion.json`，时间为 `11:07:18.948Z`：任务 `completedAt=1789815888000`，群 `dissolved`，与本地和 herdr 回执一致。Codex 原生 transcript `~/.codex/sessions/2026/09/19/rollout-2026-09-19T19-00-56-01a0b953-9033-7450-979c-8fe8910e22c0.jsonl` 的本轮只读检查为零工具调用、assistant 仅输出 `MYRIX_E34_OK`。本轮关闭普通审批、目录信任、初始投递、marker、用户验收和清理的限定步骤，并独立提供 E33 类“明确失败后正确写工具恢复”的真实通过证据；E33 原失败历史不删除。
+
+通知验收仍未完全通过：`task_close_notice` 于 `11:05:15.197Z`、`task_group_delete_notice` 于 `11:05:29.765Z` 均记录 `unavailable/reason=generation_failed/errorCode=notice_fact_missing`，没有对应收尾通知 outbox。校验未通过的候选通知被拒，随后按已有规则继续授权清理；由于被拒正文未持久化，不能判断候选一定有错，也不能排除误判。隔离真实模型重建相同阶段的两条 probe 均通过（`.cache/live/e34-live-stage-model-probe.json`），不替代生产候选审计或真实送达。整体仍为 **R-部分**，正常收尾通知生成/送达与其他业务组合继续验收。

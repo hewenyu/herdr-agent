@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config/types.js";
 import { OperationError, safeError } from "../core/errors.js";
-import { stableId } from "../core/ids.js";
+import { newId, stableId } from "../core/ids.js";
 import type { HerdrPort, Logger, PlatformHandlers, PlatformPort } from "../core/ports.js";
 import type {
   ActorContext,
@@ -393,6 +393,7 @@ export class Application implements ApplicationContext {
       if (this.config.ai.enabled) {
         try {
           const participants = this.tasks.records.participants(task);
+          const runId = newId("notice_run");
           decision = await noticeDecision(
             this.engine,
             {
@@ -414,6 +415,20 @@ export class Application implements ApplicationContext {
               enforceClaims: false,
             },
             { task, participants },
+            (rejection) => {
+              this.store.set("notice_rejections", `${signature}:${runId}:${rejection.attempt}`, {
+                signature,
+                runId,
+                taskId: task.id,
+                event: kind,
+                at: new Date().toISOString(),
+                ...rejection,
+                snapshot: {
+                  task: notificationTask(task),
+                  participants: notificationParticipants(participants),
+                },
+              });
+            },
           );
           if (this.signal.aborted)
             throw new OperationError("stopping", "服务正在停止，通知未发送。");
