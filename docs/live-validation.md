@@ -1,6 +1,6 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路、E30 长消息分片与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
 2026-09-19 E24：修复保留群在执行器已关闭后的再次清理、外部解散回读及终态描述；另由真实模型复现并修复强制工具恢复循环与生命周期通知的证据误用。最终 `npm run check` 453/453 通过（含行数、TypeScript 与 Biome），首次 452/453 的终态错误残留回归及修正已记入 E24。两条隔离真实组件链路已验证 Codex 结果、完成后保留群、再显式/外部解散，测试群和对应 pane 均已清理。普通用户写工具护栏保持；本次未走飞书用户入站，B12/B14/B10 仅补服务组件证据，LIVE-001 与其余 U/R-部分不关闭。[E24 记录](live-evidence-e24-retained-group.md) 保留准备失败、通知失败和回读边界。
 
@@ -15,6 +15,8 @@
 2026-09-19 E28：当前配置模型 `kimi-k2.5` 的真实首步探针连续三次均选择 `task_create`，参数保留新项目、Codex 和“不用测试”；工具实现在执行前拦截，没有外部写入。历史零工具决策问题在此隔离首步未复现，但该证据不关闭 LIVE-001 用户入口或完整资源链路。[E28 记录](live-evidence-e28-real-model-tool-decision.md)
 
 2026-09-19 E29：补充自动化边界回归。任务键和创建锁加入 pi `sessionId` 后，相同 request ID 的不同 session 可并行创建不同项目且互不串行阻塞；升级后的旧任务键在同 session 重试仍保持幂等。已解散群的迟到消息和卡片在入口及执行前均忽略，不创建主 pi session、不消费审批；旧桥 `/ls` 不再暴露无 kind 的 shell pane，损坏的历史路由统一失败关闭。当前 `npm run check` 通过 464/464。以上均为本地回归，不替代真实飞书用户入口、模型和 herdr 端到端验收。
+
+2026-09-19 E30：当前 `cfc7d16` 的 `0.3.12-dev` macOS arm64 二进制经真实飞书用户私聊创建专用讨论任务，Codex 在真实任务群输出 6108 Unicode code points。outbox 持久为两片 `[3500,2608]`，真实 REST 回读两条消息均存在、顺序正确、无重复；用户随后真实确认完成，任务 `completed_at`、本地 `destroyed`、参与者 `gone`、herdr pane 关闭、群 `dissolved` 均已回读。详见 [E30 记录](live-evidence-e30-long-message.md)。该记录只关闭 FSH07 长分片子项，重复 event、空 messageId、卡片重放和断线重连仍 U。
 
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
@@ -305,7 +307,7 @@ W01–W29 中聊天、任务、参与者、审批、清理和 pi session 的业�
 | FSH04 AI关闭、tasks启用 | `/new <项目> [agent] <要求>`、自然“新建任务”、`/task`七动作、`/screen /stop` | 完整参数/默认agent；关闭/确认关闭中文别名与否定区分；多参与者明确ID | I/O-H，现场U |
 | FSH05 `/clear`跨模式 | 飞书主入口私聊exact /clear不调用模型，确定性归档旧pi并新建选中，事务成功仅CLEAR_NEW_SESSION_OK；自动压缩无需clear | 所有群拒绝；事务失败不送成功标记、模型不可用不影响exact命令；旧history/receipt保留，queued消息不改绑且拒绝执行；Web无命令/清空入口 | R-部分：E15飞书私聊机械轮转可见marker通过，旧Web结果仅作历史；E17任务群owner无@拒绝分支R-P（八项true）、无checkpoint。AI关闭、无关群、其他owner、事务故障/未知恢复仍分验，旧R-F保留 |
 | FSH06 tasks关闭兼容桥 | `/ls`选中；引用优先；`/card /say /stop /mirror on\|off /close /help`，普通文本续聊 | 只按已有herdr agent发送；/close仅解除选中；notify_chat只选可信owner；旧路由核验 | I/O-H，现场U |
-| FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | R-部分：E13普通菜单有真实callback done/consumed/native答案/群可见回执，E15私聊机械clear有远端精确正文；长分片/重复event/空ID/卡片重放/重连仍U，旧R-F保留 |
+| FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | R-部分：E30真实群输出两片 `[3500,2608]`，REST回读顺序/完整正文/无重复，完成后资源已清理；E13普通菜单有真实callback done/consumed/native答案/群可见回执，E15私聊机械clear有远端精确正文；重复event/空ID/卡片重放/重连仍U，旧R-F保留 |
 
 ## 9. 横向遗漏检查与本轮缺陷账本
 
@@ -319,7 +321,7 @@ W01–W29 中聊天、任务、参与者、审批、清理和 pi session 的业�
 | GAP06 / P1 | E05 Codex 既有手动信任链路通过，新 pi 自动目录信任及其他群审批未全验 | E09专用自动信任、E13本人普通标记A菜单8项已证；保留Bypass，其他菜单/重复/换现场/未知写入仍分验，不扩大为所有审批通过 |
 | GAP07 / P1 | E12无重发恢复已证，E13新增首发及移除后resume receipt末尾即时确认通过；旧失败保留，其余恢复未全验 | E17部署补旧participant独立ID归属，retry失败清理同事务、pending/错误不误清，离线O-P；真实旧副本无pending，不能算未知恢复R。outbox/建群/其他写入继续F3/F4/F5分验 |
 | GAP08 / P1 | E04 REST完成/重开/解散通过，E05结果描述经主验收核对；应用生命周期仍未全验 | B12–B14补TaskService操作顺序/未知结果/资源保留；descriptionMatchesOutput:false为Markdown归一化比较问题，不误记漏传缺陷 |
-| GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672，卡片/引用/分片未全验 | 只确认邀请请求及user_count=1；补roster权限与群客户端/卡片回调/引用/分片证据，不能把GET代替全部用户可见验收 |
+| GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672；卡片/引用/重复事件未全验 | E30 已补真实长分片两片、顺序、完整正文和无重复；仍需补 roster 权限与群客户端/卡片回调/引用/重连证据，不能把单次 GET 代替全部用户可见验收 |
 | GAP10 / P1 | E09旧拒绝失败保留；E13一次model-no-reset异常在原历史/原提示隔离重放6/6选clear，未稳定复现，无源码bug或缓存错配证据；E14旧模型私聊额度失败保留，E15新机械命令私聊/Web均独立通过且无需模型 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
 | GAP11 / P1 | 本地配置与运行生效时间、密钥遮蔽需验证；Web配置入口保留但受保护 | 配置文件/CLI/Web→重启→实际 endpoint/model 核对；错误 key/重定向不泄密；allowlist 配置 action 需通过 Host/Origin/CSRF 与输入校验，业务 action 仍须在飞书，删除旧 `config.ai` 全拒绝断言 |
 | GAP12 / P1 | 旧 Web 不可见 ACK 失败及修复记录保留；新页面不发送 ACK | WR03/WR04/WR06核对飞书记录展示、不伪造送达、不因打开历史补发或改状态；旧模型历史约束失败继续独立保留 |
