@@ -274,6 +274,7 @@ export async function syncCompletion(context: TaskContext, task: Task): Promise<
     // A lost PATCH acknowledgement is resolved by reading the desired state,
     // not repeating the write. The operation receipt controls any actual PATCH.
     let remote = await platform.getTask(task.remoteTaskId);
+    assertActive(context);
     const completed = () => !!remote.completedAt && remote.completedAt !== "0";
     if (completed() !== (task.completionRequest === "complete")) {
       const taskId = task.remoteTaskId;
@@ -286,7 +287,9 @@ export async function syncCompletion(context: TaskContext, task: Task): Promise<
           completedAt,
         ),
       );
+      assertActive(context);
       remote = await platform.getTask(taskId);
+      assertActive(context);
       if (completed() !== (task.completionRequest === "complete")) {
         task.syncError = "飞书完成状态尚未确认，稍后只重试查询。";
         context.records.save(task);

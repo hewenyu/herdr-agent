@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasUnverifiedToolClaim, requiresWriteEvidence } from "../../src/runtime/claims.js";
+import {
+  hasUnverifiedToolClaim,
+  requiresToolForRequest,
+  requiresWriteEvidence,
+} from "../../src/runtime/claims.js";
 
 test("business completion claims require a tool-backed response", () => {
   assert.equal(hasUnverifiedToolClaim("已创建任务 task_fake123"), true);
@@ -62,4 +66,29 @@ test("action claims require a write fact even when a read-only lookup ran", () =
   assert.equal(requiresWriteEvidence("I will create a project"), true);
   assert.equal(requiresWriteEvidence("任务已完成，群已关闭"), false);
   assert.equal(requiresWriteEvidence("当前任务状态是 review"), false);
+});
+
+test("explicit business requests require a tool attempt even when the reply makes no claim", () => {
+  for (const text of [
+    "创建一个新项目并拉群",
+    "请帮我查询当前任务",
+    "我想安排 Claude 和 Codex 讨论",
+    "看看有哪些未完成任务",
+    "create a project and start Codex",
+    "please list my active tasks",
+  ]) {
+    assert.equal(requiresToolForRequest(text), true, text);
+  }
+  for (const text of [
+    "你好，今天怎么样？",
+    "请告诉我如何创建项目",
+    "我想知道如何创建项目",
+    "帮我解释如何创建项目",
+    "怎么查询任务？",
+    "能否创建一个项目？",
+    "I will explain how to create a project",
+    "What is a task?",
+  ]) {
+    assert.equal(requiresToolForRequest(text), false, text);
+  }
 });

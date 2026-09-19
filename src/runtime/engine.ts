@@ -10,7 +10,7 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
-import { hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
+import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import type {
   ConversationEngine,
@@ -255,9 +255,13 @@ export class PiEngine implements ConversationEngine {
     });
     try {
       await agent.prompt(input.prompt);
+      const requestRequiresTool =
+        input.enforceClaims !== false &&
+        input.tools.length > 0 &&
+        requiresToolForRequest(input.prompt);
       const claimRecovery =
         input.enforceClaims !== false &&
-        hasUnverifiedToolClaim(finalText) &&
+        (hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
         (unknownToolResults > 0 ||
           notExecutedToolResults > 0 ||
           toolCallsSeen === 0 ||

@@ -28,7 +28,7 @@
 
 2026-09-19 E31 主入口 `/clear`：当前 `cfc7d16` 的真实飞书主私聊 exact `/clear` 未调用模型，旧 pi session 已归档、新 session 已创建并选中，客户端只显示 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未被关闭。该证据只关闭 FSH05 正常轮转子项，详见 [E31 记录](live-evidence-e31-clear-command.md)。
 
-2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡已发送到任务群并等待用户。旧通知把 `initialSent=false`、`blocked` 的任务说成“后续自动推进、无需操作”，与人工审批边界冲突；当前分支已修正提示词，离线定向测试 12/12、lint 和完整 `npm run check` 465/465 通过。真实审批、双参与者 marker、完成和清理仍待新二进制复验，详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
+2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡已发送到任务群并等待用户。旧通知把 `initialSent=false`、`blocked` 的任务说成“后续自动推进、无需操作”，与人工审批边界冲突；当前分支已修正提示词，离线定向测试 12/12、lint 和完整 `npm run check` 470/470 通过。真实审批、双参与者 marker、完成和清理仍待新二进制复验，详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
 
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 
