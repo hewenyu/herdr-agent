@@ -10,8 +10,14 @@ export async function provision(context: TaskContext, task: Task): Promise<void>
   assertActive(context);
   await recoverInitialInputs(context, task);
   const { records, platform, operations, catalog } = context;
-  task.status = "starting";
-  records.save(task);
+  // A blocked or attention task can still need provisioning work (for example,
+  // the first participant is waiting on a native approval). Do not expose a
+  // transient starting state while that user-action fact is being reconciled;
+  // observeTask will keep the durable status aligned with the live participants.
+  if (task.status !== "blocked" && task.status !== "attention") {
+    task.status = "starting";
+    records.save(task);
+  }
   if (task.createRemoteTask && !task.remoteTaskId) {
     if (!platform) fail("platform_unavailable", "飞书未连接，任务创建等待恢复。");
     const result = await operations.run(

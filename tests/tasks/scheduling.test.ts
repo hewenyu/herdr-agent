@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { canonical, stableId } from "../../src/core/ids.js";
 import type { Task } from "../../src/core/types.js";
-import { actor, setup } from "./helpers.js";
+import { actor, discussion, setup } from "./helpers.js";
 
 function deferred() {
   let resolve = () => {};
@@ -79,6 +79,62 @@ test("a slow provisioning notice does not hold the next batch behind an idle wor
   } finally {
     release.resolve();
     await running;
+    h.close();
+  }
+});
+
+test("reconciling a blocked initial participant does not expose starting", async () => {
+  const entered = deferred();
+  const release = deferred();
+  const h = setup();
+  const originalGet = h.herdr.get.bind(h.herdr);
+  let hold = false;
+  h.herdr.get = async (paneId) => {
+    const agent = await originalGet(paneId);
+    if (hold && agent.status === "blocked") {
+      entered.resolve();
+      await release.promise;
+    }
+    return agent;
+  };
+  try {
+    const task = await h.service.create(actor, {
+      ...discussion,
+      discussion: { mode: "manual", maxRounds: 1, maxMinutes: 30 },
+      createGroup: false,
+      createRemoteTask: false,
+    });
+    const first = task.participantIds[0];
+    assert.ok(first);
+    await h.service.tick();
+    const participant = h.store.get<{ execution?: { paneId: string } }>("participants", first);
+    const paneId = participant?.execution?.paneId;
+    assert.ok(paneId);
+    const agent = h.herdr.agents.get(paneId);
+    assert.ok(agent);
+    agent.status = "blocked";
+    agent.stateSeq = "2";
+    h.herdr.agents.set(paneId, agent);
+    h.store.set("participants", first, {
+      ...h.store.get<Record<string, unknown>>("participants", first),
+      status: "blocked",
+      initialSent: false,
+    });
+    const blockedTask = h.store.get<Task>("tasks", task.id);
+    assert.ok(blockedTask);
+    blockedTask.status = "blocked";
+    h.store.set("tasks", task.id, blockedTask);
+    assert.equal(h.service.get(actor, task.id).status, "blocked");
+
+    hold = true;
+    const running = h.service.tick();
+    await within(entered.promise);
+    assert.equal(h.store.get<Task>("tasks", task.id)?.status, "blocked");
+    release.resolve();
+    await running;
+    assert.equal(h.service.get(actor, task.id).status, "blocked");
+  } finally {
+    release.resolve();
     h.close();
   }
 });
