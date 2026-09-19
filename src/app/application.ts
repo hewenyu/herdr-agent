@@ -105,6 +105,10 @@ export class Application implements ApplicationContext {
   }
 
   attachPlatform(platform: PlatformPort): void {
+    // A reconnect must retire the previous task scheduler before replacing its
+    // platform. Otherwise its in-flight/queued work can continue against the
+    // stopped connection while the new scheduler reconciles the same records.
+    this.tasks.stop();
     this.platform = platform;
     this.tasks = this.taskService();
   }

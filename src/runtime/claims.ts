@@ -42,6 +42,33 @@ export function requiresWriteEvidence(text: string): boolean {
   );
 }
 
+/**
+ * Detect an explicit request for this application's business tools. A model
+ * may acknowledge such a request without making a claim about an external
+ * result (for example, "收到，我处理"); that still cannot be accepted as a
+ * completed turn because the requested operation has not been attempted.
+ *
+ * This is intentionally limited to business terms and action/query verbs.
+ * Capability and explanation questions remain ordinary conversation unless
+ * they also contain a direct imperative ("请创建项目", "帮我查询任务").
+ */
+export function requiresToolForRequest(text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  const business =
+    /(?:项目|任务|群|参与者|Codex|Claude|目录|会话|session|project|task|chat|group|participant|directory|workspace|agent)/iu;
+  if (!business.test(value)) return false;
+  const action =
+    /(?:创建|新建|登记|安排|拉群|建群|建立|发送|启动|转交|完成|关闭|解散|销毁|删除|查询|查看|列出|列一下|看看|获取|恢复|归档|暂停|中断|继续|create|created|register|registered|schedule|scheduled|send|sent|start|started|assign|assigned|dispatch|dispatched|launch|launched|complete|completed|close|closed|delete|deleted|destroy|destroyed|list|show|get|query|archive|restore|pause|interrupt|resume)/iu;
+  if (!action.test(value)) return false;
+  const explanation =
+    /(?:如何|怎么|怎样|解释|说明|教我|告诉我|什么是|能否|可以吗|是否可以|what\s+is|how\s+to|explain|whether|can\s+(?:you|this\s+tool)|is\s+it\s+possible)/iu;
+  const directAction =
+    /^(?:(?:请(?:帮我)?|帮我|帮忙|我要|我想|需要|开个|拉个|直接|现在|把|给我|能不能\s+帮我)\s*)?(?:创建|新建|登记|安排|拉群|建群|建立|发送|启动|转交|完成|关闭|解散|销毁|删除|查询|查看|列出|列一下|看看|获取|恢复|归档|暂停|中断|继续|create|created|register|registered|schedule|scheduled|send|sent|start|started|assign|assigned|dispatch|dispatched|launch|launched|complete|completed|close|closed|delete|deleted|destroy|destroyed|list|show|get|query|archive|restore|pause|interrupt|resume)/iu;
+  if (explanation.test(value) && !directAction.test(value)) return false;
+  return true;
+}
+
 const negatedEnglishAction =
   /\b(?:not|never|no|cannot|can't|couldn't|didn't|doesn't|isn't|wasn't|weren't|hasn't|haven't|failed\s+to|unable\s+to)\b[^.!?]{0,32}\b(?:created|creating|registered|queued|scheduled|sent|started|assigned|dispatched|launched|provisioned|initialized|initialised|completed|complete|finished|closed|deleted|removed|destroyed|done|succeeded)\b/giu;
 const negatedChineseAction =

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Session, Task } from "../../src/core/types.js";
-import { deferred, setup } from "./helpers.js";
+import { deferred, Platform, setup } from "./helpers.js";
 
 async function within<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,6 +66,95 @@ test("Application polls admit a new task and a Web conversation while another ta
     release.resolve();
     await Promise.all(ticks);
     unsubscribe();
+    await h.close();
+  }
+});
+
+test("platform reconnect stops the old task scheduler before replacement", async () => {
+  const h = setup();
+  const task = (await h.app.dispatch("task.create", {
+    kind: "discussion",
+    title: "重连中的活动任务",
+    requirements: "验证旧调度器停止",
+    participants: [{ kind: "codex" }],
+    createRemoteTask: false,
+  })) as Task;
+  const old = h.app.tasks;
+  let stopped = 0;
+  const stop = old.stop.bind(old);
+  old.stop = () => {
+    stopped++;
+    stop();
+  };
+  try {
+    await h.app.tick();
+    const replacement = new Platform();
+    h.app.attachPlatform(replacement);
+    assert.equal(stopped, 1);
+    assert.notEqual(h.app.tasks, old);
+    assert.equal(h.app.platform, replacement);
+    assert.equal(
+      h.app.tasks.get(
+        { ownerId: "owner", chatId: "entry", sessionId: "s", messageId: "reconnect" },
+        task.id,
+      ).id,
+      task.id,
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("platform reconnect aborts an in-flight old reconciliation before its next remote write", async () => {
+  const h = setup();
+  const task = (await h.app.dispatch("task.create", {
+    kind: "development",
+    title: "重连中的远端完成同步",
+    requirements: "验证旧连接读请求返回后不会继续写完成状态",
+    participants: [{ kind: "codex" }],
+    createGroup: false,
+    createRemoteTask: true,
+  })) as Task;
+  await h.app.tick();
+  const persisted = h.store.get<Task>("tasks", task.id);
+  assert.ok(persisted?.remoteTaskId);
+  h.store.set("tasks", task.id, { ...persisted, completionRequest: "complete" });
+
+  const old = h.app.tasks;
+  const entered = deferred();
+  const release = deferred();
+  const get = h.platform.getTask.bind(h.platform);
+  const update = h.platform.updateTask.bind(h.platform);
+  let getCalls = 0;
+  let updateCalls = 0;
+  h.platform.getTask = async (id) => {
+    getCalls++;
+    entered.resolve();
+    await release.promise;
+    return get(id);
+  };
+  h.platform.updateTask = async (...args) => {
+    updateCalls++;
+    return update(...args);
+  };
+
+  try {
+    const running = old.reconcile(task.id, { forceRemote: true });
+    await within(entered.promise);
+    const callsBeforeReconnect = getCalls;
+    const replacement = new Platform();
+    h.app.attachPlatform(replacement);
+    release.resolve();
+    await running;
+
+    assert.equal(getCalls, callsBeforeReconnect);
+    assert.equal(updateCalls, 0);
+    assert.equal(replacement.updates, 0);
+    assert.equal(h.store.get<Task>("tasks", task.id)?.status, persisted.status);
+    assert.equal(h.store.get<Task>("tasks", task.id)?.completionRequest, "complete");
+    assert.equal(h.app.platform, replacement);
+  } finally {
+    release.resolve();
     await h.close();
   }
 });

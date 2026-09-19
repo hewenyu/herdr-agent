@@ -20,7 +20,7 @@
 
 2026-09-19 E31：当前服务实例收到真实飞书主私聊 exact `/clear` 后未调用模型，旧 session `s_2d0d2bc7…` 归档，新 session `s_26c0b10c…` 选中，用户与回复均 `delivered`，客户端可见回复严格为 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未受影响。详见 [E31 记录](live-evidence-e31-clear-command.md)。该记录只关闭 FSH05 的正常主入口子项，失败事务、旧队列、重复事件、群拒绝与重启恢复仍分验。
 
-2026-09-19 E32：真实飞书创建双参与者 `manual` 讨论，Claude/Codex 的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡真实发送到任务群并等待用户。旧二进制在 `initialSent=false` 且任务处于 `blocked` 时仍发出“后续会自动推进、无需你操作”的通知，已判为 R-F；当前分支已修正提示词并通过 12 项定向测试、lint 和 465 项完整检查。详见 [E32 记录](live-evidence-e32-manual-discussion.md)。新二进制重启后仍需完成用户审批、双 marker、任务完成和群/执行器清理复验。
+2026-09-19 E32：真实飞书创建双参与者 `manual` 讨论，Claude/Codex 的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡真实发送到任务群并等待用户。旧二进制在 `initialSent=false` 且任务处于 `blocked` 时仍发出“后续会自动推进、无需你操作”的通知，已判为 R-F；当前分支已修正提示词并通过 12 项定向测试、lint 和 470 项完整检查。详见 [E32 记录](live-evidence-e32-manual-discussion.md)。新二进制重启后仍需完成用户审批、双 marker、任务完成和群/执行器清理复验。
 
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 

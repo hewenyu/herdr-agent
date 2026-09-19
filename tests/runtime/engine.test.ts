@@ -6,11 +6,11 @@ import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { config, response, scripted } from "./helpers.js";
 
 const actor = { ownerId: "owner", chatId: "chat", sessionId: "session", messageId: "message" };
-function input(tools: RuntimeTool[] = []): EngineInput {
+function input(tools: RuntimeTool[] = [], prompt = "创建讨论任务"): EngineInput {
   return {
     actor,
     sessionId: "session",
-    prompt: "创建讨论任务",
+    prompt,
     messages: [],
     systemPrompt: "Only orchestrate",
     tools,
@@ -406,15 +406,18 @@ test("ordinary text-only conversation remains a model reply when tools are avail
     streamFn: scripted([response("你好，我可以帮你梳理需求。")]),
   });
   const result = await engine.run(
-    input([
-      {
-        name: "create",
-        description: "create",
-        parameters: schema,
-        readOnly: false,
-        execute: async () => ({ accepted: true }),
-      },
-    ]),
+    input(
+      [
+        {
+          name: "create",
+          description: "create",
+          parameters: schema,
+          readOnly: false,
+          execute: async () => ({ accepted: true }),
+        },
+      ],
+      "你好，今天怎么样？",
+    ),
   );
   assert.equal(result.text, "你好，我可以帮你梳理需求。");
   assert.equal(result.toolCalls, 0);
@@ -436,6 +439,32 @@ test("a text-only turn that remains tool-free fails without a successful respons
           execute: async () => ({ accepted: true }),
         },
       ]),
+    ),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "not_executed",
+  );
+});
+
+test("an explicit request cannot succeed with a tool-free acknowledgement", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([response("收到，我马上处理。"), response("好的，我会处理。")]),
+  });
+  await assert.rejects(
+    engine.run(
+      input(
+        [
+          {
+            name: "create",
+            description: "create",
+            parameters: schema,
+            readOnly: false,
+            execute: async () => ({ accepted: true }),
+          },
+        ],
+        "请创建一个新项目并拉群",
+      ),
     ),
     (error: unknown) =>
       error instanceof OperationError &&
