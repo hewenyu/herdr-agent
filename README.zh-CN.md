@@ -26,7 +26,7 @@ npm 自动选择当前平台的原生依赖：`@yuebanlaosiji/myrix-darwin-arm64
 
 ```sh
 npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.11
+npm install -g @yuebanlaosiji/myrix@0.3.12
 npm install -g @yuebanlaosiji/myrix@latest
 ```
 
@@ -43,6 +43,8 @@ npm install -g @yuebanlaosiji/myrix@latest
 ## 发布与验收状态
 
 最新稳定版见 [Releases](https://github.com/hewenyu/herdr-agent/releases/latest)，安装版本、源码提交和构建时间通过 `myrix version --json` 查看。本文说明当前源码行为，各已发布版本包含的改动以对应 Release 为准。根目录的 `package.json` 是私有源码包，不是公开发布的 npm 主入口包。
+
+当前公开稳定版是 [v0.3.12](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.12)；用户入口 npm 包和三个原生可选平台包均使用该版本。
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`，无需手动选择 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 

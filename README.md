@@ -26,7 +26,7 @@ List available versions, install a specific version, or upgrade to the stable re
 
 ```sh
 npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.11
+npm install -g @yuebanlaosiji/myrix@0.3.12
 npm install -g @yuebanlaosiji/myrix@latest
 ```
 
@@ -43,6 +43,8 @@ Read the setup section before starting task orchestration. Both installation met
 ## Release and acceptance status
 
 See [Releases](https://github.com/hewenyu/herdr-agent/releases/latest) for the latest stable build and use `myrix version --json` to inspect the version, source commit and build time of your installation. This README describes the current source; consult a release's notes for changes included in that version. The root `package.json` is a private source package, not the published npm entry package.
+
+The current published stable release is [v0.3.12](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.12); the user-facing npm package and all three native optional packages use that version.
 
 A pushed `v*` tag triggers three native builds and smoke tests, verifies the complete npm distribution with an offline global install, publishes the platform packages and then the entry package, and creates the GitHub Release. Publishing uses `TOKEN` from the GitHub environment `NPM`. No manual workflow download option is required. See [release operations](docs/releasing.md) for versioning and recovery.
 
