@@ -17,12 +17,18 @@ interface FinalDescription {
 }
 
 /** Called in the same transaction that records newly completed resource cleanup. */
-export function queueFinalDescription(context: TaskContext, task: Task): void {
+export function queueFinalDescription(
+  context: TaskContext,
+  task: Task,
+  completionObserved?: boolean,
+): void {
   if (!task.remoteTaskId) return;
-  context.store.set<FinalDescription>("final_description_sync", task.id, {
+  const intent: FinalDescription = {
     text: taskDescription(task, context.records.participants(task)),
     state: "pending",
-  });
+  };
+  if (completionObserved !== undefined) intent.completionObserved = completionObserved;
+  context.store.set("final_description_sync", task.id, intent);
 }
 
 export function hasFinalDescription(context: TaskContext, task: Task): boolean {

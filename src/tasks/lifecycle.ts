@@ -176,6 +176,10 @@ export async function syncGroupState(context: TaskContext, task: Task): Promise<
     observedDissolved = status === "dissolved";
   }
   if (!task.groupDeleted && !observedDissolved) return;
+  const previousFinal = context.store.get<{ completionObserved?: boolean }>(
+    "final_description_sync",
+    task.id,
+  );
   const updated: Task = {
     ...task,
     groupDeleted: true,
@@ -194,7 +198,7 @@ export async function syncGroupState(context: TaskContext, task: Task): Promise<
       // The terminal projection may already have been marked done while the
       // retained group was alive. Rebuild it so remote task text no longer
       // advertises a dissolved group link.
-      queueFinalDescription(context, updated);
+      queueFinalDescription(context, updated, previousFinal?.completionObserved);
   });
   Object.assign(task, updated);
 }

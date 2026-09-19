@@ -227,6 +227,33 @@ test("periodic polling observes a dissolved retained group and refreshes the ter
   }
 });
 
+test("external dissolution preserves an observed completion proof while rebuilding the terminal projection", async () => {
+  const h = setup();
+  try {
+    const retained = await retainGroup(h);
+    h.store.set("final_description_sync", retained.id, {
+      text: "已确认的旧终态描述",
+      state: "done",
+      completionObserved: true,
+    });
+    h.config.tasks.pollIntervalMs = 0;
+    Object.assign(h.platform, { getGroupStatus: async () => "dissolved" as const });
+    const updates = h.platform.updates;
+
+    await h.service.tick();
+
+    const projection = h.store.get<{
+      state: string;
+      completionObserved?: boolean;
+    }>("final_description_sync", retained.id);
+    assert.equal(projection?.state, "done");
+    assert.equal(projection?.completionObserved, true);
+    assert.equal(h.platform.updates, updates + 1);
+  } finally {
+    h.close();
+  }
+});
+
 test("destroyed retained group clears a recovered group read error without hiding a pending final projection", async () => {
   const h = setup();
   try {
