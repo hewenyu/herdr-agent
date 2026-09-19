@@ -1,6 +1,7 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { Logger } from "../core/ports.js";
 import type { ActorContext, StoredMessage } from "../core/types.js";
+import type { ModelDiagnostic } from "./model-diagnostics.js";
 import type { ProvisionEvidence } from "./provision-evidence.js";
 
 /** Only application business tools are injected; this runtime has no coding or shell tools. */
@@ -25,7 +26,7 @@ export interface EngineInput {
   tools: RuntimeTool[];
   sessionId: string;
   signal?: AbortSignal;
-  onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
+  onCheckpoint?: (messages: AgentMessage[], diagnostic?: ModelDiagnostic) => Promise<void> | void;
   /** Internal summaries do not represent user-visible business claims. */
   enforceClaims?: boolean;
   /** Internal authorized operation, never derived directly from user text or model output. */

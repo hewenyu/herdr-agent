@@ -12,6 +12,7 @@ import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import { canonical } from "../core/ids.js";
 import type { Logger } from "../core/ports.js";
 import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
+import { modelDiagnostic } from "./model-diagnostics.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import {
   type ProvisionEvidence,
@@ -93,8 +94,12 @@ export class PiEngine implements ConversationEngine {
           apiKey: config.apiKey,
           maxRetries: 0,
           timeoutMs: config.timeoutMs,
-          fetch: ((input, init) =>
-            fetchImpl(input, { ...init, redirect: "error" })) as typeof fetch,
+          fetch: (async (input, init) => {
+            const response = await fetchImpl(input, { ...init, redirect: "error" });
+            // Capture non-2xx responses too; provider callbacks only see accepted requests.
+            await streamOptions?.onResponse?.({ status: response.status, headers: {} }, model);
+            return response;
+          }) as typeof fetch,
         };
         return model.api === "anthropic-messages"
           ? streamAnthropic(model as Model<"anthropic-messages">, context, requestOptions)
@@ -267,7 +272,16 @@ export class PiEngine implements ConversationEngine {
     // latched forces every continuation into another tool call and can exhaust
     // the 12-call budget on read-only notification turns.
     let requireToolCall = input.requireToolCall === true;
+    let httpStatus: number | undefined;
+    let abortCause: "timeout" | "cancelled" | undefined;
     const stream: StreamFn = (model, context, options) => {
+      httpStatus = undefined;
+      options = {
+        ...options,
+        onResponse: (response) => {
+          httpStatus = response.status;
+        },
+      };
       if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
       requireToolCall = false;
       const toolChoice =
@@ -328,14 +342,25 @@ export class PiEngine implements ConversationEngine {
         return messages;
       },
     });
-    const abort = () => agent.abort();
+    const abort = () => {
+      abortCause ??= "cancelled";
+      agent.abort();
+    };
     input.signal?.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(abort, this.config.timeoutMs);
+    const timeout = setTimeout(() => {
+      abortCause ??= "timeout";
+      agent.abort();
+    }, this.config.timeoutMs);
     let checkpointError = false;
     agent.subscribe(async (event) => {
       if (event.type === "message_end" || event.type === "agent_end") {
         try {
-          await input.onCheckpoint?.(safeMessages(agent.state.messages));
+          const last = agent.state.messages.at(-1);
+          const diagnostic = modelDiagnostic(last, abortCause, httpStatus);
+          await input.onCheckpoint?.(
+            safeMessages(agent.state.messages),
+            diagnostic.category !== "unknown" ? diagnostic : undefined,
+          );
         } catch {
           checkpointError = true;
           agent.abort();
@@ -395,7 +420,7 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError(
           "model_failed",
           "pi 调度模型未能完成本轮；已登记操作保留，请查询状态。",
-          "unknown",
+          writes === 0 ? "not_executed" : "unknown",
         );
       }
       const last = agent.state.messages.at(-1);
@@ -403,7 +428,7 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError(
           "model_failed",
           "pi 调度模型响应未完整完成；请查询已登记操作。",
-          "unknown",
+          writes === 0 ? "not_executed" : "unknown",
         );
       }
       if (!finalText.trim())
@@ -458,9 +483,11 @@ export class PiEngine implements ConversationEngine {
       };
     } catch (error) {
       const failure = safeError(error);
+      const diagnostic = modelDiagnostic(agent.state.messages.at(-1), abortCause, httpStatus);
       this.logger?.error("pi 本轮未完成", {
         event: "pi.turn_failed",
         ...trace,
+        ...diagnostic,
         code: failure.code,
         outcome: failure.outcome,
         toolCalls: executedCalls,
@@ -565,7 +592,14 @@ function toolResultOutcome(value: unknown): "successful" | "unknown" | "not_exec
 
 function safeMessages(messages: AgentMessage[]): AgentMessage[] {
   return structuredClone(messages).map((message) => {
-    if (message.role === "assistant" && message.errorMessage) message.errorMessage = "模型响应失败";
+    if (
+      message.role === "assistant" &&
+      (message.errorMessage || ["error", "aborted", "length"].includes(message.stopReason))
+    ) {
+      if (message.errorMessage) message.errorMessage = "模型响应失败";
+      // Provider-specific stop strings are arbitrary upstream data too.
+      delete message.rawStopReason;
+    }
     return message;
   });
 }

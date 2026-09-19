@@ -12,6 +12,29 @@ interface ProvisionTask {
   deliveries: string[];
 }
 
+const requestedResource = "(?:(?:专属|任务|讨论|协作)?群聊?|(?:飞书|远端)?任务)";
+const requestedProvision = new RegExp(
+  `(?:已(?:经)?\\s*)?(?:申请|请求)\\s*(?:创建|建立|建群)(?:\\s*${requestedResource}(?:\\s*[和与及、]\\s*${requestedResource})*)?`,
+  "gu",
+);
+
+function withoutPendingRequests(clause: string): string {
+  return clause.replace(requestedProvision, (request: string, offset: number) => {
+    const continuation = clause
+      .slice(offset + request.length)
+      .replace(/^\s*(?:[，,：:]\s*)?(?:(?:并且|而且|且|并|但是|不过|但|而)\s*)?/u, "")
+      .split(/[，,：:]|(?:但是|不过|但|并且|而且|且|并|而)/u)[0]
+      ?.trim();
+    // "已申请创建群，现已创建成功" keeps the requested resource as the
+    // implicit subject. An explicit different subject must not inherit it.
+    const completed =
+      /^(?:(?:现(?:在)?|目前|如今|随后|之后|均|都)\s*)*(?:已(?:经)?(?:成功)?(?:创建|建立|完成)(?:成功|完成|了)?|(?:创建|建立)成功|建好|建成|就绪)$/u.test(
+        continuation ?? "",
+      );
+    return completed ? request : "";
+  });
+}
+
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -87,7 +110,9 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
     const clause = sentence.replace(/[。！？!?；;\n]+$/u, "");
     if (/(?:吗|么)\s*$/u.test(clause) || /^\s*(?:是否|Has |Have |Is )/iu.test(clause)) return false;
     // Remove only a negated/pending segment so a later contradictory assertion is still checked.
-    const value = clause.replace(
+    // A requested resource is not provisioned yet. Remove only that action and
+    // its resource list unless a following completion assertion inherits it.
+    const value = withoutPendingRequests(clause).replace(
       /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
       "",
     );
