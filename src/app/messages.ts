@@ -32,6 +32,10 @@ export async function handleMessage(
 ): Promise<void> {
   if (!context.config.feishu.allowedOpenIds.includes(message.ownerId))
     fail("unauthorized", "当前用户未授权。");
+  // The ingress callback may have been queued before group cleanup. Keep the
+  // historical task binding for audit, but do not route a late group message
+  // into the owner's current pi session.
+  if (context.tasks.records.historyByChat(message.chatId)?.groupDeleted) return;
   const task = context.tasks.records.byChat(message.chatId);
   if (!task && message.chatType === "group" && !message.mentionedBot) return;
   const actor = assignedActor

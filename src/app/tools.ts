@@ -99,6 +99,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     tool(
       "task_action",
       "管理本工具任务：任务、群、herdr执行session统一生命周期，complete确认完成后默认通过herdr关闭对应Codex/Claude并解散群，任何原因群解散都须清对应执行资源。明确保留群传keepGroup:true；明确保留执行现场传keepExecution:true（仅complete支持），有群任务还必须同时keepGroup:true，无群任务除外。保留群不自动保留执行器。keepGroup省略按策略来源处理，明确保留证据有效，旧默认/来源不明值在收尾时采用解散。close验收后清理；destroy不验收；reopen仅适用仍保留执行资源的已完成任务；retry仅明确失败；pause停止调度；resume恢复。review不是完成，不收尾。清理成功须查询实际回执。" +
+        "执行资源已关闭但群仍保留时，用户明确要求解散该群可用destroy并传keepGroup:false；已经确认完成的任务也可用close并传keepGroup:false。这只清理剩余群，不重启执行器或改写验收事实。" +
         "completed/closeRequested仅确认任务完成或收尾意图，不证明执行器关闭、删群请求已发或全部收尾完成。答复按实际阶段简短说明，群待解散时首句不得抢报全部完成，也不展示completed/gone/排队回执等字段。",
       false,
       {
@@ -106,7 +107,8 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         action: { type: "string", enum: taskActions },
         keepGroup: {
           type: "boolean",
-          description: "用户明确保留群时为true；省略由服务按明确保留证据或默认解散策略处理",
+          description:
+            "用户明确保留群时为true，明确解散此前保留群时为false；省略由服务按明确保留证据或默认解散策略处理",
         },
         keepExecution: {
           type: "boolean",

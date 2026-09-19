@@ -114,6 +114,11 @@ export class Application implements ApplicationContext {
       message: async (message) => {
         if (!this.allowed(message.ownerId)) return;
         if (isLegacyReplay(this.store, { ...message, kind: "message" })) return;
+        // A dissolved task group remains bound to its historical task for
+        // reads, but its late messages must never fall through to the main pi
+        // session (which would make an old group look like a new private chat).
+        const historical = this.tasks.records.historyByChat(message.chatId);
+        if (historical?.groupDeleted) return;
         const task = this.tasks.records.byChat(message.chatId);
         if (
           (task && task.ownerId !== message.ownerId) ||
@@ -137,6 +142,9 @@ export class Application implements ApplicationContext {
           })
         )
           return;
+        // Approval/task cards from a dissolved group are stale. Ignore the
+        // callback before it can consume a nonce or reach another session.
+        if (this.tasks.records.historyByChat(action.chatId)?.groupDeleted) return;
         const task = this.tasks.records.byChat(action.chatId);
         if (task && task.ownerId !== action.ownerId) return;
         this.inbox.enqueue("action", action.eventId, action);
@@ -237,6 +245,10 @@ export class Application implements ApplicationContext {
       }
     } else if (record.type === "action") {
       const action = record.payload as CardAction;
+      // A card can be accepted just before an external group-dissolved event
+      // is processed. Recheck the durable binding at execution time as well as
+      // ingress time so that race cannot consume a stale approval nonce.
+      if (this.tasks.records.historyByChat(action.chatId)?.groupDeleted) return;
       if (action.value.action === "approval") {
         await this.approvals.answer(
           action.ownerId,
@@ -387,6 +399,11 @@ export class Application implements ApplicationContext {
             }),
             tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
             signal: this.signal,
+            // Lifecycle notices are generated from the authoritative task and
+            // participant snapshot above. They may describe an already-created
+            // resource without replaying a write tool; ordinary user turns keep
+            // the default claim/evidence guard in SessionService/PiEngine.
+            enforceClaims: false,
           });
           if (this.signal.aborted)
             throw new OperationError("stopping", "服务正在停止，通知未发送。");

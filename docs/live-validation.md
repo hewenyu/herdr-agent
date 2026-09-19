@@ -1,12 +1,30 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路与默认收尾已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路、E30 长消息分片与默认收尾、E31 主入口 `/clear` 机械轮转已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
-2026-09-19 当前源码检查：本 checkout 的 `master` HEAD 为 `2a5bbd0`；`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是当前源码与离线检查基线，没有新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
+2026-09-19 E24：修复保留群在执行器已关闭后的再次清理、外部解散回读及终态描述；另由真实模型复现并修复强制工具恢复循环与生命周期通知的证据误用。最终 `npm run check` 453/453 通过（含行数、TypeScript 与 Biome），首次 452/453 的终态错误残留回归及修正已记入 E24。两条隔离真实组件链路已验证 Codex 结果、完成后保留群、再显式/外部解散，测试群和对应 pane 均已清理。普通用户写工具护栏保持；本次未走飞书用户入站，B12/B14/B10 仅补服务组件证据，LIVE-001 与其余 U/R-部分不关闭。[E24 记录](live-evidence-e24-retained-group.md) 保留准备失败、通知失败和回读边界。
 
-2026-09-19 当前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
+2026-09-19 E24 部署：功能提交 `15f29b31383adfd0cda416bb59eaaa71fafd6939` 构建的 macOS arm64 SEA `0.3.12-dev` 已通过独立烟测并重启为 PID `37384`，构建时间 `2026-09-18T18:20:23.267Z`，SHA256 `3620789d387f5b5bea4f6f496732f72c88f63f8b41080fc9388c7e79d7649122`。运行路径 `build/e24/herdr-agent`，`dist/herdr-agent` 已同步同一产物；`version --json`、`doctor --json`、HTTP runtime/authorization ready 均回读。生产 SQLite 中 23 任务 destroyed、23 群 groupDeleted=true、25 参与者 gone/2 removed、177 outbox delivered；这些是本地状态读回，不冒充本轮逐群远端验证。herdr agent 列表为空，原有 `w1:p1`、`w2:p1`、`w2:p2` 保持。PR [#39](https://github.com/hewenyu/herdr-agent/pull/39) 已创建；真实用户入口标记仍未观察到，相关场景继续待验。
 
-2026-09-18 历史运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新当时的现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
+2026-09-19 E25：修复 ready 后飞书长连接 terminal failure 不会触发服务级重连的问题，增加连接代次、一次性故障通知、旧平台停止、授权/订阅重试和 shutdown 取消回归；同时修复 tasks 关闭时旧兼容桥的回复路由覆盖和 pane/session 替换校验。最终 `npm run check` 457/457，定向 Feishu/CLI/legacy 回归 31 项通过。[E25 记录](live-evidence-e25-transport-legacy.md)仅记本地注入式故障与兼容路径，不关闭真实飞书断线或用户入口验收。
+
+2026-09-19 E26：使用当前服务应用凭据运行真实 REST 生命周期脚本，创建唯一测试任务和群，读回任务/群/消息，完成→重开→再完成，删除群并确认 `dissolved`；服务同步收到 5 个对应任务更新事件且未生成本地 pi 任务，原有 23 个任务、27 个参与者和 177 条 outbox 未改变。群成员列表因应用缺少 `im:chat.members:read` 返回 `99991672`，记录为明确权限缺口。该证据只关闭限定的 Feishu REST 资源步骤，不代表真实用户私聊、模型工具选择、pi 建项目或 B/N 完整组合。[E26 记录](live-evidence-e26-feishu-rest-lifecycle.md)
+
+2026-09-19 E27：向当前生产服务配置的主聊天发送唯一 LIVE-001-R5 提示，并用同一服务应用读回 sender/chat/body；随后观察 30 秒没有用户 marker 入站。此前另一个 lark-cli bot 的提示不计入本服务入口。该记录只证明正确应用的提示送达，LIVE-001 仍等待真实用户回复。[E27 记录](live-evidence-e27-service-ingress-prompt.md)
+
+2026-09-19 E28：当前配置模型 `kimi-k2.5` 的真实首步探针连续三次均选择 `task_create`，参数保留新项目、Codex 和“不用测试”；工具实现在执行前拦截，没有外部写入。历史零工具决策问题在此隔离首步未复现，但该证据不关闭 LIVE-001 用户入口或完整资源链路。[E28 记录](live-evidence-e28-real-model-tool-decision.md)
+
+2026-09-19 E29：补充自动化边界回归。任务键和创建锁加入 pi `sessionId` 后，相同 request ID 的不同 session 可并行创建不同项目且互不串行阻塞；升级后的旧任务键在同 session 重试仍保持幂等。已解散群的迟到消息和卡片在入口及执行前均忽略，不创建主 pi session、不消费审批；旧桥 `/ls` 不再暴露无 kind 的 shell pane，损坏的历史路由统一失败关闭。当前 `npm run check` 通过 464/464。以上均为本地回归，不替代真实飞书用户入口、模型和 herdr 端到端验收。
+
+2026-09-19 E30：当前 `cfc7d16` 的 `0.3.12-dev` macOS arm64 二进制经真实飞书用户私聊创建专用讨论任务，Codex 在真实任务群输出 6108 Unicode code points。outbox 持久为两片 `[3500,2608]`，真实 REST 回读两条消息均存在、顺序正确、无重复；用户随后真实确认完成，任务 `completed_at`、本地 `destroyed`、参与者 `gone`、herdr pane 关闭、群 `dissolved` 均已回读。详见 [E30 记录](live-evidence-e30-long-message.md)。该记录只关闭 FSH07 长分片子项，重复 event、空 messageId、卡片重放和断线重连仍 U。
+
+2026-09-19 E31：当前服务实例收到真实飞书主私聊 exact `/clear` 后未调用模型，旧 session `s_2d0d2bc7…` 归档，新 session `s_26c0b10c…` 选中，用户与回复均 `delivered`，客户端可见回复严格为 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未受影响。详见 [E31 记录](live-evidence-e31-clear-command.md)。该记录只关闭 FSH05 的正常主入口子项，失败事务、旧队列、重复事件、群拒绝与重启恢复仍分验。
+
+2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
+
+2026-09-19 E24 前本机重启：提交 `2a5bbd0fbe6124a4691be7fd9e64ca1c84b6dc11` 构建的 macOS arm64 SEA `0.3.11-dev` 已重启，PID `6323`，SHA256 `a6a89894350de6abc8437bd53880bef31271e296f07efcc41b65c890f49bc593`，构建时间 `2026-09-19T01-10-00+08:00`。`version --json`、`/api/state`、runtime/authorization ready 和独立 SEA smoke 已回读；该 stamp 与当前功能提交匹配，真实飞书业务场景仍按矩阵逐项验收。v0.3.11 的三平台 Release Action 和 npm 安装验证已另行完成。
+
+2026-09-18 历史运行检查：仓库 `master`/`origin/master` HEAD 为 `f2afb9b`；运行中的 macOS arm64 SEA `0.3.6` 由旧提交 `e7e8b3e` 构建，构建提交为 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`，PID `91732`；`/api/state` 的 runtime/authorization 均为 `ready`。本地 23 个任务均为 `destroyed`，177/177 outbox 已送达；本地任务对应的 23 个群及缓存中 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这条记录只更新当时的现场基线，不关闭仍未真实验证的矩阵行；LIVE-001 仍需当前生产服务 bot 对应的真实用户从主私聊发起唯一 marker 后核对 checkpoint/toolCall、task/group、herdr 和用户可见回执。
 
 本次更新核对 E19/E20 的只读 HTTP、真实 Chrome 浏览和定向状态快照，并保留此前飞书 REST、真实模型和资源回读的版本边界。历史业务证据见[2026-09-18 证据分层记录](live-evidence-2026-09-18.md)，本轮 pi 工具事实修正见[现场证据](live-evidence-pi-tool-recovery-2026-09-18.md)，只读 Web 的已测范围与未测项见 WR01–WR09。文档更新本身没有新增外部任务；主验收仍在进行，尚未记录的现场步骤保持 U。
 
@@ -143,7 +161,7 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | ID | 正常执行步骤与必要结果 | 失败/恢复/权限/投递检查 | 实现与历史离线依据 | 真实状态 |
 | --- | --- | --- | --- | --- |
 | B01 | `setup` 新注册、复用、明确 `--app`、补授权分别执行；保存正确应用，私聊与精确 nonce 卡片往返 | F1/F7；取消/超时/身份不匹配；保存成功但回调未完成返回部分成功；A1/A3/D1 | I；O-H `tests/onboarding/`、`tests/cli/run.test.ts` | U，不能拿已有机器人可发消息证明注册全流程 |
-| B02 | `serve` 获取排它锁→迁移→只读历史页→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage | R-部分：LIVE-001 入站/回复及 E05 真实运行；启动补权/重连/唯一连接完整流程 U |
+| B02 | `serve` 获取排它锁→迁移→只读历史页→校验权限/herdr→唯一平台连接 | 失权/断线/协议失败时保持可修复状态；F2/F4/F7，拒绝第二实例 | I；O-H cli/storage；E25 runtime failure recovery | R-部分：E25 注入式 terminal failure 已验证旧连接停止、授权/订阅重新执行和退避重试；真实飞书网络中断、重连耗尽和用户入口仍 U |
 | B03 | `doctor [--json]`、debug ls/screen/transcript 分别核对实际宿主结果 | 不启动编码、不建立第二平台长连接；不可读报 unknown；脱敏，宽度仅估算 | I；O-H cli/host-checks | R-部分：旧CLI成功screen/transcript证据保留；旧width fail不证明窄终端。E17在5d1e96f的28项只读检查通过，doctor文本/JSON无agent正常；a6018ec已修短内容为unknown，实际PTY列数未测 |
 | B04 | 登记已有项目，验证全部有序目录与默认 agent/default project；任务冻结目录快照 | F1/F2；第二目录无效不先改首目录；A1/A2；bypass仅影响新执行器 | I；O-H projects/config | R-部分：E13非法第二目录拒绝且首目录未初始化Git；E14真实worktree/额外目录读取、原项目干净与额外目录不变通过；完整多目录/配置组合未全验 |
 | B05 | 明确新项目指令→创建目录/Git/登记；普通新任务只复用项目；连续不同项目独立创建 | 名称穿越/占用拒绝；F3/F4；删除登记不删代码 | I；O-H projects；LIVE-001 | R-部分：E05/E16证据保留。E17 a6018ec B/C各自新项目、真实Codex产物、署名群结果及远端描述通过；原核心输入+新scope限定链路R-P，不覆盖A名称拒绝和历史无工具R-F |
@@ -151,14 +169,14 @@ E22 当前二进制的真实讨论链路：源码提交 `57736d9af5516054f1cd112
 | B07 | Claude/Codex 各启动，核对实际 argv、多个目录、bypass和唯一初始 receipt；前任务blocked不阻塞其它执行器启动 | 保留 Bypass；仅当前任务绑定启动目录信任可由专用pi确认，其余群用户选；F3/F5/A3/D3 | I；O-H herdr/lifecycle、tasks | R-部分：E09/E13/E14证据保留。E17 B/C同中文显示名映射不同合法native名称，自动目录信任、唯一初始输入/一次verified投递及真实产物通过；A名称拒绝/误unknown原R-F保留 |
 | B08 | 在绑定群续聊/引用、非任务群 @机器人、修订/否定/含糊输入各一例 | A1/A2/A3，F6；完整约束转交、unsupported资源不虚构；D1/D3 | I；O-H app/conversations、runtime | R-部分：E17绑定任务群owner无@ exact /clear拒绝，正文远端/CUA可见，session/selection/status不变且无checkpoint；普通续聊/引用及其他身份组合仍分验 |
 | B09 | 多 owner/多任务/多 session 查未结束和 all，核对真实状态与链接 | A1/A2、F6；任务不存在不得编造；query readError不可说运行正常 | I；O-H app/tasks/runtime；LIVE-002 | R-部分：E02 查询后阶段答复正确（合成回执）；LIVE-001 历史 R-F；真实飞书入站查询进行中，E16 Web A/B列表隔离与17项API边界通过，完整身份竞态仍U |
-| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；控制/通知简洁说用户可见结果，默认无scheduled/持久化/排队回执术语，追问再给诊断；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-部分：E17 B/C native final、参与者输出、署名群结果及远端描述匹配；E21-R2 的最终描述、结果、收尾通知和飞书已完成列表逐一匹配。B完成回复首句提前称“已完成收尾”为历史R-F，其他输出类型和异常投递仍分验 |
+| B10 | Claude/Codex 输出观察、署名与群消息/远端描述/Web历史逐一对应 | F3/F4/F5，D1/D2/D4；控制/通知简洁说用户可见结果，默认无scheduled/持久化/排队回执术语，追问再给诊断；cooldown只合并进度；迟到结果不驱动新任务 | I；O-H transcripts/tasks/app presentation | R-部分：E17 B/C native final、参与者输出、署名群结果及远端描述匹配；E21-R2 的最终描述、结果、收尾通知和飞书已完成列表逐一匹配。B完成回复首句提前称“已完成收尾”为历史R-F；E24 隔离真实组件通知恢复正常、第二样本群内 GET 读到署名与结果，但首样本仍显示 review 字段，简洁措辞与其他异常投递仍分验 |
 | B11 | 目录信任以外的实际 blocked→任务群用户选项→Guard验证→执行；单人/all中断 | A1/A3；回调竞态/双击/过期/换现场；显示裁剪不改完整Guard；D1/D3 | I；O-H approvals/herdr/legacy fixtures | R-P（本次普通标记A）：E13真实owner/group/card/nonce/key=1 callback done→consumed→native AskUserQuestion答案→群GET输出，8项通过；由用户本人选择，期间directory-trust操作0；其他权限/过期/替换/重复组合未全验；E16补记9a86e40真实pause与native interrupted、重复请求不重复stop；非全部子进程退出证明 |
-| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description；O-P E15 cleanup-notification：生成不可用审计、未知发送与最后结果屏障 | R-部分：E21-R2 原生完成→事件→herdr close→群 dissolved、全部 outbox delivered 的子场景为 R-P；E15/E16/E17 既有默认/保留/unknown 恢复证据继续有效，keepExecution、权限、异常组合仍未全验 |
+| B12 | `complete`/飞书手动完成确认后默认herdr关闭执行器并解散群；明确keepExecution例外须同时keepGroup:true（无群任务除外），review不收尾；旧默认/未知来源策略在收尾时兼容修正，显式保留证据继续有效 | F3：只回读确认，不重复PATCH；D4；解散前通知/未知删除不重放；群任何原因解散均清对应执行器；明确保留例外单验 | I；O-H tasks lifecycle/completion-description；O-P E15 cleanup-notification：生成不可用审计、未知发送与最后结果屏障 | R-部分：E21-R2 原生完成→事件→herdr close→群 dissolved、全部 outbox delivered 的子场景为 R-P；E15/E16/E17 既有默认/保留/unknown 恢复证据继续有效，E24 真实组件 complete+keepGroup:true 已关闭 pane 并保留群、完成时间独立回读；keepExecution、权限、异常组合及本次飞书用户入口仍未全验 |
 | B13 | 明确 close/外部勾完成→采最后结果→完成同步→关闭通知→资源清理 | F2/F3/F4，A3，D4；远端未确认不清理；模型通知失败不虚报完成 | I；O-H tasks/app | R-部分：E21-R2 已核对事件驱动强制刷新、最终 description sync、远端完成、本地 destroyed、pane gone、群 dissolved 和消息先于删群；E17三任务旧收尾事实保留，B提前声称收尾的历史R-F及其他未知/失败恢复仍需单验 |
-| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E09 外部群解散后只清对应pane、本地destroyed且远端未冒充验收通过；显式destroy及部分失败恢复仍未全验 |
+| B14 | destroy不代验收，关闭受管资源但保留代码/历史；已销毁拒绝reopen | 部分清理失败恢复；不关闭别的pane/group；F3/F4/A1/A2 | I；O-H tasks/projects | R-部分：E09 外部群解散后只清对应pane、本地destroyed且远端未冒充验收通过；E24 真实组件已验证 destroyed 后显式 destroy+keepGroup:false 及外部解散后 tick 更新，未重启/重关执行器、未改原完成时间且移除失效群链接；显式 destroy 的真实飞书用户入口及其他失败恢复仍未全验 |
 | B15 | 明确失败重试、未知写入冻结、重复事件、停机中断后恢复逐项执行 | F2/F3/F4/F7；inbox/outbox/operations/checkpoint跨进程一致；D1/D2/D3 | I；O-H storage/app/tasks | R-部分：E12初始输入只读恢复、E16隔离真实删群unknown-ack恢复保留。a6018ec补旧participant操作归属与retry事务，O-P；E17迁移故障4项O。outbox/建群/remote未知写入与硬断电仍未全验 |
 | B16 | 飞书中session创建/选择/重命名/归档/恢复；私聊自动压缩及飞书主入口exact /clear确定性归档旧session并新建选中，不调模型，事务成功后仅CLEAR_NEW_SESSION_OK；Web无命令/清空入口；provider通过本地安装配置维护 | A1/A2；事务失败不送成功标记、失败不切换、排队旧绑定拒绝/旧回执保留、群拒绝、摘要不串新session；D2 | I；O-H runtime/migration；O-P E15 clear-command/session-tools：AI关闭、正文匹配、旧队列、Web无sessionId重复请求；既有entry-reset | R-部分：E15真实私聊及Chromium机械clear均无checkpoint、source command、实际归档切新和精确marker送达；私聊4条旧历史保留，Web可见ACK/归档历史/390px通过。旧模型两次失败及全部R-F保留；新命令故障组合仅离线通过；E16 memory 15项真实loopback HTTP及11针对性测试O-P，外部生产memory/TLS/ACL仍U |
-| B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration | U |
+| B17 | tasks关闭时 /ls选择、引用优先、/card、/say、/stop、/mirror、/close逐项验证 | 错误旧绑定拒绝；解除不复活；notify_chat基线、F3/F5/A1/D1/D3 | I；O-H legacy/herdr/migration；E25 route verification | U：E25 已补旧桥 6 项离线回归，真实 tasks 关闭飞书入口和 notify_chat 现场仍未验 |
 | B18 | 单二进制安装、版本核对、服务管理器重启、迁移/回退、长期保留 | 仅桥停止不杀herdr；锁清理、磁盘异常、日志/DB增长、三平台；F4/F7 | I；O-H build/cli/storage，BUILD-001 | R-部分：当前0b6966f/PID38264/SHAfeb1…0069，345tests、SEA和三平台CI35304636486通过；a6018ec历史证据保留。E17 5d1e96f旧状态副本迁移4项R-local-copy/4项O；完整生产回退、Linux宿主及长期故障未验，旧版本证据保留 |
 | N01 | “当前有哪些任务/谁在等待/我该做什么”真实模型查询工具后答复 | F6，A1/A2；摘要和参与者自述不可替代当前事实 | I；O-H engine/app | R-部分：E01 查询自主调用 tasks_list；E02 多轮查询事实措辞通过（合成回执）；真实飞书查询进行中，LIVE-001 历史 R-F |
 | N02 | 明确仅讨论→无项目或已有项目→单Claude/Codex参与需求讨论 | pi不能自行替项目写方案；禁止编码的要求完整保留；D3/D4；F6 | I；O-H tasks/prompts | R-部分：E01 创建只讨论任务的参数含 discussion/Claude/Codex；真实单参与者讨论与禁止编码行为 U |
@@ -289,9 +307,9 @@ W01–W29 中聊天、任务、参与者、审批、清理和 pi session 的业�
 | FSH02 群/身份 | 任务群、非任务群@/不@、异owner、回调非owner | owner与chat绑定；当前任务群不能跳转其它任务；callback等同严格验证 | R-部分：E13本人菜单回调/native答案/可见结果保留；E17 owner在任务群无@ exact /clear被拒且未改会话。非owner/非任务群/跨任务等仍U |
 | FSH03 AI关闭、tasks启用 | `/help /doctor /projects /tasks [all] /sessions`；`/session new\|switch\|rename\|archive\|restore` | 返回确定性控制结果；任务群禁止切换；无AI不冒充pi沟通 | I/O-H，现场U |
 | FSH04 AI关闭、tasks启用 | `/new <项目> [agent] <要求>`、自然“新建任务”、`/task`七动作、`/screen /stop` | 完整参数/默认agent；关闭/确认关闭中文别名与否定区分；多参与者明确ID | I/O-H，现场U |
-| FSH05 `/clear`跨模式 | 飞书主入口私聊exact /clear不调用模型，确定性归档旧pi并新建选中，事务成功仅CLEAR_NEW_SESSION_OK；自动压缩无需clear | 所有群拒绝；事务失败不送成功标记、模型不可用不影响exact命令；旧history/receipt保留，queued消息不改绑且拒绝执行；Web无命令/清空入口 | R-部分：E15飞书私聊机械轮转可见marker通过，旧Web结果仅作历史；E17任务群owner无@拒绝分支R-P（八项true）、无checkpoint。AI关闭、无关群、其他owner、事务故障/未知恢复仍分验，旧R-F保留 |
+| FSH05 `/clear`跨模式 | 飞书主入口私聊exact /clear不调用模型，确定性归档旧pi并新建选中，事务成功仅CLEAR_NEW_SESSION_OK；自动压缩无需clear | 所有群拒绝；事务失败不送成功标记、模型不可用不影响exact命令；旧history/receipt保留，queued消息不改绑且拒绝执行；Web无命令/清空入口 | R-部分：E31真实主私聊正常轮转、精确 marker 和旧资源隔离通过；E17任务群owner无@拒绝分支R-P（八项true），E15与旧 Web 结果作历史；AI关闭、无关群、其他owner、事务故障/未知恢复仍分验，旧R-F保留 |
 | FSH06 tasks关闭兼容桥 | `/ls`选中；引用优先；`/card /say /stop /mirror on\|off /close /help`，普通文本续聊 | 只按已有herdr agent发送；/close仅解除选中；notify_chat只选可信owner；旧路由核验 | I/O-H，现场U |
-| FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | R-部分：E13普通菜单有真实callback done/consumed/native答案/群可见回执，E15私聊机械clear有远端精确正文；长分片/重复event/空ID/卡片重放/重连仍U，旧R-F保留 |
+| FSH07 消息回执 | 长消息分片、重复event、空messageId回退、卡片重放、飞书事件重连 | 可见片段齐全且目标正确；去重不吞合法新消息；F3/F4/D1 | R-部分：E30真实群输出两片 `[3500,2608]`，REST回读顺序/完整正文/无重复，完成后资源已清理；E13普通菜单有真实callback done/consumed/native答案/群可见回执，E15私聊机械clear有远端精确正文；重复event/空ID/卡片重放/重连仍U，旧R-F保留 |
 
 ## 9. 横向遗漏检查与本轮缺陷账本
 
@@ -305,7 +323,7 @@ W01–W29 中聊天、任务、参与者、审批、清理和 pi session 的业�
 | GAP06 / P1 | E05 Codex 既有手动信任链路通过，新 pi 自动目录信任及其他群审批未全验 | E09专用自动信任、E13本人普通标记A菜单8项已证；保留Bypass，其他菜单/重复/换现场/未知写入仍分验，不扩大为所有审批通过 |
 | GAP07 / P1 | E12无重发恢复已证，E13新增首发及移除后resume receipt末尾即时确认通过；旧失败保留，其余恢复未全验 | E17部署补旧participant独立ID归属，retry失败清理同事务、pending/错误不误清，离线O-P；真实旧副本无pending，不能算未知恢复R。outbox/建群/其他写入继续F3/F4/F5分验 |
 | GAP08 / P1 | E04 REST完成/重开/解散通过，E05结果描述经主验收核对；应用生命周期仍未全验 | B12–B14补TaskService操作顺序/未知结果/资源保留；descriptionMatchesOutput:false为Markdown归一化比较问题，不误记漏传缺陷 |
-| GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672，卡片/引用/分片未全验 | 只确认邀请请求及user_count=1；补roster权限与群客户端/卡片回调/引用/分片证据，不能把GET代替全部用户可见验收 |
+| GAP09 / P1 | E04/E05任务/群/消息已有真实GET；成员列表查询缺权限99991672；卡片/引用/重复事件未全验 | E30 已补真实长分片两片、顺序、完整正文和无重复；仍需补 roster 权限与群客户端/卡片回调/引用/重连证据，不能把单次 GET 代替全部用户可见验收 |
 | GAP10 / P1 | E09旧拒绝失败保留；E13一次model-no-reset异常在原历史/原提示隔离重放6/6选clear，未稳定复现，无源码bug或缓存错配证据；E14旧模型私聊额度失败保留，E15新机械命令私聊/Web均独立通过且无需模型 | 查询事实覆盖历史但保留审计；新/旧session、clear、重启分别验证；不以删历史关闭LIVE-001 |
 | GAP11 / P1 | 本地配置与运行生效时间、密钥遮蔽需验证；Web配置入口保留但受保护 | 配置文件/CLI/Web→重启→实际 endpoint/model 核对；错误 key/重定向不泄密；allowlist 配置 action 需通过 Host/Origin/CSRF 与输入校验，业务 action 仍须在飞书，删除旧 `config.ai` 全拒绝断言 |
 | GAP12 / P1 | 旧 Web 不可见 ACK 失败及修复记录保留；新页面不发送 ACK | WR03/WR04/WR06核对飞书记录展示、不伪造送达、不因打开历史补发或改状态；旧模型历史约束失败继续独立保留 |

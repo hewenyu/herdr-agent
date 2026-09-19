@@ -159,9 +159,15 @@ export class PiEngine implements ConversationEngine {
         }
       },
     }));
+    // A claims recovery turn must force a tool call only on its first provider
+    // request. Once that request returns a tool call, pi needs to ask the model
+    // for a normal follow-up answer with provider `auto`; leaving `required`
+    // latched forces every continuation into another tool call and can exhaust
+    // the 12-call budget on read-only notification turns.
     let requireToolCall = false;
     const stream: StreamFn = (model, context, options) => {
       if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
+      requireToolCall = false;
       const toolChoice =
         this.config.provider === "anthropic-messages" ? ("any" as const) : ("required" as const);
       return this.stream(model, context, {
@@ -259,6 +265,10 @@ export class PiEngine implements ConversationEngine {
             ? successfulWriteCalls === 0
             : successfulToolCalls === 0));
       if (claimRecovery && input.tools.length > 0) {
+        // The first answer is the evidence failure that triggered recovery. Do
+        // not allow it to survive if the constrained retry is blocked or fails
+        // before producing a new completed assistant message.
+        finalText = "";
         requireToolCall = true;
         await agent.prompt({
           role: "user",

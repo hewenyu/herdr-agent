@@ -4,7 +4,7 @@ import { Application } from "../../src/app/application.js";
 import type { InboxRecord } from "../../src/app/inbox.js";
 import { OperationError } from "../../src/core/errors.js";
 import type { Task } from "../../src/core/types.js";
-import { logger, setup } from "./helpers.js";
+import { logger, message, setup } from "./helpers.js";
 
 test("disbanded event is durable and deduplicated; restart processes only its matching task", async () => {
   const h = setup(false);
@@ -104,5 +104,72 @@ test("a disbanded event cannot turn normal or unreadable group state into destru
     } finally {
       await h.close();
     }
+  }
+});
+
+test("dissolved group messages and cards never fall through to a main pi session", async () => {
+  const h = setup(false);
+  try {
+    const created = (await h.app.dispatch("task.create", {
+      kind: "discussion",
+      title: "stale callback",
+      requirements: "只讨论",
+      participants: [{ kind: "codex" }],
+      keepGroup: true,
+    })) as Task;
+    await h.app.tasks.reconcile(created.id);
+    const active = h.app.tasks.records.get({ ownerId: "owner", chatId: "entry" }, created.id);
+    assert.ok(active.chatId);
+    const group = active.chatId;
+    const beforeSessions = h.store.list("sessions").length;
+    const beforeMessages = h.store.list("messages").length;
+    const beforeEngineCalls = h.engine.calls.length;
+    const beforeApprovals = h.store.list("approvals").length;
+
+    // Queue both callbacks while the group is still live, then dissolve it
+    // before the durable inbox gets to execute them.
+    await h.app.handlers().message({
+      ...message("late-message", "旧群消息", group),
+      chatType: "group",
+      mentionedBot: true,
+    });
+    await h.app.handlers().action({
+      eventId: "late-action",
+      ownerId: "owner",
+      chatId: group,
+      messageId: "card-message",
+      value: { action: "approval", nonce: "stale", key: "y" },
+    });
+    const stored = h.store.get<Task>("tasks", created.id);
+    assert.ok(stored);
+    stored.groupDeleted = true;
+    h.app.tasks.records.save(stored);
+    await h.app.inbox.drain();
+    assert.equal(h.store.list("sessions").length, beforeSessions);
+    assert.equal(h.store.list("messages").length, beforeMessages);
+    assert.equal(h.engine.calls.length, beforeEngineCalls);
+    assert.equal(h.store.list("approvals").length, beforeApprovals);
+    assert.equal(
+      h.store.list<InboxRecord>("inbox").every((record) => record.state === "done"),
+      true,
+    );
+
+    // New callbacks are ignored at ingress and do not create an inbox row.
+    const beforeInbox = h.store.list("inbox").length;
+    await h.app.handlers().message({
+      ...message("after-delete", "继续旧群", group),
+      chatType: "group",
+      mentionedBot: true,
+    });
+    await h.app.handlers().action({
+      eventId: "after-delete-action",
+      ownerId: "owner",
+      chatId: group,
+      messageId: "after-delete-card",
+      value: { action: "approval", nonce: "stale", key: "y" },
+    });
+    assert.equal(h.store.list("inbox").length, beforeInbox);
+  } finally {
+    await h.close();
   }
 });

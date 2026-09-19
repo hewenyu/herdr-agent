@@ -83,7 +83,11 @@ export interface PlatformHandlers {
 }
 
 export interface PlatformPort {
-  start(handlers: PlatformHandlers, signal: AbortSignal): Promise<void>;
+  start(
+    handlers: PlatformHandlers,
+    signal: AbortSignal,
+    onFailure?: (error: Error) => void,
+  ): Promise<void>;
   /** Subscribe the current application to changes of tasks it is assigned to. */
   subscribeTasks(): Promise<void>;
   stop(): Promise<void>;

@@ -42,7 +42,11 @@ export class FeishuPlatform implements PlatformPort {
   }
 
   /** Resolves when connected. Handlers must only validate and persist an inbox item. */
-  async start(handlers: PlatformHandlers, signal: AbortSignal): Promise<void> {
+  async start(
+    handlers: PlatformHandlers,
+    signal: AbortSignal,
+    onFailure?: (error: Error) => void,
+  ): Promise<void> {
     signal.throwIfAborted();
     if (this.started) throw new OperationError("feishu_already_started", "飞书连接已经启动。");
     this.started = true;
@@ -79,13 +83,22 @@ export class FeishuPlatform implements PlatformPort {
           this.options.logger?.info("飞书长连接已就绪。", { event: "feishu.connection_ready" });
           finish();
         };
+        let failureNotified = false;
         const onError = (_error: Error) => {
           if (generation !== this.generation || signal.aborted) return;
           this.options.logger?.error("飞书连接失败，请检查凭据与网络。", {
             event: "feishu.connection_failed",
             code: "feishu_connect_failed",
           });
-          finish(new OperationError("feishu_connect_failed", "飞书连接失败，请检查凭据与网络。"));
+          const failure = new OperationError(
+            "feishu_connect_failed",
+            "飞书连接失败，请检查凭据与网络。",
+          );
+          if (!settled) finish(failure);
+          else if (!failureNotified) {
+            failureNotified = true;
+            onFailure?.(failure);
+          }
         };
         const onReconnecting = () => {
           if (generation !== this.generation || signal.aborted) return;

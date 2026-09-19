@@ -46,9 +46,21 @@ export async function createTask(
     fail("discussion_budget", "讨论轮数为 1 到 50，时长为 1 到 240 分钟。");
   }
   const parent = input.parentTaskId ? records.get(actor, input.parentTaskId) : undefined;
-  const id = `task_${stableId(actor.ownerId, actor.messageId, canonical(input))}`;
+  // A message identity is only unique inside its bound pi session.  Keeping
+  // the session in the durable task key prevents two independently selected
+  // sessions that happen to reuse a Web request id from returning the first
+  // session's task (and silently discarding the second project's input).
+  // Feishu retries remain idempotent because the durable inbox pins the same
+  // session id to every delivery of one message.
+  const id = `task_${stableId(actor.ownerId, actor.sessionId, actor.messageId, canonical(input))}`;
   const previous = store.get<Task>("tasks", id);
   if (previous) return records.get(actor, id);
+  // A task created before sessionId became part of the key may still receive
+  // a retry after an upgrade. Reuse that legacy record only when its persisted
+  // session matches; a different session must remain an independent intent.
+  const legacyId = `task_${stableId(actor.ownerId, actor.messageId, canonical(input))}`;
+  const legacy = store.get<Task>("tasks", legacyId);
+  if (legacy?.sessionId === actor.sessionId) return records.get(actor, legacyId);
   if (input.newProject && !input.project) fail("project_name", "新建项目需要明确名称。");
   if (input.newProject && input.project) {
     await context.operations.run(`${id}:project`, { name: input.project }, () =>

@@ -24,21 +24,26 @@ export class LegacyBridge {
       chatId: message.chatId,
     });
     if (command === "/ls") {
-      const agents = await this.context.herdr.list();
+      // herdr can expose plain shell panes alongside managed Claude/Codex
+      // agents. The legacy bridge can only route to a managed agent, so do
+      // not render an action that would fail after the user clicks it.
+      const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
       const card = {
         schema: "2.0",
         body: {
-          elements: agents.flatMap((agent) => [
-            {
-              tag: "markdown",
-              content: `${agent.kind ?? "unknown"} · ${agent.paneId} · ${agent.status}\n${agent.cwd}`,
-            },
-            {
-              tag: "button",
-              text: { tag: "plain_text", content: "选择" },
-              value: { action: "select", paneId: agent.paneId },
-            },
-          ]),
+          elements: agents.length
+            ? agents.flatMap((agent) => [
+                {
+                  tag: "markdown",
+                  content: `${agent.kind ?? "unknown"} · ${agent.paneId} · ${agent.status}\n${agent.cwd}`,
+                },
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "选择" },
+                  value: { action: "select", paneId: agent.paneId },
+                },
+              ])
+            : [{ tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" }],
         },
       };
       await this.context.platform?.sendCard(
@@ -65,7 +70,7 @@ export class LegacyBridge {
       fail("unknown_command", "未知或已精简的命令，请发送 /help；没有向终端投递。");
     }
     let target = message.replyToMessageId ? await this.route(message.replyToMessageId) : undefined;
-    if (args[0] && command.startsWith("/")) target = await this.ref(args[0]);
+    if (!target && args[0] && command.startsWith("/")) target = await this.ref(args[0]);
     if (!target) target = (await this.selection(message.ownerId, message.chatId))?.ref;
     if (!target) {
       const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
@@ -239,19 +244,60 @@ export class LegacyBridge {
   }
 
   private async route(messageId: string): Promise<ExecutionRef | undefined> {
-    const route = this.context.store.get<ExecutionRef | { p: string }>("legacy_routes", messageId);
+    const route = this.context.store.get<unknown>("legacy_routes", messageId);
     if (!route) return undefined;
-    if ("paneId" in route) return route;
-    let binding: { p?: string; k?: string };
+    if (typeof route !== "object" || Array.isArray(route))
+      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+    if ("paneId" in route) {
+      const candidate = route as Record<string, unknown>;
+      if (
+        typeof candidate.paneId !== "string" ||
+        typeof candidate.workspaceId !== "string" ||
+        typeof candidate.kind !== "string" ||
+        !["codex", "claude"].includes(candidate.kind) ||
+        typeof candidate.cwd !== "string" ||
+        typeof candidate.sessionId !== "string"
+      )
+        fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+      return this.verifyRoute(candidate as unknown as ExecutionRef);
+    }
+    const raw = (route as Record<string, unknown>).p;
+    if (typeof raw !== "string" || !raw)
+      fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
+    let binding: { p?: unknown; k?: unknown };
     try {
-      binding = JSON.parse(route.p);
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+      binding = parsed as { p?: unknown; k?: unknown };
     } catch {
       fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
     }
-    if (!binding.p || !binding.k) fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
+    if (
+      typeof binding.p !== "string" ||
+      typeof binding.k !== "string" ||
+      !binding.p ||
+      !["codex", "claude"].includes(binding.k)
+    )
+      fail("route_unverified", "旧引用缺少 agent 身份，请重新选择。");
     const ref = await this.ref(binding.p);
     if (ref.kind !== binding.k) fail("target_changed", "被引用的 agent 已变化，未投递。");
     return ref;
+  }
+
+  private async verifyRoute(route: ExecutionRef): Promise<ExecutionRef> {
+    if (!route.paneId || !route.workspaceId || !route.kind || !route.cwd || !route.sessionId)
+      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+    const agent = await this.context.herdr.get(route.paneId);
+    if (
+      !agent.kind ||
+      agent.paneId !== route.paneId ||
+      agent.workspaceId !== route.workspaceId ||
+      agent.kind !== route.kind ||
+      agent.cwd !== route.cwd ||
+      agent.sessionId !== route.sessionId
+    )
+      fail("target_changed", "被引用的 agent 已变化，未投递。");
+    return this.fromSnapshot(agent);
   }
 
   private async ref(paneId: string): Promise<ExecutionRef> {

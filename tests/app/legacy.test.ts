@@ -38,6 +38,68 @@ test("legacy reply binding outranks selected pane and imported bindings verify a
   }
 });
 
+test("legacy reply binding outranks an explicit pane argument", async () => {
+  const h = await existing();
+  try {
+    const ref = await h.herdr.get("p1");
+    h.store.set("legacy_routes", "reply-p1", {
+      paneId: ref.paneId,
+      workspaceId: ref.workspaceId,
+      kind: ref.kind,
+      cwd: ref.cwd,
+      sessionId: ref.sessionId,
+    });
+    await h.app.legacy.handle({
+      ...message("reply-with-explicit-pane", "/say p2 继续 p1"),
+      replyToMessageId: "reply-p1",
+    });
+    assert.equal(h.herdr.sends.at(-1)?.pane, "p1");
+    assert.equal(h.herdr.sends.at(-1)?.text, "继续 p1");
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy raw reply route is rejected after the pane session is replaced", async () => {
+  const h = await existing();
+  try {
+    const ref = await h.herdr.get("p1");
+    h.store.set("legacy_routes", "stale-reply", ref);
+    const current = h.herdr.agents.get("p1");
+    assert.ok(current);
+    current.sessionId = "replacement-session";
+    await assert.rejects(
+      h.app.legacy.handle({ ...message("stale", "不要误发"), replyToMessageId: "stale-reply" }),
+      /已变化/,
+    );
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy malformed reply routes fail closed without a runtime type error", async () => {
+  const h = await existing();
+  try {
+    h.store.set("legacy_routes", "bad-route", "corrupt legacy state");
+    await assert.rejects(
+      h.app.legacy.handle({ ...message("bad-route", "不要误发"), replyToMessageId: "bad-route" }),
+      /旧引用缺少 agent 身份/,
+    );
+    h.store.set("legacy_routes", "null-binding", { p: "null" });
+    await assert.rejects(
+      h.app.legacy.handle({
+        ...message("null-binding", "不要误发"),
+        replyToMessageId: "null-binding",
+      }),
+      /旧引用缺少 agent 身份/,
+    );
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("migrated selection resumes from current output baseline and close cannot resurrect it", async () => {
   const h = await existing();
   try {
@@ -67,6 +129,51 @@ test("invalid old selection does not prevent explicit picker or detach controls"
     await h.app.legacy.handle(message("detach", "/close"));
     assert.equal(h.platform.cards.length, 1);
     assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy picker does not offer bare herdr shell panes", async () => {
+  const h = await existing();
+  try {
+    h.herdr.agents.set("shell", {
+      paneId: "shell",
+      workspaceId: "w-shell",
+      status: "idle",
+      cwd: h.directory,
+      stateSeq: "1",
+      interactiveReady: true,
+      launchPending: false,
+    });
+    await h.app.legacy.handle(message("pick-managed", "/ls"));
+    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
+    assert.ok(elements);
+    assert.equal(elements.filter((item) => (item as { tag?: string }).tag === "button").length, 2);
+    assert.ok(elements.every((item) => !JSON.stringify(item).includes("shell")));
+  } finally {
+    await h.close();
+  }
+});
+
+test("legacy picker explains when no managed agent is available", async () => {
+  const h = setup(false);
+  h.config.tasks.enabled = false;
+  try {
+    h.herdr.agents.set("shell", {
+      paneId: "shell",
+      workspaceId: "w-shell",
+      status: "idle",
+      cwd: h.directory,
+      stateSeq: "1",
+      interactiveReady: true,
+      launchPending: false,
+    });
+    await h.app.legacy.handle(message("pick-empty", "/ls"));
+    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
+    assert.deepEqual(elements, [
+      { tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" },
+    ]);
   } finally {
     await h.close();
   }

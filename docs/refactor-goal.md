@@ -6,11 +6,27 @@
 
 2026-09-18 发布授权与约束：用户已授权在问题修复、必要验收及最终 HEAD CI 通过后自动合并 PR #16，自动打 tag、执行并检查 Release Action 和真实 npm 安装。重构版本从 **v0.3.x** 开始，首版计划 **v0.3.0**。npm 包名 **@yuebanlaosiji/myrix**，提供 `myrix` 命令及 `herdr-agent` 兼容命令；使用 GitHub environment **NPM** 的 **TOKEN**。发布失败不得覆盖既有 npm 版本或移动公开 tag。该授权不把未测项自动视为通过；发布状态与完整验收目标分别记录。
 
-2026-09-18 当前运行检查：仓库 `master`/`origin/master` 为 `f2afb9b`；`v0.3.6` macOS arm64 SEA 已重新构建并重启，PID `91732`，构建提交 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`；`version --json`、`/api/state` 和授权状态均已回读。状态库 23 个任务均为 `destroyed`，177/177 个 outbox 已送达；23 个任务群及缓存中的 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这只是当前部署和资源清理证据，LIVE-001、B/N 矩阵中的 U/R-部分/R-F 仍保持原判定，不能以服务 ready 或测试资源为空替代真实用户入口验收。
+2026-09-18 历史运行检查：仓库 `master`/`origin/master` 为 `f2afb9b`；`v0.3.6` macOS arm64 SEA 已重新构建并重启，PID `91732`，构建提交 `e7e8b3e`，SHA256 `cee2c5cd1287be2b79cbb1b2ed4487025f47baaf974783c45cb6641b66df882d`；`version --json`、`/api/state` 和授权状态均已回读。状态库 23 个任务均为 `destroyed`，177/177 个 outbox 已送达；23 个任务群及缓存中的 5 个历史专用群均经真实 Feishu GET 回读为 `dissolved`。这只是当前部署和资源清理证据，LIVE-001、B/N 矩阵中的 U/R-部分/R-F 仍保持原判定，不能以服务 ready 或测试资源为空替代真实用户入口验收。
 
 2026-09-18 E20进展：Web 配置与历史边界整改已实际部署，真实飞书主私聊机械clear、讨论→关联开发、关闭父而保留子、子默认资源清理均有独立证据。0ccfff2全量378项检查；b53b263终态描述修复386项、SEA通过并部署，子远端描述已精确匹配最终投影。首轮讨论字数超限保留R-F；群内明确修订60字符通过。详情及当前未解决项见[E20记录](live-evidence-e20-release.md)。主分支required checks已从4个失效Go名称迁移为3个平台Node/SEA检查，strict:true及其他全部保护逐字段确认不变；最终HEAD通过前不合并。
 
 ## 目标
+
+2026-09-19 E24 后续整改：继续在 `fix/retained-group-cleanup` 修复已关闭执行器后仍保留群的再次清理与外部解散回读，以及真实模型暴露的强制工具选择持续到整轮结束、生命周期通知缺少写工具而无法生成的问题。通知依据真实任务/参与者快照，只读工具边界保持；普通用户请求的写证据检查保持。当前现场使用独立状态库和专用群，经真实飞书、pi 模型与 herdr 验证服务组件；不冒充飞书用户入站验收，LIVE-001-R4 仍待真实消息。最终离线检查 453/453 通过，`15f29b3` 的 `0.3.12-dev` SEA 已通过独立烟测并重启，PR #39 跟踪本轮修复；按用户要求同步更新中英文 README 的 myrix 安装、飞书业务和 Web 配置边界，现场状态不再混入入门说明。详情见 [E24 记录](live-evidence-e24-retained-group.md)。
+
+2026-09-19 E25 后续整改：修复飞书长连接 ready 后 terminal failure 不触发服务级恢复的问题，并校验 tasks 关闭时旧兼容桥的回复路由和 pane/session 绑定。最终离线检查 457/457 通过；注入式连接回归验证旧平台停止、授权/订阅重试和 shutdown 取消，旧桥回归验证回复绑定优先及替换目标拒绝。真实飞书网络断线和 LIVE-001-R5 用户入站仍未验证，详情见 [E25 记录](live-evidence-e25-transport-legacy.md)。
+
+2026-09-19 E26 真实 REST 验收：使用当前服务应用凭据创建唯一飞书任务和群，读回任务、群和消息，完成→重开→再完成，删除群并确认 `dissolved`；服务收到对应任务事件但没有生成本地 pi 任务，既有状态与 herdr pane 未改变。群成员读取因应用缺少 `im:chat.members:read` 返回 `99991672`，按权限缺口记录，未将失败吞掉。该证据只覆盖限定的 Feishu REST 资源生命周期，不关闭真实用户私聊、模型自主工具选择、pi 新项目或 B/N 完整组合；详见 [E26 记录](live-evidence-e26-feishu-rest-lifecycle.md)。
+
+2026-09-19 E27 入口提示：确认当前生产服务 bot 在配置主聊天中发送并读回 LIVE-001-R5 唯一提示；发送后 30 秒没有用户 marker 入站。此前另一个 lark-cli bot 的 P2P 提示已明确排除。该证据只确认正确应用的提示可见，不关闭真实用户入口，详见 [E27 记录](live-evidence-e27-service-ingress-prompt.md)。
+
+2026-09-19 E28 模型决策复验：当前 `kimi-k2.5` 真实模型在隔离探针中连续三次首选 `task_create`，参数检查通过，工具实现均在执行前拦截；历史“零工具调用”决策故障未在该输入复现。该证据不替代飞书用户入站和外部资源回读，详见 [E28 记录](live-evidence-e28-real-model-tool-decision.md)。
+
+2026-09-19 E29 边界回归：任务键和创建锁按 pi `sessionId` 隔离并兼容同 session 的旧键重试；已解散群的消息和卡片在入口及执行前拒绝进入主 session；旧桥只呈现可接管的 Claude/Codex agent，损坏路由失败关闭。`npm run check` 通过 464/464；这些是本地自动化证据，不关闭真实飞书用户入口和外部资源链路。
+
+2026-09-19 E30 真实长消息：当前 `cfc7d16` 的 macOS arm64 `0.3.12-dev` 经真实飞书用户入口创建专用讨论任务，Codex 输出 6108 Unicode code points，outbox 分成 `[3500,2608]`，两条群消息 REST 回读顺序正确且无重复；用户确认完成后任务、参与者、herdr pane 和群均完成清理。该证据只关闭 FSH07 长分片子项，重复 event、空 messageId、卡片重放和断线重连仍未验，详见 [E30 记录](live-evidence-e30-long-message.md)。
+
+2026-09-19 E31 主入口 `/clear`：当前 `cfc7d16` 的真实飞书主私聊 exact `/clear` 未调用模型，旧 pi session 已归档、新 session 已创建并选中，客户端只显示 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未被关闭。该证据只关闭 FSH05 正常轮转子项，详见 [E31 记录](live-evidence-e31-clear-command.md)。
 
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 

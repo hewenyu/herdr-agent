@@ -9,6 +9,7 @@ import { runCLI } from "../../src/cli/run.js";
 import { selectCredentials } from "../../src/cli/setup.js";
 import { loadConfig } from "../../src/config/load.js";
 import { OperationError } from "../../src/core/errors.js";
+import type { PlatformPort } from "../../src/core/ports.js";
 import { saveCredentials } from "../../src/onboarding/credentials.js";
 import { Store } from "../../src/storage/store.js";
 import { FakeHerdr, FakePlatform } from "../tasks/helpers.js";
@@ -280,6 +281,41 @@ test("failed task subscription stops that connection and retries the same app be
       ],
     );
     assert.deepEqual(h.errors, ["订阅未成功。"]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("runtime connection failure stops the old platform and retries before work continues", async () => {
+  const h = harness();
+  try {
+    h.config.feishu = {
+      appId: "cli_test",
+      appSecret: "secret",
+      allowedOpenIds: ["owner"],
+      notifyChatId: "",
+    };
+    let starts = 0;
+    const runtimePlatform = h.platform as PlatformPort;
+    runtimePlatform.start = async (_handlers, _signal, onFailure) => {
+      starts++;
+      h.events.push(`connect-${starts}`);
+      if (starts === 1) queueMicrotask(() => onFailure?.(new Error("socket closed")));
+    };
+    h.deps.sleep = async () => {
+      h.events.push("retry");
+    };
+    h.app.tick = async () => {
+      h.events.push("tick");
+      if (starts === 2) h.control.abort();
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 0);
+    assert.equal(starts, 2);
+    assert.deepEqual(
+      h.events.filter((event) => /^(connect|disconnect|retry|tick)/.test(event)),
+      ["connect-1", "disconnect", "retry", "connect-2", "tick", "disconnect"],
+    );
+    assert.deepEqual(h.errors, ["操作未完成，请查看本机诊断状态。"]);
   } finally {
     h.cleanup();
   }

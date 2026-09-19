@@ -54,7 +54,11 @@ export class TaskService {
   }
 
   create(actor: ActorContext, input: TaskCreateInput): Promise<Task> {
-    return this.locks.run(`create:${actor.ownerId}:${actor.messageId}`, () =>
+    // A message identity is scoped to the selected pi session. Keeping the
+    // creation lock at that same scope prevents a slow project registration
+    // in one session from blocking an independent task in another session
+    // that happens to reuse the request/message id.
+    return this.locks.run(`create:${actor.ownerId}:${actor.sessionId}:${actor.messageId}`, () =>
       createTask(this.context, actor, input),
     );
   }
@@ -279,7 +283,9 @@ export class TaskService {
     const added: Promise<void>[] = [];
     for (const task of this.context.store.list<Task>("tasks")) {
       if (
-        (task.status === "destroyed" && !hasFinalDescription(this.context, task)) ||
+        (task.status === "destroyed" &&
+          !hasFinalDescription(this.context, task) &&
+          !(task.chatId && !task.groupDeleted && this.context.platform?.getGroupStatus)) ||
         this.running.has(task.id) ||
         this.queued.has(task.id)
       )
@@ -328,7 +334,28 @@ export class TaskService {
       const forceRemote = options.forceRemote ?? true;
       try {
         if (task.status === "destroyed") {
+          // Retained groups remain externally observable after executor cleanup.
+          // Poll only while a group is still present; this branch must never
+          // reopen the task or repeat native close effects.
+          if (task.chatId && !task.groupDeleted && this.context.platform?.getGroupStatus)
+            await this.remotePolls.run(task.id, "group", forceRemote, () =>
+              syncGroupState(this.context, task),
+            );
           await this.syncFinalRemote(task, forceRemote);
+          // A successful group read clears a prior group/task poll error, but
+          // a pending final projection owns its own unresolved syncError and
+          // must remain visible until its exact remote readback succeeds.
+          if (!hasFinalDescription(this.context, task)) {
+            // A destroyed task must not keep reporting an abandoned completion
+            // GET/PATCH failure after its final description has been observed.
+            // Only a retained group's current read can still block this
+            // terminal projection; task polling is no longer active here.
+            task.syncError = this.context.store.get<{ error?: string }>(
+              "remote_poll",
+              `${task.id}:group`,
+            )?.error;
+            this.records.save(task);
+          }
           return;
         }
         if (task.chatId && !task.groupDeleted && this.context.platform?.getGroupStatus)
