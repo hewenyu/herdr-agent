@@ -1,6 +1,6 @@
 # 功能逐项整改与真实验收矩阵
 
-更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路、E30 长消息分片与默认收尾、E31 主入口 `/clear` 机械轮转已有限定真实证据，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
+更新时间：2026-09-19。状态：**本轮目标仍进行中；E21-R2 事件订阅、E22 当前二进制讨论链路、E30 长消息分片与默认收尾、E31 主入口 `/clear` 机械轮转已有限定真实证据，E32 已暴露并修正一处 `manual` 讨论通知事实错误，其余未覆盖场景仍未关闭。** 范围继承 [重构目标](refactor-goal.md)、[B/N 需求盘点](node-pi-refactor-requirements.md) 和 [设计](node-pi-design.md)。本文件是新的逐项追踪表；[此前验收](acceptance.md) 保留上一阶段离线证据，不代表本轮真实链路已通过。
 
 2026-09-19 E24：修复保留群在执行器已关闭后的再次清理、外部解散回读及终态描述；另由真实模型复现并修复强制工具恢复循环与生命周期通知的证据误用。最终 `npm run check` 453/453 通过（含行数、TypeScript 与 Biome），首次 452/453 的终态错误残留回归及修正已记入 E24。两条隔离真实组件链路已验证 Codex 结果、完成后保留群、再显式/外部解散，测试群和对应 pane 均已清理。普通用户写工具护栏保持；本次未走飞书用户入站，B12/B14/B10 仅补服务组件证据，LIVE-001 与其余 U/R-部分不关闭。[E24 记录](live-evidence-e24-retained-group.md) 保留准备失败、通知失败和回读边界。
 
@@ -19,6 +19,8 @@
 2026-09-19 E30：当前 `cfc7d16` 的 `0.3.12-dev` macOS arm64 二进制经真实飞书用户私聊创建专用讨论任务，Codex 在真实任务群输出 6108 Unicode code points。outbox 持久为两片 `[3500,2608]`，真实 REST 回读两条消息均存在、顺序正确、无重复；用户随后真实确认完成，任务 `completed_at`、本地 `destroyed`、参与者 `gone`、herdr pane 关闭、群 `dissolved` 均已回读。详见 [E30 记录](live-evidence-e30-long-message.md)。该记录只关闭 FSH07 长分片子项，重复 event、空 messageId、卡片重放和断线重连仍 U。
 
 2026-09-19 E31：当前服务实例收到真实飞书主私聊 exact `/clear` 后未调用模型，旧 session `s_2d0d2bc7…` 归档，新 session `s_26c0b10c…` 选中，用户与回复均 `delivered`，客户端可见回复严格为 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未受影响。详见 [E31 记录](live-evidence-e31-clear-command.md)。该记录只关闭 FSH05 的正常主入口子项，失败事务、旧队列、重复事件、群拒绝与重启恢复仍分验。
+
+2026-09-19 E32：真实飞书创建双参与者 `manual` 讨论，Claude/Codex 的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡真实发送到任务群并等待用户。旧二进制在 `initialSent=false` 且任务处于 `blocked` 时仍发出“后续会自动推进、无需你操作”的通知，已判为 R-F；当前分支已修正提示词并通过 12 项定向测试、lint 和 465 项完整检查。详见 [E32 记录](live-evidence-e32-manual-discussion.md)。新二进制重启后仍需完成用户审批、双 marker、任务完成和群/执行器清理复验。
 
 2026-09-19 v0.3.11 离线检查记录：功能发布基线为 `2a5bbd0`。`npm run check` 通过 440/440 项（单文件行数、typecheck、Biome lint 和测试）。这只是该发布基线的离线检查记录，不代表后续修复检查结果或新的现场飞书业务验收，因此不关闭仍未真实验证的矩阵行。下面保留的 2026-09-18 运行记录是历史部署 stamp，不能当作当前 HEAD 的运行证明。
 
