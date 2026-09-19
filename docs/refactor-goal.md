@@ -36,6 +36,8 @@
 
 2026-09-19 E35：`259b377` 的 `0.3.13-dev` 经真实主私聊 tasks_list→task_action destroy→task_get，完成指定取消/销毁子场景。两条后台通知按“进入销毁收尾/即将解散”分别在 herdr close 和删群前送达，两个阶段 processed、无 rejection；主回合 done/finished，真实 CUA 和 REST 确认群解散、执行器 gone，飞书任务 completedAt=0 且无 completion 操作。四条旧历史和空讨论目录保留，零审批记录不算审批失效验证。完整检查 566 项、SEA 烟测和三平台 CI 通过，部署 stamp 见 [E35 记录](live-evidence-e35-destroy-notices.md)。仅 destroy 指定子项 R-P；E34 原失败与正文缺失保留，修复后的 complete 全链路通知及其他组合仍分验，完整目标 active。
 
+2026-09-19 E36：`2e621e1` 的 `0.3.13-dev`（602 项完整检查、SEA 和三平台 CI 通过）经真实入口创建带引号 Codex 的单参与者受控讨论；旧目录信任现场拒绝后自动确认新现场、initial verified、原生零工具 marker 和群可见输出有证据。群内用户确认后 complete→task_get、两条正确阶段通知 processed/delivered、herdr close、群删除及真实 REST completedAt/group dissolved 的限定完成通知子链 R-P。但主私聊创建回合 inbox failed/model_failed，事实护栏拒绝了两份候选答复，疑似误拒仍在定位，创建阶段保留 R-F，不以最终资源清理覆盖。详见 [E36 记录](live-evidence-e36-completion-notices.md)。完整目标 active，未声称全矩阵通过。
+
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 
 2026-09-18 E21 审查整改：启动飞书长连接后订阅当前应用负责的任务，订阅失败沿原连接清理与重试流程处理，成功前不启动调度。普通后台任务和群查询遵守 `tasks.pollIntervalMs`，失败尝试时间持久化，重启不清空冷却；真实事件和显式完成/重开操作即时同步，执行器观察与资源清理不等待远端轮询。403 项自动化及格式、类型、lint、行数检查通过；真实订阅事件验收与最终 HEAD CI 另行记录，通过前不合并。

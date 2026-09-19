@@ -102,12 +102,19 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
       /(?:飞书|Feishu|remote).{0,16}(?:任务|task).{0,16}(?:创建|建立|建好|建成|已(?:经)?建(?:了)?(?=[，,、：:\s]|$)|created)|(?:创建|建立|建好|建成|已(?:经)?建(?:了)?|created).{0,16}(?:飞书|Feishu|remote).{0,16}(?:任务|task)/iu.test(
         value,
       );
-    const sent =
-      /(?:转交|投递|送达|交给|传给|发送|收到|forwarded|delivered|dispatched|\b(?:sent|received)\b)/iu.test(
-        value,
-      ) &&
-      /(?:要求|需求|指令|限制|Claude|Codex|参与者|prompt|requirements|instructions|participant)/iu.test(
-        value,
+    // Delivery must be asserted in its own clause. "群已建立，初始要求投递
+    // 确认前" and "已加入，但投递尚未确认" contain no successful delivery.
+    const sent = value
+      .split(/[，,]|(?:但是|不过|但|并且|而且)/iu)
+      .some(
+        (part) =>
+          asserted.test(part) &&
+          /(?:转交|投递|送达|交给|传给|发送|收到|forwarded|delivered|dispatched|\b(?:sent|received)\b)/iu.test(
+            part,
+          ) &&
+          /(?:要求|需求|指令|限制|Claude|Codex|参与者|prompt|requirements|instructions|participant)/iu.test(
+            value,
+          ),
       );
     if (!group && !remote && !sent) return false;
     const explicitIds = clause.match(/task_[a-zA-Z0-9]+/gu) ?? [];

@@ -512,3 +512,104 @@ for (const scenario of [
     assert.equal(failure?.toolCalls, 3);
   });
 }
+
+// Exact candidate text and relevant task_get facts from E36 checkpoint
+// 1c151246262c73379de53335d6765155566d597af5b1c40656c83be0df61b409, indices 23/29.
+const e36Candidates = [
+  {
+    text: "已创建并核验真实状态：\n\n- 任务：**MYRIX-E36-COMPLETE-20260919**\n- 任务编号：`task_53dbc3f2899b8fb0c719be0c5d96b91b`\n- 飞书任务已创建：[打开任务](https://applink.feishu.cn/client/todo/detail?guid=78e579af-47c3-4121-bde2-59d9e99c014d&suite_entity_num=t100036)\n- 专属任务群已建立：群 ID `oc_0211e7b2e6c1c30869aeed041d04d718`\n- 当前状态：启动中\n- Codex：已加入，但尚未启动，初始要求的投递尚未确认\n- 已保留 Bypass；讨论目录已生成，目录信任按 pi 启动流程处理，其他确认留在群内\n- 不会自动验收、完成或关闭；Codex 输出 `MYRIX_E36_OK` 后将等待你确认完成",
+    snapshot: {
+      id: "task_53dbc3f2899b8fb0c719be0c5d96b91b",
+      status: "starting",
+      remoteTaskId: "78e579af-47c3-4121-bde2-59d9e99c014d",
+      chatId: "oc_0211e7b2e6c1c30869aeed041d04d718",
+      groupDeleted: false,
+      participants: [
+        {
+          id: "task_53dbc3f2899b8fb0c719be0c5d96b91b:p1",
+          name: "Codex",
+          kind: "codex",
+          status: "pending",
+          started: false,
+          initialSent: false,
+        },
+      ],
+    },
+  },
+  {
+    text: [
+      "已按要求**只读复核，未重复创建任务**。当前已核验阶段如下：",
+      "",
+      "- **飞书任务已实际创建**：任务编号 `task_53dbc3f2899b8fb0c719be0c5d96b91b`  ",
+      "  [打开飞书任务](https://applink.feishu.cn/client/todo/detail?guid=78e579af-47c3-4121-bde2-59d9e99c014d&suite_entity_num=t100036)",
+      "- **专属任务群已建立**：群 ID `oc_0211e7b2e6c1c30869aeed041d04d718`，且 `groupDeleted=false`",
+      "- **参与者**：仅一名 Codex，已在正确讨论目录中启动并进入交互界面",
+      "- **任务状态**：`starting`，尚未完成、未关闭，也不会自动验收",
+      "- **Bypass**：已保留为开启",
+      "- **尚未确认**：Codex 初始要求的投递仍为 `initialSent=false`，因此不能声称要求已经转交；目前也未捕获到 `MYRIX_E36_OK` 输出",
+      "",
+      "结论：任务与群均已真实建立，当前处于 **Codex 启动后、初始要求投递确认前** 的阶段。",
+    ].join("\n"),
+    snapshot: {
+      id: "task_53dbc3f2899b8fb0c719be0c5d96b91b",
+      status: "starting",
+      remoteTaskId: "78e579af-47c3-4121-bde2-59d9e99c014d",
+      chatId: "oc_0211e7b2e6c1c30869aeed041d04d718",
+      groupDeleted: false,
+      participants: [
+        {
+          id: "task_53dbc3f2899b8fb0c719be0c5d96b91b:p1",
+          name: "Codex",
+          kind: "codex",
+          status: "blocked",
+          started: true,
+          initialSent: false,
+        },
+      ],
+    },
+  },
+];
+
+for (const { text, snapshot } of e36Candidates) {
+  test(`E36 real creation candidate reports pending delivery without inventing receipt: ${snapshot.participants[0]?.status}`, async () => {
+    const available = tools(async () => snapshot);
+    const create = available.find((tool) => tool.name === "task_create");
+    assert.ok(create);
+    create.execute = async () => ({ accepted: true, task: { ...queued, id: snapshot.id } });
+    const result = await run(
+      [
+        call("task_create", "create"),
+        call("task_get", "read", { taskId: snapshot.id }),
+        response(text),
+      ],
+      available,
+    );
+    assert.equal(result.text, text);
+    assert.equal(result.toolCalls, 2, "Accurate pending-stage text must not trigger recovery");
+    assert.equal(result.toolEvidence?.provisioning?.tasks[0]?.participants[0]?.sent, false);
+  });
+}
+
+for (const text of [
+  "任务与群均已真实建立，Codex 已收到初始要求。",
+  "Codex：已加入，初始要求已投递给 Codex。",
+  "任务与群均已真实建立，要求已转交给 Codex。",
+  "Codex，已收到。",
+  "Codex 已转交要求，但投递尚未确认。",
+]) {
+  test(`separate actual delivery assertions still require a receipt: ${text}`, async () => {
+    await assert.rejects(
+      run(
+        [
+          call("task_create", "create"),
+          call("task_get", "read"),
+          response(text),
+          call("task_get", "verify"),
+          response(text),
+        ],
+        tools(async () => provisioned(false, false)),
+      ),
+      (error: unknown) => error instanceof OperationError && error.code === "model_failed",
+    );
+  });
+}
