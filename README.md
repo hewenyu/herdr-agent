@@ -6,9 +6,13 @@ A local orchestration tool built with **Node, TypeScript and pi**, distributed a
 
 **pi manages this tool's projects, tasks, participants and sessions. herdr hosts Claude/Codex and their native sessions.** Claude/Codex handle your project's requirements, design, implementation, tests and reviews. You can bring both into one task group, run multiple instances, and create independent tasks for different projects.
 
+The pi conversation is the orchestration context. A task's Claude/Codex sessions are separate execution resources managed through herdr; switching or clearing the main pi conversation does not close them.
+
 With AI enabled, the model decides conversational replies, lifecycle notices and tool calls. The application provides tools, permission checks and durable operation receipts. An explicit business request must result in at least one tool attempt; a text-only acknowledgement such as “received” cannot finish that request. Capability and explanation questions remain ordinary conversation. Claims about completed business actions require real write evidence; lifecycle notices use the current task and participant snapshots with read-only tools. The exact `/clear` command rotates the main private pi session directly, without a model call.
 
 The frontend, backend, Node runtime and native locking addon are bundled into one executable. The repository, standalone executable and state directory retain the names `herdr-agent` and `~/.herdr-agent` for compatibility.
+
+Task creation and participant follow-ups preserve and forward the current Feishu user's original message separately from pi's assignment summary. Explicit paths, ordering and restrictions in the original message take precedence. Remote task descriptions show a truncation notice when they exceed the length limit; local records and participant input retain the full original. Existing tasks are not rewritten or resent automatically.
 
 ## Install
 
@@ -26,8 +30,15 @@ List available versions, install a specific version, or upgrade to the stable re
 
 ```sh
 npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.12
+npm install -g @yuebanlaosiji/myrix@0.3.13
 npm install -g @yuebanlaosiji/myrix@latest
+```
+
+`0.3.13` is an example published version; npm versions omit the tag's `v` prefix. A global installation replaces the currently installed version. To pin a version in a local npm project instead:
+
+```sh
+npm install --save-exact @yuebanlaosiji/myrix@0.3.13
+npx --no-install myrix version --json
 ```
 
 For an installation without Node, download and extract the matching archive from [Releases](https://github.com/hewenyu/herdr-agent/releases), verify it against the attached `SHA256SUMS`, then run the included executable:
@@ -46,7 +57,9 @@ See [Releases](https://github.com/hewenyu/herdr-agent/releases/latest) for the l
 
 A pushed `v*` tag triggers three native builds and smoke tests, verifies the complete npm distribution with an offline global install, publishes the platform packages and then the entry package, and creates the GitHub Release. Publishing uses `TOKEN` from the GitHub environment `NPM`. Artifact downloads inside Actions are only an internal assembly step; users install `@yuebanlaosiji/myrix` from npm or download a release archive, without selecting a workflow download. See [release operations](docs/releasing.md) for versioning and recovery.
 
-Full live acceptance remains **partial and in progress**. [The validation matrix](docs/live-validation.md) separates implementation, automated tests and real Feishu/herdr evidence. [E32](docs/live-evidence-e32-manual-discussion.md) covers manual Claude/Codex discussion and cleanup; [E34](docs/live-evidence-e34-runtime-recovery.md) covers user approval, participant output, cleanup and recovery from an explicitly failed task ID within the same turn. Historical failures remain recorded, including [E33](docs/live-evidence-e33-n02-codex.md). [E35](docs/live-evidence-e35-destroy-notices.md) verified both cleanup notices and resource deletion for an explicitly cancelled task, while its remote task stayed incomplete. [E36](docs/live-evidence-e36-completion-notices.md) also verified completion-path notices and cleanup. Its creation-reply rejection was subsequently fixed and passed the limited creation-to-cleanup recheck in [E37](docs/live-evidence-e37-create-delivery.md). These are limited checks; overall acceptance remains partial.
+Full live acceptance remains **partial and in progress**. [The validation matrix](docs/live-validation.md) separates implementation, automated tests and real Feishu/herdr evidence for the B/N scenarios. It records both successful checks and unresolved failures; a passing build or a completed task does not mean that every scenario has passed. [E37](docs/live-evidence-e37-create-delivery.md) records a limited creation-to-completion-and-cleanup recheck, with earlier failures preserved in the linked evidence.
+
+[E38](docs/live-evidence-e38-multi-project.md) records multi-directory Web configuration, separate pi sessions and a second project created while the first was blocked. It also exposed configuration feedback, request fidelity and directory-trust failures. The repaired development runtime resumed the second project through real Codex execution, checked its output and cleaned up the test resources. Subsequent [E39 checks](docs/live-evidence-e39-source-approval.md) verified Web add/edit error feedback, frozen configuration for existing tasks, and original-request delivery and outputs for new Claude/Codex tasks. They also exposed creation-reply, approval-option and notification failures. The repaired development binary passed 702 automated checks and three-platform CI; E39 test groups and execution sessions are cleaned up. Real approval clicks, new-task reply accuracy and the remaining session combinations still need rechecks.
 
 A locally accepted or queued task does not prove that the remote task or group exists, or that instructions reached a participant. Replies must follow confirmed tool receipts. Release versions and the local development binary can differ; use `myrix version --json` when comparing behavior.
 
@@ -78,7 +91,7 @@ myrix setup
 myrix serve --open
 ```
 
-Setup reuses an existing app when possible, saves credentials and the verified owner, and requires both a private message and the matching card callback for complete verification. Stop serve before running setup. Use `setup --app cli_EXISTING_APP` to resolve an ambiguous app and `setup --update-permissions` to grant required scopes. Creating a replacement app requires `setup --reregister --yes`.
+Setup reuses an existing app when possible, saves credentials and the verified owner, and requires both a private message and the matching card callback for complete verification. Stop serve before running setup. Use `setup --app cli_EXAMPLE123` to resolve an ambiguous app and `setup --update-permissions` to grant required scopes. Creating a replacement app requires `setup --reregister --yes`.
 
 For existing apps with tasks enabled, configure event subscriptions in the Feishu developer console, add `task.task.update_user_access_v2`, and publish the app version so manual task completion reaches the service. Per-task API subscriptions do not replace this event configuration and publication. Setup's scope check does not verify developer-console event subscriptions.
 
@@ -86,7 +99,17 @@ The current CLI supports mainland Feishu apps; it refuses to save a Lark registr
 
 Feishu credentials come from process environment, then state `.env`, then repository `.env`. Files use literal `KEY=VALUE`: quotes, hashes and embedded equals signs are literal, and shell `export` syntax is unsupported. Model and memory keys come from TOML. Keep credential files private.
 
-The local page maintains machine configuration and shows conversation history; it is not a task-management fallback when Feishu is unavailable. Its URL is printed on startup; port 0 selects an available port. Only literal loopback IPs are accepted. The local Web page can add, edit or remove project registrations, choose a default project and participant, set Bypass for new tasks, and save the pi model connection. Enter existing directories in order: saving validates every directory and initializes Git in the first directory if needed; additional directories are passed to Claude/Codex in the same order. Removing a registration does not delete its code. Project and Bypass settings apply to new tasks without changing existing execution sessions; model connection changes require a service restart. The Web identity selector only selects authorized history and configuration scope; it does not change the Feishu sender. You can also use the documented configuration files and CLI; initiate business operations in Feishu. `myrix configure --listen 127.0.0.1:0 --open` remains available to start the local page without a Feishu connection. Its HTTP interface only exposes protected configuration writes; business writes remain unavailable. The command still opens and migrates local state and can process already queued work through the existing scheduler; the read-only guarantee applies to browsing, not to every effect of starting the service. This is a single-user, single-machine tool, not a remotely authenticated multi-tenant Web service.
+The local Web page has three areas:
+
+| Area | What you can do | When changes apply |
+| --- | --- | --- |
+| Project configuration | Add, edit or remove local project registrations; choose the default project and its Claude/Codex participant; set Bypass | New tasks use the saved configuration; existing task snapshots remain unchanged |
+| Model settings | Save the pi provider, model, explicit Base URL, API key and enabled state | Restart the service after saving |
+| Conversation history | Browse main and task sessions, messages and recorded tool activity | Browsing does not send messages, acknowledge delivery or switch the active Feishu session |
+
+For each project, enter **one existing absolute directory per line**. The first is the main working directory; saving checks all directories and initializes Git in the main directory if needed. Additional directories are passed to Claude/Codex in the saved order. Removing a registration does not delete its code. Other service settings, such as Feishu permissions, polling and memory, use `setup` or the documented configuration files.
+
+The page URL is printed on startup; port 0 selects an available port. Only literal loopback IPs are accepted. The Web identity selector selects authorized history and configuration scope; it does not change the Feishu sender. `myrix configure --listen 127.0.0.1:0 --open` starts the page without a Feishu connection. Its HTTP interface exposes protected configuration writes; task creation, discussion and approvals happen in Feishu. Starting `configure` still opens and migrates local state and can process already queued work through the scheduler; browsing itself is read-only. This is a single-user, single-machine tool.
 
 For supervised operation, review the launchd/systemd user templates and installer in [deploy](deploy/). Use the correct account and paths. Stopping the bridge does not automatically destroy herdr-managed tasks.
 
@@ -94,13 +117,17 @@ For supervised operation, review the launchd/systemd user templates and installe
 
 Use the main Feishu private conversation to create projects and tasks or switch pi sessions; use each task group to continue its discussion and handle approvals. Ask pi to start a requirements discussion with Claude and Codex or arrange implementation and review. Discussions may omit a project; development, review and test tasks use a configured project. One Feishu bot labels participant output; Claude and Codex are not separate Feishu accounts.
 
-Multi-participant discussions default to at most four rounds and 30 minutes. Participant IDs distinguish multiple instances of the same model. Normal text never serves as a permission-menu approval. Unknown delivery or mutation outcomes are retained for inspection rather than automatically retried.
+The first participant receives the task input automatically once its execution environment is ready. A single participant has no next participant to hand off to; its output waits for user follow-up or acceptance. Multi-participant discussions default to at most four rounds and 30 minutes. Participant IDs distinguish multiple instances of the same model. Normal text never serves as a permission-menu approval. Unknown delivery or mutation outcomes are retained for inspection rather than automatically retried.
 
 Task identity and creation locks are scoped to the selected pi session. Reusing a request or message ID in another session therefore creates an independent task and does not serialize unrelated project creation. The application retains task and conversation history after a group is dissolved, but late messages and card callbacks are rejected at ingress and before inbox execution; they cannot fall back to the main pi session or consume an approval. When Feishu reconnects, the previous task scheduler is stopped before the replacement starts reconciling the same records, so an old connection cannot continue acting on the new connection's work.
 
 At startup, pi automatically confirms only the native Claude/Codex directory-trust prompt when the directory matches the authorized task project. In `manual` discussions pi only attempts the first participant automatically; later participants wait for the user or scheduler. If the current facts show a published task-group approval card, a `blocked` participant requires the user to handle that card; without a group or card publication fact, the notice reports only that the participant is blocked. `round_robin` may advance only after the previous participant has produced a verified output. Other approval prompts remain in the task group for the user to choose explicitly. The project/task Bypass setting is preserved as an explicit option and is never enabled implicitly by this startup handling.
 
-New tasks dissolve their group after confirmed completion by default; explicitly request `keepGroup: true` to retain it. `review` never triggers dissolution. Explicit retention remains effective. Legacy default or unproven retention is resolved to deletion when completion or closure begins; active historical tasks are not rewritten in bulk. `complete`, including manual Feishu completion, closes the corresponding execution resources through herdr and applies the group policy. Any group dissolution also closes the corresponding herdr-managed Claude/Codex sessions. Explicit `keepExecution: true` on completion is an exception and requires `keepGroup: true` for tasks with a group; `close` confirms completion before execution cleanup; `destroy` cleans up without accepting the task; `reopen` applies to completed tasks whose resources remain. If execution has already closed and a group was retained, explicitly request its dissolution; pi can use `destroy` with `keepGroup: false` (or `close` for an already accepted task). This keeps the original acceptance history and never restarts execution. Session archiving is independent. Shared project directories are the default. Explicit worktree mode isolates only the first directory; additional directories remain shared, and task closure does not delete code or worktrees.
+**Confirmed task completion normally closes its group and its Claude/Codex sessions together.** This includes completion confirmed in Feishu; execution cleanup goes through herdr. Participant output or `review` alone does not complete the task or dissolve its group. Any group dissolution also closes the associated herdr-managed execution sessions.
+
+Explicit retention overrides the default: `keepGroup: true` retains the group, while `keepExecution: true` also retains execution and requires `keepGroup: true` when a group exists. `close` confirms completion before cleanup; `destroy` cleans up without accepting the task; `reopen` applies to completed tasks whose resources remain. A retained group can be dissolved later with `destroy` and `keepGroup: false` (or `close` for an accepted task), preserving acceptance history without restarting execution. Legacy default or unproven retention is resolved when closure begins; active historical tasks are not rewritten in bulk.
+
+Task cleanup and pi session archiving are separate. Code, conversation history and worktrees remain after cleanup. Shared project directories are the default; explicit worktree mode isolates only the first directory, while additional directories remain shared.
 
 The everyday CLI is `serve / setup / configure / doctor / version / help`; `configure` opens the local configuration and conversation-history page, while business controls remain in Feishu. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
 

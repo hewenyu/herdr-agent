@@ -64,21 +64,38 @@ export function heading(title: string, subtitle: string, ...buttons: HTMLElement
 
 export function modal(title: string): HTMLDivElement {
   const dialog = document.querySelector<HTMLDialogElement>("#modal");
-  const body = document.querySelector<HTMLDivElement>("#modal-content");
-  if (!dialog || !body) throw new Error("缺少对话框");
-  body.replaceChildren();
+  const content = document.querySelector<HTMLDivElement>("#modal-content");
+  if (!dialog || !content) throw new Error("缺少对话框");
+  const body = el("div");
+  content.replaceChildren(body);
   const head = el("div", "modal-head");
   head.append(
     el("h2", "", title),
     button("×", () => dialog.close(), "icon-button"),
   );
-  body.append(head);
+  const feedback = el("div", "notice error modal-feedback");
+  feedback.setAttribute("role", "alert");
+  feedback.hidden = true;
+  body.append(head, feedback);
   if (!dialog.open) dialog.showModal();
   return body;
 }
 
-export function closeModal(): void {
+export function closeModal(body?: HTMLElement): void {
+  if (body && !document.querySelector("#modal-content")?.contains(body)) return;
   document.querySelector<HTMLDialogElement>("#modal")?.close();
+}
+
+/** Capture this dialog's feedback, so a late response cannot affect a newer dialog. */
+export function modalFeedback(): ((message?: string) => void) | undefined {
+  const dialog = document.querySelector<HTMLDialogElement>("#modal");
+  const feedback = dialog?.querySelector<HTMLElement>(".modal-feedback");
+  if (!dialog?.open || !feedback) return;
+  return (message = "") => {
+    if (!dialog.open || !dialog.contains(feedback)) return;
+    feedback.textContent = message;
+    feedback.hidden = !message;
+  };
 }
 
 export function ask(title: string, detail: string, run: () => Promise<boolean>) {
@@ -90,7 +107,7 @@ export function ask(title: string, detail: string, run: () => Promise<boolean>) 
       button(
         "确认",
         async () => {
-          if (await run()) closeModal();
+          if (await run()) closeModal(body);
         },
         "danger",
       ),

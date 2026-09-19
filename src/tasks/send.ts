@@ -1,9 +1,11 @@
 import { fail, OperationError } from "../core/errors.js";
-import { now } from "../core/ids.js";
-import type { Delivery, Participant, Task } from "../core/types.js";
+import { canonical, now, stableId } from "../core/ids.js";
+import type { Delivery, Participant, Task, UserRequestSource } from "../core/types.js";
+import type { OperationReceipt } from "../storage/operations.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { participantPrompt } from "./prompts.js";
+import { requestPrompt } from "./user-request.js";
 
 export async function sendParticipant(
   context: TaskContext,
@@ -11,6 +13,7 @@ export async function sendParticipant(
   participant: Participant,
   text: string,
   operationId: string,
+  userRequest?: UserRequestSource,
 ): Promise<Delivery> {
   assertActive(context);
   if (!text.trim()) fail("empty_input", "消息不能为空。");
@@ -28,30 +31,36 @@ export async function sendParticipant(
       fail("participant_busy", "同一执行任务按参与者串行工作，请等待当前参与者结束。");
   }
   const initial = !participant.initialSent;
-  const prompt = initial ? participantPrompt(task, participant, text) : text;
-  const delivery = await context.operations.run(
-    operationId,
-    { participant: participant.id, text },
-    async () => {
-      await captureInputBaseline(context, participant);
-      assertActive(context);
-      const result = await context.herdr.send(
-        participant.execution as NonNullable<Participant["execution"]>,
-        prompt,
-        initial ? { receipt: participant.initialReceipt } : undefined,
+  const arrangement = userRequest ? requestPrompt(userRequest, text) : text;
+  const prompt = initial ? participantPrompt(task, participant, arrangement) : arrangement;
+  const legacyParameters = { participant: participant.id, text };
+  const previous = context.store.get<OperationReceipt>("operations", operationId);
+  // Preserve old receipt lookup without emitting a new prompt on upgrade. New
+  // sends bind the exact trusted message too, so changed source cannot replay.
+  const legacyReceipt = previous?.fingerprint === stableId(canonical(legacyParameters));
+  const parameters =
+    userRequest && !legacyReceipt
+      ? { participant: participant.id, text: arrangement }
+      : legacyParameters;
+  const delivery = await context.operations.run(operationId, parameters, async () => {
+    await captureInputBaseline(context, participant);
+    assertActive(context);
+    const result = await context.herdr.send(
+      participant.execution as NonNullable<Participant["execution"]>,
+      prompt,
+      initial ? { receipt: participant.initialReceipt } : undefined,
+    );
+    if (result.status === "not_executed")
+      throw new OperationError("delivery_not_executed", "本次未发送；可核对参数后重试。");
+    if (!result.verified) {
+      throw new OperationError(
+        "delivery_unconfirmed",
+        "正文已尝试发送，但尚未确认到达。请核对现场，不要自动重发。",
+        "unknown",
       );
-      if (result.status === "not_executed")
-        throw new OperationError("delivery_not_executed", "本次未发送；可核对参数后重试。");
-      if (!result.verified) {
-        throw new OperationError(
-          "delivery_unconfirmed",
-          "正文已尝试发送，但尚未确认到达。请核对现场，不要自动重发。",
-          "unknown",
-        );
-      }
-      return result;
-    },
-  );
+    }
+    return result;
+  });
   participant.initialSent = true;
   participant.status = "working";
   participant.error = undefined;

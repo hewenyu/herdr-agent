@@ -9,8 +9,10 @@ import { streamSimple as streamAnthropic } from "@earendil-works/pi-ai/api/anthr
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
+import { canonical } from "../core/ids.js";
 import type { Logger } from "../core/ports.js";
 import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
+import { modelDiagnostic } from "./model-diagnostics.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import {
   type ProvisionEvidence,
@@ -28,6 +30,22 @@ import type {
 export function estimateTokens(value: unknown): number {
   return Math.ceil(Buffer.byteLength(JSON.stringify(value), "utf8") / 3) + 16;
 }
+
+// Targets outside taskId/participantId must not share a failed-attempt key.
+// Mutable payload (a rename's new name, project directories, requirements)
+// stays out so correcting those fields on the same target can still succeed.
+const targetSelectors: Record<string, readonly string[]> = {
+  session_create: ["name"],
+  session_select: ["sessionId"],
+  session_rename: ["sessionId"],
+  session_archive: ["sessionId"],
+  session_restore: ["sessionId"],
+  project_create: ["name"],
+  project_save: ["name"],
+  project_remove: ["name"],
+  task_create: ["project", "title"],
+  participant_add: ["name", "kind"],
+};
 
 /** Use the real pi tool loop, with only the two explicitly configured transports. */
 export class PiEngine implements ConversationEngine {
@@ -76,8 +94,12 @@ export class PiEngine implements ConversationEngine {
           apiKey: config.apiKey,
           maxRetries: 0,
           timeoutMs: config.timeoutMs,
-          fetch: ((input, init) =>
-            fetchImpl(input, { ...init, redirect: "error" })) as typeof fetch,
+          fetch: (async (input, init) => {
+            const response = await fetchImpl(input, { ...init, redirect: "error" });
+            // Capture non-2xx responses too; provider callbacks only see accepted requests.
+            await streamOptions?.onResponse?.({ status: response.status, headers: {} }, model);
+            return response;
+          }) as typeof fetch,
         };
         return model.api === "anthropic-messages"
           ? streamAnthropic(model as Model<"anthropic-messages">, context, requestOptions)
@@ -98,12 +120,25 @@ export class PiEngine implements ConversationEngine {
     let notExecutedToolResults = 0;
     const rejectedAttempts = new Map<
       string,
-      { retry: string; target: string; code: unknown; corrected: boolean }
+      {
+        retry: string;
+        target: string;
+        code: unknown;
+        corrected: boolean;
+        readOnly: boolean;
+        args: Record<string, unknown>;
+      }
     >();
     const retryKey = (name: string, args: Record<string, unknown>) =>
       JSON.stringify([name, args.action]);
     const attemptKey = (name: string, args: Record<string, unknown>) =>
-      JSON.stringify([name, args.taskId ?? input.actor.taskId, args.participantId, args.action]);
+      JSON.stringify([
+        name,
+        args.taskId ?? input.actor.taskId,
+        args.participantId,
+        args.action,
+        ...(targetSelectors[name] ?? []).map((field) => args[field]),
+      ]);
     const unresolvedNotExecuted = (text: string) =>
       [...rejectedAttempts.values()].filter(
         (attempt) =>
@@ -159,12 +194,30 @@ export class PiEngine implements ConversationEngine {
               code:
                 result && typeof result === "object" && "code" in result ? result.code : undefined,
               corrected: false,
+              readOnly: tool.readOnly,
+              args: structuredClone(args as Record<string, unknown>),
             });
           } else {
             rejectedAttempts.delete(attemptKey(tool.name, args as Record<string, unknown>));
-            for (const attempt of rejectedAttempts.values()) {
-              if (attempt.retry === retryKey(tool.name, args as Record<string, unknown>))
-                attempt.corrected = true;
+            for (const [key, attempt] of rejectedAttempts) {
+              if (attempt.retry !== retryKey(tool.name, args as Record<string, unknown>)) continue;
+              // A read-only query rejected for missing input can be completed
+              // by supplying that input. Preserve every existing selector and
+              // any bound task so another target cannot erase its failure.
+              const completedReadInput =
+                tool.readOnly &&
+                attempt.readOnly &&
+                attempt.code === "input" &&
+                (!attempt.target ||
+                  attempt.target ===
+                    String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? "")) &&
+                Object.entries(attempt.args).every(
+                  ([field, value]) =>
+                    Object.hasOwn(args as Record<string, unknown>, field) &&
+                    canonical(value) === canonical((args as Record<string, unknown>)[field]),
+                );
+              if (completedReadInput) rejectedAttempts.delete(key);
+              else attempt.corrected = true;
             }
             successfulToolCalls++;
             if (!tool.readOnly) successfulWriteCalls++;
@@ -202,6 +255,8 @@ export class PiEngine implements ConversationEngine {
               target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
               code: safe.code,
               corrected: false,
+              readOnly: tool.readOnly,
+              args: structuredClone(args as Record<string, unknown>),
             });
           } else unknownToolResults++;
           return {
@@ -216,8 +271,17 @@ export class PiEngine implements ConversationEngine {
     // for a normal follow-up answer with provider `auto`; leaving `required`
     // latched forces every continuation into another tool call and can exhaust
     // the 12-call budget on read-only notification turns.
-    let requireToolCall = false;
+    let requireToolCall = input.requireToolCall === true;
+    let httpStatus: number | undefined;
+    let abortCause: "timeout" | "cancelled" | undefined;
     const stream: StreamFn = (model, context, options) => {
+      httpStatus = undefined;
+      options = {
+        ...options,
+        onResponse: (response) => {
+          httpStatus = response.status;
+        },
+      };
       if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
       requireToolCall = false;
       const toolChoice =
@@ -278,14 +342,25 @@ export class PiEngine implements ConversationEngine {
         return messages;
       },
     });
-    const abort = () => agent.abort();
+    const abort = () => {
+      abortCause ??= "cancelled";
+      agent.abort();
+    };
     input.signal?.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(abort, this.config.timeoutMs);
+    const timeout = setTimeout(() => {
+      abortCause ??= "timeout";
+      agent.abort();
+    }, this.config.timeoutMs);
     let checkpointError = false;
     agent.subscribe(async (event) => {
       if (event.type === "message_end" || event.type === "agent_end") {
         try {
-          await input.onCheckpoint?.(safeMessages(agent.state.messages));
+          const last = agent.state.messages.at(-1);
+          const diagnostic = modelDiagnostic(last, abortCause, httpStatus);
+          await input.onCheckpoint?.(
+            safeMessages(agent.state.messages),
+            diagnostic.category !== "unknown" ? diagnostic : undefined,
+          );
         } catch {
           checkpointError = true;
           agent.abort();
@@ -312,15 +387,16 @@ export class PiEngine implements ConversationEngine {
         input.tools.length > 0 &&
         requiresToolForRequest(input.prompt);
       const claimRecovery =
-        input.enforceClaims !== false &&
-        (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
-          (unknownToolResults > 0 ||
-            unresolvedNotExecuted(finalText) > 0 ||
-            toolCallsSeen === 0 ||
-            (requiresWriteEvidence(finalText)
-              ? successfulWriteCalls === 0
-              : successfulToolCalls === 0))) ||
-          unsupportedProvisionClaim(finalText, provisioning));
+        (input.requireToolCall === true && executedCalls === 0) ||
+        (input.enforceClaims !== false &&
+          (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
+            (unknownToolResults > 0 ||
+              unresolvedNotExecuted(finalText) > 0 ||
+              toolCallsSeen === 0 ||
+              (requiresWriteEvidence(finalText)
+                ? successfulWriteCalls === 0
+                : successfulToolCalls === 0))) ||
+            unsupportedProvisionClaim(finalText, provisioning)));
       if (claimRecovery && input.tools.length > 0) {
         // The first answer is the evidence failure that triggered recovery. Do
         // not allow it to survive if the constrained retry is blocked or fails
@@ -344,7 +420,7 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError(
           "model_failed",
           "pi 调度模型未能完成本轮；已登记操作保留，请查询状态。",
-          "unknown",
+          writes === 0 ? "not_executed" : "unknown",
         );
       }
       const last = agent.state.messages.at(-1);
@@ -352,19 +428,20 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError(
           "model_failed",
           "pi 调度模型响应未完整完成；请查询已登记操作。",
-          "unknown",
+          writes === 0 ? "not_executed" : "unknown",
         );
       }
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
       if (
-        claimRecovery &&
-        (unknownToolResults > 0 ||
-          unresolvedNotExecuted(finalText) > 0 ||
-          (requiresWriteEvidence(finalText)
-            ? successfulWriteCalls === 0
-            : successfulToolCalls === 0) ||
-          unsupportedProvisionClaim(finalText, provisioning))
+        (input.requireToolCall === true && executedCalls === 0) ||
+        (claimRecovery &&
+          (unknownToolResults > 0 ||
+            unresolvedNotExecuted(finalText) > 0 ||
+            (requiresWriteEvidence(finalText)
+              ? successfulWriteCalls === 0
+              : successfulToolCalls === 0) ||
+            unsupportedProvisionClaim(finalText, provisioning)))
       )
         throw new OperationError(
           "model_failed",
@@ -406,9 +483,11 @@ export class PiEngine implements ConversationEngine {
       };
     } catch (error) {
       const failure = safeError(error);
+      const diagnostic = modelDiagnostic(agent.state.messages.at(-1), abortCause, httpStatus);
       this.logger?.error("pi 本轮未完成", {
         event: "pi.turn_failed",
         ...trace,
+        ...diagnostic,
         code: failure.code,
         outcome: failure.outcome,
         toolCalls: executedCalls,
@@ -513,7 +592,14 @@ function toolResultOutcome(value: unknown): "successful" | "unknown" | "not_exec
 
 function safeMessages(messages: AgentMessage[]): AgentMessage[] {
   return structuredClone(messages).map((message) => {
-    if (message.role === "assistant" && message.errorMessage) message.errorMessage = "模型响应失败";
+    if (
+      message.role === "assistant" &&
+      (message.errorMessage || ["error", "aborted", "length"].includes(message.stopReason))
+    ) {
+      if (message.errorMessage) message.errorMessage = "模型响应失败";
+      // Provider-specific stop strings are arbitrary upstream data too.
+      delete message.rawStopReason;
+    }
     return message;
   });
 }

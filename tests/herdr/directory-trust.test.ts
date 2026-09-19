@@ -143,6 +143,58 @@ test("native Claude directory fixture recognizes wrapped cwd and exact selected 
   );
 });
 
+test("E38 Claude startup menu preserves a wrapped canonical directory and rejects altered contents", async () => {
+  const screen = await readFile(
+    new URL("../fixtures/native/claude-e38-directory-trust.txt", import.meta.url),
+    "utf8",
+  );
+  const cwd =
+    "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-e38-projects-i6y9ntq_/a/main";
+  assert.match(screen, /0000\n gn\/T/u);
+  assert.deepEqual(directoryTrustKeys("claude", screen, cwd), ["down", "enter"]);
+  assert.equal(directoryTrustKeys("claude", screen, cwd.replace("/a/main", "/a/extra")), undefined);
+  assert.equal(
+    directoryTrustKeys("claude", `${screen}\nApprove command execution`, cwd),
+    undefined,
+  );
+  assert.equal(
+    directoryTrustKeys("claude", screen.replace("Security guide", "Approve command"), cwd),
+    undefined,
+  );
+});
+
+test("E38 Codex clipped native heading uses the guarded full cwd, never grants authority by prefix", async () => {
+  const screen = await readFile(
+    new URL("../fixtures/native/codex-e38-directory-trust.txt", import.meta.url),
+    "utf8",
+  );
+  const cwd = "/Users/yueban/herder-agent-code/myrix-e38-project-b";
+  assert.deepEqual(directoryTrustKeys("codex", screen, cwd), ["enter"]);
+  for (const altered of [
+    screen.replace("/myrix-e38", "/another38"),
+    screen.replace("/myrix-e38", "/myrix"),
+    screen.replace("  Do you trust", "Do you trust"),
+    screen.replace("Do you trust the contents of this directory?", "Approve running a command?"),
+    `${screen}\nRun a command`,
+  ])
+    assert.equal(directoryTrustKeys("codex", altered, cwd), undefined);
+
+  const client = new TrustClient("codex");
+  client.ref.cwd = cwd;
+  client.agent.cwd = cwd;
+  client.text = screen;
+  // A similar prefix cannot authorize a different native cwd.
+  client.agent.cwd = `${cwd}-foreign`;
+  await assert.rejects(
+    new AgentControl(client).trustDirectory(client.ref, cwd, guard()),
+    (error: unknown) => error instanceof OperationError && error.code === "directory_mismatch",
+  );
+  assert.deepEqual(client.strokes, []);
+  client.agent.cwd = cwd;
+  await new AgentControl(client).trustDirectory(client.ref, cwd, guard());
+  assert.deepEqual(client.strokes, [["enter"]]);
+});
+
 test("false idle Claude startup is recognized as blocked only from its complete native directory menu", async () => {
   const client = new TrustClient();
   const raw = {
