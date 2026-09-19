@@ -59,3 +59,15 @@ Claude 和 Codex 的原生目录信任提示均由 pi 在目录与任务授权�
 - `welcome`、`group_ready` 只证明通知入口可用，不能承诺参与者要求已经投递或“无需操作”。
 
 离线定向测试 12/12、`npm run lint` 和完整 `npm run check` 470/470 已通过。真实修正后的通知、用户处理 Claude 审批、Claude/Codex 两个 marker、任务完成、群解散以及对应 herdr pane 关闭，仍需在用户处理审批后继续复验；本记录在这些步骤完成前保持 **R-部分**，不把当前保留的测试群或执行器当作已清理。
+
+## 2026-09-19 10:34 UTC 只读复核
+
+先前“仍等待用户处理 Claude 审批”的描述只适用于当时的快照，当前 SQLite 已有后续进展：
+
+- Claude `:p1:initial` 在 `02:55:13.930Z` 为 `done/delivered/acked=true/verified=true/attempts=1`，`initialSent=true`。`lastOutput=CLAUDE_DUAL_E32_OK`；对应群 outbox 为 `delivered`，飞书消息 ID `om_x100b65ebd76128a0b3f30ffd2903a3a`。
+- Codex `initialSent=false`，没有 `:p2:initial` 操作、没有 `lastOutput`，其 `done` 只表示当前执行器状态，不能据此声称已经发言。
+- 任务仍为 `review/groupDeleted=false/closeRequested=false`，结果只含 Claude marker。`manual` 模式不会自动把下一位当成已安排；仍需从真实任务群明确安排 Codex，完成双 marker 后再由用户验收和清理。
+- 本次真实 `herdr agent list` 同时列出 `w1W:p1` 和 `w1X:p1`，两个测试执行目标仍保留。没有清理 E32 任务或群。
+- 原服务 PID `54747` 已不存在，herdr PID `39037` 仍在；磁盘二进制仍是上述 `76d30f0` 的 `0.3.12-dev`，不能将历史 ready 记录写成当前在线证明。
+
+本次仅从指定状态记录、磁盘版本和 herdr 只读列表核实，未发送消息、点击审批或重新查询飞书远端。不能仅凭 Claude 已输出推断普通 Bypass 审批具体由哪个入口处理；原错误通知的 R-F 不被覆盖。双参与者完整链路和收尾仍未验收。

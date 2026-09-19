@@ -108,6 +108,8 @@ test("lifecycle notice trusts its task snapshot without forcing a write tool", a
       successfulWrites: 0,
       unknown: 0,
       notExecuted: 0,
+      unresolvedNotExecuted: 0,
+      provisioning: { created: [], tasks: [] },
     });
     assert.equal(h.platform.texts.length, 1);
     assert.equal(h.platform.texts[0]?.text, "模型确认：群已创建。");

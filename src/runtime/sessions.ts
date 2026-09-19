@@ -9,6 +9,7 @@ import { hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
 import { estimateTokens } from "./engine.js";
 import { type MemoryProvider, MemoryService, memoryEntry } from "./memory.js";
 import { NOTIFICATION_PROMPT, ORCHESTRATOR_PROMPT } from "./prompts.js";
+import { unsupportedProvisionClaim } from "./provision-evidence.js";
 import type {
   ConversationEngine,
   DeliveryOutcome,
@@ -410,19 +411,24 @@ export class SessionService {
         (result.toolCalls ?? 0) > 0 &&
         (evidence
           ? evidence.unknown === 0 &&
-            evidence.notExecuted === 0 &&
+            (evidence.unresolvedNotExecuted ?? evidence.notExecuted) === 0 &&
             (needsWrite ? (evidence.successfulWrites ?? 0) > 0 : evidence.successful > 0)
           : needsWrite
             ? (result.writeCalls ?? 0) > 0
             : (result.toolCalls ?? 0) > 0);
-      if (claim && !hasCredibleEvidence)
+      if (
+        (claim && !hasCredibleEvidence) ||
+        (evidence?.provisioning && unsupportedProvisionClaim(result.text, evidence.provisioning))
+      )
         throw new OperationError(
           "model_failed",
           evidence?.unknown
             ? "pi 调度模型未取得可确认的工具事实，本轮业务结果未知；请查询状态。"
-            : evidence?.notExecuted
+            : evidence?.notExecuted && !(evidence.successfulWrites ?? 0)
               ? "pi 调度模型调用的工具未执行，本轮业务未执行；请重试。"
-              : "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+              : (result.toolCalls ?? 0) === 0
+                ? "pi 调度模型未调用工具，本轮业务未执行；请重试。"
+                : "pi 调度模型的答复缺少对应工具事实；已登记操作保留，请查询实际状态。",
           evidence?.unknown ? "unknown" : "not_executed",
         );
       if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)

@@ -48,7 +48,11 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`。Actions 内部的 artifact 下载只是组装发布包的工作流步骤；用户直接从 npm 安装 `@yuebanlaosiji/myrix` 或下载 Release 压缩包，不需要选择 workflow 的 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28 模型探针](docs/live-evidence-e28-real-model-tool-decision.md)，生产应用身份与只读权限边界见 [E28 身份审计](docs/live-evidence-e28-identity-audit.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)，真实长消息分片与清理见 [E30](docs/live-evidence-e30-long-message.md)，主入口 `/clear` 机械轮转见 [E31](docs/live-evidence-e31-clear-command.md)，手动讨论通知修正及仍待现场复验见 [E32](docs/live-evidence-e32-manual-discussion.md)。E32 中普通审批仍明确交给用户；当前二进制必须等用户处理已发布的 Claude 审批卡，并回读 Claude/Codex 输出、任务完成、群解散和 herdr 清理后，才能标记为完成。这些记录不替代真实用户从飞书进入的完整链路。
+全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28 模型探针](docs/live-evidence-e28-real-model-tool-decision.md)，生产应用身份与只读权限边界见 [E28 身份审计](docs/live-evidence-e28-identity-audit.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)，真实长消息分片与清理见 [E30](docs/live-evidence-e30-long-message.md)，主入口 `/clear` 机械轮转见 [E31](docs/live-evidence-e31-clear-command.md)，手动讨论通知修正见 [E32](docs/live-evidence-e32-manual-discussion.md)。E32 中 Claude 现已输出并有核验回执；Codex 的初始输入仍未确认投递，也没有输出，两个执行目标仍保留。普通审批继续由用户处理。
+
+[E33](docs/live-evidence-e33-n02-codex.md) 补充真实飞书入口的无项目、单 Codex 讨论：指定输出、原生零工具调用、群投递及用户确认后的资源清理已有证据。但完成回合最终被判为失败，错误报告“本轮业务未执行”，与实际清理成功矛盾；该问题继续记为失败，不能把整个场景标为验收完成。
+
+本地接受或排队不代表远端任务、群聊已创建，也不代表初始要求已送达参与者。本 PR 正在修复基于回执的事实校验和上述完成误报；新版改动尚未经过部署后的真实复验。这些记录只覆盖指定场景，不代表全量验收通过。
 
 ## 运行前置
 

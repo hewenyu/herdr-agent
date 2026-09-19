@@ -12,6 +12,11 @@ import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
 import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
+import {
+  type ProvisionEvidence,
+  recordProvisionEvidence,
+  unsupportedProvisionClaim,
+} from "./provision-evidence.js";
 import type {
   ConversationEngine,
   EngineInput,
@@ -91,6 +96,26 @@ export class PiEngine implements ConversationEngine {
     let successfulWriteCalls = 0;
     let unknownToolResults = 0;
     let notExecutedToolResults = 0;
+    const rejectedAttempts = new Map<
+      string,
+      { retry: string; target: string; code: unknown; corrected: boolean }
+    >();
+    const retryKey = (name: string, args: Record<string, unknown>) =>
+      JSON.stringify([name, args.action]);
+    const attemptKey = (name: string, args: Record<string, unknown>) =>
+      JSON.stringify([name, args.taskId ?? input.actor.taskId, args.participantId, args.action]);
+    const unresolvedNotExecuted = (text: string) =>
+      [...rejectedAttempts.values()].filter(
+        (attempt) =>
+          // A nonexistent identifier can be corrected in this turn. It cannot
+          // support a claim about that original identifier, and a failure for
+          // an existing/different target is never erased by another success.
+          attempt.code !== "task_missing" ||
+          !attempt.corrected ||
+          !attempt.target ||
+          text.includes(attempt.target),
+      ).length;
+    const provisioning: ProvisionEvidence = { created: [], tasks: [] };
     const startedAt = Date.now();
     const trace = { sessionId: input.sessionId, messageId: input.actor.messageId };
     this.logger?.info("pi 开始处理", {
@@ -126,10 +151,30 @@ export class PiEngine implements ConversationEngine {
           if (outcome === "unknown") {
             unknownToolResults++;
             if (!tool.readOnly) uncertain = true;
-          } else if (outcome === "not_executed") notExecutedToolResults++;
-          else {
+          } else if (outcome === "not_executed") {
+            notExecutedToolResults++;
+            rejectedAttempts.set(attemptKey(tool.name, args as Record<string, unknown>), {
+              retry: retryKey(tool.name, args as Record<string, unknown>),
+              target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
+              code:
+                result && typeof result === "object" && "code" in result ? result.code : undefined,
+              corrected: false,
+            });
+          } else {
+            rejectedAttempts.delete(attemptKey(tool.name, args as Record<string, unknown>));
+            for (const attempt of rejectedAttempts.values()) {
+              if (attempt.retry === retryKey(tool.name, args as Record<string, unknown>))
+                attempt.corrected = true;
+            }
             successfulToolCalls++;
             if (!tool.readOnly) successfulWriteCalls++;
+            recordProvisionEvidence(
+              provisioning,
+              tool.name,
+              args as Record<string, unknown>,
+              result,
+              input.actor.taskId,
+            );
           }
           this.logger?.info("pi 工具已返回", {
             event: "pi.tool_completed",
@@ -150,8 +195,15 @@ export class PiEngine implements ConversationEngine {
             outcome: safe.outcome,
             durationMs: Date.now() - toolStartedAt,
           });
-          if (safe.outcome === "not_executed") notExecutedToolResults++;
-          else unknownToolResults++;
+          if (safe.outcome === "not_executed") {
+            notExecutedToolResults++;
+            rejectedAttempts.set(attemptKey(tool.name, args as Record<string, unknown>), {
+              retry: retryKey(tool.name, args as Record<string, unknown>),
+              target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
+              code: safe.code,
+              corrected: false,
+            });
+          } else unknownToolResults++;
           return {
             content: [{ type: "text", text: JSON.stringify({ error: safe.message, ...safe }) }],
             details: {},
@@ -261,23 +313,24 @@ export class PiEngine implements ConversationEngine {
         requiresToolForRequest(input.prompt);
       const claimRecovery =
         input.enforceClaims !== false &&
-        (hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
-        (unknownToolResults > 0 ||
-          notExecutedToolResults > 0 ||
-          toolCallsSeen === 0 ||
-          (requiresWriteEvidence(finalText)
-            ? successfulWriteCalls === 0
-            : successfulToolCalls === 0));
+        (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
+          (unknownToolResults > 0 ||
+            unresolvedNotExecuted(finalText) > 0 ||
+            toolCallsSeen === 0 ||
+            (requiresWriteEvidence(finalText)
+              ? successfulWriteCalls === 0
+              : successfulToolCalls === 0))) ||
+          unsupportedProvisionClaim(finalText, provisioning));
       if (claimRecovery && input.tools.length > 0) {
         // The first answer is the evidence failure that triggered recovery. Do
         // not allow it to survive if the constrained retry is blocked or fails
         // before producing a new completed assistant message.
         finalText = "";
-        requireToolCall = true;
+        requireToolCall = toolCallsSeen === 0 || successfulToolCalls === 0;
         await agent.prompt({
           role: "user",
           content:
-            "上一次答复没有调用任何工具。请重新检查原始用户请求：如果需要本工具的业务操作或当前状态，先调用一个合适的工具并根据返回事实回答；不要把历史文字当作执行回执。",
+            "上一次答复缺少支持业务请求或所述结果的工具事实。请重新检查原始用户请求与本轮工具返回：尚未尝试的操作先调用合适工具；已经登记的操作不要重复创建，必要时只读查询。accepted/queued只证明本地登记，remoteTaskId证明飞书任务、chatId且groupDeleted=false证明群建立、initialSent或verified投递回执才证明要求已转交。按已核验的实际阶段重新回答；不要把历史文字当作执行回执。",
           timestamp: Date.now(),
         });
       }
@@ -307,18 +360,21 @@ export class PiEngine implements ConversationEngine {
       if (
         claimRecovery &&
         (unknownToolResults > 0 ||
-          notExecutedToolResults > 0 ||
+          unresolvedNotExecuted(finalText) > 0 ||
           (requiresWriteEvidence(finalText)
             ? successfulWriteCalls === 0
-            : successfulToolCalls === 0))
+            : successfulToolCalls === 0) ||
+          unsupportedProvisionClaim(finalText, provisioning))
       )
         throw new OperationError(
           "model_failed",
           unknownToolResults > 0
             ? "pi 调度模型未取得可确认的工具事实，本轮业务结果未知；请查询状态。"
-            : notExecutedToolResults > 0
+            : notExecutedToolResults > 0 && successfulWriteCalls === 0
               ? "pi 调度模型调用的工具未执行，本轮业务未执行；请重试。"
-              : "pi 调度模型未调用工具，本轮业务未执行；请重试。",
+              : toolCallsSeen === 0
+                ? "pi 调度模型未调用工具，本轮业务未执行；请重试。"
+                : "pi 调度模型的答复缺少对应工具事实；已登记操作保留，请查询实际状态。",
           unknownToolResults > 0 ? "unknown" : "not_executed",
         );
       this.logger?.info("pi 已生成回复", {
@@ -344,6 +400,8 @@ export class PiEngine implements ConversationEngine {
           successfulWrites: successfulWriteCalls,
           unknown: unknownToolResults,
           notExecuted: notExecutedToolResults,
+          unresolvedNotExecuted: unresolvedNotExecuted(finalText),
+          provisioning,
         },
       };
     } catch (error) {
