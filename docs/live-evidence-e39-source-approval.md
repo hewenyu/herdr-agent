@@ -1,6 +1,6 @@
 # E39：Web 复验、需求原文、会话归档与审批菜单
 
-日期：2026-09-19，时间均为 UTC。**本轮仍在进行；已通过的限定步骤、原失败和离线修复分别记录，完整目标保持 active。** 正式 npm 版本仍为 `0.3.13`，本轮运行基线是 E38 的 `0.3.14-dev`，不能把未发布改动当成正式版能力。
+日期：2026-09-19，时间均为 UTC。**本轮修复已部署，测试资源已清理；真实按钮点击、修复后新创建答复及剩余会话组合仍待验。已通过步骤、原失败和离线修复分别记录，完整目标保持 active。** 正式 npm 版本仍为 `0.3.13`，本轮运行基线是 E38 的 `0.3.14-dev`，不能把未发布改动当成正式版能力。
 
 ## 运行基线和证据边界
 
@@ -65,3 +65,20 @@ A2 真实创建消息 `om_x100b65dce9528ca0b4a53b6a7b84b9e` 使用已编辑默�
 `13:24Z` 左右工具两次获取飞书窗口及一次获取 Chrome 窗口均返回 `cgWindowNotFound`。这是桌面恢复并完成上述操作之后的新中断；不能沿用 E38 的中断状态否认本轮已发生的真实 UI 操作。已请求恢复可见桌面，继续可独立完成的修复与文档。
 
 截至 `e39-resumed.json`：A1 blocked、审批未作答；A2 review；两个群仍存续，默认项目仍是专用 A。正确审批卡点击、后续改稿和用户完成、会话恢复/当前归档、修复后新建任务答复、三项目组合及资源清理仍未验收。最终必须恢复默认 `herdr-agent`、删除专用项目登记并通过 herdr 关闭测试执行器和测试群，保留目录、产物与历史。
+
+
+## 修复部署、审批刷新和资源收尾
+
+功能提交 `a3978c097aba137e857a2af5d39eb538d53dbde2` 的完整检查 **702/702**、独立 macOS SEA 烟测通过；[CI 35446043195](https://github.com/hewenyu/herdr-agent/actions/runs/35446043195) 的 darwin arm64、Linux x64、Linux arm64 三个平台检查与 SEA 构建全部成功。此 CI 只证明该提交，不代替用户入口验收。
+
+新二进制 `build/e39/herdr-agent` / `dist/herdr-agent` 已部署，版本 `0.3.14-dev`，构建时间 `13:31:37.795Z`，SHA256 `cb9a000ab4bd6e19aef35702353a06878d1ea1543f553a2f7c3df5fdbbbc242d`，bridge PID `53372`，日志 `~/.herdr-agent/e39-runtime.log`。重启前无 queued/processing inbox；只重启 bridge，herdr PID `39037` 和两执行器原现场保留。`e39-deployment.json` 保存 stamp，HTTP runtime/authorization 回读 ready。
+
+生产调度器在原 `stateSeq=274` 上自动重新观察审批，没有发送控制键。旧 nonce `approval_6c26c683a6254a5f8a75728c101242b6` 变为 consumed，原因是菜单已更新；新 nonce `approval_1af3aed0b4e3463ca7d7a10229906ac4` 未消费，keys 为 `[1,2,3,4,esc]`，消息 `om_x100b65dca17650a8b3fe0037bddccfa` publication=sent。原生屏幕仍 blocked，解析结果是红色、蓝色、Type something、Chat about this。
+
+独立真实 Feishu GET 确认旧卡 updated、新卡存在，但 API 正文只返回“请升级至最新版本客户端，以查看内容”的交互卡占位，不能检查真实按钮文字。首个探针错误地要求 GET 含按钮文字，断言失败保留在 `e39-approval-refresh-readback.json`；纠正证据边界后的 `e39-approval-refresh-scoped.json` 只判定后台刷新、远端存在和原生未作答，**客户端按钮显示与点击仍未通过**。没有通过删除断言把同一 UI 场景改称成功。
+
+桌面持续 `cgWindowNotFound`，因此按专用测试资源清理授权，外部删除 A1/A2 群；不模拟用户完成或审批。`e39-external-group-cleanup.json` 记录两个远端群 `dissolved`、任务 `completedAt=0`。生产调度器随后通过 herdr 关闭两执行器：A2 `13:35:31.881Z`、A1 `13:35:34.094Z` 的 close 操作 done；`e39-after-group-delete.json` 确认两个任务 destroyed、groupDeleted=true，两参与者 gone。
+
+`e39-config-cleanup.json` 通过受保护的 loopback 配置 API 恢复默认 `herdr-agent`、只删除 `MYRIX-E39-WEB-A` 登记，最终 catalog 与原 12 项基线完全一致、Bypass=true。herdr agent 列表为空，原输入、两个产物和历史保留；这不是浏览器删除操作验收。
+
+本轮不合并/发布：修复后新创建主答复、生产通知语义、真实普通审批选择与续聊、session restore/当前归档以及三项目完整组合仍待独立复验。PR #48 保持草稿；历史 R-F 不因离线回放、最终执行或测试清理而改写。
