@@ -24,6 +24,9 @@ const requests = [
   "先停一下，保留讨论，稍后继续",
   "请解释创建任务的流程，然后创建一个任务",
   "Claude 可以参与讨论吗？现在让 Claude 参与讨论",
+  "请让“Codex”实现需求",
+  '请让"Claude"梳理需求',
+  "请让`Codex`实现需求",
 ];
 
 function input(prompt: string, tool: RuntimeTool): EngineInput {
@@ -174,6 +177,14 @@ for (const prompt of [
   "请解释创建任务的流程，第一步创建项目，第二步让 Claude 参与讨论。",
   "任务未完成。",
   "Claude 可以参与讨论吗？",
+  "不要让“Codex”实现需求",
+  "他说：请让“Codex”实现需求",
+  "示例：“请让 Codex 实现需求”",
+  "只解释如何让“Codex”实现需求",
+  "代码示例：```text\n请让“Codex”实现需求\n```",
+  "示例：`请让 Codex 实现需求`",
+  "他说，请让“Codex”实现需求",
+  "代码示例：请让“Codex”实现需求",
 ]) {
   test(`PiEngine does not force a tool for explanations, reports or capability questions: ${prompt}`, async () => {
     const engine = new PiEngine(config, { streamFn: scripted([response("明白了。")]) });

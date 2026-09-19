@@ -44,11 +44,9 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 最新稳定版见 [Releases](https://github.com/hewenyu/herdr-agent/releases/latest)，安装版本、源码提交和构建时间通过 `myrix version --json` 查看。本文说明当前源码行为，各已发布版本包含的改动以对应 Release 为准。根目录的 `package.json` 是私有源码包，不是公开发布的 npm 主入口包。
 
-当前公开稳定版是 [v0.3.12](https://github.com/hewenyu/herdr-agent/releases/tag/v0.3.12)；用户入口 npm 包和三个原生可选平台包均使用该版本。
-
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`。Actions 内部的 artifact 下载只是组装发布包的工作流步骤；用户直接从 npm 安装 `@yuebanlaosiji/myrix` 或下载 Release 压缩包，不需要选择 workflow 的 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实验收仍为 **R-部分，持续进行中**。[现场验收矩阵](docs/live-validation.md) 分开记录实现、自动化检查和真实飞书/herdr 证据。[E32](docs/live-evidence-e32-manual-discussion.md) 覆盖 Claude/Codex 手动讨论及资源清理；[E34](docs/live-evidence-e34-runtime-recovery.md) 覆盖用户审批、参与者输出、清理，以及错误任务编号明确失败后同轮恢复完成。历史失败继续保留，包括 [E33](docs/live-evidence-e33-n02-codex.md)。正常收尾通知的生成和送达仍待验；检查通过或资源清理成功不代表全部功能验收完成。
+全量真实验收仍为 **R-部分，持续进行中**。[现场验收矩阵](docs/live-validation.md) 分开记录实现、自动化检查和真实飞书/herdr 证据。[E32](docs/live-evidence-e32-manual-discussion.md) 覆盖 Claude/Codex 手动讨论及资源清理；[E34](docs/live-evidence-e34-runtime-recovery.md) 覆盖用户审批、参与者输出、清理，以及错误任务编号明确失败后同轮恢复完成。历史失败继续保留，包括 [E33](docs/live-evidence-e33-n02-codex.md)。[E35](docs/live-evidence-e35-destroy-notices.md) 已验证明确取消任务时的两条收尾通知与资源销毁，远端任务仍保持未完成；确认完成路径的通知和其他组合仍待验，不能据此认定全部功能通过。
 
 本地接受或排队不代表远端任务、群聊已创建，也不代表要求已送达参与者；回复必须以工具回执为依据。发布版本与本地开发二进制可能不同，对照行为前请用 `myrix version --json` 核对。
 

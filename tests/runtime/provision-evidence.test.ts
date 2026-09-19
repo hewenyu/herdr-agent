@@ -68,6 +68,8 @@ for (const claim of [
   "飞书任务已创建。",
   "飞书任务已建好。",
   "要求已转交给 Claude 和 Codex。",
+  "Claude 和 Codex 已收到要求。",
+  "Claude and Codex received the requirements.",
 ]) {
   test(`queued registration cannot prove external completion: ${claim}`, async () => {
     const calls: string[] = [];
@@ -116,6 +118,9 @@ for (const [claudeSent, codexSent, claim] of [
   [false, false, "要求已转交给 Claude 和 Codex。"],
   [true, false, "要求已转交给 Claude 和 Codex。"],
   [true, false, "要求已转交给双方参与者。"],
+  [false, false, "Claude 和 Codex 已收到要求。"],
+  [true, false, "Claude 和 Codex 已收到要求。"],
+  [true, false, "Claude, Codex received the requirements."],
 ] as const) {
   test(`started participants do not prove all initial deliveries: ${claudeSent}/${codexSent}/${claim}`, async () => {
     await assert.rejects(
@@ -143,6 +148,58 @@ test("one verified participant can be reported without claiming the other was se
   assert.equal(result.text, answer);
 });
 
+for (const answer of [
+  "Claude 和 Codex 已收到要求。",
+  "Claude and Codex received the requirements.",
+]) {
+  test(`verified initial delivery supports receipt claims: ${answer}`, async () => {
+    const result = await run(
+      [call("task_create", "create"), call("task_get", "read"), response(answer)],
+      tools(async () => provisioned()),
+    );
+    assert.equal(result.text, answer);
+  });
+}
+
+test("negative, pending and questioned receipt statements do not claim delivery", async () => {
+  for (const answer of [
+    "Claude 和 Codex 尚未收到要求。",
+    "Claude and Codex have not received the requirements.",
+    "Claude 和 Codex 会收到要求。",
+    "Claude 和 Codex 已收到要求吗？",
+  ]) {
+    const result = await run([call("task_create", "create"), response(answer)]);
+    assert.equal(result.text, answer);
+  }
+});
+
+test("verified participant_send receipts support received without initialSent in the snapshot", async () => {
+  const available = tools(async () => provisioned(false, false));
+  available.push({
+    name: "participant_send",
+    description: "Send participant instructions",
+    readOnly: false,
+    parameters: {
+      type: "object",
+      properties: { taskId: { type: "string" }, participantId: { type: "string" } },
+      required: ["taskId", "participantId"],
+    },
+    execute: async () => ({ status: "delivered", verified: true }),
+  });
+  const answer = "Claude 和 Codex 已收到要求。";
+  const result = await run(
+    [
+      call("task_get", "read"),
+      call("participant_send", "send-claude", { taskId, participantId: "claude-1" }),
+      call("participant_send", "send-codex", { taskId, participantId: "codex-1" }),
+      response(answer),
+    ],
+    available,
+  );
+  assert.equal(result.text, answer);
+  assert.equal(result.toolEvidence?.successfulWrites, 2);
+});
+
 test("task ids scope each assertion without applying another task's pending facts", async () => {
   const answer = "task_provision 群已创建。task_pending 尚未建群。";
   const result = await run([
@@ -152,6 +209,49 @@ test("task ids scope each assertion without applying another task's pending fact
   ]);
   assert.equal(result.text, answer);
 });
+
+for (const answer of [
+  "task_provision 群已创建，task_pending 尚未建群。",
+  "task_pending 尚未建群，task_provision 群已创建。",
+  "task_provision 群已创建, task_pending 尚未建群。",
+  "task_provision 群已创建，但task_pending 尚未建群。",
+  "task_provision 群已创建，而 task_pending 尚未建群。",
+]) {
+  test(`task clauses keep independent group assertions: ${answer}`, async () => {
+    const result = await run([
+      call("task_create", "create"),
+      call("tasks_list", "list", {}),
+      response(answer),
+    ]);
+    assert.equal(result.text, answer);
+  });
+}
+
+for (const answer of [
+  "task_provision 群已创建，task_pending 群已创建。",
+  "task_provision 群已创建，而 task_pending 群已创建。",
+  "task_provision 尚未建群，task_pending 群已创建。",
+  "task_provision, task_pending 群已创建。",
+  "task_provision、task_pending 群已创建。",
+  "task_provision 群已创建，task_unknown 群已创建。",
+  "task_pending 已登记，群已创建。",
+  "群已创建。",
+]) {
+  test(`mixed or unscoped claims cannot borrow another task's group fact: ${answer}`, async () => {
+    await assert.rejects(
+      run([
+        // Supply a successful write without selecting a newly-created task as
+        // the implicit subject. Unscoped assertions must cover every listed task.
+        call("task_action", "action", { taskId, action: "complete" }),
+        call("tasks_list", "list", {}),
+        response(answer),
+        call("tasks_list", "verify", {}),
+        response(answer),
+      ]),
+      (error: unknown) => error instanceof OperationError && error.code === "model_failed",
+    );
+  });
+}
 
 test("questions about provisioning remain questions without requiring completed facts", async () => {
   const answer = "群是否已建立？";

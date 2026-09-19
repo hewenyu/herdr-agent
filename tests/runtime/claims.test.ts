@@ -103,6 +103,16 @@ test("explicit business requests require a tool attempt even when the reply make
     "Claude 可以参与讨论吗？现在让 Claude 参与讨论",
     "任务未完成，先查询任务状态",
     "查询未完成任务",
+    "请让“Codex”实现需求",
+    '请让"Claude"梳理需求',
+    "把需求交给「Codex」",
+    "请让‘Claude’梳理需求",
+    "请让`Codex`实现需求",
+    "请让“Claude 和 Codex”讨论需求",
+    "请查询“任务”",
+    "请关闭“task_123”",
+    "Ask 'Codex' to implement the requirement",
+    "他说，让“Codex”实现需求。现在请让“Claude”评审",
   ]) {
     assert.equal(requiresToolForRequest(text), true, text);
   }
@@ -141,6 +151,21 @@ test("explicit business requests require a tool attempt even when the reply make
     "任务尚未创建。",
     "Claude 可以参与讨论吗？",
     "可以让 Claude 参与讨论吗？",
+    "不要让“Codex”实现需求",
+    "禁止让`Claude`参与讨论",
+    "他说：请让“Codex”实现需求",
+    "例如：请让“Codex”实现需求",
+    "只解释如何让“Codex”实现需求",
+    "“请让 Codex 实现需求”",
+    "示例：“请让 Codex 实现需求”",
+    'Example: "Ask Codex to implement the requirement"',
+    "Don't ask 'Codex' to implement the requirement",
+    "代码示例：```text\n请让“Codex”实现需求\n```",
+    "示例：`请让 Codex 实现需求`",
+    "示例：'Ask Codex to implement the requirement'",
+    "他说，请让“Codex”实现需求",
+    "例如，让“Claude”参与讨论",
+    "代码示例：请让“Codex”实现需求",
   ]) {
     assert.equal(requiresToolForRequest(text), false, text);
   }

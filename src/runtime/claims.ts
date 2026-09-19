@@ -53,17 +53,43 @@ export function requiresWriteEvidence(text: string): boolean {
  * they also contain a direct imperative ("请创建项目", "帮我查询任务").
  */
 export function requiresToolForRequest(text: string): boolean {
-  // Quoted examples and code are data, not fresh instructions. Work clause by
-  // clause so "不要建群，先查询任务" still recognizes the positive lookup.
-  const value = text.replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|「[^」]*」|"[^"\n]*"/gu, " ").trim();
+  // Keep quoted business entities as targets of the surrounding request, but
+  // discard quoted instructions and fenced code. The remaining clause still
+  // determines whether the user is asking, explaining, quoting or prohibiting.
+  const value = text
+    .replace(
+      /```[\s\S]*?```|`[^`]*`|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|《[^》]*》|"[^"\n]*"|(?<![\p{L}\p{N}])'[^'\n]*'(?![\p{L}\p{N}])/gu,
+      (quoted) => {
+        if (quoted.startsWith("```")) return " ";
+        const entity = quoted.slice(1, -1).trim();
+        return quotedBusinessEntity.test(entity) ? ` ${entity} ` : " ";
+      },
+    )
+    .trim();
   if (!value) return false;
   const business =
     /(?:项目|任务|群|参与者|Codex|Claude|目录|会话|session|project|task|chat|group|participant|directory|workspace|agent)/iu;
   const clauses = value.split(/([，,。.!！?？;；\n]+|但是|不过|然后|\bbut\b|\bthen\b)/iu);
   const businessContext = business.test(value) || /讨论/iu.test(value);
   let explaining = false;
+  let reporting = false;
   for (let index = 0; index < clauses.length; index += 2) {
     const original = clauses[index]?.trim() ?? "";
+    const separator = clauses[index - 1] ?? "";
+    if (requestIsReported.test(original)) {
+      reporting = true;
+      continue;
+    }
+    // "他说，请让‘Codex’实现" remains one reported request across the comma.
+    // A new sentence or explicit transition can introduce fresh authorization.
+    if (reporting) {
+      if (
+        !/(?:[。.!！?？;；]|但是|不过|然后|\bbut\b|\bthen\b)/iu.test(separator) &&
+        !/^(?:现在|另外|now)\s*/iu.test(original)
+      )
+        continue;
+      reporting = false;
+    }
     if (requestIsExplanation.test(original) || capabilityQuestion.test(original)) {
       explaining = true;
       continue;
@@ -71,7 +97,6 @@ export function requiresToolForRequest(text: string): boolean {
     if (!original || requestIsNonAction.test(original)) continue;
     // Explanation examples span commas. A fresh imperative or an explicit
     // transition starts a new request; numbered example steps do not.
-    const separator = clauses[index - 1] ?? "";
     if (
       explaining &&
       !/^(?:请|帮我|我要|现在|直接|另外|please|now)\s*/iu.test(original) &&
@@ -95,6 +120,10 @@ export function requiresToolForRequest(text: string): boolean {
   return false;
 }
 
+const quotedBusinessEntity =
+  /^(?:(?:Claude|Codex)(?:\s*(?:和|与|、|and|&)\s*(?:Claude|Codex))*(?:\s*(?:会话|session|agent))?|项目|任务|群聊?|参与者|目录|会话|session|project|task|chat|group|participant|directory|workspace|agent|(?:task|session)_[\w:-]+)$/iu;
+const requestIsReported =
+  /^(?:他说|她说|用户说|用户要求|文档说|文档提到|日志显示|例如|比如|示例|原话|代码(?:示例|样例)|示例代码|\b(?:he|she|they)\s+(?:said|asked)|\bexample\b)/iu;
 const businessRequestAction =
   /(?:创建|新建|登记|安排|拉群|建群|建立|发送|启动|转交|交给|完成|关闭|解散|销毁|删除|查询|查看|列出|列一下|看看|获取|恢复|归档|暂停|中断|继续|开(?:一)?个.{0,12}任务|拉(?:一)?个.{0,12}群|\b(?:create|register|schedule|send|start|assign|dispatch|launch|complete|close|delete|destroy|list|show|get|query|archive|restore|pause|interrupt|resume)\b)/iu;
 const delegatedRequest =

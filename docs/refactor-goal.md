@@ -34,6 +34,8 @@
 
 2026-09-19 E34 事实恢复：真实主私聊经 task_create→task_get 后，模型仍草拟“已完整转交限制”；`2900d8b` 的运行时拦截该草稿、触发再次 task_get，并只投递承认 initialSent=false 的纠正答复，未重复创建任务。用户已在群内处理普通菜单，目录信任自动确认、初始投递 verified、marker 和用户验收均有证据；受控错误编号先 task_missing、后查询并正确 complete 的回合最终 done/finished，资源 destroyed/gone/groupDeleted=true，真实 REST 回读远端完成和群 dissolved。当前仍限定 R-部分，详见 [E34 记录](live-evidence-e34-runtime-recovery.md)。后续通知护栏及任务标题边界修正 `0b3c457` 已通过 557 项自动化测试、SEA烟测并部署为 PID98996；真实模型加合成快照探针通过；生产两条收尾通知候选未通过校验并记 unavailable，被拒正文缺失，不能排除误判，正常通知生成和送达仍未通过。精确版本、构建时间和SHA见E34，不将部署或探针通过视为完整现场通过。完整目标保持 active。
 
+2026-09-19 E35：`259b377` 的 `0.3.13-dev` 经真实主私聊 tasks_list→task_action destroy→task_get，完成指定取消/销毁子场景。两条后台通知按“进入销毁收尾/即将解散”分别在 herdr close 和删群前送达，两个阶段 processed、无 rejection；主回合 done/finished，真实 CUA 和 REST 确认群解散、执行器 gone，飞书任务 completedAt=0 且无 completion 操作。四条旧历史和空讨论目录保留，零审批记录不算审批失效验证。完整检查 566 项、SEA 烟测和三平台 CI 通过，部署 stamp 见 [E35 记录](live-evidence-e35-destroy-notices.md)。仅 destroy 指定子项 R-P；E34 原失败与正文缺失保留，修复后的 complete 全链路通知及其他组合仍分验，完整目标 active。
+
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 
 2026-09-18 E21 审查整改：启动飞书长连接后订阅当前应用负责的任务，订阅失败沿原连接清理与重试流程处理，成功前不启动调度。普通后台任务和群查询遵守 `tasks.pollIntervalMs`，失败尝试时间持久化，重启不清空冷却；真实事件和显式完成/重开操作即时同步，执行器观察与资源清理不等待远端轮询。403 项自动化及格式、类型、lint、行数检查通过；真实订阅事件验收与最终 HEAD CI 另行记录，通过前不合并。

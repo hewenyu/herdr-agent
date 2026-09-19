@@ -81,18 +81,18 @@ export function recordProvisionEvidence(
 
 /** Guard assertions only; questions, pending stages and negations remain model-written. */
 export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvidence): boolean {
-  const clauses = text.split(/(?<=[。！？!?；;\n])/u);
+  const clauses = text.split(/(?<=[。！？!?；;\n])/u).flatMap(taskClauses);
   return clauses.some((sentence) => {
     if (/[?？]\s*$/u.test(sentence)) return false;
     const clause = sentence.replace(/[。！？!?；;\n]+$/u, "");
     if (/(?:吗|么)\s*$/u.test(clause) || /^\s*(?:是否|Has |Have |Is )/iu.test(clause)) return false;
     // Remove only a negated/pending segment so a later contradictory assertion is still checked.
     const value = clause.replace(
-      /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
+      /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
       "",
     );
     const asserted =
-      /(?:已|成功|建好|建成|\b(?:created|established|sent|delivered|forwarded|dispatched|ready)\b)/iu;
+      /(?:已|成功|建好|建成|\b(?:created|established|sent|received|delivered|forwarded|dispatched|ready)\b)/iu;
     if (!asserted.test(value)) return false;
     const group =
       /(?:群|\b(?:group|chat)\b).{0,24}(?:建立|建好|建成|创建|拉好|就绪|已(?:经)?建(?:了)?(?=[，,、：:\s]|$)|created|established|ready)|(?:建好|建成|创建|建立|拉好|已(?:经)?建(?:了)?|created|established).{0,24}(?:群|\b(?:group|chat)\b)/iu.test(
@@ -103,7 +103,9 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
         value,
       );
     const sent =
-      /(?:转交|投递|送达|交给|传给|发送|forwarded|delivered|dispatched|\bsent\b)/iu.test(value) &&
+      /(?:转交|投递|送达|交给|传给|发送|收到|forwarded|delivered|dispatched|\b(?:sent|received)\b)/iu.test(
+        value,
+      ) &&
       /(?:要求|需求|指令|限制|Claude|Codex|参与者|prompt|requirements|instructions|participant)/iu.test(
         value,
       );
@@ -138,6 +140,31 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
         : task.deliveries.length === 0 || kinds.length > 0;
     });
   });
+}
+
+/** A new explicit task starts its own assertion scope, not a new global claim. */
+function taskClauses(sentence: string): string[] {
+  const parts = sentence.split(
+    /(?:[，,]\s*(?:(?:但是|不过|但|而)\s*)?|(?:但是|不过|但|而)\s*)(?=(?:任务\s*)?task_[a-zA-Z0-9]+)/u,
+  );
+  const result: string[] = [];
+  let references = "";
+  for (const part of parts) {
+    const clause = references + part;
+    // "task_a, task_b 群已创建" asserts both tasks. Do not mistake the ID
+    // enumeration (or a participant-name comma) for independent assertions.
+    const onlyReferences = clause
+      .replace(/task_[a-zA-Z0-9]+/gu, "")
+      .replace(/(?:任务|和|与|及|\band\b|[\s、，,:：])/giu, "");
+    if (!onlyReferences && /task_[a-zA-Z0-9]+/u.test(clause)) {
+      references = `${clause}，`;
+      continue;
+    }
+    result.push(clause);
+    references = "";
+  }
+  if (references) result.push(references);
+  return result;
 }
 
 function mentions(text: string, identifier: string): boolean {
