@@ -28,9 +28,11 @@
 
 2026-09-19 E31 主入口 `/clear`：当前 `cfc7d16` 的真实飞书主私聊 exact `/clear` 未调用模型，旧 pi session 已归档、新 session 已创建并选中，客户端只显示 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未被关闭。该证据只关闭 FSH05 正常轮转子项，详见 [E31 记录](live-evidence-e31-clear-command.md)。
 
-2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认；历史普通 Bypass 审批卡已发送到任务群。最新只读回读中 Claude 已确认初始投递并输出 `CLAUDE_DUAL_E32_OK`；Codex 仍 `initialSent=false`、无输出，任务保持 review，两个 herdr 执行目标仍保留。不能从 Claude 输出反推普通审批由哪个入口处理，也不能把 Codex 的 done 状态当作已经发言。旧通知“后续自动推进、无需操作”的 R-F 保留；通知提示词修正当时通过 12 项定向测试及 470 项完整检查，不代表双参与者完整链路已通过。仍需真实安排 Codex、核对双 marker，再经用户验收完成与清理，详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
+2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认。后续在 `2900d8b` 的 `0.3.13-dev` 上，真实群消息经 task_get→participant_send 将要求投递给 Codex，两个指定 marker 均已看到；群内用户确认后，两次 herdr close 和删群操作均 done，任务 destroyed、两参与者 gone、groupDeleted=true，测试资源已清理。该证据覆盖手动安排下一位及默认收尾，不冒充自动轮转验证。旧“无需操作”通知 R-F 保留，本轮后台通知又在执行器和群关闭前声称“已完成收尾”，新增 R-F 不被最终成功覆盖。详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
 
-2026-09-19 E33 单 Codex 讨论与完成误报：真实飞书入口创建无项目单 Codex 受控讨论，原生 transcript 只有指定 marker、零工具调用，初始 receipt verified、署名群输出和用户确认后的 herdr 关闭/群删除均有指定任务证据。但完成回合先用错 ID，查询后成功完成了真实清理，最终 inbox/turn receipt 却失败并称“本轮业务未执行”；保留新增 R-F。创建时“已完整转交”和删群前“已完成收尾”的事实措辞问题也继续跟踪，详见 [E33 记录](live-evidence-e33-n02-codex.md)。本地 task_create 的 accepted/queued 不证明远端任务/群存在或参与者初始投递成功。本 PR 正在修复业务意图、回执事实校验及失败后成功恢复的判定；新版尚未部署后真实复验。仅补 N02/B06/B07/B10/B12/B13 的限定 R-部分，完整 B01–B18/N01–N07 目标保持 active。
+2026-09-19 E33 单 Codex 讨论与完成误报：真实飞书入口创建无项目单 Codex 受控讨论，原生 transcript 只有指定 marker、零工具调用，初始 receipt verified、署名群输出和用户确认后的 herdr 关闭/群删除均有指定任务证据。但完成回合先用错 ID，查询后成功完成了真实清理，最终 inbox/turn receipt 却失败并称“本轮业务未执行”；保留新增 R-F。创建时“已完整转交”和删群前“已完成收尾”的事实措辞问题也继续跟踪，详见 [E33 记录](live-evidence-e33-n02-codex.md)。本地 task_create 的 accepted/queued 不证明远端任务/群存在或参与者初始投递成功。首轮业务意图、回执事实校验及失败后成功恢复的修复已在 `2900d8b` 部署；E33 的同轮失败后成功恢复仍需专门真实复验，不能借 E34 的创建答复恢复替代。仅补 N02/B06/B07/B10/B12/B13 的限定 R-部分，完整 B01–B18/N01–N07 目标保持 active。
+
+2026-09-19 E34 事实恢复：真实主私聊经 task_create→task_get 后，模型仍草拟“已完整转交限制”；`2900d8b` 的运行时拦截该草稿、触发再次 task_get，并只投递承认 initialSent=false 的纠正答复，未重复创建任务。E34 仍停在 Codex 普通更新菜单，任务群已有用户审批卡；不能代为确认，也不能清理未验收任务。当前限定 R-部分，输出、完成与清理未通过，详见 [E34 记录](live-evidence-e34-runtime-recovery.md)。后续通知护栏及任务标题边界修正 `0b3c457` 已通过 557 项自动化测试、SEA烟测并部署为 PID98996；真实模型加合成快照探针通过，生产收尾通知仍待复验。精确版本、构建时间和SHA见E34，不将部署或探针通过视为完整现场通过。完整目标保持 active。
 
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 
