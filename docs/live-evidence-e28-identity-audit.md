@@ -18,6 +18,7 @@
 - `GET /task/v2/tasks/2b273dc9-2055-4c80-8c0e-969002ecc710` 成功，标题为 `FSH08-DUAL-E32-20260919`，`completed_at=0`，成员是该用户与生产应用。
 - `GET /im/v1/messages` 在主聊天和 E32 群均返回 HTTP 200；主聊天最近记录同时包含生产应用 `cli_aaf...` 与用户 `ou_1ee...` 的消息，说明服务应用可以回读消息元数据。
 - 成员明细读取返回 HTTP 400/code `99991672`，生产应用身份缺少 `im:chat:readonly`、`im:chat.group_info:readonly` 或 `im:chat.members:read` 等任一权限。因此 `user_count`/`bot_count` 不能扩张为成员明细证据。
+- 生产应用 scope 列表只读查询返回 41 项，包含 `im:chat:read`、`im:chat.members:bot_access`、`im:message:readonly`、`task:task:read` 和 `task:task:write`；列表中没有上述成员明细所需的 `im:chat.members:read`/`im:chat:readonly`，与接口拒绝原因一致。
 
 ## 验收边界
 
