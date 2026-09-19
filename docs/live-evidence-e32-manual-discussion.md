@@ -23,6 +23,14 @@
 
 当前 bot 可读到任务群详情仍为 `normal`，但读取群消息返回 `230002`（bot 不在群），成员列表缺少对应 scope；lark-cli 用户 token 仍缺失，因此这些远端读取限制不被解释为业务完成或失败。
 
+## 合并提交重建后复核（2026-09-19 10:11，Asia/Shanghai）
+
+- 合并提交：`76d30f09f3748bf169d6d2fb14d2b092743af3de`（PR #43）。
+- 当前二进制：`0.3.12-dev`，构建时间 `2026-09-19T02:08:32Z`，SHA256 `7f2f1241bfcafb8689be06af4cbe2ee30685319362ee778ad10b7dd9fbaa95e2`。
+- 运行实例：macOS arm64，PID `54747`，`serve --state-dir /Users/yueban/.herdr-agent --no-config-ui`。
+- `npm run check` 470/470、`npm run smoke`、`version --json`、`doctor --json` 通过；运行日志显示飞书长连接已就绪。
+- 重启后的只读回读仍为 `status=blocked`、`groupDeleted=false`、`closeRequested=false`；Claude `w1W:p1` 为 `blocked`，Codex `w1X:p1` 为 `done`，两者 `initialSent=false`。本次未处理群内 Claude Bypass 审批，不能声称双 marker、任务完成、群解散或 herdr pane/session 已发生。
+
 ## 真实入口和资源
 
 用户在真实飞书主私聊中要求创建标题为 `FSH08-DUAL-E32-20260919` 的讨论任务，加入 Claude 和 Codex，并让两者分别只回复指定 marker。pi 真实调用 `task_create` 和 `task_get`，没有直接创建业务结果或伪造参与者输出。
