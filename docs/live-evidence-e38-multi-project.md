@@ -142,3 +142,5 @@ B1 在同一 `w24:p1`、同一旧任务上恢复。生产日志与操作回执�
 飞书及 Chrome 原生窗口复查仍为 `cgWindowNotFound`，无法继续新 A2、群内确认和浏览器错误呈现。按测试清理授权，生产应用 REST 于 `12:51:12.774Z` 删除 B1 群并独立回读 dissolved；服务观察后自动通过 herdr 关闭 `w24:p1`。`.cache/live/e38-after-b1-cleanup.json` 中 A1/B1 均 destroyed、groupDeleted=true、参与者 gone；这次清理没有完成远端任务，不能替代用户确认完成场景。
 
 `.cache/live/e38-config-cleanup.json` 记录受保护本机配置 API 的收尾：恢复 defaultProject=herdr-agent，移除两项 E38 测试登记，保留原 12 项项目及 Bypass=true，目录、输入和 HTML 产物不删除。herdr 受管 agent 列表为空；隔离组件 w25/w26 也已有各自关闭回读。pi 测试会话与历史保留，未通过后门更改 session selection。runtime/authorization ready 仅为运行状态回读。原 R-F、新建 A2 原文传递、Claude 别名自动确认的生产复验、Web 弹窗视觉/交互、切回/归档/恢复 pi 会话、三个项目并发组合和迟到审批卡仍继续跟踪。
+
+`12:54:50Z` 的 `.cache/live/e38-remote-final.json` 再次独立确认 B1 群 dissolved、远端 completedAt=0、终态描述已移除群链接。删群后原群消息 GET 返回 HTTP 400，不能再读回；此前删群前的 result 快照保留了消息正文和 ID，主私聊查询消息仍可读取。
