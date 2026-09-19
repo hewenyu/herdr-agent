@@ -154,7 +154,7 @@ export function renderSettings(state: WebState, action: Action): HTMLElement {
     "Base URL",
     state.model?.baseUrl ?? state.config?.ai?.baseUrl ?? "",
     "text",
-    "留空使用对应提供商的默认地址。",
+    "启用 pi 时须填写模型服务的完整基础地址。",
   );
   const modelId = field("模型 ID", state.model?.model ?? state.config?.ai?.model ?? "");
   const enabled = check("启用 pi 调度助手", state.model?.enabled ?? true);

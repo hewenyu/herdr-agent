@@ -1,10 +1,12 @@
 import { fail, isNotExecuted, OperationError } from "../core/errors.js";
-import { newId, now, stableId } from "../core/ids.js";
+import { canonical, newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { HerdrPort, PlatformPort } from "../core/ports.js";
 import type { AgentScreen, ExecutionRef } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 import { defaultPresentation, presentScreen, type ScreenPresentation } from "./presentation.js";
+
+export const APPROVAL_OPTIONS_VERSION = "current-native-menu-v2";
 
 interface Approval {
   nonce: string;
@@ -20,6 +22,8 @@ interface Approval {
   invalidatedReason?: string;
   messageId?: string;
   publication?: "sending" | "uncertain" | "retryable" | "sent";
+  menuFingerprint?: string;
+  replacesNonce?: string;
 }
 
 export class Approvals {
@@ -51,8 +55,34 @@ export class Approvals {
     );
     const nonce = this.store.get<string>("approval_identity", identity);
     const previous = nonce ? this.store.get<Approval>("approvals", nonce) : undefined;
-    if (previous && !previous.navigationCompleted && Date.parse(previous.expiresAt) > Date.now())
-      return previous;
+    const keys = [...new Set([...screen.options.map((option) => option.key), "esc"])];
+    const menuFingerprint = stableId(canonical(screen.options));
+    let replacesNonce: string | undefined;
+    let retired: Approval | undefined;
+    if (previous && !previous.navigationCompleted) {
+      // Expiry or a parser upgrade is not proof that a previous key/card send
+      // had no effect. Only explicit successful navigation may replace these.
+      if (
+        previous.consumed ||
+        previous.publication === "sending" ||
+        previous.publication === "uncertain"
+      )
+        return previous;
+      const changed = previous.menuFingerprint
+        ? previous.menuFingerprint !== menuFingerprint
+        : canonical(previous.keys) !== canonical(keys);
+      if (!changed && Date.parse(previous.expiresAt) > Date.now()) return previous;
+      // Older records lack labels. Key/order changes prove a changed mapping;
+      // never invent a historical label comparison from today's screen.
+      retired = {
+        ...previous,
+        consumed: true,
+        invalidatedReason: changed
+          ? "审批菜单已更新，请使用新的审批卡片。"
+          : "审批卡片已过期，请使用新的审批卡片。",
+      };
+      replacesNonce = previous.nonce;
+    }
     const approval: Approval = {
       nonce: newId("approval"),
       ownerId,
@@ -61,11 +91,16 @@ export class Approvals {
       stateSeq: screen.agent.stateSeq,
       sessionId: screen.agent.sessionId,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      keys: [...new Set([...screen.options.map((option) => option.key), "esc"])],
+      keys,
+      menuFingerprint,
+      ...(replacesNonce ? { replacesNonce } : {}),
       consumed: false,
     };
-    this.store.set("approvals", approval.nonce, approval);
-    this.store.set("approval_identity", identity, approval.nonce);
+    this.store.transaction(() => {
+      if (retired) this.store.set("approvals", retired.nonce, retired);
+      this.store.set("approvals", approval.nonce, approval);
+      this.store.set("approval_identity", identity, approval.nonce);
+    });
     return approval;
   }
 
@@ -88,6 +123,14 @@ export class Approvals {
       }
       const platform = this.platform();
       if (!platform) fail("platform_unavailable", "飞书未连接。");
+      if (latest.replacesNonce) {
+        const replaced = this.store.get<Approval>("approvals", latest.replacesNonce);
+        if (replaced) await this.disableCard(replaced);
+      }
+      // Disabling an old remote card yields: an owner/cleanup action may have
+      // consumed this replacement in the meantime. Never publish it afterwards.
+      const current = this.store.get<Approval>("approvals", latest.nonce) as Approval;
+      if (current.consumed) return current;
       this.store.set("approvals", latest.nonce, { ...latest, publication: "sending" });
       try {
         const messageId = await platform.sendCard(chatId, this.card(latest, screen), latest.nonce);

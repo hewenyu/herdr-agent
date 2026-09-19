@@ -9,6 +9,7 @@ import { streamSimple as streamAnthropic } from "@earendil-works/pi-ai/api/anthr
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
+import { canonical } from "../core/ids.js";
 import type { Logger } from "../core/ports.js";
 import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
@@ -28,6 +29,22 @@ import type {
 export function estimateTokens(value: unknown): number {
   return Math.ceil(Buffer.byteLength(JSON.stringify(value), "utf8") / 3) + 16;
 }
+
+// Targets outside taskId/participantId must not share a failed-attempt key.
+// Mutable payload (a rename's new name, project directories, requirements)
+// stays out so correcting those fields on the same target can still succeed.
+const targetSelectors: Record<string, readonly string[]> = {
+  session_create: ["name"],
+  session_select: ["sessionId"],
+  session_rename: ["sessionId"],
+  session_archive: ["sessionId"],
+  session_restore: ["sessionId"],
+  project_create: ["name"],
+  project_save: ["name"],
+  project_remove: ["name"],
+  task_create: ["project", "title"],
+  participant_add: ["name", "kind"],
+};
 
 /** Use the real pi tool loop, with only the two explicitly configured transports. */
 export class PiEngine implements ConversationEngine {
@@ -98,12 +115,25 @@ export class PiEngine implements ConversationEngine {
     let notExecutedToolResults = 0;
     const rejectedAttempts = new Map<
       string,
-      { retry: string; target: string; code: unknown; corrected: boolean }
+      {
+        retry: string;
+        target: string;
+        code: unknown;
+        corrected: boolean;
+        readOnly: boolean;
+        args: Record<string, unknown>;
+      }
     >();
     const retryKey = (name: string, args: Record<string, unknown>) =>
       JSON.stringify([name, args.action]);
     const attemptKey = (name: string, args: Record<string, unknown>) =>
-      JSON.stringify([name, args.taskId ?? input.actor.taskId, args.participantId, args.action]);
+      JSON.stringify([
+        name,
+        args.taskId ?? input.actor.taskId,
+        args.participantId,
+        args.action,
+        ...(targetSelectors[name] ?? []).map((field) => args[field]),
+      ]);
     const unresolvedNotExecuted = (text: string) =>
       [...rejectedAttempts.values()].filter(
         (attempt) =>
@@ -159,12 +189,30 @@ export class PiEngine implements ConversationEngine {
               code:
                 result && typeof result === "object" && "code" in result ? result.code : undefined,
               corrected: false,
+              readOnly: tool.readOnly,
+              args: structuredClone(args as Record<string, unknown>),
             });
           } else {
             rejectedAttempts.delete(attemptKey(tool.name, args as Record<string, unknown>));
-            for (const attempt of rejectedAttempts.values()) {
-              if (attempt.retry === retryKey(tool.name, args as Record<string, unknown>))
-                attempt.corrected = true;
+            for (const [key, attempt] of rejectedAttempts) {
+              if (attempt.retry !== retryKey(tool.name, args as Record<string, unknown>)) continue;
+              // A read-only query rejected for missing input can be completed
+              // by supplying that input. Preserve every existing selector and
+              // any bound task so another target cannot erase its failure.
+              const completedReadInput =
+                tool.readOnly &&
+                attempt.readOnly &&
+                attempt.code === "input" &&
+                (!attempt.target ||
+                  attempt.target ===
+                    String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? "")) &&
+                Object.entries(attempt.args).every(
+                  ([field, value]) =>
+                    Object.hasOwn(args as Record<string, unknown>, field) &&
+                    canonical(value) === canonical((args as Record<string, unknown>)[field]),
+                );
+              if (completedReadInput) rejectedAttempts.delete(key);
+              else attempt.corrected = true;
             }
             successfulToolCalls++;
             if (!tool.readOnly) successfulWriteCalls++;
@@ -202,6 +250,8 @@ export class PiEngine implements ConversationEngine {
               target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
               code: safe.code,
               corrected: false,
+              readOnly: tool.readOnly,
+              args: structuredClone(args as Record<string, unknown>),
             });
           } else unknownToolResults++;
           return {

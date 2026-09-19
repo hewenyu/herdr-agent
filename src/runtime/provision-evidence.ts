@@ -112,7 +112,7 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
           /(?:转交|投递|送达|交给|传给|发送|收到|forwarded|delivered|dispatched|\b(?:sent|received)\b)/iu.test(
             part,
           ) &&
-          /(?:要求|需求|指令|限制|Claude|Codex|参与者|prompt|requirements|instructions|participant)/iu.test(
+          /(?:要求|需求|指令|限制|约束|Claude|Codex|参与者|prompt|requirements|instructions|constraints|participant)/iu.test(
             value,
           ),
       );
