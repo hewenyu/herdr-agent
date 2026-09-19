@@ -57,7 +57,7 @@ function editProject(action: Action, project?: Project) {
               agent: agent.input.value,
             })
           )
-            closeModal();
+            closeModal(body);
         },
         "primary",
       ),

@@ -28,6 +28,8 @@ export interface EngineInput {
   onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
   /** Internal summaries do not represent user-visible business claims. */
   enforceClaims?: boolean;
+  /** Internal authorized operation, never derived directly from user text or model output. */
+  requireToolCall?: boolean;
 }
 
 export interface EngineResult {

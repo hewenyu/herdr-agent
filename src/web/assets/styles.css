@@ -437,6 +437,10 @@ dialog::backdrop {
 .modal-head h2 {
   margin-bottom: 0;
 }
+.modal-feedback {
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
 .icon-button {
   padding: 5px 9px;
 }

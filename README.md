@@ -10,6 +10,8 @@ With AI enabled, the model decides conversational replies, lifecycle notices and
 
 The frontend, backend, Node runtime and native locking addon are bundled into one executable. The repository, standalone executable and state directory retain the names `herdr-agent` and `~/.herdr-agent` for compatibility.
 
+Task creation and participant follow-ups preserve and forward the current Feishu user's original message separately from pi's assignment summary. Explicit paths, ordering and restrictions in the original message take precedence. Remote task descriptions show a truncation notice when they exceed the length limit; local records and participant input retain the full original. Existing tasks are not rewritten or resent automatically.
+
 ## Install
 
 The Node/pi rewrite starts at **v0.3.0**. Supported release targets are macOS arm64, Linux x64 and Linux arm64. npm users need Node >=18 for the launcher; the standalone executable embeds Node.
@@ -26,7 +28,7 @@ List available versions, install a specific version, or upgrade to the stable re
 
 ```sh
 npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.12
+npm install -g @yuebanlaosiji/myrix@0.3.13
 npm install -g @yuebanlaosiji/myrix@latest
 ```
 
@@ -47,6 +49,8 @@ See [Releases](https://github.com/hewenyu/herdr-agent/releases/latest) for the l
 A pushed `v*` tag triggers three native builds and smoke tests, verifies the complete npm distribution with an offline global install, publishes the platform packages and then the entry package, and creates the GitHub Release. Publishing uses `TOKEN` from the GitHub environment `NPM`. Artifact downloads inside Actions are only an internal assembly step; users install `@yuebanlaosiji/myrix` from npm or download a release archive, without selecting a workflow download. See [release operations](docs/releasing.md) for versioning and recovery.
 
 Full live acceptance remains **partial and in progress**. [The validation matrix](docs/live-validation.md) separates implementation, automated tests and real Feishu/herdr evidence. [E32](docs/live-evidence-e32-manual-discussion.md) covers manual Claude/Codex discussion and cleanup; [E34](docs/live-evidence-e34-runtime-recovery.md) covers user approval, participant output, cleanup and recovery from an explicitly failed task ID within the same turn. Historical failures remain recorded, including [E33](docs/live-evidence-e33-n02-codex.md). [E35](docs/live-evidence-e35-destroy-notices.md) verified both cleanup notices and resource deletion for an explicitly cancelled task, while its remote task stayed incomplete. [E36](docs/live-evidence-e36-completion-notices.md) also verified completion-path notices and cleanup. Its creation-reply rejection was subsequently fixed and passed the limited creation-to-cleanup recheck in [E37](docs/live-evidence-e37-create-delivery.md). These are limited checks; overall acceptance remains partial.
+
+[E38](docs/live-evidence-e38-multi-project.md) records multi-directory Web configuration, separate pi sessions and a second project created while the first was blocked. It also exposed hidden configuration errors, rewritten task requirements and failed startup directory confirmation. Current-source fixes have automated and limited native-component evidence; the real Feishu and browser rechecks remain incomplete.
 
 A locally accepted or queued task does not prove that the remote task or group exists, or that instructions reached a participant. Replies must follow confirmed tool receipts. Release versions and the local development binary can differ; use `myrix version --json` when comparing behavior.
 

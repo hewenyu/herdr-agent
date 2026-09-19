@@ -10,6 +10,8 @@ AI 开启时，普通回复、生命周期通知和工具选择由模型决定�
 
 前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。仓库名、独立二进制名和状态目录继续保留 `herdr-agent`、`~/.herdr-agent`，兼容已有安装。
 
+从飞书创建任务或向参与者续聊时，程序保留并转交当前用户原文，将其与 pi 整理的分派摘要分开。路径、顺序、禁止项等明确约束以用户原文为准；远端任务描述超出长度限制时会提示截断，完整原文仍保存在本地记录并交给参与者。旧任务不自动重写或重新投递。
+
 ## 安装
 
 Node/pi 重构版本从 **v0.3.0** 开始，支持 macOS arm64、Linux x64 和 Linux arm64。npm 启动器需要 Node >=18；独立二进制已内置 Node。
@@ -26,7 +28,7 @@ npm 自动选择当前平台的原生依赖：`@yuebanlaosiji/myrix-darwin-arm64
 
 ```sh
 npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.12
+npm install -g @yuebanlaosiji/myrix@0.3.13
 npm install -g @yuebanlaosiji/myrix@latest
 ```
 
@@ -47,6 +49,8 @@ npm install -g @yuebanlaosiji/myrix@latest
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`。Actions 内部的 artifact 下载只是组装发布包的工作流步骤；用户直接从 npm 安装 `@yuebanlaosiji/myrix` 或下载 Release 压缩包，不需要选择 workflow 的 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
 全量真实验收仍为 **R-部分，持续进行中**。[现场验收矩阵](docs/live-validation.md) 分开记录实现、自动化检查和真实飞书/herdr 证据。[E32](docs/live-evidence-e32-manual-discussion.md) 覆盖 Claude/Codex 手动讨论及资源清理；[E34](docs/live-evidence-e34-runtime-recovery.md) 覆盖用户审批、参与者输出、清理，以及错误任务编号明确失败后同轮恢复完成。历史失败继续保留，包括 [E33](docs/live-evidence-e33-n02-codex.md)。[E35](docs/live-evidence-e35-destroy-notices.md) 已验证明确取消任务时的两条收尾通知与资源销毁，远端任务仍保持未完成；[E36](docs/live-evidence-e36-completion-notices.md) 也已限定验证确认完成后的通知与清理，其创建答复误拒随后已修复，并经 [E37](docs/live-evidence-e37-create-delivery.md) 从创建到清理的限定链路复验通过；整体仍为部分通过。
+
+[E38](docs/live-evidence-e38-multi-project.md) 记录了 Web 多目录配置、独立 pi 会话，以及前一任务阻塞时继续创建第二个项目的结果；同时暴露了配置错误被弹窗遮挡、任务要求被改写和启动目录确认失败。当前源码已补修复及自动化、限定原生组件验证，真实飞书与浏览器复验仍未完成。
 
 本地接受或排队不代表远端任务、群聊已创建，也不代表要求已送达参与者；回复必须以工具回执为依据。发布版本与本地开发二进制可能不同，对照行为前请用 `myrix version --json` 核对。
 

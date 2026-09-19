@@ -216,7 +216,7 @@ export class PiEngine implements ConversationEngine {
     // for a normal follow-up answer with provider `auto`; leaving `required`
     // latched forces every continuation into another tool call and can exhaust
     // the 12-call budget on read-only notification turns.
-    let requireToolCall = false;
+    let requireToolCall = input.requireToolCall === true;
     const stream: StreamFn = (model, context, options) => {
       if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
       requireToolCall = false;
@@ -312,15 +312,16 @@ export class PiEngine implements ConversationEngine {
         input.tools.length > 0 &&
         requiresToolForRequest(input.prompt);
       const claimRecovery =
-        input.enforceClaims !== false &&
-        (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
-          (unknownToolResults > 0 ||
-            unresolvedNotExecuted(finalText) > 0 ||
-            toolCallsSeen === 0 ||
-            (requiresWriteEvidence(finalText)
-              ? successfulWriteCalls === 0
-              : successfulToolCalls === 0))) ||
-          unsupportedProvisionClaim(finalText, provisioning));
+        (input.requireToolCall === true && executedCalls === 0) ||
+        (input.enforceClaims !== false &&
+          (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
+            (unknownToolResults > 0 ||
+              unresolvedNotExecuted(finalText) > 0 ||
+              toolCallsSeen === 0 ||
+              (requiresWriteEvidence(finalText)
+                ? successfulWriteCalls === 0
+                : successfulToolCalls === 0))) ||
+            unsupportedProvisionClaim(finalText, provisioning)));
       if (claimRecovery && input.tools.length > 0) {
         // The first answer is the evidence failure that triggered recovery. Do
         // not allow it to survive if the constrained retry is blocked or fails
@@ -358,13 +359,14 @@ export class PiEngine implements ConversationEngine {
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
       if (
-        claimRecovery &&
-        (unknownToolResults > 0 ||
-          unresolvedNotExecuted(finalText) > 0 ||
-          (requiresWriteEvidence(finalText)
-            ? successfulWriteCalls === 0
-            : successfulToolCalls === 0) ||
-          unsupportedProvisionClaim(finalText, provisioning))
+        (input.requireToolCall === true && executedCalls === 0) ||
+        (claimRecovery &&
+          (unknownToolResults > 0 ||
+            unresolvedNotExecuted(finalText) > 0 ||
+            (requiresWriteEvidence(finalText)
+              ? successfulWriteCalls === 0
+              : successfulToolCalls === 0) ||
+            unsupportedProvisionClaim(finalText, provisioning)))
       )
         throw new OperationError(
           "model_failed",
