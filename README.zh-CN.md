@@ -48,7 +48,7 @@ npm install -g @yuebanlaosiji/myrix@latest
 
 推送 `v*` tag 后，GitHub Actions 自动完成三平台原生构建与烟测、完整 npm 分发的离线安装验证、平台包及主入口包发布，最后创建 GitHub Release。npm 发布使用 GitHub environment `NPM` 的 `TOKEN`，无需手动选择 download 选项。版本规则与失败恢复见[发布说明](docs/releasing.md)。
 
-全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28](docs/live-evidence-e28-real-model-tool-decision.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)，真实长消息分片与清理见 [E30](docs/live-evidence-e30-long-message.md)，主入口 `/clear` 机械轮转见 [E31](docs/live-evidence-e31-clear-command.md)。这些记录不替代真实用户从飞书进入的完整链路。
+全量真实场景验收仍在进行。自动化检查和二进制烟测通过，不代表全部飞书、模型和 herdr 业务组合都已验证。[现场验收矩阵](docs/live-validation.md) 分别记录通过、部分通过、未测与失败；保留群后续清理和通知组件验证见 [E24](docs/live-evidence-e24-retained-group.md)，飞书长连接恢复与旧兼容桥路由验证见 [E25](docs/live-evidence-e25-transport-legacy.md)，真实 REST 任务/群生命周期及权限缺口见 [E26](docs/live-evidence-e26-feishu-rest-lifecycle.md)，当前服务 bot 的真实入口提示见 [E27](docs/live-evidence-e27-service-ingress-prompt.md)，当前模型首步工具选择复验见 [E28](docs/live-evidence-e28-real-model-tool-decision.md)，session 与已解散群边界回归见 [E29](docs/live-evidence-e29-boundary-regressions.md)，真实长消息分片与清理见 [E30](docs/live-evidence-e30-long-message.md)，主入口 `/clear` 机械轮转见 [E31](docs/live-evidence-e31-clear-command.md)，手动讨论通知修正及仍待现场复验见 [E32](docs/live-evidence-e32-manual-discussion.md)。这些记录不替代真实用户从飞书进入的完整链路。
 
 ## 运行前置
 
@@ -104,7 +104,7 @@ myrix doctor --json
 
 任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后仍保留历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。
 
-参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
+参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。`manual` 讨论只自动尝试首位参与者；后续参与者等待用户或调度器安排。只有当前事实明确显示任务群已经发布仍有效的审批卡时，`blocked` 参与者才提示用户去群里处理；没有群或卡片发布事实时只说明参与者处于 blocked，不能假定存在审批卡。只有上一位参与者产生已核验输出后，`round_robin` 才会自动转交下一位。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
 
 新任务在 completed 完成确认后默认自动解散群；用户明确保留时使用 `keepGroup: true`。review 不触发解散，明确保留证据继续有效；旧默认或来源不明的保留值在完成/关闭时采用解散，不批量改写活跃旧任务。`complete`（含飞书手动完成）默认通过 herdr 关闭对应执行器并按快照处理群；无论因何种原因解散群，都会关闭对应的 herdr Claude/Codex session。明确 `keepExecution: true` 保留执行器是例外，有群任务必须同时 `keepGroup: true`；`close` 确认完成后关闭受管执行资源；`destroy` 不自动验收；`reopen` 用于保留现场的已完成任务。若执行器已关闭而群仍保留，之后可明确要求解散该群：pi 使用 `destroy` 加 `keepGroup: false`，已验收任务也可使用 `close`。这不会重启执行器或改写原验收事实。任务结束和 pi session 归档是独立操作。默认共享项目目录；显式 worktree 只隔离首目录，其余附加目录仍共享，关闭时不删除代码或 worktree。
 
