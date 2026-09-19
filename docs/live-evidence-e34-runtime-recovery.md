@@ -56,3 +56,5 @@ E32 再次提前报告收尾后，新增基于服务端任务/参与者快照的
 - `version --json`、进程路径和 `10:58:42.375Z` 的 `feishu.connection_ready` 已回读。
 
 当前 E34 仍等待用户在真实群处理普通更新菜单。服务重启不代替审批，也不清理未完成验收的任务。原有审批卡可能过期，须使用群里的当前卡片。最终新版的生产通知、输出及完成收尾仍待验，PR #47 保持待验状态；完整目标 active。
+
+最终生产应用 REST 只读回读（`11:00:58.323Z`）：E32 飞书任务 `completedAt=1789814817000`、群 `dissolved`；E34 飞书任务 `completedAt=0`、群 `normal`。同期真实 herdr agent list 仅保留 E34 的 `w1Z:p1`，E32 `w1W:p1/w1X:p1` 均不在列表。原始结果存于 `.cache/live/e34-remote-readback.json`，此读取没有修改外部状态。
