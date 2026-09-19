@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config/types.js";
 import { OperationError, safeError } from "../core/errors.js";
-import { stableId } from "../core/ids.js";
+import { newId, stableId } from "../core/ids.js";
 import type { HerdrPort, Logger, PlatformHandlers, PlatformPort } from "../core/ports.js";
 import type {
   ActorContext,
@@ -27,6 +27,7 @@ import { Inbox, type InboxRecord } from "./inbox.js";
 import { LegacyBridge } from "./legacy.js";
 import { createLogger } from "./logger.js";
 import { handleMessage, messageActor } from "./messages.js";
+import { noticeDecision } from "./notice-decision.js";
 import { notificationParticipants, notificationTask } from "./notifications.js";
 import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
@@ -391,30 +392,46 @@ export class Application implements ApplicationContext {
     if (!decision) {
       if (this.config.ai.enabled) {
         try {
-          const answer = await this.engine.run({
-            actor,
-            sessionId: `notice:${signature}`,
-            messages: [],
-            systemPrompt: NOTIFICATION_PROMPT,
-            prompt: JSON.stringify({
-              event: kind,
-              task: notificationTask(task),
-              participants: notificationParticipants(this.tasks.records.participants(task)),
-            }),
-            tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
-            signal: this.signal,
-            // Lifecycle notices are generated from the authoritative task and
-            // participant snapshot above. They may describe an already-created
-            // resource without replaying a write tool; ordinary user turns keep
-            // the default claim/evidence guard in SessionService/PiEngine.
-            enforceClaims: false,
-          });
+          const participants = this.tasks.records.participants(task);
+          const runId = newId("notice_run");
+          decision = await noticeDecision(
+            this.engine,
+            {
+              actor,
+              sessionId: `notice:${signature}`,
+              messages: [],
+              systemPrompt: NOTIFICATION_PROMPT,
+              prompt: JSON.stringify({
+                event: kind,
+                task: notificationTask(task),
+                participants: notificationParticipants(participants),
+              }),
+              tools: applicationTools(this, actor).filter((tool) => tool.readOnly),
+              signal: this.signal,
+              // Lifecycle notices are generated from the authoritative task and
+              // participant snapshot above. They may describe an already-created
+              // resource without replaying a write tool; ordinary user turns keep
+              // the default claim/evidence guard in SessionService/PiEngine.
+              enforceClaims: false,
+            },
+            { task, participants },
+            (rejection) => {
+              this.store.set("notice_rejections", `${signature}:${runId}:${rejection.attempt}`, {
+                signature,
+                runId,
+                taskId: task.id,
+                event: kind,
+                at: new Date().toISOString(),
+                ...rejection,
+                snapshot: {
+                  task: notificationTask(task),
+                  participants: notificationParticipants(participants),
+                },
+              });
+            },
+          );
           if (this.signal.aborted)
             throw new OperationError("stopping", "服务正在停止，通知未发送。");
-          const parsed = JSON.parse(answer.text) as { notify?: unknown; text?: unknown };
-          if (typeof parsed.notify !== "boolean" || typeof parsed.text !== "string")
-            throw new Error("invalid decision");
-          decision = { notify: parsed.notify, text: parsed.text };
         } catch (error) {
           if (this.signal.aborted) throw error;
           this.logger.warn("生命周期通知决策未完成", { code: safeError(error).code });

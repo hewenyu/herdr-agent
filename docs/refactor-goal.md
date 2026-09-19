@@ -28,7 +28,17 @@
 
 2026-09-19 E31 主入口 `/clear`：当前 `cfc7d16` 的真实飞书主私聊 exact `/clear` 未调用模型，旧 pi session 已归档、新 session 已创建并选中，客户端只显示 `CLEAR_NEW_SESSION_OK`；旧任务、群和 herdr session 未被关闭。该证据只关闭 FSH05 正常轮转子项，详见 [E31 记录](live-evidence-e31-clear-command.md)。
 
-2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认；Claude 的普通 Bypass 审批卡已发送到任务群并等待用户。旧通知把 `initialSent=false`、`blocked` 的任务说成“后续自动推进、无需操作”，与人工审批边界冲突；当前分支已修正提示词，离线定向测试 12/12、lint 和完整 `npm run check` 470/470 通过。真实审批、双参与者 marker、完成和清理仍待新二进制复验，详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
+2026-09-19 E32 手动讨论通知：真实飞书创建 Claude/Codex 双参与者 `manual` 讨论，两者的新目录信任提示均由 pi 自动确认。后续在 `2900d8b` 的 `0.3.13-dev` 上，真实群消息经 task_get→participant_send 将要求投递给 Codex，两个指定 marker 均已看到；群内用户确认后，两次 herdr close 和删群操作均 done，任务 destroyed、两参与者 gone、groupDeleted=true，测试资源已清理。该证据覆盖手动安排下一位及默认收尾，不冒充自动轮转验证。旧“无需操作”通知 R-F 保留，本轮后台通知又在执行器和群关闭前声称“已完成收尾”，新增 R-F 不被最终成功覆盖。详见 [E32 记录](live-evidence-e32-manual-discussion.md)。
+
+2026-09-19 E33 单 Codex 讨论与完成误报：真实飞书入口创建无项目单 Codex 受控讨论，原生 transcript 只有指定 marker、零工具调用，初始 receipt verified、署名群输出和用户确认后的 herdr 关闭/群删除均有指定任务证据。但完成回合先用错 ID，查询后成功完成了真实清理，最终 inbox/turn receipt 却失败并称“本轮业务未执行”；保留新增 R-F。创建时“已完整转交”和删群前“已完成收尾”的事实措辞问题也继续跟踪，详见 [E33 记录](live-evidence-e33-n02-codex.md)。本地 task_create 的 accepted/queued 不证明远端任务/群存在或参与者初始投递成功。首轮业务意图、回执事实校验及失败后成功恢复的修复已在 `2900d8b` 部署；E33 的同轮失败后成功恢复已由 E34 后续受控错误编号→查询→正确完成的独立真实回合复验，不以早前创建答复恢复替代；原失败仍保留。仅补 N02/B06/B07/B10/B12/B13 的限定 R-部分，完整 B01–B18/N01–N07 目标保持 active。
+
+2026-09-19 E34 事实恢复：真实主私聊经 task_create→task_get 后，模型仍草拟“已完整转交限制”；`2900d8b` 的运行时拦截该草稿、触发再次 task_get，并只投递承认 initialSent=false 的纠正答复，未重复创建任务。用户已在群内处理普通菜单，目录信任自动确认、初始投递 verified、marker 和用户验收均有证据；受控错误编号先 task_missing、后查询并正确 complete 的回合最终 done/finished，资源 destroyed/gone/groupDeleted=true，真实 REST 回读远端完成和群 dissolved。当前仍限定 R-部分，详见 [E34 记录](live-evidence-e34-runtime-recovery.md)。后续通知护栏及任务标题边界修正 `0b3c457` 已通过 557 项自动化测试、SEA烟测并部署为 PID98996；真实模型加合成快照探针通过；生产两条收尾通知候选未通过校验并记 unavailable，被拒正文缺失，不能排除误判，正常通知生成和送达仍未通过。精确版本、构建时间和SHA见E34，不将部署或探针通过视为完整现场通过。完整目标保持 active。
+
+2026-09-19 E35：`259b377` 的 `0.3.13-dev` 经真实主私聊 tasks_list→task_action destroy→task_get，完成指定取消/销毁子场景。两条后台通知按“进入销毁收尾/即将解散”分别在 herdr close 和删群前送达，两个阶段 processed、无 rejection；主回合 done/finished，真实 CUA 和 REST 确认群解散、执行器 gone，飞书任务 completedAt=0 且无 completion 操作。四条旧历史和空讨论目录保留，零审批记录不算审批失效验证。完整检查 566 项、SEA 烟测和三平台 CI 通过，部署 stamp 见 [E35 记录](live-evidence-e35-destroy-notices.md)。仅 destroy 指定子项 R-P；E34 原失败与正文缺失保留，修复后的 complete 全链路通知及其他组合仍分验，完整目标 active。
+
+2026-09-19 E36：`2e621e1` 的 `0.3.13-dev`（602 项完整检查、SEA 和三平台 CI 通过）经真实入口创建带引号 Codex 的单参与者受控讨论；旧目录信任现场拒绝后自动确认新现场、initial verified、原生零工具 marker 和群可见输出有证据。群内用户确认后 complete→task_get、两条正确阶段通知 processed/delivered、herdr close、群删除及真实 REST completedAt/group dissolved 的限定完成通知子链 R-P。但主私聊创建回合 inbox failed/model_failed，事实护栏拒绝了两份候选答复，当时疑似误拒，创建阶段保留 R-F；后续修复及独立复验见 E37，不以最终资源清理改写旧失败。详见 [E36 记录](live-evidence-e36-completion-notices.md)。完整目标 active，未声称全矩阵通过。
+
+2026-09-19 E37：`772163d` 修复 E36 创建答复误拒，完整检查 609 项、SEA 和三平台 CI 通过。独立真实主私聊 tasks_list→task_create→task_get 仅创建一次，已建群与初始投递未确认的准确答复 delivered；目录信任、初始 verified、原生零工具 marker、群确认 complete→task_get、两条通知 processed/delivered、herdr close 与群删除均有指定证据。真实 REST 于 11:51:04.164Z 确认 completedAt1789818588000/group dissolved，两 inbox done；限定创建到清理子链通过，E36 原 R-F 不改写。详见 [E37 记录](live-evidence-e37-create-delivery.md)。单参与者 welcome 仍写轮到他人，保留 B10 其他措辞边界；全库 active tasks/pending inbox 为零仅作资源回读，整体目标 active，不代表全矩阵通过。
 
 E21 现场新增失活执行器阻断完成/清理的问题，已补修复与421项自动化检查；真实失败、订阅事件未到达和后续复验在 [E21记录](live-evidence-e21-release.md) 分别记录。未经最终验收不合并，未知投递不重发。
 

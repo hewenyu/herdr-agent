@@ -1,6 +1,7 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { Logger } from "../core/ports.js";
 import type { ActorContext, StoredMessage } from "../core/types.js";
+import type { ProvisionEvidence } from "./provision-evidence.js";
 
 /** Only application business tools are injected; this runtime has no coding or shell tools. */
 export interface RuntimeTool {
@@ -42,6 +43,9 @@ export interface EngineResult {
     successfulWrites?: number;
     unknown: number;
     notExecuted: number;
+    /** Earlier rejected attempts remain in counters; a successful retry resolves that tool. */
+    unresolvedNotExecuted?: number;
+    provisioning?: ProvisionEvidence;
   };
 }
 export interface SummaryInput {
