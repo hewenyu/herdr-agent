@@ -327,12 +327,13 @@ test("a future action promise is retried with required tool selection", async ()
   assert.equal(writes, 1);
 });
 
-test("a blocked claims recovery cannot reuse the original assistant claim", async () => {
+test("an empty claims recovery cannot reuse the original assistant claim after many tools", async () => {
+  let reads = 0;
   const recoveryCalls = Array.from({ length: 13 }, (_, index) =>
     response("", [{ type: "toolCall", id: `read-${index}`, name: "status", arguments: {} }]),
   );
   const engine = new PiEngine(config, {
-    streamFn: scripted([response("我会创建一个新项目。"), ...recoveryCalls]),
+    streamFn: scripted([response("我会创建一个新项目。"), ...recoveryCalls, response("")]),
   });
   await assert.rejects(
     engine.run(
@@ -342,12 +343,16 @@ test("a blocked claims recovery cannot reuse the original assistant claim", asyn
           description: "read status",
           parameters: { type: "object", properties: {} },
           readOnly: true,
-          execute: async () => ({ status: "pending" }),
+          execute: async () => {
+            reads++;
+            return { status: "pending" };
+          },
         },
       ]),
     ),
     (error: unknown) => error instanceof OperationError && error.code === "empty_response",
   );
+  assert.equal(reads, 13);
 });
 
 for (const provider of ["openai-responses", "anthropic-messages"] as const) {
@@ -703,7 +708,7 @@ test("both real providers use correct endpoint and prohibit redirects", async ()
   }
 });
 
-test("tool calls stop at twelve and invalid arguments cannot reach execute", async () => {
+test("tool calls continue past twelve and invalid arguments cannot reach execute", async () => {
   let executed = 0;
   const tools: RuntimeTool[] = [
     {
@@ -728,10 +733,14 @@ test("tool calls stop at twelve and invalid arguments cannot reach execute", asy
           arguments: { title: "x" },
         })),
       ),
+      response("请求已记录。"),
     ]),
   });
-  await assert.rejects(engine.run(input(tools)));
-  assert.equal(executed, 12);
+  const result = await engine.run(input(tools));
+  assert.equal(result.text, "请求已记录。");
+  assert.equal(result.toolCalls, 14);
+  assert.equal(result.writeCalls, 14);
+  assert.equal(executed, 14);
   const invalid = new PiEngine(config, {
     streamFn: scripted([
       response("", [{ type: "toolCall", id: "bad", name: "write", arguments: {} }]),
@@ -739,5 +748,5 @@ test("tool calls stop at twelve and invalid arguments cannot reach execute", asy
     ]),
   });
   await invalid.run(input(tools));
-  assert.equal(executed, 12);
+  assert.equal(executed, 14);
 });

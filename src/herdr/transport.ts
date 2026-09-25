@@ -102,11 +102,15 @@ export class HerdrTransport {
             // herdr validates names and global name conflicts before starting the terminal.
             const refusedStart =
               method === "agent.start" && ["invalid_agent_name", "agent_name_taken"].includes(code);
+            // Upstream checks blocked state before queuing any prompt input.
+            const refusedPrompt = method === "agent.prompt" && code === "agent_blocked";
             finish(
               new OperationError(
                 code,
                 string(error.message) || "herdr 拒绝请求。",
-                definiteRefusals.has(code) || refusedStart ? "not_executed" : outcome(),
+                definiteRefusals.has(code) || refusedStart || refusedPrompt
+                  ? "not_executed"
+                  : outcome(),
               ),
             );
           } else if (!("result" in response)) {

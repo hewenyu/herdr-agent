@@ -35,7 +35,7 @@ test("offline Feishu adapter drives the real pi loop and turn-taking; Web only r
           participants: [{ kind: "claude" }, { kind: "codex" }],
           createGroup: true,
           createRemoteTask: false,
-          discussion: { mode: "round_robin", maxRounds: 1, maxMinutes: 5 },
+          discussion: { mode: "round_robin" },
         },
       },
     ]),
@@ -86,8 +86,11 @@ test("offline Feishu adapter drives the real pi loop and turn-taking; Web only r
     assert.ok(task);
     assert.equal(task.entryChatId, "entry");
     assert.equal(task.chatId, "group1");
-    assert.equal(task.status, "review");
-    assert.equal(task.discussion.paused, true);
+    assert.equal(task.status, "running");
+    assert.equal(task.discussion.paused, false);
+    assert.equal(task.discussion.rounds, 1);
+    assert.equal(herdr.sends.length, 3);
+    assert.equal(herdr.sends[2]?.pane, "p1");
     const session = app.sessions.forTask("owner", task.id);
     const outputs = app.sessions
       .history("owner", session.id)

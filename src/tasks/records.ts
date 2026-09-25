@@ -20,9 +20,16 @@ export class TaskRecords {
     const bound = this.byChat(actor.chatId);
     if (actor.source !== "web" && bound && (bound.id !== id || actor.taskId !== bound.id))
       fail("task_scope", "任务群身份必须使用服务端绑定任务。");
+    const localOrchestrator =
+      actor.source === "system" &&
+      task.orchestration?.mode === "model" &&
+      !task.chatId &&
+      actor.taskId === task.id &&
+      actor.chatId === task.entryChatId;
     if (
       actor.taskId &&
-      (actor.taskId !== id || (actor.source !== "web" && task.chatId !== actor.chatId))
+      (actor.taskId !== id ||
+        (actor.source !== "web" && !localOrchestrator && task.chatId !== actor.chatId))
     ) {
       fail("task_scope", "本群只能操作绑定任务。");
     }

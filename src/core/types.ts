@@ -112,13 +112,42 @@ export interface Participant {
 
 export interface DiscussionPolicy {
   mode: "manual" | "round_robin";
-  maxRounds: number;
-  maxMinutes: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxRounds?: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxMinutes?: number;
   rounds: number;
   nextParticipant: number;
   activeParticipant?: string;
   startedAt?: string;
   paused: boolean;
+}
+
+/** Captured from the authenticated ingress, never from model arguments. */
+export interface UserRequestSource {
+  source: "feishu" | "web";
+  ownerId: string;
+  sessionId: string;
+  chatId: string;
+  messageId: string;
+  eventId: string;
+  text: string;
+}
+
+export interface OrchestrationPolicy {
+  mode: "model" | "manual";
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxDecisions?: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxMinutes?: number;
+}
+
+/** A committed task mutation, independent of whether it came through chat ingress. */
+export interface TaskMutationRevision {
+  taskId: string;
+  action: "participant_add";
+  participantId: string;
+  at: string;
 }
 
 export interface Task {
@@ -130,6 +159,7 @@ export interface Task {
   kind: TaskKind;
   title: string;
   requirements: string;
+  userRequest?: UserRequestSource;
   directories: string[];
   directoryMode: DirectoryMode;
   /** Original task-authorized directories, frozen before worktree substitution. */
@@ -151,10 +181,13 @@ export interface Task {
     taskId: string;
     title: string;
     requirements: string;
+    userRequest?: UserRequestSource;
     result: string;
     participants: Array<{ name: string; kind: AgentKind; lastOutput: string }>;
   };
   discussion: DiscussionPolicy;
+  /** Missing on historical tasks: keep their existing manual/round-robin policy. */
+  orchestration?: OrchestrationPolicy;
   result: string;
   error?: string;
   syncError?: string;
@@ -228,6 +261,7 @@ export interface TaskCreateInput {
   createRemoteTask?: boolean;
   parentTaskId?: string;
   discussion?: Partial<Pick<DiscussionPolicy, "mode" | "maxRounds" | "maxMinutes">>;
+  orchestration?: OrchestrationPolicy;
 }
 
 export interface ActorContext {

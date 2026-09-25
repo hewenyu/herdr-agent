@@ -14,11 +14,12 @@ import { isLegacyReplay } from "../migration/index.js";
 import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
+import { transientTurnFailure } from "../runtime/recovery.js";
 import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
-import { Approvals } from "./approvals.js";
+import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
 import type { ApplicationContext } from "./context.js";
 import { DirectoryTrust } from "./directory-trust.js";
 import { canDeleteTaskGroup } from "./group-delivery.js";
@@ -31,6 +32,7 @@ import { noticeDecision } from "./notice-decision.js";
 import { notificationParticipants, notificationTask } from "./notifications.js";
 import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
+import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
 
 interface ApplicationOptions {
@@ -55,6 +57,7 @@ export class Application implements ApplicationContext {
   readonly logger: Logger;
   readonly inbox: Inbox;
   readonly legacy: LegacyBridge;
+  private readonly taskOrchestrator: TaskOrchestrator;
   private readonly control = new AbortController();
   readonly signal = this.control.signal;
   private readonly engine: ConversationEngine;
@@ -101,8 +104,36 @@ export class Application implements ApplicationContext {
       this.signal,
     );
     this.tasks = this.taskService();
+    this.taskOrchestrator = new TaskOrchestrator({
+      store: this.store,
+      engine: this.engine,
+      tasks: () => this.tasks,
+      tools: (actor) => applicationTools(this, actor),
+      signal: this.signal,
+      logger: this.logger,
+      onReply: (task, text, eventId) => this.orchestrationReply(task, text, eventId),
+      replyConfirmed: async (task, eventId) => {
+        const decision = this.store.get<OrchestrationEvent>(
+          "task_orchestration_events",
+          eventId,
+        )?.decision;
+        return (
+          decision?.action === "deliver" &&
+          !!decision.participantId &&
+          !!decision.outputId &&
+          this.outbox.receipt(`output:${task.id}:${decision.participantId}:${decision.outputId}`)
+            ?.state === "delivered"
+        );
+      },
+      replyRetryable: async (task, eventId) =>
+        this.canResumeOutbox(this.orchestrationReplyId(task, eventId)),
+    });
     this.legacy = new LegacyBridge(this);
-    this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger);
+    this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger, 8, {
+      canRetry: (record, error) => this.canRetryMessage(record, error),
+      exhausted: (record) => this.interruptedMessage(record),
+      exhaustedRetryable: (record) => this.canResumeOutbox(`${record.id}:interrupted`),
+    });
   }
 
   attachPlatform(platform: PlatformPort): void {
@@ -190,6 +221,10 @@ export class Application implements ApplicationContext {
     // Each tick must run inbox admission even when an earlier tick is waiting
     // on a slow lane. Inbox.drain() deduplicates active lanes itself, while a
     // fresh call can admit messages that arrived after the previous snapshot.
+    const orchestration =
+      this.config.ai.enabled && this.config.tasks.enabled
+        ? this.track(this.taskOrchestrator.tick())
+        : Promise.resolve();
     const inbox = this.track(this.inbox.drain());
     const scheduler = this.track(
       this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
@@ -199,6 +234,9 @@ export class Application implements ApplicationContext {
       const followUp = this.track(this.tasks.tick());
       await Promise.allSettled([scheduler, followUp]);
     } else await scheduler;
+    await orchestration;
+    if (this.config.ai.enabled && this.config.tasks.enabled && !this.signal.aborted)
+      await this.track(this.taskOrchestrator.tick());
   }
 
   async shutdown(): Promise<void> {
@@ -218,6 +256,55 @@ export class Application implements ApplicationContext {
 
   private allowed(owner: string): boolean {
     return this.config.feishu.allowedOpenIds.includes(owner);
+  }
+
+  private canRetryMessage(record: InboxRecord, error?: ReturnType<typeof safeError>): boolean {
+    if (record.type !== "message" || !record.actor) return false;
+    const actor = record.actor;
+    if (!this.allowed(actor.ownerId)) return false;
+    try {
+      if (this.sessions.get(actor.ownerId, actor.sessionId).generation !== record.generation)
+        return false;
+      const reply = this.sessions.recoveryReply(actor);
+      if (reply) {
+        const delivery = this.outbox.receipt(reply.id);
+        return (
+          (!delivery || ["prepared", "retryable", "delivered"].includes(delivery.state)) &&
+          this.sessions.canRecover(actor)
+        );
+      }
+      return (!error || transientTurnFailure(error.code)) && this.sessions.canRecover(actor);
+    } catch {
+      return false;
+    }
+  }
+
+  private async interruptedMessage(record: InboxRecord): Promise<void> {
+    if (record.type !== "message" || !this.config.ai.enabled || this.signal.aborted) return;
+    if (["session_cleared", "invalid_scope", "cancelled"].includes(record.error?.code ?? ""))
+      return;
+    const message = record.payload as IncomingMessage;
+    if (!this.allowed(message.ownerId)) return;
+    if (
+      record.actor &&
+      this.sessions.get(record.actor.ownerId, record.actor.sessionId).generation !==
+        record.generation
+    )
+      return;
+    if (this.tasks.records.historyByChat(message.chatId)?.groupDeleted) return;
+    await this.outbox.send(
+      message.chatId,
+      "本次请求的处理已中断，自动恢复未能完成。已经登记的任务和操作会保留；结果尚未确认的操作不会重复执行。请查询当前任务进度后继续。",
+      `${record.id}:interrupted`,
+      message.messageId,
+    );
+  }
+
+  private canResumeOutbox(id: string): boolean {
+    const receipt = this.outbox.receipt(id);
+    // Only re-enter the original callback: Outbox.send validates the same
+    // envelope, resumes unsent parts and never resends delivered parts.
+    return !receipt || ["prepared", "retryable", "delivered"].includes(receipt.state);
   }
 
   private async process(record: InboxRecord): Promise<void> {
@@ -284,8 +371,14 @@ export class Application implements ApplicationContext {
       herdr: this.herdr,
       platform: this.platform,
       hooks: {
+        blockedVersion: APPROVAL_OPTIONS_VERSION,
         changed: () => this.changed(),
         output: (task, participant, entry) => this.output(task, participant, entry),
+        outputConfirmed: (task, participant, entry) =>
+          this.outbox.receipt(`output:${task.id}:${participant.id}:${entry.id}`)?.state ===
+          "delivered",
+        outputRetryable: (task, participant, entry) =>
+          this.canResumeOutbox(`output:${task.id}:${participant.id}:${entry.id}`),
         notice: (task, kind) => this.notice(task, kind),
         canDeleteGroup: (task) => canDeleteTaskGroup(this.store, task),
         blocked: async (task, participant) => {
@@ -341,7 +434,38 @@ export class Application implements ApplicationContext {
   }
 
   private outputChat(task: Task): string | undefined {
-    return task.groupDeleted ? task.entryChatId : task.chatId;
+    return task.groupDeleted ? task.entryChatId : (task.chatId ?? task.entryChatId);
+  }
+
+  private orchestrationReplyId(task: Task, eventId: string): string {
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", eventId);
+    const final = event?.decision?.action === "deliver" ? event.decision : undefined;
+    // A selected final is the same native message, not a new send authorization.
+    // Reuse its original envelope so a missing ACK cannot be bypassed by a new ID.
+    return final?.participantId && final.outputId
+      ? `output:${task.id}:${final.participantId}:${final.outputId}`
+      : `orchestration:${task.id}:${eventId}`;
+  }
+
+  private async orchestrationReply(task: Task, text: string, eventId: string): Promise<void> {
+    const chatId = this.outputChat(task);
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", eventId);
+    const final = event?.decision?.action === "deliver" ? event.decision : undefined;
+    const outputId = this.orchestrationReplyId(task, eventId);
+    const delivered = !!chatId && !chatId.startsWith("web:");
+    if (delivered) await this.outbox.send(chatId, text, outputId);
+    if (final) {
+      this.changed();
+      return;
+    }
+    this.sessions.recordExternal(this.actor(task, outputId), {
+      id: outputId,
+      text,
+      source: "orchestration",
+      pendingDelivery: !delivered,
+      deliveredAt: delivered ? new Date().toISOString() : undefined,
+    });
+    this.changed();
   }
 
   private async output(

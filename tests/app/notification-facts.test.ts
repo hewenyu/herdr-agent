@@ -22,7 +22,7 @@ test("native done without transcript leaves explicit absent-output facts and wai
       title: "No captured discussion output",
       requirements: "仅讨论",
       participants: [{ kind: "claude" }, { kind: "codex" }],
-      discussion: { mode: "round_robin", maxRounds: 1, maxMinutes: 30 },
+      discussion: { mode: "round_robin" },
       createRemoteTask: false,
       keepGroup: true,
     })) as Task;
@@ -35,12 +35,17 @@ test("native done without transcript leaves explicit absent-output facts and wai
       agent.stateSeq = "2";
     }
     await h.app.tasks.reconcile(task.id);
-    const event = events.findLast(
-      (item) => item.event === "progress" && item.task.status === "review",
+    // An idle native process without its expected final reply remains running,
+    // rather than being advertised as ready for user review.
+    const current = h.app.tasks.get(
+      { ownerId: "owner", chatId: "entry", source: "web", sessionId: "test", messageId: "test" },
+      task.id,
     );
+    assert.equal(current.status, "running");
+    const event = { task: current, participants: notificationParticipants(current.participants) };
     assert.ok(event);
     assert.equal(event.task.discussion.rounds, 0);
-    assert.equal(event.task.discussion.maxRounds, 1);
+    assert.equal(event.task.discussion.maxRounds, undefined);
     assert.equal(event.task.discussion.paused, false);
     assert.deepEqual(
       event.participants.map((participant) => ({
@@ -78,7 +83,7 @@ test("Application notice projection keeps blocked, receipt and discussion facts 
       title: "当前讨论状态",
       requirements: "HISTORICAL_REQUIREMENTS_ONLY",
       participants: [{ kind: "claude", role: "HISTORICAL_ROLE_ONLY" }, { kind: "codex" }],
-      discussion: { mode: "round_robin", maxRounds: 4, maxMinutes: 30 },
+      discussion: { mode: "round_robin" },
       createRemoteTask: false,
       keepGroup: true,
     })) as Task;

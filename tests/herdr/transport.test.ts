@@ -134,6 +134,24 @@ test("name validation refusals are definite only for agent.start", async () => {
   }
 });
 
+test("agent_blocked is a definite prompt refusal but stalled prompts remain unknown", async () => {
+  for (const code of ["agent_blocked", "agent_prompt_stalled"]) {
+    const mock = await server((request) =>
+      JSON.stringify({ id: request.id, error: { code, message: "upstream prompt outcome" } }),
+    );
+    try {
+      const client = new HerdrTransport(mock.socket);
+      await assert.rejects(client.call("agent.prompt", { target: "w1:p1", text: "continue" }), {
+        code,
+        outcome: code === "agent_blocked" ? "not_executed" : "unknown",
+      });
+      await assert.rejects(client.call("agent.send_keys", {}), { code, outcome: "unknown" });
+    } finally {
+      await mock.close();
+    }
+  }
+});
+
 function started(request: Record<string, unknown>, nameOverride?: string) {
   const params = request.params as Record<string, unknown>;
   return JSON.stringify({

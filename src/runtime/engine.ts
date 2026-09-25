@@ -88,7 +88,6 @@ export class PiEngine implements ConversationEngine {
   async run(input: EngineInput): Promise<EngineResult> {
     if (!this.config.enabled) throw new OperationError("ai_disabled", "pi 调度模型尚未启用。");
     if (input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
-    let calls = 0;
     let executedCalls = 0;
     let toolCallsSeen = 0;
     let writes = 0;
@@ -126,6 +125,66 @@ export class PiEngine implements ConversationEngine {
     });
     let uncertain = false;
     let finalText = "";
+    let closed = false;
+    const operationTimeouts = new Set<ReturnType<typeof setTimeout>>();
+    // Protect each individual provider request or tool operation from hanging.
+    // Completed work clears its timer; there is no cumulative turn-time quota.
+    const watchOperation = () => {
+      const timeout = setTimeout(() => abort(), this.config.timeoutMs);
+      operationTimeouts.add(timeout);
+      return () => {
+        clearTimeout(timeout);
+        operationTimeouts.delete(timeout);
+      };
+    };
+    if (input.resume) {
+      const previousCalls = new Map<string, { name: string; args: Record<string, unknown> }>();
+      for (const message of input.messages) {
+        if (message.role === "assistant")
+          for (const part of message.content) {
+            if (part.type === "toolCall") {
+              toolCallsSeen++;
+              previousCalls.set(part.id, { name: part.name, args: part.arguments });
+            }
+          }
+        if (message.role !== "toolResult") continue;
+        const call = previousCalls.get(message.toolCallId);
+        const tool = input.tools.find((candidate) => candidate.name === call?.name);
+        if (!call || !tool) continue;
+        let value: unknown;
+        try {
+          value = JSON.parse(
+            message.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n"),
+          );
+        } catch {
+          continue;
+        }
+        const outcome = toolResultOutcome(value);
+        if (outcome === "unknown") {
+          unknownToolResults++;
+          if (!tool.readOnly) uncertain = true;
+        } else if (outcome === "not_executed" || message.isError) {
+          notExecutedToolResults++;
+          rejectedAttempts.set(attemptKey(call.name, call.args), {
+            retry: retryKey(call.name, call.args),
+            target: String(call.args.taskId ?? input.actor.taskId ?? ""),
+            code: value && typeof value === "object" && "code" in value ? value.code : undefined,
+            corrected: false,
+          });
+        } else {
+          successfulToolCalls++;
+          if (!tool.readOnly) {
+            successfulWriteCalls++;
+            writes++;
+          }
+          rejectedAttempts.delete(attemptKey(call.name, call.args));
+          recordProvisionEvidence(provisioning, call.name, call.args, value, input.actor.taskId);
+        }
+      }
+    }
     const tools: AgentTool[] = input.tools.map((tool) => ({
       name: tool.name,
       label: tool.name,
@@ -145,6 +204,7 @@ export class PiEngine implements ConversationEngine {
           tool: tool.name,
           readOnly: tool.readOnly,
         });
+        const stopWatching = watchOperation();
         try {
           const result = await tool.execute(args as Record<string, unknown>, input.actor, signal);
           const outcome = toolResultOutcome(result);
@@ -208,26 +268,43 @@ export class PiEngine implements ConversationEngine {
             content: [{ type: "text", text: JSON.stringify({ error: safe.message, ...safe }) }],
             details: {},
           };
+        } finally {
+          stopWatching();
         }
       },
     }));
     // A claims recovery turn must force a tool call only on its first provider
     // request. Once that request returns a tool call, pi needs to ask the model
     // for a normal follow-up answer with provider `auto`; leaving `required`
-    // latched forces every continuation into another tool call and can exhaust
-    // the 12-call budget on read-only notification turns.
-    let requireToolCall = false;
-    const stream: StreamFn = (model, context, options) => {
-      if (!requireToolCall || !input.tools.length) return this.stream(model, context, options);
-      requireToolCall = false;
-      const toolChoice =
-        this.config.provider === "anthropic-messages" ? ("any" as const) : ("required" as const);
-      return this.stream(model, context, {
-        ...(options ?? {}),
-        // The provider adapters accept `any` (Anthropic) or `required` (Responses),
-        // while pi's provider-neutral option type intentionally exposes only auto/none.
-        toolChoice,
-      } as unknown as NonNullable<Parameters<StreamFn>[2]>);
+    // latched forces every continuation into another unnecessary tool call.
+    let requireToolCall = input.requireToolCall === true;
+    const stream: StreamFn = async (model, context, options) => {
+      if (closed || input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
+      const stopWatching = watchOperation();
+      try {
+        let requestOptions = options;
+        if (requireToolCall && input.tools.length) {
+          requireToolCall = false;
+          const toolChoice =
+            this.config.provider === "anthropic-messages"
+              ? ("any" as const)
+              : ("required" as const);
+          requestOptions = {
+            ...(options ?? {}),
+            // The provider adapters accept `any` (Anthropic) or `required` (Responses),
+            // while pi's provider-neutral option type exposes only auto/none.
+            toolChoice,
+          } as unknown as NonNullable<Parameters<StreamFn>[2]>;
+        }
+        const response = await this.stream(model, context, requestOptions);
+        // Receiving the stream object is not completion: cover stalled bodies
+        // and adapters that ignore AbortSignal until their final result exists.
+        void response.result().then(stopWatching, stopWatching);
+        return response;
+      } catch (error) {
+        stopWatching();
+        throw error;
+      }
     };
     const agent = new Agent({
       initialState: {
@@ -241,16 +318,6 @@ export class PiEngine implements ConversationEngine {
       streamFn: stream,
       getApiKey: () => this.config.apiKey,
       toolExecution: "sequential",
-      beforeToolCall: async () => {
-        if (++calls > 12)
-          return {
-            block: true,
-            reason: "本轮最多调用 12 次工具，请查询结果后发起新消息。",
-            terminate: true,
-          };
-        return undefined;
-      },
-      shouldStopAfterTurn: () => calls > 12,
       transformContext: async (messages, signal) => {
         if (
           estimateTokens({
@@ -270,7 +337,7 @@ export class PiEngine implements ConversationEngine {
           ) {
             throw new OperationError(
               "context_budget",
-              "上下文超过配置预算；已执行操作不会重放，请查询实际状态。",
+              "上下文超过配置容量；已执行操作不会重放，请查询实际状态。",
             );
           }
           return compacted;
@@ -278,11 +345,20 @@ export class PiEngine implements ConversationEngine {
         return messages;
       },
     });
-    const abort = () => agent.abort();
+    let rejectAborted!: (reason: OperationError) => void;
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAborted = reject;
+    });
+    const abort = () => {
+      agent.abort();
+      rejectAborted(
+        new OperationError("model_failed", "pi 调度回复已中断；已登记的操作保留。", "unknown"),
+      );
+    };
     input.signal?.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(abort, this.config.timeoutMs);
     let checkpointError = false;
     agent.subscribe(async (event) => {
+      if (closed) return;
       if (event.type === "message_end" || event.type === "agent_end") {
         try {
           await input.onCheckpoint?.(safeMessages(agent.state.messages));
@@ -306,7 +382,14 @@ export class PiEngine implements ConversationEngine {
       }
     });
     try {
-      await agent.prompt(input.prompt);
+      await Promise.race([
+        agent.prompt(
+          input.resume
+            ? "继续完成检查点中原始用户请求尚未完成的部分。此前工具结果是本轮持久事实，已确认的操作不要重复执行；缺少结果的调用已用恢复回执明确标记。请查询必要状态并给出完整答复。"
+            : input.prompt,
+        ),
+        aborted,
+      ]);
       const requestRequiresTool =
         input.enforceClaims !== false &&
         input.tools.length > 0 &&
@@ -327,12 +410,15 @@ export class PiEngine implements ConversationEngine {
         // before producing a new completed assistant message.
         finalText = "";
         requireToolCall = toolCallsSeen === 0 || successfulToolCalls === 0;
-        await agent.prompt({
-          role: "user",
-          content:
-            "上一次答复缺少支持业务请求或所述结果的工具事实。请重新检查原始用户请求与本轮工具返回：尚未尝试的操作先调用合适工具；已经登记的操作不要重复创建，必要时只读查询。accepted/queued只证明本地登记，remoteTaskId证明飞书任务、chatId且groupDeleted=false证明群建立、initialSent或verified投递回执才证明要求已转交。按已核验的实际阶段重新回答；不要把历史文字当作执行回执。",
-          timestamp: Date.now(),
-        });
+        await Promise.race([
+          agent.prompt({
+            role: "user",
+            content:
+              "上一次答复缺少支持业务请求或所述结果的工具事实。请重新检查原始用户请求与本轮工具返回：尚未尝试的操作先调用合适工具；已经登记的操作不要重复创建，必要时只读查询。accepted/queued只证明本地登记，remoteTaskId证明飞书任务、chatId且groupDeleted=false证明群建立、initialSent或verified投递回执才证明要求已转交。按已核验的实际阶段重新回答；不要把历史文字当作执行回执。",
+            timestamp: Date.now(),
+          }),
+          aborted,
+        ]);
       }
       if (checkpointError)
         throw new OperationError(
@@ -357,6 +443,8 @@ export class PiEngine implements ConversationEngine {
       }
       if (!finalText.trim())
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
+      if (input.requireToolCall && toolCallsSeen === 0)
+        throw new OperationError("model_failed", "本轮要求的工具调用未执行。", "not_executed");
       if (
         claimRecovery &&
         (unknownToolResults > 0 ||
@@ -423,7 +511,9 @@ export class PiEngine implements ConversationEngine {
       });
       throw error;
     } finally {
-      clearTimeout(timeout);
+      closed = true;
+      for (const timeout of operationTimeouts) clearTimeout(timeout);
+      operationTimeouts.clear();
       input.signal?.removeEventListener("abort", abort);
     }
   }
@@ -462,7 +552,10 @@ export class PiEngine implements ConversationEngine {
     // Keep the complete current user request and the latest tool-call/result batch.
     // Only context is transformed; the running pi loop and execution receipts continue.
     if (userIndex < 0 || lastAssistant <= userIndex + 1) {
-      throw new OperationError("context_budget", "当前输入或最新工具结果超过预算；原始历史保留。");
+      throw new OperationError(
+        "context_budget",
+        "当前输入或最新工具结果超过上下文容量；原始历史保留。",
+      );
     }
     const old = messages.slice(0, lastAssistant).filter((_, index) => index !== userIndex);
     let summary = "";
@@ -476,7 +569,7 @@ export class PiEngine implements ConversationEngine {
         chunk = [];
       }
       if (estimateTokens(message) > this.contextTokens * 0.6)
-        throw new OperationError("context_budget", "单条工具记录超过可压缩预算。");
+        throw new OperationError("context_budget", "单条工具记录超过可压缩上下文容量。");
       chunk.push(message);
     }
     if (chunk.length)
@@ -493,7 +586,7 @@ export class PiEngine implements ConversationEngine {
       ...messages.slice(lastAssistant),
     ];
     if (estimateTokens({ system, messages: compacted }) > this.contextTokens)
-      throw new OperationError("context_budget", "压缩后上下文仍超出预算。");
+      throw new OperationError("context_budget", "压缩后上下文仍超出容量。");
     return compacted;
   }
 }

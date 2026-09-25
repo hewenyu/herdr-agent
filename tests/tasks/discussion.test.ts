@@ -5,7 +5,7 @@ import type { Participant, Task } from "../../src/core/types.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
 
-test("round robin dispatches one turn each, preserves next participant state and stops at budget", async () => {
+test("round robin keeps dispatching past historical round limits without a user continuation", async () => {
   const outputs: string[] = [];
   const f = setup({
     output: async (_task, participant) => {
@@ -13,8 +13,12 @@ test("round robin dispatches one turn each, preserves next participant state and
     },
   });
   try {
-    const task = await f.service.create(actor, { ...discussion, discussion: { maxRounds: 1 } });
+    const task = await f.service.create(actor, discussion);
     await f.service.tick();
+    const stored = f.store.get<Task>("tasks", task.id);
+    assert.ok(stored);
+    stored.discussion.maxRounds = 1;
+    f.store.set("tasks", task.id, stored);
     const participants = f.service.get(actor, task.id).participants;
     const first = participants[0];
     const second = participants[1];
@@ -28,23 +32,32 @@ test("round robin dispatches one turn each, preserves next participant state and
     assert.ok(f.herdr.sends[1]?.text.includes("不是用户的新指令或授权"));
     f.herdr.finish(second.execution.paneId, "Codex：建议B");
     await f.service.tick();
-    assert.equal(f.herdr.sends.length, 2);
+    assert.equal(f.herdr.sends.length, 3);
     assert.equal(outputs.length, 2);
     const current = f.service.get(actor, task.id);
-    assert.equal(current.discussion.paused, true);
+    assert.equal(current.discussion.paused, false);
     assert.equal(current.discussion.rounds, 1);
+    assert.equal(current.status, "running");
+    assert.equal(f.herdr.sends[2]?.pane, first.execution.paneId);
     await f.service.tick();
     assert.equal(outputs.length, 2);
-    assert.equal(f.herdr.sends.length, 2);
-    await f.service.action({ ...actor, messageId: "resume" }, task.id, "resume");
     assert.equal(f.herdr.sends.length, 3);
-    assert.equal(f.herdr.sends[2]?.pane, first.execution.paneId);
+    for (let turn = 0; turn < 12; turn++) {
+      const participant = turn % 2 === 0 ? first : second;
+      assert.ok(participant.execution);
+      f.herdr.finish(participant.execution.paneId, `后续观点 ${turn}`);
+      await f.service.tick();
+    }
+    assert.equal(f.service.get(actor, task.id).discussion.rounds, 7);
+    assert.equal(f.service.get(actor, task.id).discussion.paused, false);
+    assert.equal(f.herdr.sends.length, 15);
+    assert.equal(outputs.length, 14);
   } finally {
     f.close();
   }
 });
 
-test("elapsed time stops future automatic turns; missing participant pauses discussion", async () => {
+test("elapsed time and historical time limits do not stop turns; a missing participant still pauses", async () => {
   const f = setup();
   try {
     const task = await f.service.create(actor, discussion);
@@ -56,22 +69,24 @@ test("elapsed time stops future automatic turns; missing participant pauses disc
     assert.ok(second?.execution);
     const stored = f.store.get<Task>("tasks", task.id);
     assert.ok(stored);
-    stored.discussion.startedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    stored.discussion.startedAt = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+    stored.discussion.maxMinutes = 30;
     f.store.set("tasks", task.id, stored);
-    f.herdr.finish(first.execution.paneId, "超时后的回复");
+    f.herdr.finish(first.execution.paneId, "长时间讨论后的回复");
     await f.service.tick();
-    assert.equal(f.herdr.sends.length, 1);
-    assert.equal(f.service.get(actor, task.id).discussion.paused, true);
+    assert.equal(f.herdr.sends.length, 2);
+    assert.equal(f.service.get(actor, task.id).discussion.paused, false);
     f.herdr.agents.delete(second.execution.paneId);
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).status, "attention");
+    assert.equal(f.service.get(actor, task.id).discussion.paused, true);
     assert.equal(f.service.get(actor, task.id).participants[1]?.status, "gone");
   } finally {
     f.close();
   }
 });
 
-test("output delivery failure resumes the stored event after restart without re-running participant", async () => {
+test("output delivery retries after restart while native discussion continues independently", async () => {
   let failed = true;
   let delivered = 0;
   const f = setup({
@@ -88,7 +103,7 @@ test("output delivery failure resumes the stored event after restart without re-
     f.herdr.finish(first.execution.paneId, "待投递发言");
     await f.service.tick();
     assert.equal(f.store.list("pending_outputs").length, 1);
-    assert.equal(f.herdr.sends.length, 1);
+    assert.equal(f.herdr.sends.length, 2);
     failed = false;
     const restored = new TaskService(f.options);
     await restored.tick();
@@ -182,7 +197,7 @@ test("local web task access keeps owner and task boundaries without a Feishu gro
   }
 });
 
-test("long first relay supplies its durable receipt while subsequent inputs do not reuse it", async () => {
+test("every relay supplies a durable per-turn receipt without reusing the initial marker", async () => {
   const f = setup();
   const received: Array<string | undefined> = [];
   const send = f.herdr.send.bind(f.herdr);
@@ -194,7 +209,6 @@ test("long first relay supplies its durable receipt while subsequent inputs do n
     const task = await f.service.create(actor, {
       ...discussion,
       requirements: "较长讨论上下文".repeat(500),
-      discussion: { maxRounds: 2 },
     });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
@@ -209,7 +223,9 @@ test("long first relay supplies its durable receipt while subsequent inputs do n
     f.herdr.finish(second.execution.paneId, "第二轮反馈");
     await f.service.tick();
     assert.equal(received.length, 3);
-    assert.equal(received[2], undefined);
+    assert.ok(received[2]?.startsWith("HERDR_RECEIPT_"));
+    assert.notEqual(received[2], first.initialReceipt);
+    assert.notEqual(received[2], second.initialReceipt);
   } finally {
     f.close();
   }

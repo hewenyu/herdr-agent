@@ -47,6 +47,8 @@ for (const [state, oldTemplate] of [
       assert.ok(sent);
       (f.herdr as HerdrPort).initialInput = async () =>
         oldTemplate ? previousDiscussionPrompt(sent) : sent;
+      // Imported versions have no exact per-operation input snapshot.
+      f.store.delete("input_deliveries", key);
       const restored = new TaskService(f.options);
       await restored.tick();
       assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");
@@ -101,6 +103,7 @@ for (const [legacy, oldTemplate] of [
         : sent;
       (f.herdr as HerdrPort).initialInput = async () =>
         oldTemplate ? previousDiscussionPrompt(initial) : initial;
+      f.store.delete("input_deliveries", key);
       const restored = new TaskService(f.options);
       await restored.tick();
       assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");

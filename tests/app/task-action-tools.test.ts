@@ -8,6 +8,8 @@ test("pi task action preserves an omitted group policy and forwards explicit boo
   const services = {
     tasks: {
       async action(...args: unknown[]) {
+        assert.equal(typeof args[4], "function", "mutations receive an in-lock cancellation guard");
+        (args[4] as () => void)();
         calls.push(args);
         return { accepted: true };
       },
@@ -24,7 +26,7 @@ test("pi task action preserves an omitted group policy and forwards explicit boo
   assert.ok(action);
   for (const keepGroup of [undefined, true, false]) {
     await action.execute({ action: "complete", keepGroup }, actor);
-    assert.deepEqual(calls.at(-1), [
+    assert.deepEqual(calls.at(-1)?.slice(0, 4), [
       actor,
       "task-bound",
       "complete",
@@ -37,7 +39,7 @@ test("pi task action preserves an omitted group policy and forwards explicit boo
     });
   assert.equal(calls.length, 3, "invalid policy must not reach the mutation service");
   await action.execute({ action: "complete", keepGroup: true, keepExecution: true }, actor);
-  assert.deepEqual(calls.at(-1), [
+  assert.deepEqual(calls.at(-1)?.slice(0, 4), [
     actor,
     "task-bound",
     "complete",

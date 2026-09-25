@@ -105,6 +105,12 @@ export function requestAction(
     fail("completion_pending", "前次完成状态同步尚未确认，请先核对，不能改为相反操作。");
   const reuseCompletion = requested && pending?.request === requested;
   if (reuseCompletion && attempted?.state === "failed") context.operations.resetFailed(pending.id);
+  if (["complete", "close", "destroy", "reopen", "pause"].includes(action))
+    context.store.set(
+      "task_pause_revision",
+      task.id,
+      (context.store.get<number>("task_pause_revision", task.id) ?? 0) + 1,
+    );
   switch (action) {
     case "complete":
       task.completionRequest = "complete";

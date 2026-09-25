@@ -15,6 +15,19 @@ export interface InboxRecord {
   error?: ReturnType<typeof safeError>;
   createdAt: string;
   sequence: number;
+  attempts?: number;
+  nextAttemptAt?: number;
+  failureNotice?: "pending" | "attempted" | "delivered";
+  failureNoticeAttempts?: number;
+  failureNoticeNextAttemptAt?: number;
+}
+
+export interface InboxRecovery {
+  canRetry(record: InboxRecord, error?: ReturnType<typeof safeError>): boolean;
+  exhausted?(record: InboxRecord): Promise<void>;
+  /** Read-only proof that re-entering the exact failure-notice envelope is safe. */
+  exhaustedRetryable?(record: InboxRecord): boolean;
+  retryDelayMs?: number;
 }
 
 function logFields(record: Pick<InboxRecord, "id" | "type" | "payload" | "lane">) {
@@ -32,15 +45,26 @@ function logFields(record: Pick<InboxRecord, "id" | "type" | "payload" | "lane">
 /** ACK only after durable enqueue; each chat stays ordered and independent chats can run together. */
 export class Inbox {
   private readonly active = new Map<string, Promise<void>>();
+  private readonly notifyingFailures = new Set<string>();
   private stopped = false;
   constructor(
     private readonly store: Store,
     private readonly process: (record: InboxRecord) => Promise<void>,
     private readonly logger: Logger,
     private readonly concurrency = 8,
+    private readonly recovery?: InboxRecovery,
   ) {
     for (const [id, record] of store.entries<InboxRecord>("inbox")) {
-      if (record.state === "processing") store.set("inbox", id, { ...record, state: "uncertain" });
+      if (
+        record.state === "processing" ||
+        record.state === "failed" ||
+        record.state === "uncertain"
+      ) {
+        const retry = (record.attempts ?? 0) < 3 && recovery?.canRetry(record, record.error);
+        if (retry) store.set("inbox", id, { ...record, state: "queued", nextAttemptAt: 0 });
+        else if (record.state === "processing")
+          store.set("inbox", id, { ...record, state: "uncertain", failureNotice: "pending" });
+      }
     }
   }
 
@@ -91,14 +115,24 @@ export class Inbox {
 
   async drain(): Promise<void> {
     if (this.stopped) return;
+    const notices = this.store
+      .entries<InboxRecord>("inbox")
+      .filter(
+        ([, record]) =>
+          (record.failureNotice === "pending" ||
+            (record.failureNotice === "attempted" && !!this.recovery?.exhaustedRetryable)) &&
+          (record.failureNoticeNextAttemptAt ?? 0) <= Date.now(),
+      )
+      .map(([, record]) => this.notifyFailure(record));
     const rows = this.queued();
     for (const [, record] of rows) {
       if (this.active.size >= this.concurrency) break;
       if (this.active.has(record.lane)) continue;
+      if ((record.nextAttemptAt ?? 0) > Date.now()) continue;
       const running = this.runLane(record.lane).finally(() => this.active.delete(record.lane));
       this.active.set(record.lane, running);
     }
-    await Promise.allSettled([...this.active.values()]);
+    await Promise.allSettled([...this.active.values(), ...notices]);
   }
 
   async shutdown(): Promise<void> {
@@ -121,6 +155,8 @@ export class Inbox {
       const next = this.queued().find(([, record]) => record.lane === lane);
       if (!next) return;
       const [id, record] = next;
+      if ((record.nextAttemptAt ?? 0) > Date.now()) return;
+      record.attempts = (record.attempts ?? 0) + 1;
       this.store.set("inbox", id, { ...record, state: "processing" });
       const startedAt = performance.now();
       const fields = logFields(record);
@@ -131,7 +167,12 @@ export class Inbox {
       });
       try {
         await this.process(record);
-        this.store.set("inbox", id, { ...record, state: "done" });
+        this.store.set("inbox", id, {
+          ...record,
+          state: "done",
+          error: undefined,
+          nextAttemptAt: undefined,
+        });
         this.logger.info("事件处理完成", {
           event: "inbox.completed",
           ...fields,
@@ -140,20 +181,82 @@ export class Inbox {
         });
       } catch (error) {
         const safe = safeError(error);
-        this.store.set("inbox", id, {
+        const retry = !this.stopped && record.attempts < 3 && this.recovery?.canRetry(record, safe);
+        const state = retry ? "queued" : safe.outcome === "not_executed" ? "failed" : "uncertain";
+        const failed: InboxRecord = {
           ...record,
-          state: safe.outcome === "not_executed" ? "failed" : "uncertain",
+          state,
           error: safe,
-        });
+          nextAttemptAt: retry
+            ? Date.now() + (this.recovery?.retryDelayMs ?? 1000) * record.attempts
+            : undefined,
+          failureNotice: retry ? undefined : "pending",
+        };
+        this.store.set("inbox", id, failed);
         this.logger.error("消息处理未完成", {
           event: "inbox.failed",
           ...fields,
-          state: safe.outcome === "not_executed" ? "failed" : "uncertain",
+          state,
           code: safe.code,
           outcome: safe.outcome,
           durationMs: Math.round(performance.now() - startedAt),
         });
+        if (retry) return;
+        if (!this.stopped) await this.notifyFailure(failed);
       }
+    }
+  }
+
+  private async notifyFailure(record: InboxRecord): Promise<void> {
+    // Re-read the durable claim so overlapping drains cannot retry one notice.
+    const pending = this.store.get<InboxRecord>("inbox", record.id);
+    if (
+      !this.recovery?.exhausted ||
+      !pending ||
+      this.notifyingFailures.has(record.id) ||
+      (pending.failureNotice !== "pending" &&
+        (pending.failureNotice !== "attempted" || !this.recovery.exhaustedRetryable?.(pending))) ||
+      (pending.failureNoticeNextAttemptAt ?? 0) > Date.now()
+    )
+      return;
+    // A live callback may not have created its outbox record yet. Only an
+    // abandoned durable claim can use receipt recovery, never this active one.
+    this.notifyingFailures.add(record.id);
+    const attempts = (pending.failureNoticeAttempts ?? 0) + 1;
+    try {
+      this.store.set("inbox", record.id, {
+        ...pending,
+        failureNotice: "attempted",
+        failureNoticeAttempts: attempts,
+        failureNoticeNextAttemptAt: undefined,
+      });
+      await this.recovery.exhausted(pending);
+      const current = this.store.get<InboxRecord>("inbox", record.id);
+      if (current) this.store.set("inbox", record.id, { ...current, failureNotice: "delivered" });
+    } catch (error) {
+      const failure = safeError(error);
+      if (failure.outcome === "not_executed") {
+        const current = this.store.get<InboxRecord>("inbox", record.id);
+        if (current?.failureNotice === "attempted") {
+          // Definite refusal is safe to retry, including after a restart. Keep
+          // the delay in state rather than sleeping in the conversation lane.
+          const delay = Math.min(
+            60_000,
+            Math.max(1000, this.recovery.retryDelayMs ?? 1000) * 2 ** Math.min(attempts - 1, 6),
+          );
+          this.store.set("inbox", record.id, {
+            ...current,
+            failureNotice: "pending",
+            failureNoticeNextAttemptAt: Date.now() + delay,
+          });
+        }
+      }
+      this.logger.warn("中断状态通知未送达", {
+        event: "inbox.failure_notice_failed",
+        code: failure.code,
+      });
+    } finally {
+      this.notifyingFailures.delete(record.id);
     }
   }
 }

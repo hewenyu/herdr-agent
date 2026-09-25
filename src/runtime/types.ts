@@ -28,6 +28,10 @@ export interface EngineInput {
   onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
   /** Internal summaries do not represent user-visible business claims. */
   enforceClaims?: boolean;
+  /** Continue a durable tool transcript; the original request is already in messages. */
+  resume?: boolean;
+  /** Restricted workflows may require a tool on the first provider request. */
+  requireToolCall?: boolean;
 }
 
 export interface EngineResult {
@@ -86,5 +90,8 @@ export interface TurnReceipt {
   generation: number;
   status: "running" | "finished" | "failed";
   replyId: string;
+  /** Only versioned turns prove all write attempts passed through the durable journal. */
+  recoveryVersion?: 1;
+  attempts?: number;
 }
 export type MessageRecord = StoredMessage & { sequence: number };
