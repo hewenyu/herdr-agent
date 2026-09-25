@@ -1,5 +1,6 @@
 import type { WebState } from "../contracts.js";
-import { type Action, dispatch, state as fetchState } from "./api.js";
+import { dispatch, state as fetchState } from "./api.js";
+import { configurationAction } from "./config-action.js";
 import { button, el, select, time } from "./dom.js";
 import { renderProjects, renderSettings } from "./projects.js";
 import { type RecordTab, renderSessions, type SessionFilter } from "./sessions.js";
@@ -103,17 +104,7 @@ function feedback(message: string, error = false): void {
   node("#feedback").replaceChildren(el("div", `notice ${error ? "error" : "good"}`, message));
 }
 
-const configAction: Action = async (name, input) => {
-  try {
-    const result = await dispatch(name, input);
-    await refresh();
-    feedback(name === "config.ai" ? "模型配置已保存，重启服务后生效。" : "配置已保存。");
-    return result;
-  } catch (error) {
-    feedback(error instanceof Error ? error.message : "配置未完成，请核对输入。", true);
-    return undefined;
-  }
-};
+const configAction = configurationAction(dispatch, refresh, feedback);
 
 function render(): void {
   const oldHistory = document.querySelector<HTMLElement>(".history");

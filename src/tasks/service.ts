@@ -24,6 +24,7 @@ import { TaskRecords } from "./records.js";
 import { RemotePolls } from "./remote-poll.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
+import { currentUserRequest } from "./user-request.js";
 
 export type TaskServiceOptions = Omit<TaskContext, "records" | "operations" | "signal">;
 
@@ -185,6 +186,7 @@ export class TaskService {
         participant,
         text,
         `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
+        currentUserRequest(this.context.store, actor),
       );
     });
   }

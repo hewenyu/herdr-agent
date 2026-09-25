@@ -10,6 +10,16 @@ import { config, response, scripted } from "./helpers.js";
 const actor = { ownerId: "owner", chatId: "entry", sessionId: "session", messageId: "message" };
 const taskId = "task_provision";
 const queued = { id: taskId, status: "queued", groupDeleted: false };
+// E39 A2's delivered creation reply claimed constraint delivery in its own bullet,
+// while the only task_get snapshot still had initialSent:false.
+const e39A2DeliveryClaim = `任务已创建并登记完成，当前进展如下：
+
+- **飞书任务**：MYRIX-E39-A2 已建立
+- **任务群**：已建立，开发参与者 codex-dev 正在启动，初始要求投递确认中
+- **工作目录**：主目录 main + 附加目录 extra-new（shared 模式，无 worktree）
+- **约束已完整转交**：只新增 brief-new.md、不改 brief.md 和输入文件、不提交、不装依赖、字节级断言校验、汇报两条原文和校验结果后等验收、不自动完成、不碰 A1
+
+Codex 启动并在群内汇报后，你可以在任务群验收。`;
 function provisioned(claudeSent = true, codexSent = true) {
   return {
     ...queued,
@@ -611,5 +621,54 @@ for (const text of [
       ),
       (error: unknown) => error instanceof OperationError && error.code === "model_failed",
     );
+  });
+}
+
+for (const claim of [e39A2DeliveryClaim, "约束已完整转交。", "Constraints have been delivered."]) {
+  test(`constraint delivery needs a participant receipt even in a separate Markdown bullet: ${claim.slice(0, 30)}`, async () => {
+    const get = async () => ({
+      ...provisioned(),
+      participants: [
+        { id: "codex-dev", name: "codex-dev", kind: "codex", started: false, initialSent: false },
+      ],
+    });
+    await assert.rejects(
+      run(
+        [
+          call("task_create", "create"),
+          call("task_get", "read"),
+          response(claim),
+          call("task_get", "verify"),
+          response(claim),
+        ],
+        tools(get),
+      ),
+      (error: unknown) => error instanceof OperationError && error.code === "model_failed",
+    );
+    const result = await run(
+      [call("task_create", "create"), call("task_get", "read"), response(claim)],
+      tools(async () => ({
+        ...(await get()),
+        participants: [
+          { id: "codex-dev", name: "codex-dev", kind: "codex", started: true, initialSent: true },
+        ],
+      })),
+    );
+    assert.equal(result.text, claim);
+  });
+}
+
+for (const text of [
+  "约束已随任务登记，初始投递尚待确认。",
+  "约束尚未完整转交。",
+  "约束已完整转交了吗？",
+  "当前不能声称约束已完整转交。",
+]) {
+  test(`pending or questioned constraint delivery remains a valid reply: ${text}`, async () => {
+    const result = await run(
+      [call("task_create", "create"), call("task_get", "read"), response(text)],
+      tools(async () => provisioned(false, false)),
+    );
+    assert.equal(result.text, text);
   });
 }

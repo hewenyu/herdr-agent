@@ -114,11 +114,12 @@ test("Application notice projection keeps blocked, receipt and discussion facts 
           participants: ReturnType<typeof notificationParticipants>;
         };
         assert.equal(event.event, "progress");
-        assert.match(turn.systemPrompt, /讨论调度必须遵守discussion\.mode/);
+        assert.match(turn.systemPrompt, /先依据task\.kind判断任务类型/);
+        assert.match(turn.systemPrompt, /讨论任务的后续调度才依据discussion\.mode/);
         assert.match(turn.systemPrompt, /manual只自动尝试首位参与者/);
         assert.match(turn.systemPrompt, /已有仍有效的审批卡/);
         assert.match(turn.systemPrompt, /没有群或卡片发布事实时/);
-        assert.match(turn.systemPrompt, /welcome和group_ready事件只证明/);
+        assert.match(turn.systemPrompt, /welcome和group_ready在启动和初始投递之前即可产生/);
         assert.equal(event.task.status, "attention");
         assert.equal(event.task.error, task.error);
         assert.equal(event.task.syncError, task.syncError);

@@ -389,11 +389,12 @@ export class SessionService {
         systemPrompt: `${prompt}\n当前服务端绑定：${JSON.stringify({ source: actor.source, chatType: actor.chatType, sessionId: session.id, taskId: actor.taskId })}\n当前可用工具：${tools.map((tool) => tool.name).join(", ")}。仅依据上述当前规则、绑定与工具判断能力，历史拒绝不能覆盖当前能力；处理最后一条用户请求，不模仿历史数据的包装格式。`,
         tools: tools.map((tool) => this.wrapTool(actor, session.generation, tool)),
         signal,
-        onCheckpoint: (messages) => {
+        onCheckpoint: (messages, diagnostic) => {
           this.database.set("pi_checkpoints", receiptId, {
             sessionId: session.id,
             generation: session.generation,
             messages,
+            ...(diagnostic ? { diagnostic } : {}),
             updatedAt: new Date().toISOString(),
           });
         },

@@ -138,10 +138,20 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
     context.records.saveParticipant(participant);
     if (
       agent.status === "blocked" &&
-      (!participant.initialSent || participant.lastNotifiedState !== agent.stateSeq)
+      (!participant.initialSent ||
+        participant.lastNotifiedState !== agent.stateSeq ||
+        (context.hooks.blockedVersion &&
+          context.store.get<string>("approval_observation_versions", participant.id) !==
+            context.hooks.blockedVersion))
     ) {
       assertActive(context);
       await context.hooks.blocked?.(task, participant);
+      if (context.hooks.blockedVersion)
+        context.store.set(
+          "approval_observation_versions",
+          participant.id,
+          context.hooks.blockedVersion,
+        );
       participant.lastNotifiedState = agent.stateSeq;
       context.records.saveParticipant(participant);
     }

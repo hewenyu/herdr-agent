@@ -18,7 +18,7 @@ import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
-import { Approvals } from "./approvals.js";
+import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
 import type { ApplicationContext } from "./context.js";
 import { DirectoryTrust } from "./directory-trust.js";
 import { canDeleteTaskGroup } from "./group-delivery.js";
@@ -284,6 +284,7 @@ export class Application implements ApplicationContext {
       herdr: this.herdr,
       platform: this.platform,
       hooks: {
+        blockedVersion: APPROVAL_OPTIONS_VERSION,
         changed: () => this.changed(),
         output: (task, participant, entry) => this.output(task, participant, entry),
         notice: (task, kind) => this.notice(task, kind),
