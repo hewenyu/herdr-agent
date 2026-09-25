@@ -250,7 +250,10 @@ export class TaskService {
       if (!["codex", "claude"].includes(input.kind)) fail("participant_kind", "参与者类型无效。");
       const participantId = `${id}:p_${stableId(actor.messageId, input.kind, input.name ?? "")}`;
       const existing = this.context.store.get<Participant>("participants", participantId);
-      if (existing) return existing;
+      if (existing) {
+        this.associateUserRequest(actor, task);
+        return existing;
+      }
       if (
         this.records.participants(task).filter((entry) => entry.status !== "removed").length >= 8
       ) {
@@ -273,6 +276,7 @@ export class TaskService {
       this.context.store.transaction(() => {
         this.records.saveParticipant(participant);
         this.records.save(task);
+        this.associateUserRequest(actor, task);
       });
       return participant;
     });

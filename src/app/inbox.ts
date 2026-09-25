@@ -18,6 +18,8 @@ export interface InboxRecord {
   attempts?: number;
   nextAttemptAt?: number;
   failureNotice?: "pending" | "attempted" | "delivered";
+  failureNoticeAttempts?: number;
+  failureNoticeNextAttemptAt?: number;
 }
 
 export interface InboxRecovery {
@@ -112,7 +114,11 @@ export class Inbox {
     if (this.stopped) return;
     const notices = this.store
       .entries<InboxRecord>("inbox")
-      .filter(([, record]) => record.failureNotice === "pending")
+      .filter(
+        ([, record]) =>
+          record.failureNotice === "pending" &&
+          (record.failureNoticeNextAttemptAt ?? 0) <= Date.now(),
+      )
       .map(([, record]) => this.notifyFailure(record));
     const rows = this.queued();
     for (const [, record] of rows) {
@@ -198,16 +204,46 @@ export class Inbox {
   }
 
   private async notifyFailure(record: InboxRecord): Promise<void> {
-    if (!this.recovery?.exhausted || record.failureNotice !== "pending") return;
-    this.store.set("inbox", record.id, { ...record, failureNotice: "attempted" });
+    // Re-read the durable claim so overlapping drains cannot retry one notice.
+    const pending = this.store.get<InboxRecord>("inbox", record.id);
+    if (
+      !this.recovery?.exhausted ||
+      pending?.failureNotice !== "pending" ||
+      (pending.failureNoticeNextAttemptAt ?? 0) > Date.now()
+    )
+      return;
+    const attempts = (pending.failureNoticeAttempts ?? 0) + 1;
+    this.store.set("inbox", record.id, {
+      ...pending,
+      failureNotice: "attempted",
+      failureNoticeAttempts: attempts,
+      failureNoticeNextAttemptAt: undefined,
+    });
     try {
-      await this.recovery.exhausted(record);
+      await this.recovery.exhausted(pending);
       const current = this.store.get<InboxRecord>("inbox", record.id);
       if (current) this.store.set("inbox", record.id, { ...current, failureNotice: "delivered" });
     } catch (error) {
+      const failure = safeError(error);
+      if (failure.outcome === "not_executed") {
+        const current = this.store.get<InboxRecord>("inbox", record.id);
+        if (current?.failureNotice === "attempted") {
+          // Definite refusal is safe to retry, including after a restart. Keep
+          // the delay in state rather than sleeping in the conversation lane.
+          const delay = Math.min(
+            60_000,
+            Math.max(1000, this.recovery.retryDelayMs ?? 1000) * 2 ** Math.min(attempts - 1, 6),
+          );
+          this.store.set("inbox", record.id, {
+            ...current,
+            failureNotice: "pending",
+            failureNoticeNextAttemptAt: Date.now() + delay,
+          });
+        }
+      }
       this.logger.warn("中断状态通知未送达", {
         event: "inbox.failure_notice_failed",
-        code: safeError(error).code,
+        code: failure.code,
       });
     }
   }
