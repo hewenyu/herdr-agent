@@ -125,17 +125,14 @@ export class Application implements ApplicationContext {
             ?.state === "delivered"
         );
       },
-      replyRetryable: async (task, eventId) => {
-        const receipt = this.outbox.receipt(this.orchestrationReplyId(task, eventId));
-        // This only permits re-entering the original callback. Outbox.send
-        // still validates the exact envelope and never resends delivered parts.
-        return !receipt || ["prepared", "retryable", "delivered"].includes(receipt.state);
-      },
+      replyRetryable: async (task, eventId) =>
+        this.canResumeOutbox(this.orchestrationReplyId(task, eventId)),
     });
     this.legacy = new LegacyBridge(this);
     this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger, 8, {
       canRetry: (record, error) => this.canRetryMessage(record, error),
       exhausted: (record) => this.interruptedMessage(record),
+      exhaustedRetryable: (record) => this.canResumeOutbox(`${record.id}:interrupted`),
     });
   }
 
@@ -303,6 +300,13 @@ export class Application implements ApplicationContext {
     );
   }
 
+  private canResumeOutbox(id: string): boolean {
+    const receipt = this.outbox.receipt(id);
+    // Only re-enter the original callback: Outbox.send validates the same
+    // envelope, resumes unsent parts and never resends delivered parts.
+    return !receipt || ["prepared", "retryable", "delivered"].includes(receipt.state);
+  }
+
   private async process(record: InboxRecord): Promise<void> {
     if (record.type === "message") {
       const message = record.payload as IncomingMessage;
@@ -373,6 +377,8 @@ export class Application implements ApplicationContext {
         outputConfirmed: (task, participant, entry) =>
           this.outbox.receipt(`output:${task.id}:${participant.id}:${entry.id}`)?.state ===
           "delivered",
+        outputRetryable: (task, participant, entry) =>
+          this.canResumeOutbox(`output:${task.id}:${participant.id}:${entry.id}`),
         notice: (task, kind) => this.notice(task, kind),
         canDeleteGroup: (task) => canDeleteTaskGroup(this.store, task),
         blocked: async (task, participant) => {

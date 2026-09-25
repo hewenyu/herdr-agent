@@ -25,6 +25,8 @@ export interface InboxRecord {
 export interface InboxRecovery {
   canRetry(record: InboxRecord, error?: ReturnType<typeof safeError>): boolean;
   exhausted?(record: InboxRecord): Promise<void>;
+  /** Read-only proof that re-entering the exact failure-notice envelope is safe. */
+  exhaustedRetryable?(record: InboxRecord): boolean;
   retryDelayMs?: number;
 }
 
@@ -43,6 +45,7 @@ function logFields(record: Pick<InboxRecord, "id" | "type" | "payload" | "lane">
 /** ACK only after durable enqueue; each chat stays ordered and independent chats can run together. */
 export class Inbox {
   private readonly active = new Map<string, Promise<void>>();
+  private readonly notifyingFailures = new Set<string>();
   private stopped = false;
   constructor(
     private readonly store: Store,
@@ -116,7 +119,8 @@ export class Inbox {
       .entries<InboxRecord>("inbox")
       .filter(
         ([, record]) =>
-          record.failureNotice === "pending" &&
+          (record.failureNotice === "pending" ||
+            (record.failureNotice === "attempted" && !!this.recovery?.exhaustedRetryable)) &&
           (record.failureNoticeNextAttemptAt ?? 0) <= Date.now(),
       )
       .map(([, record]) => this.notifyFailure(record));
@@ -208,18 +212,24 @@ export class Inbox {
     const pending = this.store.get<InboxRecord>("inbox", record.id);
     if (
       !this.recovery?.exhausted ||
-      pending?.failureNotice !== "pending" ||
+      !pending ||
+      this.notifyingFailures.has(record.id) ||
+      (pending.failureNotice !== "pending" &&
+        (pending.failureNotice !== "attempted" || !this.recovery.exhaustedRetryable?.(pending))) ||
       (pending.failureNoticeNextAttemptAt ?? 0) > Date.now()
     )
       return;
+    // A live callback may not have created its outbox record yet. Only an
+    // abandoned durable claim can use receipt recovery, never this active one.
+    this.notifyingFailures.add(record.id);
     const attempts = (pending.failureNoticeAttempts ?? 0) + 1;
-    this.store.set("inbox", record.id, {
-      ...pending,
-      failureNotice: "attempted",
-      failureNoticeAttempts: attempts,
-      failureNoticeNextAttemptAt: undefined,
-    });
     try {
+      this.store.set("inbox", record.id, {
+        ...pending,
+        failureNotice: "attempted",
+        failureNoticeAttempts: attempts,
+        failureNoticeNextAttemptAt: undefined,
+      });
       await this.recovery.exhausted(pending);
       const current = this.store.get<InboxRecord>("inbox", record.id);
       if (current) this.store.set("inbox", record.id, { ...current, failureNotice: "delivered" });
@@ -245,6 +255,8 @@ export class Inbox {
         event: "inbox.failure_notice_failed",
         code: failure.code,
       });
+    } finally {
+      this.notifyingFailures.delete(record.id);
     }
   }
 }

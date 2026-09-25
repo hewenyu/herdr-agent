@@ -360,10 +360,21 @@ async function deliverOutput(
   if (!pending) return;
   const confirmed =
     context.hooks.outputConfirmed?.(task, participant, { ...pending.entry, id: key }) === true;
-  if (!confirmed && (pending.delivery === "uncertain" || pending.error?.outcome === "unknown"))
+  const retryable =
+    !confirmed &&
+    (pending.delivery === "sending" ||
+      pending.delivery === "uncertain" ||
+      pending.error?.outcome === "unknown") &&
+    context.hooks.outputRetryable?.(task, participant, { ...pending.entry, id: key }) === true;
+  if (
+    !confirmed &&
+    !retryable &&
+    (pending.delivery === "uncertain" || pending.error?.outcome === "unknown")
+  )
     return;
-  if (!confirmed && pending.delivery === "sending") {
-    // A crash crossed the notification boundary. Preserve that uncertainty;
+  if (!confirmed && !retryable && pending.delivery === "sending") {
+    // Without receipt proof, a crash may have crossed the notification boundary.
+    // Preserve that uncertainty;
     // native work may continue, but this message must never be blindly resent.
     context.store.set("pending_outputs", key, {
       ...pending,

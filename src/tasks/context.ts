@@ -20,6 +20,8 @@ export interface TaskHooks {
   output?(task: Task, participant: Participant, entry: TranscriptEntry): Promise<void>;
   /** Read-only proof that the existing output envelope is already delivered. */
   outputConfirmed?(task: Task, participant: Participant, entry: TranscriptEntry): boolean;
+  /** Read-only proof that re-entering this exact output callback cannot duplicate delivery. */
+  outputRetryable?(task: Task, participant: Participant, entry: TranscriptEntry): boolean;
   notice?(
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
