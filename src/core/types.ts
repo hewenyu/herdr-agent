@@ -142,6 +142,14 @@ export interface OrchestrationPolicy {
   maxMinutes?: number;
 }
 
+/** A committed task mutation, independent of whether it came through chat ingress. */
+export interface TaskMutationRevision {
+  taskId: string;
+  action: "participant_add";
+  participantId: string;
+  at: string;
+}
+
 export interface Task {
   id: string;
   ownerId: string;

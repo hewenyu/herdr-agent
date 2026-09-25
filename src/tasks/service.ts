@@ -2,7 +2,14 @@ import { fail, OperationError, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { RemoteTask } from "../core/ports.js";
-import type { ActorContext, AgentKind, Participant, Task, TaskCreateInput } from "../core/types.js";
+import type {
+  ActorContext,
+  AgentKind,
+  Participant,
+  Task,
+  TaskCreateInput,
+  TaskMutationRevision,
+} from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { createTask } from "./create.js";
@@ -251,7 +258,10 @@ export class TaskService {
       const participantId = `${id}:p_${stableId(actor.messageId, input.kind, input.name ?? "")}`;
       const existing = this.context.store.get<Participant>("participants", participantId);
       if (existing) {
-        this.associateUserRequest(actor, task);
+        this.context.store.transaction(() => {
+          this.associateUserRequest(actor, task);
+          this.recordParticipantAddition(task, existing);
+        });
         return existing;
       }
       if (
@@ -277,6 +287,7 @@ export class TaskService {
         this.records.saveParticipant(participant);
         this.records.save(task);
         this.associateUserRequest(actor, task);
+        this.recordParticipantAddition(task, participant);
       });
       return participant;
     });
@@ -550,6 +561,17 @@ export class TaskService {
     const existing = this.context.store.get("task_user_revisions", id);
     if (!existing)
       this.context.store.set("task_user_revisions", id, { taskId: task.id, source, at: now() });
+  }
+
+  private recordParticipantAddition(task: Task, participant: Participant): void {
+    const id = `mutation:${stableId(task.id, "participant_add", participant.id)}`;
+    if (!this.context.store.get<TaskMutationRevision>("task_mutation_revisions", id))
+      this.context.store.set<TaskMutationRevision>("task_mutation_revisions", id, {
+        taskId: task.id,
+        action: "participant_add",
+        participantId: participant.id,
+        at: now(),
+      });
   }
 
   private pauseScheduling(task: Task): void {
