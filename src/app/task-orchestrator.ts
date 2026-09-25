@@ -67,6 +67,8 @@ export interface TaskOrchestratorOptions {
   onReply?(task: Task, text: string, eventId: string): Promise<void>;
   /** Read-only proof that the exact chosen final envelope was already delivered. */
   replyConfirmed?(task: Task, eventId: string): Promise<boolean>;
+  /** Read-only proof that re-entering this exact notification callback cannot duplicate delivery. */
+  replyRetryable?(task: Task, eventId: string): Promise<boolean>;
   /** Injection for deterministic recovery tests; production uses wall clock. */
   clock?: () => number;
   retryDelayMs?: number;
@@ -274,7 +276,7 @@ export class TaskOrchestrator {
         event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state))
       )
         this.reconcileDispatches(event);
-      this.recoverRetiredBudget(task, event);
+      if (!this.recoverRetiredBudget(task, event)) return;
       if (
         event.userRevision !== revision &&
         !event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state)) &&
@@ -348,18 +350,22 @@ export class TaskOrchestrator {
     await this.run(task, participants, outputs, event);
   }
 
-  private recoverRetiredBudget(task: Task, event: OrchestrationEvent): void {
+  private recoverRetiredBudget(task: Task, event: OrchestrationEvent): boolean {
     if (
       event.state !== "attention" ||
       event.error?.code !== "orchestration_budget" ||
       event.dispatches.length ||
       event.decision
     )
-      return;
+      return true;
     // The removed quota gate ran before any model call or native dispatch.
     // Resume that exact durable event; do not replay already completed work.
     const previousError = event.error;
-    this.options.store.transaction(() => {
+    return this.options.store.transaction(() => {
+      // Notification recovery yields before this step. Re-read inside the
+      // transaction so a committed pause, close or unknown operation wins.
+      const current = this.current(task.id);
+      if (!current || current.pending) return false;
       event.retiredBudgetRecovery = {
         at: new Date(this.clock()).toISOString(),
         error: previousError,
@@ -369,20 +375,21 @@ export class TaskOrchestrator {
       event.notified = undefined;
       event.nextAttemptAt = undefined;
       this.save(event);
-      if (task.error !== previousError.message) return;
-      task.error = undefined;
-      if (task.status === "attention" && !task.pending) {
+      if (current.error !== previousError.message) return true;
+      current.error = undefined;
+      if (current.status === "attention") {
         const participants = this.options
           .tasks()
-          .records.participants(task)
+          .records.participants(current)
           .filter((entry) => entry.status !== "removed");
         if (
           participants.length &&
           participants.every((entry) => !entry.error && ["idle", "done"].includes(entry.status))
         )
-          task.status = "review";
+          current.status = "review";
       }
-      this.options.tasks().records.save(task);
+      this.options.tasks().records.save(current);
+      return true;
     });
   }
 
@@ -707,30 +714,34 @@ export class TaskOrchestrator {
 
   private async recoverNotification(task: Task, event: OrchestrationEvent): Promise<void> {
     if (
-      event.decision?.action !== "deliver" ||
+      !event.decision ||
+      event.decision.action === "continue" ||
       event.notified ||
       !["sending", "uncertain"].includes(event.notificationState ?? "") ||
-      !this.options.replyConfirmed
+      (!this.options.replyConfirmed && !this.options.replyRetryable)
     )
       return;
     let confirmed = false;
+    let retryable = false;
     try {
-      confirmed = await this.options.replyConfirmed(task, event.id);
+      if (event.decision.action === "deliver")
+        confirmed = (await this.options.replyConfirmed?.(task, event.id)) ?? false;
+      if (!confirmed) retryable = (await this.options.replyRetryable?.(task, event.id)) ?? false;
     } catch (error) {
-      this.options.logger.warn("最终交付回执暂未核验", {
+      this.options.logger.warn("调度通知回执暂未核验", {
         taskId: task.id,
         eventId: event.id,
         code: safeError(error).code,
       });
       return;
     }
-    if (!confirmed) return;
+    if (!confirmed && !retryable) return;
     const previousError = event.error;
     const notificationError =
       previousError?.code.startsWith("orchestration_notification_") === true;
     this.options.store.transaction(() => {
-      event.notified = true;
-      event.notificationState = "sent";
+      event.notified = confirmed;
+      event.notificationState = confirmed ? "sent" : "retryable";
       event.notificationNextAttemptAt = undefined;
       if (event.state !== "superseded") event.state = "done";
       if (notificationError) event.error = undefined;

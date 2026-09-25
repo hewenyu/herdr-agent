@@ -125,6 +125,12 @@ export class Application implements ApplicationContext {
             ?.state === "delivered"
         );
       },
+      replyRetryable: async (task, eventId) => {
+        const receipt = this.outbox.receipt(this.orchestrationReplyId(task, eventId));
+        // This only permits re-entering the original callback. Outbox.send
+        // still validates the exact envelope and never resends delivered parts.
+        return !receipt || ["prepared", "retryable", "delivered"].includes(receipt.state);
+      },
     });
     this.legacy = new LegacyBridge(this);
     this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger, 8, {
@@ -425,16 +431,21 @@ export class Application implements ApplicationContext {
     return task.groupDeleted ? task.entryChatId : (task.chatId ?? task.entryChatId);
   }
 
-  private async orchestrationReply(task: Task, text: string, eventId: string): Promise<void> {
-    const chatId = this.outputChat(task);
+  private orchestrationReplyId(task: Task, eventId: string): string {
     const event = this.store.get<OrchestrationEvent>("task_orchestration_events", eventId);
     const final = event?.decision?.action === "deliver" ? event.decision : undefined;
     // A selected final is the same native message, not a new send authorization.
     // Reuse its original envelope so a missing ACK cannot be bypassed by a new ID.
-    const outputId =
-      final?.participantId && final.outputId
-        ? `output:${task.id}:${final.participantId}:${final.outputId}`
-        : `orchestration:${task.id}:${eventId}`;
+    return final?.participantId && final.outputId
+      ? `output:${task.id}:${final.participantId}:${final.outputId}`
+      : `orchestration:${task.id}:${eventId}`;
+  }
+
+  private async orchestrationReply(task: Task, text: string, eventId: string): Promise<void> {
+    const chatId = this.outputChat(task);
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", eventId);
+    const final = event?.decision?.action === "deliver" ? event.decision : undefined;
+    const outputId = this.orchestrationReplyId(task, eventId);
     const delivered = !!chatId && !chatId.startsWith("web:");
     if (delivered) await this.outbox.send(chatId, text, outputId);
     if (final) {
