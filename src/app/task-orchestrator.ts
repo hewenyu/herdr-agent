@@ -198,15 +198,21 @@ export class TaskOrchestrator {
   }
 
   private foregroundPending(task: Task): boolean {
-    return this.options.store
-      .list<InboxRecord>("inbox")
-      .some(
-        (record) =>
-          record.type === "message" &&
-          ["queued", "processing"].includes(record.state) &&
-          (record.actor?.taskId === task.id ||
-            (task.chatId && "chatId" in record.payload && record.payload.chatId === task.chatId)),
+    return this.options.store.list<InboxRecord>("inbox").some((record) => {
+      if (record.type !== "message" || !["queued", "processing"].includes(record.state))
+        return false;
+      const payload = record.payload;
+      const ownerId = record.actor?.ownerId ?? ("ownerId" in payload ? payload.ownerId : undefined);
+      if (ownerId !== task.ownerId || ("ownerId" in payload && payload.ownerId !== task.ownerId))
+        return false;
+      // Entry-chat instructions have no task binding until foreground routing
+      // interprets them. Give that owner's accepted instructions priority too.
+      return (
+        record.actor?.taskId === task.id ||
+        ("chatId" in payload &&
+          (payload.chatId === task.chatId || payload.chatId === task.entryChatId))
       );
+    });
   }
 
   private current(taskId: string): Task | undefined {

@@ -61,6 +61,12 @@ const transientRefusals = new Set([
   "transcript_unavailable",
   "server_unavailable",
 ]);
+const admissionRefusals = new Set([
+  "orchestration_deferred",
+  "orchestration_superseded",
+  "cancelled",
+  "stopping",
+]);
 
 /** Only retry an input that was definitely refused, with its exact original fingerprint. */
 export function retryUnsentInput(
@@ -77,10 +83,17 @@ export function retryUnsentInput(
     !previous ||
     previous.fingerprint !== fingerprint ||
     previous.state !== "failed" ||
-    previous.error?.outcome !== "not_executed" ||
-    !transientRefusals.has(previous.error.code)
+    previous.error?.outcome !== "not_executed"
   )
     return;
+  if (admissionRefusals.has(previous.error.code)) {
+    // These local guards run before native input. A durable definite refusal
+    // can be admitted again after restart, without spending transport retries.
+    // The caller checks its current authorization and cancellation again.
+    context.store.delete("operations", operationId);
+    return;
+  }
+  if (!transientRefusals.has(previous.error.code)) return;
   const retries = context.store.get<{ fingerprint: string; count: number }>(
     "input_retry_counts",
     operationId,

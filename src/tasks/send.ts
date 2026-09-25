@@ -15,6 +15,7 @@ export async function sendParticipant(
   text: string,
   operationId: string,
   source?: UserRequestSource,
+  beforeSend?: () => void,
 ): Promise<Delivery> {
   assertActive(context);
   if (!text.trim()) fail("empty_input", "消息不能为空。");
@@ -44,7 +45,10 @@ export async function sendParticipant(
   retryUnsentInput(context, operationId, parameters);
   const delivery = await context.operations.run(operationId, parameters, async () => {
     await captureInputBaseline(context, participant);
+    // Baseline reads yield while the task lock is held. A new foreground
+    // request or cancellation can arrive before the actual native input.
     assertActive(context);
+    beforeSend?.();
     const prepared = prepareInputDelivery(
       context,
       task,

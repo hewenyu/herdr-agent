@@ -202,6 +202,7 @@ export class TaskService {
         text,
         `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
         currentUserRequest(this.context.store, actor),
+        beforeSend,
       );
     });
   }
