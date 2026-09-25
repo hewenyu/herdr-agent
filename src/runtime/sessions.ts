@@ -832,7 +832,10 @@ export class SessionService {
       tools: tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
     });
     if (fixed > this.engine.contextTokens * 0.75)
-      throw new OperationError("context_budget", "当前输入或工具定义超过上下文预算；请缩短输入。");
+      throw new OperationError(
+        "context_budget",
+        "当前输入或工具定义超过模型上下文容量；请缩短输入。",
+      );
     if (
       estimateTokens({ messages, summary: session.summary }) + fixed >
       this.engine.contextTokens * 0.85
@@ -863,7 +866,10 @@ export class SessionService {
           chunk = [];
         }
         if (estimateTokens(message) > this.engine.contextTokens * 0.65)
-          throw new OperationError("context_budget", "单条历史过长，原文保留，请提高上下文预算。");
+          throw new OperationError(
+            "context_budget",
+            "单条历史过长，原文保留，请调整模型上下文容量。",
+          );
         chunk.push(message);
       }
       if (chunk.length)

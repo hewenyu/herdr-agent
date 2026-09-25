@@ -100,7 +100,7 @@ test("reconciling a blocked initial participant does not expose starting", async
   try {
     const task = await h.service.create(actor, {
       ...discussion,
-      discussion: { mode: "manual", maxRounds: 1, maxMinutes: 30 },
+      discussion: { mode: "manual" },
       createGroup: false,
       createRemoteTask: false,
     });

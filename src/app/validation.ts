@@ -71,6 +71,8 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
     createRemoteTask:
       input.createRemoteTask === undefined ? undefined : boolean(input, "createRemoteTask"),
     parentTaskId: optionalString(input, "parentTaskId"),
+    // Preserve obsolete limits only in normalized input: old tool-call retries
+    // must retain their canonical task identity. Creation never stores/enforces them.
     orchestration: orchestration
       ? {
           mode: orchestration.mode as "model" | "manual",

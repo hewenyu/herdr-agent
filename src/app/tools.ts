@@ -255,7 +255,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_create",
-      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者讨论默认有界轮流发言。newProject仅用于用户明确新建项目。",
+      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者任务默认由模型自主调度。newProject仅用于用户明确新建项目。",
       false,
       {
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },
@@ -293,18 +293,6 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
             "model让pi根据执行结果自主分工、继续、返工和委托汇总；manual仅按用户逐次安排。默认model；明确指定discussion.mode时沿用该策略。",
           properties: {
             mode: { type: "string", enum: ["model", "manual"] },
-            maxDecisions: {
-              type: "integer",
-              minimum: 1,
-              maximum: 256,
-              description: "默认32次，含分派、复核和返工；到限保留进度并说明阻塞",
-            },
-            maxMinutes: {
-              type: "number",
-              minimum: 1,
-              maximum: 1440,
-              description: "默认240分钟；不会越过普通人工审批",
-            },
           },
           required: ["mode"],
           additionalProperties: false,
@@ -313,8 +301,6 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
           type: "object",
           properties: {
             mode: { type: "string", enum: ["manual", "round_robin"] },
-            maxRounds: { type: "integer", minimum: 1, maximum: 50 },
-            maxMinutes: { type: "number", minimum: 1, maximum: 240 },
           },
           additionalProperties: false,
         },

@@ -38,32 +38,6 @@ export async function createTask(
     fail("orchestration_mode", "调度模式无效。");
   if (input.orchestration?.mode === "model" && !config.ai.enabled)
     fail("ai_disabled", "模型调度需要启用 AI。");
-  if (
-    input.orchestration?.maxDecisions !== undefined &&
-    (!Number.isInteger(input.orchestration.maxDecisions) ||
-      input.orchestration.maxDecisions < 1 ||
-      input.orchestration.maxDecisions > 256)
-  )
-    fail("orchestration_budget", "调度决策上限为 1 到 256 次。");
-  if (
-    input.orchestration?.maxMinutes !== undefined &&
-    (!Number.isFinite(input.orchestration.maxMinutes) ||
-      input.orchestration.maxMinutes < 1 ||
-      input.orchestration.maxMinutes > 1440)
-  )
-    fail("orchestration_budget", "调度时长上限为 1 到 1440 分钟。");
-  const maxRounds = input.discussion?.maxRounds ?? 4;
-  const maxMinutes = input.discussion?.maxMinutes ?? 30;
-  if (
-    !Number.isInteger(maxRounds) ||
-    maxRounds < 1 ||
-    maxRounds > 50 ||
-    !Number.isFinite(maxMinutes) ||
-    maxMinutes < 1 ||
-    maxMinutes > 240
-  ) {
-    fail("discussion_budget", "讨论轮数为 1 到 50，时长为 1 到 240 分钟。");
-  }
   const parent = input.parentTaskId ? records.get(actor, input.parentTaskId) : undefined;
   // A message identity is only unique inside its bound pi session.  Keeping
   // the session in the durable task key prevents two independently selected
@@ -154,14 +128,12 @@ export async function createTask(
       mode:
         input.discussion?.mode ??
         (input.kind === "discussion" && participants.length > 1 ? "round_robin" : "manual"),
-      maxRounds,
-      maxMinutes,
       rounds: 0,
       nextParticipant: 0,
       paused: false,
       activeParticipant: participants[0]?.id,
     },
-    orchestration: input.orchestration,
+    orchestration: input.orchestration ? { mode: input.orchestration.mode } : undefined,
     result: "",
     closeRequested: false,
     createdAt: timestamp,

@@ -26,15 +26,6 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
   assertActive(context);
   await recoverInitialInputs(context, task);
   await flushPendingTaskEvents(context, task, false);
-  if (
-    task.orchestration?.mode !== "model" &&
-    task.discussion.mode === "round_robin" &&
-    task.discussion.startedAt &&
-    Date.now() - Date.parse(task.discussion.startedAt) >= task.discussion.maxMinutes * 60_000
-  ) {
-    task.discussion.paused = true;
-    context.records.save(task);
-  }
   // Reload each participant: an earlier output can dispatch work to a later one.
   // Reusing the initial array would overwrite that dispatch's durable state.
   for (const id of task.participantIds) {

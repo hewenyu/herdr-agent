@@ -112,8 +112,10 @@ export interface Participant {
 
 export interface DiscussionPolicy {
   mode: "manual" | "round_robin";
-  maxRounds: number;
-  maxMinutes: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxRounds?: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
+  maxMinutes?: number;
   rounds: number;
   nextParticipant: number;
   activeParticipant?: string;
@@ -134,7 +136,9 @@ export interface UserRequestSource {
 
 export interface OrchestrationPolicy {
   mode: "model" | "manual";
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
   maxDecisions?: number;
+  /** @deprecated Accepted only for old stored records and input replay; never enforced. */
   maxMinutes?: number;
 }
 

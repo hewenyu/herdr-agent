@@ -48,6 +48,7 @@ export interface OrchestrationEvent {
   dispatches: Dispatch[];
   decision?: OrchestrationDecision;
   error?: ReturnType<typeof safeError>;
+  retiredBudgetRecovery?: { at: string; error: ReturnType<typeof safeError> };
   notified?: boolean;
   notificationState?: "sending" | "sent" | "retryable" | "uncertain";
   notificationAttempts?: number;
@@ -273,6 +274,7 @@ export class TaskOrchestrator {
         event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state))
       )
         this.reconcileDispatches(event);
+      this.recoverRetiredBudget(task, event);
       if (
         event.userRevision !== revision &&
         !event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state)) &&
@@ -341,30 +343,47 @@ export class TaskOrchestrator {
       this.save(event);
     }
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > this.clock()) return;
-    const cycle = events.filter(
-      (entry) => entry.userRevision === event.userRevision && entry.state !== "superseded",
-    );
-    const first = cycle[0];
-    const decisionBudget = task.orchestration?.maxDecisions ?? 32;
-    if (
-      cycle.filter((entry) => entry.state === "done").length >= decisionBudget ||
-      (first &&
-        this.clock() - Date.parse(first.createdAt) >=
-          (task.orchestration?.maxMinutes ?? 240) * 60_000)
-    ) {
-      event.state = "attention";
-      event.error = {
-        code: "orchestration_budget",
-        message: "自动协作已达到本次轮次或时间预算，完整输出与调度记录已保留，请确认是否继续。",
-        outcome: "not_executed",
-      };
-      this.save(event);
-      await this.attention(task, event);
-      return;
-    }
     task = this.current(taskId);
     if (!task) return;
     await this.run(task, participants, outputs, event);
+  }
+
+  private recoverRetiredBudget(task: Task, event: OrchestrationEvent): void {
+    if (
+      event.state !== "attention" ||
+      event.error?.code !== "orchestration_budget" ||
+      event.dispatches.length ||
+      event.decision
+    )
+      return;
+    // The removed quota gate ran before any model call or native dispatch.
+    // Resume that exact durable event; do not replay already completed work.
+    const previousError = event.error;
+    this.options.store.transaction(() => {
+      event.retiredBudgetRecovery = {
+        at: new Date(this.clock()).toISOString(),
+        error: previousError,
+      };
+      event.state = "pending";
+      event.error = undefined;
+      event.notified = undefined;
+      event.nextAttemptAt = undefined;
+      this.save(event);
+      if (task.error !== previousError.message) return;
+      task.error = undefined;
+      if (task.status === "attention" && !task.pending) {
+        const participants = this.options
+          .tasks()
+          .records.participants(task)
+          .filter((entry) => entry.status !== "removed");
+        if (
+          participants.length &&
+          participants.every((entry) => !entry.error && ["idle", "done"].includes(entry.status))
+        )
+          task.status = "review";
+      }
+      this.options.tasks().records.save(task);
+    });
   }
 
   private assertCurrent(event: OrchestrationEvent): Task {
@@ -650,7 +669,7 @@ export class TaskOrchestrator {
     if (!fits(JSON.stringify(base)))
       fail(
         "orchestration_context_budget",
-        "完整任务要求与修订已超过当前模型上下文预算，自动调度已暂停；请调整模型上下文容量后继续，原始要求完整保留。",
+        "完整任务要求与修订已超过当前模型上下文容量，自动调度已暂停；请调整模型上下文容量后继续，原始要求完整保留。",
       );
     for (let limit = 6000; limit >= 0; limit = limit > 0 ? Math.floor(limit / 2) : -1) {
       const prompt = JSON.stringify({
@@ -663,7 +682,7 @@ export class TaskOrchestrator {
       });
       if (fits(prompt)) return prompt;
     }
-    fail("orchestration_context_budget", "完整任务上下文超出模型预算，已保留数据并暂停自动调度。");
+    fail("orchestration_context_budget", "完整任务上下文超出模型容量，已保留数据并暂停自动调度。");
   }
 
   private async attention(task: Task, event: OrchestrationEvent): Promise<void> {

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
+import {
+  type OrchestrationEvent,
+  type SettledTaskOutput,
+  TaskOrchestrator,
+} from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
+import { stableId } from "../../src/core/ids.js";
 import type { ActorContext, StoredMessage, Task } from "../../src/core/types.js";
 import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
@@ -381,48 +386,131 @@ test("a clarification after wait wakes the model without requiring the user to r
   }
 });
 
-test("a durable explicit resume starts a fresh decision budget without replaying previous native input", async () => {
-  const h = await harness();
-  try {
-    const task = h.service.get(actor, h.task.id);
-    task.orchestration = { mode: "model", maxDecisions: 1 };
-    h.service.records.save(task);
-    let calls = 0;
-    h.engine.handler = async (input) => {
-      if (calls++ === 0)
-        await h.execute(input, "participant_send", {
-          participantId: h.participants[0]?.id,
-          text: "先完成第一阶段",
-        });
-      else
-        await h.execute(input, "orchestration_decide", {
-          action: "wait",
-          reason: "已恢复调度；还需要用户确认交付范围。",
-        });
-      return { text: "", messages: [] };
-    };
-    await h.worker.tick();
-    h.herdr.finish(h.participants[0]?.execution?.paneId ?? "", "第一阶段完成");
-    await h.service.reconcile(task.id);
-    await h.worker.tick();
-    assert.equal(calls, 1);
-    assert.ok(
-      h.store
-        .list<OrchestrationEvent>(TABLE)
-        .some((event) => event.error?.code === "orchestration_budget"),
-    );
-    assert.ok(h.replies.some((reply) => /预算/.test(reply)));
-    await h.service.action({ ...actor, messageId: "resume-after-budget" }, task.id, "resume");
-    await h.worker.tick();
-    assert.equal(calls, 2);
-    assert.equal(h.herdr.sends.length, 1);
-    assert.ok(
-      h.store.list<OrchestrationEvent>(TABLE).some((event) => event.state === "superseded"),
-    );
-  } finally {
-    h.close();
-  }
-});
+for (const legacyLimits of [false, true])
+  test(`model work continues beyond 32 decisions and 240 minutes (${legacyLimits ? "legacy limits" : "defaults"})`, async () => {
+    const h = await harness();
+    try {
+      const task = h.service.get(actor, h.task.id);
+      if (legacyLimits) {
+        task.orchestration = { mode: "model", maxDecisions: 1, maxMinutes: 1 };
+        h.service.records.save(task);
+      }
+      let time = Date.now();
+      let calls = 0;
+      const worker = new TaskOrchestrator({ ...h.options, clock: () => time });
+      const participant = h.participants[0];
+      assert.ok(participant?.execution);
+      h.engine.handler = async (input) => {
+        calls++;
+        if (calls <= 34)
+          await h.execute(input, "participant_send", {
+            participantId: participant.id,
+            text: `继续完成第 ${calls} 项交付`,
+          });
+        else {
+          const data = JSON.parse(input.prompt);
+          await h.execute(input, "orchestration_decide", {
+            action: "deliver",
+            reason: "所有已授权目标均有真实产出。",
+            outputId: data.authoritativeOutputs.at(-1).entry.id,
+          });
+        }
+        return { text: "", messages: [] };
+      };
+      await worker.tick();
+      for (let step = 1; step <= 34; step++) {
+        h.herdr.finish(participant.execution.paneId, `第 ${step} 项交付完成`);
+        await h.service.reconcile(task.id);
+        time += 10 * 60_000;
+        await worker.tick();
+      }
+      assert.equal(calls, 35);
+      assert.equal(h.herdr.sends.length, 34);
+      assert.equal(h.replies.length, 1);
+      assert.match(h.replies[0] ?? "", /第 34 项交付完成/);
+      assert.ok(h.store.list<OrchestrationEvent>(TABLE).every((event) => !event.error));
+      assert.equal(h.service.get(actor, task.id).status, "review");
+    } finally {
+      h.close();
+    }
+  });
+
+for (const paused of [false, true])
+  test(`legacy budget attention recovers without replaying native work (${paused ? "explicit pause respected" : "automatic"})`, async () => {
+    const h = await harness();
+    try {
+      const task = h.service.get(actor, h.task.id);
+      let calls = 0;
+      h.engine.handler = async (input) => {
+        if (calls++ === 0)
+          await h.execute(input, "participant_send", {
+            participantId: h.participants[0]?.id,
+            text: "先完成第一阶段",
+          });
+        else {
+          const data = JSON.parse(input.prompt);
+          await h.execute(input, "orchestration_decide", {
+            action: "deliver",
+            reason: "原生交付完整，供用户验收。",
+            outputId: data.authoritativeOutputs[0].entry.id,
+          });
+        }
+        return { text: "", messages: [] };
+      };
+      await h.worker.tick();
+      h.herdr.finish(h.participants[0]?.execution?.paneId ?? "", "第一阶段完成");
+      await h.service.reconcile(task.id);
+      const previous = h.store.list<OrchestrationEvent>(TABLE)[0];
+      const output = h.store.list<SettledTaskOutput>("task_settled_outputs")[0];
+      assert.ok(previous && output);
+      const budget: OrchestrationEvent = {
+        id: `orchestrate:${stableId(task.id, "output", previous.userRevision, output.entry.id)}`,
+        taskId: task.id,
+        trigger: "output",
+        outputIds: [output.entry.id],
+        userRevision: previous.userRevision,
+        state: "attention",
+        attempts: 0,
+        dispatches: [],
+        error: {
+          code: "orchestration_budget",
+          message: "旧调度预算已用完",
+          outcome: "not_executed",
+        },
+        notified: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      h.store.set(TABLE, budget.id, budget);
+      const current = h.service.get(actor, task.id);
+      current.status = paused ? "paused" : "attention";
+      current.discussion.paused = paused;
+      current.error = budget.error?.message;
+      h.service.records.save(current);
+      const restarted = new TaskOrchestrator(h.options);
+      if (paused) {
+        await restarted.tick();
+        assert.equal(calls, 1);
+        assert.equal(h.store.get<OrchestrationEvent>(TABLE, budget.id)?.state, "attention");
+        assert.equal(h.service.get(actor, task.id).discussion.paused, true);
+        await h.service.action({ ...actor, messageId: "explicit-resume" }, task.id, "resume");
+      }
+      await restarted.tick();
+      assert.equal(calls, 2);
+      assert.equal(h.herdr.sends.length, 1);
+      assert.equal(h.replies.length, 1, "old attention notice must not suppress the final output");
+      assert.match(h.replies[0] ?? "", /第一阶段完成/);
+      assert.equal(h.service.get(actor, task.id).error, undefined);
+      const recovered = h.store.get<OrchestrationEvent>(TABLE, budget.id);
+      assert.equal(recovered?.retiredBudgetRecovery?.error.code, "orchestration_budget");
+      assert.equal(recovered?.state, paused ? "superseded" : "done");
+      await new TaskOrchestrator(h.options).tick();
+      assert.equal(calls, 2);
+      assert.equal(h.replies.length, 1);
+    } finally {
+      h.close();
+    }
+  });
 
 test("accepted task-group input blocks background dispatch even before it enters session history", async () => {
   const h = await harness();

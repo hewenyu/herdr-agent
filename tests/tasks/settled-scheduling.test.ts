@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TranscriptEntry } from "../../src/core/types.js";
+import type { Task, TranscriptEntry } from "../../src/core/types.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
 
@@ -93,13 +93,45 @@ test("explicit user pause retains the settled handoff until resume", async () =>
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
     await f.service.action({ ...actor, messageId: "pause" }, task.id, "pause");
+    const stored = f.store.get<Task>("tasks", task.id);
+    assert.ok(stored);
+    stored.discussion.maxRounds = 1;
+    stored.discussion.rounds = 2;
+    stored.discussion.maxMinutes = 30;
+    stored.discussion.startedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    f.store.set("tasks", task.id, stored);
     f.herdr.finish(first.execution.paneId, "paused result");
     await f.service.tick();
+    assert.equal(f.service.get(actor, task.id).status, "paused");
+    assert.equal(f.service.get(actor, task.id).discussion.paused, true);
     assert.equal(f.herdr.sends.length, 1);
     assert.equal(f.store.list("pending_relays").length, 1);
     await f.service.action({ ...actor, messageId: "resume" }, task.id, "resume");
     await f.service.tick();
     assert.equal(f.herdr.sends.length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test("explicit completion blocks automatic handoffs even when execution is retained", async () => {
+  const f = setup();
+  try {
+    const task = await f.service.create(actor, discussion);
+    await f.service.tick();
+    const first = f.service.get(actor, task.id).participants[0];
+    assert.ok(first?.execution);
+    await f.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepExecution: true,
+      keepGroup: true,
+    });
+    f.herdr.finish(first.execution.paneId, "result after completion");
+    await f.service.tick();
+    await new TaskService(f.options).tick();
+    assert.equal(f.service.get(actor, task.id).status, "completed");
+    assert.equal(f.service.get(actor, task.id).discussion.paused, true);
+    assert.equal(f.herdr.sends.length, 1);
+    assert.equal(f.herdr.closes, 0);
   } finally {
     f.close();
   }
