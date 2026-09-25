@@ -19,6 +19,9 @@ const text = (description: string) => ({ type: "string", description });
 const taskId = text("任务列表或创建结果中的任务编号；任务群可省略，始终限定本群");
 const participantId = text("当前任务中的参与者编号或唯一名称，多参与者时必须明确");
 const taskActions = ["complete", "close", "destroy", "reopen", "retry", "pause", "resume"];
+const mutationGuard = (signal?: AbortSignal) => () => {
+  if (signal?.aborted) fail("cancelled", "本轮已取消，尚未开始排队的任务操作。");
+};
 
 export function applicationTools(services: Services, actor: ActorContext): RuntimeTool[] {
   const tool = (
@@ -70,7 +73,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
             }
           }),
         );
-        return { ...task, participants };
+        const orchestrationHistory = services.store
+          .list<{ taskId: string; createdAt: string }>("task_orchestration_events")
+          .filter((event) => event.taskId === task.id)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        return { ...task, participants, orchestrationHistory };
       },
     ),
     tool(
@@ -88,12 +95,13 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       false,
       { taskId, participantId, text: text("完整用户要求和上下文，保留否定约束") },
       ["text"],
-      async (args, ctx) =>
+      async (args, ctx, signal) =>
         services.tasks.send(
           ctx,
           id(args, ctx),
           optionalString(args, "participantId"),
           string(args, "text"),
+          mutationGuard(signal),
         ),
     ),
     tool(
@@ -116,12 +124,18 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         },
       },
       ["action"],
-      async (args, ctx) =>
-        services.tasks.action(ctx, id(args, ctx), string(args, "action") as TaskAction, {
-          keepGroup: args.keepGroup === undefined ? undefined : boolean(args, "keepGroup"),
-          keepExecution:
-            args.keepExecution === undefined ? undefined : boolean(args, "keepExecution"),
-        }),
+      async (args, ctx, signal) =>
+        services.tasks.action(
+          ctx,
+          id(args, ctx),
+          string(args, "action") as TaskAction,
+          {
+            keepGroup: args.keepGroup === undefined ? undefined : boolean(args, "keepGroup"),
+            keepExecution:
+              args.keepExecution === undefined ? undefined : boolean(args, "keepExecution"),
+          },
+          mutationGuard(signal),
+        ),
     ),
     tool(
       "participant_interrupt",
@@ -129,8 +143,13 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       false,
       { taskId, participantId },
       [],
-      async (args, ctx) => {
-        await services.tasks.interrupt(ctx, id(args, ctx), optionalString(args, "participantId"));
+      async (args, ctx, signal) => {
+        await services.tasks.interrupt(
+          ctx,
+          id(args, ctx),
+          optionalString(args, "participantId"),
+          mutationGuard(signal),
+        );
         return { accepted: true };
       },
     ),
@@ -145,12 +164,17 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         role: text("角色"),
       },
       ["kind"],
-      async (args, ctx) =>
-        services.tasks.addParticipant(ctx, id(args, ctx), {
-          kind: agentKind(args.kind),
-          name: optionalString(args, "name"),
-          role: optionalString(args, "role"),
-        }),
+      async (args, ctx, signal) =>
+        services.tasks.addParticipant(
+          ctx,
+          id(args, ctx),
+          {
+            kind: agentKind(args.kind),
+            name: optionalString(args, "name"),
+            role: optionalString(args, "role"),
+          },
+          mutationGuard(signal),
+        ),
     ),
     tool(
       "participant_remove",
@@ -158,8 +182,13 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       false,
       { taskId, participantId },
       ["participantId"],
-      async (args, ctx) => {
-        await services.tasks.removeParticipant(ctx, id(args, ctx), string(args, "participantId"));
+      async (args, ctx, signal) => {
+        await services.tasks.removeParticipant(
+          ctx,
+          id(args, ctx),
+          string(args, "participantId"),
+          mutationGuard(signal),
+        );
         return { accepted: true };
       },
     ),
@@ -258,6 +287,28 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         },
         createGroup: { type: "boolean" },
         createRemoteTask: { type: "boolean" },
+        orchestration: {
+          type: "object",
+          description:
+            "model让pi根据执行结果自主分工、继续、返工和委托汇总；manual仅按用户逐次安排。默认model；明确指定discussion.mode时沿用该策略。",
+          properties: {
+            mode: { type: "string", enum: ["model", "manual"] },
+            maxDecisions: {
+              type: "integer",
+              minimum: 1,
+              maximum: 256,
+              description: "默认32次，含分派、复核和返工；到限保留进度并说明阻塞",
+            },
+            maxMinutes: {
+              type: "number",
+              minimum: 1,
+              maximum: 1440,
+              description: "默认240分钟；不会越过普通人工审批",
+            },
+          },
+          required: ["mode"],
+          additionalProperties: false,
+        },
         discussion: {
           type: "object",
           properties: {
@@ -269,9 +320,20 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         },
       },
       ["kind", "title", "requirements", "participants"],
-      async (args, ctx) => ({
+      async (args, ctx, signal) => ({
         accepted: true,
-        task: await services.tasks.create(ctx, taskInput(args)),
+        task: await services.tasks.create(
+          ctx,
+          taskInput({
+            ...args,
+            orchestration:
+              args.orchestration ??
+              (args.discussion && typeof args.discussion === "object" && "mode" in args.discussion
+                ? undefined
+                : { mode: "model" }),
+          }),
+          mutationGuard(signal),
+        ),
       }),
     ),
     tool(

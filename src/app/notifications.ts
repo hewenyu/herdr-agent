@@ -20,6 +20,7 @@ export function notificationTask(task: Task) {
     groupRetentionSource: task.groupRetentionSource,
     worktreeReady: task.worktreeReady,
     discussion: { ...task.discussion },
+    orchestration: task.orchestration,
     error: task.error,
     syncError: task.syncError,
     pending: task.pending,

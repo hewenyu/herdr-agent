@@ -3,6 +3,7 @@ import { now } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
 import { recoverInitialInputs } from "./input-recovery.js";
 import { participantPrompt, taskDescription } from "./prompts.js";
 
@@ -115,7 +116,7 @@ export async function provisionParticipant(
     participant.cursor = (await herdr.transcript(ref)).cursor;
     records.saveParticipant(participant);
   }
-  if (participant.initialSent) return;
+  if (participant.initialSent || task.orchestration?.mode === "model") return;
   // Round-robin discussion starts one participant. Manual mode waits for the
   // owner to address subsequent participants, avoiding unsolicited parallel turns.
   const first = task.participantIds[0] === participant.id;
@@ -128,15 +129,22 @@ export async function provisionParticipant(
     records.saveParticipant(participant);
     return;
   }
+  retryUnsentInput(context, `${participant.id}:initial`, { receipt: participant.initialReceipt });
   const delivery = await operations.run(
     `${participant.id}:initial`,
     { receipt: participant.initialReceipt },
     async () => {
       await captureInputBaseline(context, participant);
       assertActive(context);
-      const result = await herdr.send(ref, participantPrompt(task, participant), {
-        receipt: participant.initialReceipt,
-      });
+      const prepared = prepareInputDelivery(
+        context,
+        task,
+        participant,
+        `${participant.id}:initial`,
+        { receipt: participant.initialReceipt },
+        participantPrompt(task, participant),
+      );
+      const result = await herdr.send(ref, prepared.prompt, { receipt: prepared.receipt });
       if (result.status === "not_executed")
         throw new OperationError("delivery_not_executed", "初始要求未投递，请核对启动状态后重试。");
       if (!result.verified)
@@ -148,10 +156,17 @@ export async function provisionParticipant(
       return result;
     },
   );
-  participant.initialSent = delivery.verified;
-  participant.status = "working";
-  records.saveParticipant(participant);
-  task.status = "running";
-  task.discussion.startedAt ??= now();
-  records.save(task);
+  context.store.transaction(() => {
+    context.store.set("participant_awaiting_output", participant.id, {
+      operationId: `${participant.id}:initial`,
+      at: now(),
+    });
+    context.store.set("task_input_applied", `${participant.id}:initial`, { at: now() });
+    participant.initialSent = delivery.verified;
+    participant.status = "working";
+    records.saveParticipant(participant);
+    task.status = "running";
+    task.discussion.startedAt ??= now();
+    records.save(task);
+  });
 }

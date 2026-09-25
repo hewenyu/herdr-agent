@@ -14,8 +14,12 @@ export interface NoticeUnavailable {
 }
 
 export interface TaskHooks {
+  /** Re-observe a blocked menu once when its presentation parser changes. */
+  blockedVersion?: string;
   changed?(task: Task): void;
   output?(task: Task, participant: Participant, entry: TranscriptEntry): Promise<void>;
+  /** Read-only proof that the existing output envelope is already delivered. */
+  outputConfirmed?(task: Task, participant: Participant, entry: TranscriptEntry): boolean;
   notice?(
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",

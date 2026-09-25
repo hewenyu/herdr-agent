@@ -382,7 +382,8 @@ test("native session changes retain herdr pane identity without replaying startu
     live.status = "idle";
     await h.service.reconcile(task.id);
     const current = h.service.get(actor, task.id);
-    assert.equal(current.status, "review");
+    assert.equal(current.status, "attention");
+    assert.match(current.error ?? "", /工作中断/);
     assert.match(current.participants[0]?.sessionNote ?? "", /原生会话已变化/);
     assert.equal(h.herdr.sends.length, 1);
     assert.equal(h.herdr.starts, 1);

@@ -121,6 +121,23 @@ export interface DiscussionPolicy {
   paused: boolean;
 }
 
+/** Captured from the authenticated ingress, never from model arguments. */
+export interface UserRequestSource {
+  source: "feishu" | "web";
+  ownerId: string;
+  sessionId: string;
+  chatId: string;
+  messageId: string;
+  eventId: string;
+  text: string;
+}
+
+export interface OrchestrationPolicy {
+  mode: "model" | "manual";
+  maxDecisions?: number;
+  maxMinutes?: number;
+}
+
 export interface Task {
   id: string;
   ownerId: string;
@@ -130,6 +147,7 @@ export interface Task {
   kind: TaskKind;
   title: string;
   requirements: string;
+  userRequest?: UserRequestSource;
   directories: string[];
   directoryMode: DirectoryMode;
   /** Original task-authorized directories, frozen before worktree substitution. */
@@ -151,10 +169,13 @@ export interface Task {
     taskId: string;
     title: string;
     requirements: string;
+    userRequest?: UserRequestSource;
     result: string;
     participants: Array<{ name: string; kind: AgentKind; lastOutput: string }>;
   };
   discussion: DiscussionPolicy;
+  /** Missing on historical tasks: keep their existing manual/round-robin policy. */
+  orchestration?: OrchestrationPolicy;
   result: string;
   error?: string;
   syncError?: string;
@@ -228,6 +249,7 @@ export interface TaskCreateInput {
   createRemoteTask?: boolean;
   parentTaskId?: string;
   discussion?: Partial<Pick<DiscussionPolicy, "mode" | "maxRounds" | "maxMinutes">>;
+  orchestration?: OrchestrationPolicy;
 }
 
 export interface ActorContext {

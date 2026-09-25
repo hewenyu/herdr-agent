@@ -15,6 +15,15 @@ export interface InboxRecord {
   error?: ReturnType<typeof safeError>;
   createdAt: string;
   sequence: number;
+  attempts?: number;
+  nextAttemptAt?: number;
+  failureNotice?: "pending" | "attempted" | "delivered";
+}
+
+export interface InboxRecovery {
+  canRetry(record: InboxRecord, error?: ReturnType<typeof safeError>): boolean;
+  exhausted?(record: InboxRecord): Promise<void>;
+  retryDelayMs?: number;
 }
 
 function logFields(record: Pick<InboxRecord, "id" | "type" | "payload" | "lane">) {
@@ -38,9 +47,19 @@ export class Inbox {
     private readonly process: (record: InboxRecord) => Promise<void>,
     private readonly logger: Logger,
     private readonly concurrency = 8,
+    private readonly recovery?: InboxRecovery,
   ) {
     for (const [id, record] of store.entries<InboxRecord>("inbox")) {
-      if (record.state === "processing") store.set("inbox", id, { ...record, state: "uncertain" });
+      if (
+        record.state === "processing" ||
+        record.state === "failed" ||
+        record.state === "uncertain"
+      ) {
+        const retry = (record.attempts ?? 0) < 3 && recovery?.canRetry(record, record.error);
+        if (retry) store.set("inbox", id, { ...record, state: "queued", nextAttemptAt: 0 });
+        else if (record.state === "processing")
+          store.set("inbox", id, { ...record, state: "uncertain", failureNotice: "pending" });
+      }
     }
   }
 
@@ -91,14 +110,19 @@ export class Inbox {
 
   async drain(): Promise<void> {
     if (this.stopped) return;
+    const notices = this.store
+      .entries<InboxRecord>("inbox")
+      .filter(([, record]) => record.failureNotice === "pending")
+      .map(([, record]) => this.notifyFailure(record));
     const rows = this.queued();
     for (const [, record] of rows) {
       if (this.active.size >= this.concurrency) break;
       if (this.active.has(record.lane)) continue;
+      if ((record.nextAttemptAt ?? 0) > Date.now()) continue;
       const running = this.runLane(record.lane).finally(() => this.active.delete(record.lane));
       this.active.set(record.lane, running);
     }
-    await Promise.allSettled([...this.active.values()]);
+    await Promise.allSettled([...this.active.values(), ...notices]);
   }
 
   async shutdown(): Promise<void> {
@@ -121,6 +145,8 @@ export class Inbox {
       const next = this.queued().find(([, record]) => record.lane === lane);
       if (!next) return;
       const [id, record] = next;
+      if ((record.nextAttemptAt ?? 0) > Date.now()) return;
+      record.attempts = (record.attempts ?? 0) + 1;
       this.store.set("inbox", id, { ...record, state: "processing" });
       const startedAt = performance.now();
       const fields = logFields(record);
@@ -131,7 +157,12 @@ export class Inbox {
       });
       try {
         await this.process(record);
-        this.store.set("inbox", id, { ...record, state: "done" });
+        this.store.set("inbox", id, {
+          ...record,
+          state: "done",
+          error: undefined,
+          nextAttemptAt: undefined,
+        });
         this.logger.info("事件处理完成", {
           event: "inbox.completed",
           ...fields,
@@ -140,20 +171,44 @@ export class Inbox {
         });
       } catch (error) {
         const safe = safeError(error);
-        this.store.set("inbox", id, {
+        const retry = !this.stopped && record.attempts < 3 && this.recovery?.canRetry(record, safe);
+        const state = retry ? "queued" : safe.outcome === "not_executed" ? "failed" : "uncertain";
+        const failed: InboxRecord = {
           ...record,
-          state: safe.outcome === "not_executed" ? "failed" : "uncertain",
+          state,
           error: safe,
-        });
+          nextAttemptAt: retry
+            ? Date.now() + (this.recovery?.retryDelayMs ?? 1000) * record.attempts
+            : undefined,
+          failureNotice: retry ? undefined : "pending",
+        };
+        this.store.set("inbox", id, failed);
         this.logger.error("消息处理未完成", {
           event: "inbox.failed",
           ...fields,
-          state: safe.outcome === "not_executed" ? "failed" : "uncertain",
+          state,
           code: safe.code,
           outcome: safe.outcome,
           durationMs: Math.round(performance.now() - startedAt),
         });
+        if (retry) return;
+        if (!this.stopped) await this.notifyFailure(failed);
       }
+    }
+  }
+
+  private async notifyFailure(record: InboxRecord): Promise<void> {
+    if (!this.recovery?.exhausted || record.failureNotice !== "pending") return;
+    this.store.set("inbox", record.id, { ...record, failureNotice: "attempted" });
+    try {
+      await this.recovery.exhausted(record);
+      const current = this.store.get<InboxRecord>("inbox", record.id);
+      if (current) this.store.set("inbox", record.id, { ...current, failureNotice: "delivered" });
+    } catch (error) {
+      this.logger.warn("中断状态通知未送达", {
+        event: "inbox.failure_notice_failed",
+        code: safeError(error).code,
+      });
     }
   }
 }

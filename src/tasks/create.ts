@@ -4,6 +4,7 @@ import { fail } from "../core/errors.js";
 import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { ActorContext, Participant, Task, TaskCreateInput } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { currentUserRequest } from "./user-request.js";
 
 export async function createTask(
   context: TaskContext,
@@ -33,6 +34,24 @@ export async function createTask(
     fail("directory_mode", "目录隔离模式无效。");
   if (input.discussion?.mode && !["manual", "round_robin"].includes(input.discussion.mode))
     fail("discussion_mode", "讨论模式无效。");
+  if (input.orchestration && !["model", "manual"].includes(input.orchestration.mode))
+    fail("orchestration_mode", "调度模式无效。");
+  if (input.orchestration?.mode === "model" && !config.ai.enabled)
+    fail("ai_disabled", "模型调度需要启用 AI。");
+  if (
+    input.orchestration?.maxDecisions !== undefined &&
+    (!Number.isInteger(input.orchestration.maxDecisions) ||
+      input.orchestration.maxDecisions < 1 ||
+      input.orchestration.maxDecisions > 256)
+  )
+    fail("orchestration_budget", "调度决策上限为 1 到 256 次。");
+  if (
+    input.orchestration?.maxMinutes !== undefined &&
+    (!Number.isFinite(input.orchestration.maxMinutes) ||
+      input.orchestration.maxMinutes < 1 ||
+      input.orchestration.maxMinutes > 1440)
+  )
+    fail("orchestration_budget", "调度时长上限为 1 到 1440 分钟。");
   const maxRounds = input.discussion?.maxRounds ?? 4;
   const maxMinutes = input.discussion?.maxMinutes ?? 30;
   if (
@@ -93,6 +112,7 @@ export async function createTask(
     createdAt: timestamp,
     updatedAt: timestamp,
   }));
+  const userRequest = currentUserRequest(store, actor);
   const task: Task = {
     id,
     ownerId: actor.ownerId,
@@ -102,6 +122,7 @@ export async function createTask(
     kind: input.kind,
     title: input.title,
     requirements: input.requirements,
+    ...(userRequest ? { userRequest } : {}),
     directories,
     sourceDirectories: [...directories],
     directoryMode: input.directoryMode ?? "shared",
@@ -120,6 +141,7 @@ export async function createTask(
           taskId: parent.id,
           title: parent.title,
           requirements: parent.requirements,
+          ...(parent.userRequest ? { userRequest: parent.userRequest } : {}),
           result: parent.result,
           participants: records.participants(parent).map((entry) => ({
             name: entry.name,
@@ -139,6 +161,7 @@ export async function createTask(
       paused: false,
       activeParticipant: participants[0]?.id,
     },
+    orchestration: input.orchestration,
     result: "",
     closeRequested: false,
     createdAt: timestamp,

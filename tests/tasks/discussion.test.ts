@@ -71,7 +71,7 @@ test("elapsed time stops future automatic turns; missing participant pauses disc
   }
 });
 
-test("output delivery failure resumes the stored event after restart without re-running participant", async () => {
+test("output delivery retries after restart while native discussion continues independently", async () => {
   let failed = true;
   let delivered = 0;
   const f = setup({
@@ -88,7 +88,7 @@ test("output delivery failure resumes the stored event after restart without re-
     f.herdr.finish(first.execution.paneId, "待投递发言");
     await f.service.tick();
     assert.equal(f.store.list("pending_outputs").length, 1);
-    assert.equal(f.herdr.sends.length, 1);
+    assert.equal(f.herdr.sends.length, 2);
     failed = false;
     const restored = new TaskService(f.options);
     await restored.tick();
@@ -182,7 +182,7 @@ test("local web task access keeps owner and task boundaries without a Feishu gro
   }
 });
 
-test("long first relay supplies its durable receipt while subsequent inputs do not reuse it", async () => {
+test("every relay supplies a durable per-turn receipt without reusing the initial marker", async () => {
   const f = setup();
   const received: Array<string | undefined> = [];
   const send = f.herdr.send.bind(f.herdr);
@@ -209,7 +209,9 @@ test("long first relay supplies its durable receipt while subsequent inputs do n
     f.herdr.finish(second.execution.paneId, "第二轮反馈");
     await f.service.tick();
     assert.equal(received.length, 3);
-    assert.equal(received[2], undefined);
+    assert.ok(received[2]?.startsWith("HERDR_RECEIPT_"));
+    assert.notEqual(received[2], first.initialReceipt);
+    assert.notEqual(received[2], second.initialReceipt);
   } finally {
     f.close();
   }

@@ -49,7 +49,11 @@ export async function handleMessage(
     fail("message_scope", "消息所属任务已变化，未执行排队消息。");
   }
   const clearCommand = !message.unsupportedType && isClearCommand(message.text);
-  if (!clearCommand && context.sessions.get(actor.ownerId, actor.sessionId).archived)
+  if (
+    !clearCommand &&
+    context.sessions.get(actor.ownerId, actor.sessionId).archived &&
+    !context.sessions.recoveryReply(actor)
+  )
     fail("invalid_scope", "会话已归档，未执行旧会话的排队请求。");
   if (clearCommand) {
     if (actor.taskId || message.chatType !== "private") {
@@ -310,6 +314,24 @@ async function deliverReply(
   message: IncomingMessage,
   answer: StoredMessage,
 ): Promise<void> {
+  const previous = context.outbox.receipt(answer.id);
+  if (previous?.state === "delivered") {
+    // Validate the complete immutable envelope before repairing a crash between
+    // outbox commit and the conversation delivery ACK.
+    const ids = await context.outbox.send(
+      message.chatId,
+      answer.text,
+      answer.id,
+      message.messageId,
+    );
+    context.sessions.reconcileDelivery(actor.ownerId, answer.id, { state: "delivered", ids });
+    return;
+  }
+  context.sessions.reconcileDelivery(
+    actor.ownerId,
+    answer.id,
+    previous ?? { state: "prepared", ids: [] },
+  );
   if (!context.sessions.beginDelivery(actor.ownerId, answer.id)) return;
   try {
     const ids = await context.outbox.send(
@@ -325,7 +347,9 @@ async function deliverReply(
     context.sessions.recordDelivery(actor.ownerId, answer.id, {
       complete: false,
       ids,
-      retryable: !ids.length && error instanceof OperationError && error.outcome === "not_executed",
+      retryable:
+        receipt?.state === "retryable" ||
+        (!ids.length && error instanceof OperationError && error.outcome === "not_executed"),
     });
     throw error;
   } finally {

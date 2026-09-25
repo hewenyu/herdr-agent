@@ -1,7 +1,7 @@
 import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
 import { OperationError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
-import { FetchHttpClient } from "./http.js";
+import { FetchHttpClient, withRequestDeadline } from "./http.js";
 
 export interface APIRequest {
   method: string;
@@ -9,7 +9,7 @@ export interface APIRequest {
   data?: Record<string, unknown>;
   params?: Record<string, string>;
 }
-export type Requester = (input: APIRequest) => Promise<unknown>;
+export type Requester = (input: APIRequest, signal?: AbortSignal) => Promise<unknown>;
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -37,7 +37,11 @@ const definiteRejections = new Set([
 
 export class FeishuAPI {
   readonly request: Requester;
-  constructor(options: { appId: string; appSecret: string; logger?: Logger }, request?: Requester) {
+  constructor(
+    options: { appId: string; appSecret: string; logger?: Logger },
+    request?: Requester,
+    private readonly timeoutMs = 15_000,
+  ) {
     if (request) {
       this.request = request;
       return;
@@ -49,18 +53,28 @@ export class FeishuAPI {
       httpInstance: new FetchHttpClient(),
       source: "herdr-agent",
     });
-    this.request = (input) => client.request<unknown>({ ...input, timeout: 15_000 });
+    this.request = (input, signal) =>
+      client.request<unknown>({ ...input, signal, timeout: timeoutMs });
   }
 
-  async call(input: APIRequest): Promise<Record<string, unknown>> {
+  async call(input: APIRequest, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const method = input.method.toUpperCase();
+    const mutation = method !== "GET" && method !== "HEAD";
     try {
-      const body = object(await this.request(input));
+      const body = object(
+        await withRequestDeadline(
+          (requestSignal) => this.request(input, requestSignal),
+          this.timeoutMs,
+          mutation,
+          signal,
+        ),
+      );
       if (body.code !== 0) {
         const code = typeof body.code === "number" ? body.code : "invalid_response";
         throw new OperationError(
           `feishu_${code}`,
           `飞书请求未成功（${code}）。`,
-          input.method !== "GET" && (typeof code !== "number" || !definiteRejections.has(code))
+          mutation && (typeof code !== "number" || !definiteRejections.has(code))
             ? "unknown"
             : "not_executed",
         );
@@ -71,7 +85,7 @@ export class FeishuAPI {
       throw new OperationError(
         "feishu_transport",
         "飞书请求结果未确认，请核对状态后处理。",
-        input.method === "GET" ? "not_executed" : "unknown",
+        mutation ? "unknown" : "not_executed",
       );
     }
   }

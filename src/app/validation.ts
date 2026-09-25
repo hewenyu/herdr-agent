@@ -48,6 +48,9 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
   const discussion = input.discussion === undefined ? undefined : object(input.discussion);
   if (discussion?.mode && discussion.mode !== "manual" && discussion.mode !== "round_robin")
     fail("input", "讨论模式无效。");
+  const orchestration = input.orchestration === undefined ? undefined : object(input.orchestration);
+  if (orchestration && orchestration.mode !== "model" && orchestration.mode !== "manual")
+    fail("input", "调度模式无效。");
   return {
     kind: kind as TaskKind,
     title: string(input, "title"),
@@ -68,6 +71,17 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
     createRemoteTask:
       input.createRemoteTask === undefined ? undefined : boolean(input, "createRemoteTask"),
     parentTaskId: optionalString(input, "parentTaskId"),
+    orchestration: orchestration
+      ? {
+          mode: orchestration.mode as "model" | "manual",
+          maxDecisions:
+            orchestration.maxDecisions === undefined
+              ? undefined
+              : Number(orchestration.maxDecisions),
+          maxMinutes:
+            orchestration.maxMinutes === undefined ? undefined : Number(orchestration.maxMinutes),
+        }
+      : undefined,
     discussion: discussion
       ? {
           mode: discussion.mode as "manual" | "round_robin" | undefined,

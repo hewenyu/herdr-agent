@@ -35,9 +35,14 @@ test("native done without transcript leaves explicit absent-output facts and wai
       agent.stateSeq = "2";
     }
     await h.app.tasks.reconcile(task.id);
-    const event = events.findLast(
-      (item) => item.event === "progress" && item.task.status === "review",
+    // An idle native process without its expected final reply remains running,
+    // rather than being advertised as ready for user review.
+    const current = h.app.tasks.get(
+      { ownerId: "owner", chatId: "entry", source: "web", sessionId: "test", messageId: "test" },
+      task.id,
     );
+    assert.equal(current.status, "running");
+    const event = { task: current, participants: notificationParticipants(current.participants) };
     assert.ok(event);
     assert.equal(event.task.discussion.rounds, 0);
     assert.equal(event.task.discussion.maxRounds, 1);

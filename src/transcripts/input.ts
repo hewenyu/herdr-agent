@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { basename } from "node:path";
 import type { ExecutionRef } from "../core/types.js";
 import type { TranscriptSource } from "./receipt.js";
@@ -16,20 +16,11 @@ export async function readInitialInput(
   const file = await open(source.path, "r");
   try {
     const info = await file.stat();
-    if (!info.isFile() || info.size > 8 * 1_048_576) return;
-    const data = Buffer.alloc(info.size);
-    if ((await file.read(data, 0, data.length, 0)).bytesRead !== data.length) return;
+    if (!info.isFile() || !Number.isSafeInteger(info.size)) return;
     let sessionMatched = ref.kind === "claude";
     let input: string | undefined;
-    let offset = 0;
-    for (;;) {
-      const end = data.indexOf(10, offset);
-      if (end < 0) return sessionMatched ? input : undefined;
-      const row = JSON.parse(data.subarray(offset, end).toString("utf8")) as Record<
-        string,
-        unknown
-      >;
-      offset = end + 1;
+    for await (const line of inputLines(file, info.size)) {
+      const row = JSON.parse(line) as Record<string, unknown>;
       if (!row || typeof row !== "object" || Array.isArray(row)) return;
       let content: unknown;
       if (ref.kind === "claude") {
@@ -71,10 +62,42 @@ export async function readInitialInput(
       if (input !== undefined) return;
       input = text;
     }
+    return sessionMatched ? input : undefined;
   } catch (error) {
     if (strictIO && !(error instanceof SyntaxError)) throw error;
     return;
   } finally {
     await file.close();
   }
+}
+
+/** Bound memory per record, not per session: long-running native sessions are normal. */
+async function* inputLines(file: FileHandle, size: number): AsyncGenerator<string> {
+  const buffer = Buffer.alloc(Math.min(size, 1_048_576));
+  let pending = Buffer.alloc(0);
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await file.read(
+      buffer,
+      0,
+      Math.min(buffer.length, size - offset),
+      offset,
+    );
+    if (!bytesRead) throw new SyntaxError("transcript changed during input readback");
+    offset += bytesRead;
+    const data = Buffer.concat([pending, buffer.subarray(0, bytesRead)]);
+    let start = 0;
+    for (;;) {
+      const end = data.indexOf(10, start);
+      if (end < 0) break;
+      if (end - start > 8 * 1_048_576)
+        throw new SyntaxError("transcript record exceeds read limit");
+      yield data.subarray(start, end).toString("utf8");
+      start = end + 1;
+    }
+    pending = Buffer.from(data.subarray(start));
+    if (pending.length > 8 * 1_048_576)
+      throw new SyntaxError("transcript record exceeds read limit");
+  }
+  // The native writer may still be appending its final record. Ignore its fragment.
 }

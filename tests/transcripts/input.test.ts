@@ -64,3 +64,12 @@ test("Claude readback excludes sidechains, metadata and conflicting sessions", a
   assert.equal(await read([{ ...row, cwd: "/other" }], target), undefined);
   assert.equal(await read([row, { type: "system", sessionId: "another" }], target), undefined);
 });
+
+test("native input remains recoverable after a session grows beyond 8 MiB", async () => {
+  const history = Array.from({ length: 10 }, () => ({
+    type: "event_msg",
+    text: "x".repeat(1_048_576),
+  }));
+  assert.equal(await read([meta, ...history, input]), text);
+  assert.equal(await read([meta, input, ...history, input]), undefined);
+});

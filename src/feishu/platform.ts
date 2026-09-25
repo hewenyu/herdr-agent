@@ -29,6 +29,7 @@ export class FeishuPlatform implements PlatformPort {
   private started = false;
   private generation = 0;
   private cancelConnect?: () => void;
+  private startup?: AbortController;
   private botOpenId = "";
 
   constructor(
@@ -51,8 +52,13 @@ export class FeishuPlatform implements PlatformPort {
     if (this.started) throw new OperationError("feishu_already_started", "飞书连接已经启动。");
     this.started = true;
     const generation = ++this.generation;
+    const startup = new AbortController();
+    this.startup = startup;
     try {
-      const identity = await this.api.call({ method: "GET", url: "/open-apis/bot/v3/info" });
+      const identity = await this.api.call(
+        { method: "GET", url: "/open-apis/bot/v3/info" },
+        AbortSignal.any([signal, startup.signal]),
+      );
       signal.throwIfAborted();
       if (!this.started || generation !== this.generation)
         throw new OperationError("feishu_stopped", "飞书连接已停止。");
@@ -134,8 +140,12 @@ export class FeishuPlatform implements PlatformPort {
         else void this.connection.start({ eventDispatcher: dispatcher }).catch(onError);
       });
     } catch (error) {
+      const stopped = startup.signal.aborted;
       if (generation === this.generation) await this.stop();
+      if (stopped) throw new OperationError("feishu_stopped", "飞书连接已停止。");
       throw error;
+    } finally {
+      if (this.startup === startup) this.startup = undefined;
     }
   }
 
@@ -198,6 +208,8 @@ export class FeishuPlatform implements PlatformPort {
   }
 
   async stop(): Promise<void> {
+    this.startup?.abort();
+    this.startup = undefined;
     this.cancelConnect?.();
     this.cancelConnect = undefined;
     this.generation++;

@@ -1,4 +1,5 @@
 import type { Participant, Task } from "../core/types.js";
+import { requestPrompt } from "./user-request.js";
 
 export function participantPrompt(
   task: Task,
@@ -61,8 +62,9 @@ function renderParticipantPrompt(
     );
   }
   lines.push(
-    "\n用户要求：",
-    task.requirements,
+    task.userRequest
+      ? `\n${requestPrompt(task.userRequest, task.requirements, "creation")}`
+      : `\n用户要求：\n${task.requirements}`,
     "\n回复结束不代表用户已验收。需要权限或澄清时明确指出，不能自称已得到用户批准。",
   );
   if (arrangement !== undefined) lines.push("\n本轮安排：", arrangement);
@@ -79,7 +81,9 @@ export function taskDescription(task: Task, participants: Participant[]): string
     task.chatId && !task.groupDeleted
       ? `会话：https://applink.feishu.cn/client/chat/open?openChatId=${task.chatId}`
       : "",
-    `\n用户要求：\n${task.requirements}`,
+    task.userRequest
+      ? `\n用户原文：\n${task.userRequest.text}\n\npi 分派摘要（原文硬约束优先）：\n${task.requirements}`
+      : `\n用户要求：\n${task.requirements}`,
     task.error ? `\n需要处理：${task.error}` : "",
     task.pending ? `\n待核对操作：${task.pending}` : "",
     task.result ? `\n最近参与者反馈（未独立验证）：\n${task.result}` : "",
@@ -89,5 +93,9 @@ export function taskDescription(task: Task, participants: Participant[]): string
     .filter(Boolean)
     .join("\n")
     .replace(/\[([^\]]+)\]\((?!https?:|applink:)([^)]+)\)/g, "$1 ($2)");
-  return [...normalized].slice(0, 2999).join("");
+  const characters = [...normalized];
+  if (characters.length <= 2999) return normalized;
+  const notice =
+    "\n\n【内容已截断】此处展示不完整，可能省略要求或禁止项；完整用户原文请查看会话历史或本地任务记录。";
+  return characters.slice(0, 2999 - [...notice].length).join("") + notice;
 }

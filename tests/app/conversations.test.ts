@@ -125,7 +125,7 @@ test("Web reply only becomes visible context after scoped rendering acknowledgem
   }
 });
 
-test("partial Feishu delivery retains acknowledged chunks and cannot advertise a whole-message retry", async () => {
+test("partial Feishu delivery retains acknowledged chunks and retries only known-unsent fragments", async () => {
   const h = setup();
   try {
     h.engine.response = "x".repeat(5000);
@@ -136,7 +136,7 @@ test("partial Feishu delivery retains acknowledged chunks and cannot advertise a
     await h.app.inbox.drain();
     const session = h.app.sessions.current("owner", "entry");
     const answer = h.app.sessions.history("owner", session.id).at(-1);
-    assert.equal(answer?.delivery, "uncertain");
+    assert.equal(answer?.delivery, "retryable");
     assert.deepEqual(answer?.deliveryIds, ["message-1"]);
     assert.equal(h.platform.texts.length, 1);
     await h.app.handlers().message(message("partial", "要求"));
@@ -194,7 +194,7 @@ test("AI owns every conversational reply including slash syntax and unsupported 
   }
 });
 
-test("AI transport failure never falls through to templates, terminal input or slash execution", async () => {
+test("AI transport failure reports operational interruption without terminal input or slash execution", async () => {
   const h = setup();
   try {
     h.engine.handler = async () => {
@@ -202,7 +202,8 @@ test("AI transport failure never falls through to templates, terminal input or s
     };
     await h.app.handlers().message(message("failure", "/new project 不要重投"));
     await h.app.inbox.drain();
-    assert.equal(h.platform.texts.length, 0);
+    assert.equal(h.platform.texts.length, 1);
+    assert.match(h.platform.texts[0]?.text ?? "", /处理已中断/);
     assert.equal(h.herdr.sends.length, 0);
     assert.equal(h.app.tasks.records.list("owner", true).length, 0);
   } finally {
@@ -222,6 +223,7 @@ test("one application tick provisions a task created while draining its inbox", 
         {
           kind: "development",
           title: "同轮调度任务",
+          orchestration: { mode: "manual" },
           requirements: "创建一个 HTML 页面。",
           project: "project",
           participants: [{ kind: "codex" }],

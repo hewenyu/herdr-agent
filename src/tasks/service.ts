@@ -24,6 +24,7 @@ import { TaskRecords } from "./records.js";
 import { RemotePolls } from "./remote-poll.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
+import { currentUserRequest } from "./user-request.js";
 
 export type TaskServiceOptions = Omit<TaskContext, "records" | "operations" | "signal">;
 
@@ -53,14 +54,15 @@ export class TaskService {
     this.queued.clear();
   }
 
-  create(actor: ActorContext, input: TaskCreateInput): Promise<Task> {
+  create(actor: ActorContext, input: TaskCreateInput, beforeMutation?: () => void): Promise<Task> {
     // A message identity is scoped to the selected pi session. Keeping the
     // creation lock at that same scope prevents a slow project registration
     // in one session from blocking an independent task in another session
     // that happens to reuse the request/message id.
-    return this.locks.run(`create:${actor.ownerId}:${actor.sessionId}:${actor.messageId}`, () =>
-      createTask(this.context, actor, input),
-    );
+    return this.locks.run(`create:${actor.ownerId}:${actor.sessionId}:${actor.messageId}`, () => {
+      beforeMutation?.();
+      return createTask(this.context, actor, input);
+    });
   }
 
   get(actor: ActorContext, id: string): Task & { participants: Participant[] } {
@@ -78,8 +80,10 @@ export class TaskService {
     id: string,
     action: TaskAction,
     options: TaskActionOptions = {},
+    beforeMutation?: () => void,
   ): Promise<Task> {
     return this.locks.run(id, async () => {
+      beforeMutation?.();
       assertActive(this.context);
       const task = this.records.get(actor, id);
       const actionId = `${task.id}:${stableId(actor.messageId, action)}`;
@@ -94,6 +98,7 @@ export class TaskService {
           return false;
         }
         requestAction(this.context, task, action, options);
+        this.associateUserRequest(actor, task);
         this.context.store.set("task_actions", actionId, {
           action,
           keepGroup: options.keepGroup,
@@ -173,27 +178,37 @@ export class TaskService {
     id: string,
     participantId: string | undefined,
     text: string,
+    beforeSend?: () => void,
   ): Promise<unknown> {
     return this.locks.run(id, async () => {
+      beforeSend?.();
       const task = this.records.get(actor, id);
       const participant = this.selectParticipant(task, participantId);
-      task.discussion.paused = true;
-      this.records.save(task);
+      this.associateUserRequest(actor, task);
+      if (task.orchestration?.mode !== "model") {
+        this.pauseScheduling(task);
+      }
       return sendParticipant(
         this.context,
         task,
         participant,
         text,
         `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
+        currentUserRequest(this.context.store, actor),
       );
     });
   }
 
-  async interrupt(actor: ActorContext, id: string, participantId?: string): Promise<void> {
+  async interrupt(
+    actor: ActorContext,
+    id: string,
+    participantId?: string,
+    beforeMutation?: () => void,
+  ): Promise<void> {
     await this.locks.run(id, async () => {
+      beforeMutation?.();
       const task = this.records.get(actor, id);
-      task.discussion.paused = true;
-      this.records.save(task);
+      this.pauseScheduling(task);
       const selected =
         participantId === "all"
           ? this.records.participants(task)
@@ -224,8 +239,10 @@ export class TaskService {
     actor: ActorContext,
     id: string,
     input: { kind: AgentKind; name?: string; role?: string },
+    beforeMutation?: () => void,
   ): Promise<Participant> {
     return this.locks.run(id, async () => {
+      beforeMutation?.();
       assertActive(this.context);
       const task = this.records.get(actor, id);
       if (["completed", "destroying", "destroyed"].includes(task.status))
@@ -261,12 +278,17 @@ export class TaskService {
     });
   }
 
-  async removeParticipant(actor: ActorContext, id: string, participantId: string): Promise<void> {
+  async removeParticipant(
+    actor: ActorContext,
+    id: string,
+    participantId: string,
+    beforeMutation?: () => void,
+  ): Promise<void> {
     await this.locks.run(id, async () => {
+      beforeMutation?.();
       const task = this.records.get(actor, id);
       const participant = this.selectParticipant(task, participantId);
-      task.discussion.paused = true;
-      this.records.save(task);
+      this.pauseScheduling(task);
       if (participant.execution)
         await this.context.operations.run(`${participant.id}:close`, participant.execution, () =>
           this.context.herdr.close(
@@ -420,7 +442,9 @@ export class TaskService {
             (participant) =>
               participant.status !== "removed" &&
               (!participant.started ||
-                (participant.id === task.participantIds[0] && !participant.initialSent)),
+                (task.orchestration?.mode !== "model" &&
+                  participant.id === task.participantIds[0] &&
+                  !participant.initialSent)),
           );
         if (needsProvision && !["completed", "paused"].includes(task.status))
           await provision(this.context, task);
@@ -471,7 +495,12 @@ export class TaskService {
         if (
           uncertain ||
           (error instanceof OperationError &&
-            ["agent_replaced", "directory_missing", "operation_conflict"].includes(error.code))
+            [
+              "agent_replaced",
+              "directory_missing",
+              "operation_conflict",
+              "input_retry_exhausted",
+            ].includes(error.code))
         ) {
           task.error = safe.message;
           if (!["completed", "paused", "destroying", "destroyed"].includes(task.status))
@@ -508,6 +537,27 @@ export class TaskService {
     }
     this.records.save(task);
     return remote;
+  }
+
+  private associateUserRequest(actor: ActorContext, task: Task): void {
+    const source = currentUserRequest(this.context.store, actor);
+    if (!source) return;
+    const id = stableId(task.id, source.messageId);
+    const existing = this.context.store.get("task_user_revisions", id);
+    if (!existing)
+      this.context.store.set("task_user_revisions", id, { taskId: task.id, source, at: now() });
+  }
+
+  private pauseScheduling(task: Task): void {
+    this.context.store.transaction(() => {
+      this.context.store.set(
+        "task_pause_revision",
+        task.id,
+        (this.context.store.get<number>("task_pause_revision", task.id) ?? 0) + 1,
+      );
+      task.discussion.paused = true;
+      this.records.save(task);
+    });
   }
 
   private selectParticipant(task: Task, id?: string): Participant {

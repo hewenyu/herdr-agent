@@ -11,6 +11,7 @@ const input = {
     { kind: "claude", name: "Claude" },
     { kind: "codex", name: "Codex" },
   ],
+  discussion: { mode: "round_robin" },
 };
 
 test("pi tools create a real task flow, herdr owns agents, notification decisions never enter user authority", async () => {

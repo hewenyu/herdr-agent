@@ -10,6 +10,7 @@ import { estimateTokens } from "./engine.js";
 import { type MemoryProvider, MemoryService, memoryEntry } from "./memory.js";
 import { NOTIFICATION_PROMPT, ORCHESTRATOR_PROMPT } from "./prompts.js";
 import { unsupportedProvisionClaim } from "./provision-evidence.js";
+import { recoverMessages, type TurnEffect } from "./recovery.js";
 import type {
   ConversationEngine,
   DeliveryOutcome,
@@ -28,10 +29,6 @@ interface Options {
 interface SummaryCursor {
   generation: number;
   sequence: number;
-}
-interface Effect {
-  status: "pending" | "complete" | "not_executed";
-  result?: unknown;
 }
 interface ResetRequest {
   generation: number;
@@ -315,6 +312,47 @@ export class SessionService {
     return this.mutex.run(actor.sessionId, async () => this.runReply(actor, text, options));
   }
 
+  /** Read-only proof used by inbox recovery; unknown writes and old generations stay blocked. */
+  canRecover(actor: ActorContext): boolean {
+    try {
+      const session = this.checkActor(actor, true);
+      const id = key(actor.ownerId, actor.sessionId, actor.messageId);
+      const receipt = this.database.get<TurnReceipt>("turn_receipts", id);
+      if (!receipt) return !session.archived;
+      if (receipt.generation !== session.generation) return false;
+      if (receipt.status === "finished") return true;
+      if (session.archived) return false;
+      if (receipt.recoveryVersion !== 1 || (receipt.attempts ?? 1) >= 3) return false;
+      this.recoveryTranscript(actor, receipt);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  recoveryReply(actor: ActorContext): StoredMessage | undefined {
+    const receipt = this.database.get<TurnReceipt>(
+      "turn_receipts",
+      key(actor.ownerId, actor.sessionId, actor.messageId),
+    );
+    return receipt?.status === "finished"
+      ? this.database.get<MessageRecord>("messages", receipt.replyId)
+      : undefined;
+  }
+
+  private recoveryTranscript(actor: ActorContext, receipt: TurnReceipt): AgentMessage[] {
+    const id = key(actor.ownerId, actor.sessionId, actor.messageId);
+    const checkpoint = this.database.get<{ messages: AgentMessage[]; generation: number }>(
+      "pi_checkpoints",
+      id,
+    );
+    if (!checkpoint || checkpoint.generation !== receipt.generation)
+      throw new OperationError("turn_unconfirmed", "中断回合没有可恢复的检查点。", "unknown");
+    return recoverMessages(this.database, id, checkpoint.messages, (name, args) =>
+      this.operationId(actor, receipt.generation, name, args),
+    );
+  }
+
   private async runReply(
     actor: ActorContext,
     text: string,
@@ -323,16 +361,24 @@ export class SessionService {
     const session = this.checkActor(actor, true);
     const receiptId = key(actor.ownerId, actor.sessionId, actor.messageId);
     const existing = this.database.get<TurnReceipt>("turn_receipts", receiptId);
+    let resumed: AgentMessage[] | undefined;
     if (existing) {
-      if (existing.status !== "finished")
-        throw new OperationError(
-          "turn_unconfirmed",
-          "上一轮未确认；禁止重放，请查询任务状态。",
-          "unknown",
-        );
-      const reply = this.database.get<MessageRecord>("messages", existing.replyId);
-      if (!reply) throw new OperationError("state_invalid", "会话回执损坏。", "unknown");
-      return reply;
+      if (existing.status !== "finished") {
+        if (!this.canRecover(actor))
+          throw new OperationError(
+            "turn_unconfirmed",
+            "上一轮未确认；禁止重放，请查询任务状态。",
+            "unknown",
+          );
+        const original = this.database.get<MessageRecord>("messages", `user_${receiptId}`);
+        if (original?.text !== text)
+          throw new OperationError("duplicate_identity", "消息标识已用于其他内容。");
+        resumed = this.recoveryTranscript(actor, existing);
+      } else {
+        const reply = this.database.get<MessageRecord>("messages", existing.replyId);
+        if (!reply) throw new OperationError("state_invalid", "会话回执损坏。", "unknown");
+        return reply;
+      }
     }
     if (session.archived)
       throw new OperationError("invalid_scope", "会话已归档，请先恢复后发起新消息。");
@@ -349,34 +395,10 @@ export class SessionService {
       );
       const prompt =
         options.systemPrompt ?? (options.readOnly ? NOTIFICATION_PROMPT : ORCHESTRATOR_PROMPT);
-      const history = await this.prepareHistory(actor, session, text, prompt, tools, signal);
-      if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)
-        throw new OperationError("cancelled", "本轮会话已取消。");
-      this.database.transaction(() => {
-        this.append({
-          id: `user_${receiptId}`,
-          sessionId: session.id,
-          taskId: actor.taskId,
-          role: "user",
-          source: options.readOnly ? "event" : "user",
-          text,
-          createdAt: new Date().toISOString(),
-          delivery: "delivered",
-          deliveryIds: [actor.messageId],
-          generation: session.generation,
-        });
-        this.database.set<TurnReceipt>("turn_receipts", receiptId, {
-          generation: session.generation,
-          status: "running",
-          replyId,
-        });
-      });
-      started = true;
-      const result = await this.engine.run({
-        actor,
-        sessionId: session.id,
-        prompt: text,
-        messages: session.summary
+      const history =
+        resumed ?? (await this.prepareHistory(actor, session, text, prompt, tools, signal));
+      const messages: AgentMessage[] =
+        !resumed && session.summary
           ? [
               {
                 role: "user",
@@ -385,7 +407,48 @@ export class SessionService {
               },
               ...history,
             ]
-          : history,
+          : history;
+      if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)
+        throw new OperationError("cancelled", "本轮会话已取消。");
+      this.database.transaction(() => {
+        if (!resumed)
+          this.append({
+            id: `user_${receiptId}`,
+            sessionId: session.id,
+            taskId: actor.taskId,
+            role: "user",
+            source: options.readOnly ? "event" : "user",
+            text,
+            createdAt: new Date().toISOString(),
+            delivery: "delivered",
+            deliveryIds: [actor.messageId],
+            generation: session.generation,
+          });
+        this.database.set<TurnReceipt>("turn_receipts", receiptId, {
+          generation: session.generation,
+          status: "running",
+          replyId,
+          recoveryVersion: 1,
+          attempts: (existing?.attempts ?? 0) + 1,
+        });
+        if (resumed) this.restoreDeferredRequests(actor, session.generation, receiptId);
+        this.database.set("pi_checkpoints", receiptId, {
+          sessionId: session.id,
+          generation: session.generation,
+          messages: resumed ?? [
+            ...messages,
+            { role: "user", content: text, timestamp: Date.now() },
+          ],
+          updatedAt: new Date().toISOString(),
+        });
+      });
+      started = true;
+      const result = await this.engine.run({
+        actor,
+        sessionId: session.id,
+        prompt: text,
+        messages,
+        resume: !!resumed,
         systemPrompt: `${prompt}\n当前服务端绑定：${JSON.stringify({ source: actor.source, chatType: actor.chatType, sessionId: session.id, taskId: actor.taskId })}\n当前可用工具：${tools.map((tool) => tool.name).join(", ")}。仅依据上述当前规则、绑定与工具判断能力，历史拒绝不能覆盖当前能力；处理最后一条用户请求，不模仿历史数据的包装格式。`,
         tools: tools.map((tool) => this.wrapTool(actor, session.generation, tool)),
         signal,
@@ -454,6 +517,8 @@ export class SessionService {
           generation: session.generation,
           status: "finished",
           replyId,
+          recoveryVersion: 1,
+          attempts: (existing?.attempts ?? 0) + 1,
         });
         const reset = this.database.get<ResetRequest>("session_reset_requests", session.id);
         const current = this.get(actor.ownerId, session.id);
@@ -500,6 +565,8 @@ export class SessionService {
           generation: session.generation,
           status: "failed",
           replyId,
+          recoveryVersion: 1,
+          attempts: (existing?.attempts ?? 0) + 1,
         });
       throw error;
     } finally {
@@ -527,12 +594,36 @@ export class SessionService {
     return true;
   }
 
+  /** Called only with the authoritative outbox receipt, including its confirmed fragment prefix. */
+  reconcileDelivery(
+    ownerId: string,
+    messageId: string,
+    receipt: { state: string; ids: string[] },
+  ): void {
+    const message = this.messageForOwner(ownerId, messageId);
+    if (
+      message.delivery === "delivered" ||
+      !["prepared", "retryable", "delivered"].includes(receipt.state)
+    )
+      return;
+    if (message.deliveryIds.some((id, index) => receipt.ids[index] !== id))
+      throw new OperationError("invalid_receipt", "投递回执丢失了已确认分片。");
+    if (receipt.state === "delivered") {
+      if (message.delivery === "prepared") this.beginDelivery(ownerId, messageId);
+      this.recordDelivery(ownerId, messageId, { complete: true, ids: receipt.ids });
+    } else
+      this.database.set("messages", messageId, {
+        ...message,
+        delivery: "retryable",
+        deliveryIds: receipt.ids,
+      });
+  }
+
   recordDelivery(ownerId: string, messageId: string, outcome: DeliveryOutcome): void {
     const message = this.messageForOwner(ownerId, messageId);
     if (
-      (outcome.complete &&
-        (!outcome.ids.length || outcome.ids.some((id) => !id) || outcome.retryable)) ||
-      (outcome.retryable && outcome.ids.length)
+      outcome.complete &&
+      (!outcome.ids.length || outcome.ids.some((id) => !id) || outcome.retryable)
     )
       throw new OperationError("invalid_receipt", "投递回执无效。");
     if (message.delivery === "delivered") {
@@ -640,15 +731,8 @@ export class SessionService {
       execute: async (args, _untrustedActor, signal) => {
         const clean = { ...args };
         delete clean.request_id;
-        const id = key(
-          actor.ownerId,
-          actor.sessionId,
-          String(generation),
-          actor.messageId,
-          tool.name,
-          canonical(clean),
-        );
-        const receipt = this.database.get<Effect>("pi_operations", id);
+        const id = this.operationId(actor, generation, tool.name, clean);
+        const receipt = this.database.get<TurnEffect>("pi_operations", id);
         if (receipt?.status === "complete") return receipt.result;
         if (receipt?.status === "pending")
           throw new OperationError(
@@ -656,21 +740,70 @@ export class SessionService {
             "此操作已尝试但未确认，只能查询结果。",
             "unknown",
           );
-        this.database.set<Effect>("pi_operations", id, { status: "pending" });
+        const metadata = {
+          turnId: key(actor.ownerId, actor.sessionId, actor.messageId),
+          tool: tool.name,
+          args: clean,
+        };
+        this.database.set<TurnEffect>("pi_operations", id, { status: "pending", ...metadata });
         try {
           const result = await tool.execute(clean, actor, signal, id);
-          this.database.set<Effect>("pi_operations", id, {
+          this.database.set<TurnEffect>("pi_operations", id, {
             status: "complete",
             result: result ?? null,
+            ...metadata,
+            deferredReset: this.database.get<ResetRequest>(
+              "session_reset_requests",
+              actor.sessionId,
+            ),
+            deferredArchive: this.database.get<TurnEffect["deferredArchive"]>(
+              "session_archive_requests",
+              actor.sessionId,
+            ),
           });
           return result;
         } catch (error) {
           if (isNotExecuted(error))
-            this.database.set<Effect>("pi_operations", id, { status: "not_executed" });
+            this.database.set<TurnEffect>("pi_operations", id, {
+              status: "not_executed",
+              ...metadata,
+            });
           throw error;
         }
       },
     };
+  }
+
+  private restoreDeferredRequests(actor: ActorContext, generation: number, turnId: string): void {
+    // Failed turns discard live intent. Restore only the journaled intent of
+    // this same recoverable turn, without invoking the write tool a second time.
+    for (const effect of this.database.list<TurnEffect>("pi_operations")) {
+      if (effect.turnId !== turnId || effect.status !== "complete") continue;
+      const reset = effect.deferredReset;
+      if (reset?.generation === generation && reset.messageId === actor.messageId)
+        this.database.set("session_reset_requests", actor.sessionId, reset);
+      const archive = effect.deferredArchive;
+      if (archive?.generation === generation && archive.messageId === actor.messageId)
+        this.database.set("session_archive_requests", actor.sessionId, archive);
+    }
+  }
+
+  private operationId(
+    actor: ActorContext,
+    generation: number,
+    name: string,
+    args: Record<string, unknown>,
+  ): string {
+    const clean = { ...args };
+    delete clean.request_id;
+    return key(
+      actor.ownerId,
+      actor.sessionId,
+      String(generation),
+      actor.messageId,
+      name,
+      canonical(clean),
+    );
   }
 
   private async prepareHistory(

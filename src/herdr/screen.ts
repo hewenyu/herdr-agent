@@ -133,24 +133,70 @@ export function showsStartupMenu(raw: string): boolean {
     .filter(Boolean);
   if (lines.at(-1) !== "Press enter to continue") return false;
   return (
-    lines.some((line) => /^[❯›>]\s+[1-9][.)]\s+\S/.test(line)) &&
-    parseOptions(lines.slice(0, -1).join("\n")).length >= 2
+    lines.some((line) => /^[❯›>]\s+[1-9][.)]\s+\S/.test(line)) && parseOptions(raw).length >= 2
   );
 }
 
 export function parseOptions(raw: string): ScreenOption[] {
-  const result: ScreenOption[] = [];
-  const seen = new Set<string>();
-  for (const line of cleanScreen(raw).split("\n")) {
-    const match = /^\s*[❯›>]?\s*([1-9])[.)]\s+(.+)$/.exec(line);
-    const key = match?.[1];
-    const label = match?.[2]?.trim();
-    if (key && label && !seen.has(key)) {
-      seen.add(key);
-      result.push({ key, label });
+  const lines = cleanScreen(raw).split("\n");
+  // A current unnumbered menu/composer must not expose an earlier numbered list.
+  const selected = lines.findLastIndex((line) => /^\s*[❯›>]\s+\S/.test(line));
+  if (selected < 0) return [];
+  const option = (line: string) => {
+    const match = /^(\s*[❯›>]?\s*)([1-9])[.)]\s+(.+)$/.exec(line);
+    return match?.[2] && match[3]
+      ? { key: match[2], label: match[3].trim(), column: match[1]?.length ?? 0 }
+      : undefined;
+  };
+  if (!option(lines[selected] ?? "")) return [];
+  const rule = (line: string) => /^[─━═]{10,}$/.test(line.trim());
+  let run: ScreenOption[] = [];
+  let column = 0;
+  let start = -1;
+  let hasSelected = false;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    const item = option(line);
+    if (item) {
+      // Numbered examples in the indented option description are not buttons.
+      if (run.length && item.column > column + 2) continue;
+      if (item.key === "1") {
+        if (hasSelected) return [];
+        run = [];
+        column = item.column;
+        start = index;
+      } else if (Number(item.key) !== run.length + 1 || !run.length) {
+        if (hasSelected) return [];
+        run = [];
+        continue;
+      }
+      run.push({ key: item.key, label: item.label });
+      if (index === selected) hasSelected = true;
+      continue;
     }
+    if (!run.length || !line.trim()) continue;
+    if (rule(line)) {
+      const next = lines.slice(index + 1).find((entry) => entry.trim());
+      const footerOption = next ? option(next) : undefined;
+      // Claude AskUserQuestion places this real last choice below a separator.
+      if (footerOption?.label === "Chat about this" && Number(footerOption.key) === run.length + 1)
+        continue;
+    } else if (line.search(/\S/) > column + 2) {
+      continue;
+    }
+    if (hasSelected) break;
+    run = [];
   }
-  return result;
+  if (!hasSelected || run.length < 2) return [];
+  const tail = lines.slice(selected + 1).join("\n");
+  const before = lines.slice(0, start).join("").replace(/\s/g, "");
+  // Native footers or the permission question establish menu context. Plain
+  // numbered prose, even with a copied selection glyph, stays non-actionable.
+  return /Press enter to continue|Enter to (?:select|confirm)|↑\/↓ to navigate|esc to cancel/i.test(
+    tail,
+  ) || before.endsWith("Doyouwanttoproceed?")
+    ? run
+    : [];
 }
 
 /** Conservative native composer boundaries: uncertain footer text is excluded from proof. */
