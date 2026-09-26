@@ -285,6 +285,11 @@ done
 # absolute paths and both have to exist now rather than at first launch.
 if [ "$do_bridge" -eq 1 ]; then
   bridge_bin="${HERDR_AGENT_BIN:-}"
+  # npm upgrades replace the executable behind this launcher. Prefer that
+  # installation over an older standalone copy left in the state directory.
+  if [ -z "$bridge_bin" ]; then
+    bridge_bin=$(command -v myrix || true)
+  fi
   if [ -z "$bridge_bin" ]; then
     for candidate in "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../dist/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
       if [ -x "$candidate" ]; then bridge_bin="$candidate"; break; fi
@@ -300,6 +305,11 @@ if [ "$do_bridge" -eq 1 ]; then
   fi
   bridge_bin=$(abspath "$bridge_bin")
   assert_xml_safe "herdr-agent path" "$bridge_bin"
+  if LC_ALL=C head -c 64 "$bridge_bin" | LC_ALL=C grep -q '^#!/usr/bin/env node'; then
+    if ! command -v node >/dev/null 2>&1; then
+      die "the npm launcher $bridge_bin requires Node.js on PATH; select your Node installation and run this installer again"
+    fi
+  fi
   ok "bridge binary $bridge_bin"
 fi
 
@@ -315,18 +325,38 @@ fi
 
 assert_xml_safe "home directory" "$HOME"
 
-# The PATH the scrubbed herdr server gets, and therefore the PATH every pane it
-# spawns starts with. It has to contain the agents, so it is built from where
-# they actually are rather than from a guess.
+# Both the bridge and the scrubbed herdr server use this PATH. npm launchers
+# need the selected Node installation even when it comes from nvm/fnm rather
+# than a system directory; launchd does not read interactive shell startup.
+# Every pane also inherits the server PATH, so include the installed agents.
 clean_path=""
 path_add() {
   if [ ! -d "$1" ]; then return 0; fi
   case ":$clean_path:" in *":$1:"*) return 0 ;; esac
   if [ -z "$clean_path" ]; then clean_path="$1"; else clean_path="$clean_path:$1"; fi
 }
-for tool in herdr claude codex; do
+selected_tool_path=""
+for tool in node herdr claude codex; do
   tool_path=$(command -v "$tool" || true)
-  if [ -n "$tool_path" ]; then path_add "$(dirname "$(abspath "$tool_path")")"; fi
+  if [ -n "$tool_path" ]; then
+    selected_tool_path="$selected_tool_path:$(dirname "$(abspath "$tool_path")")"
+  fi
+done
+# Preserve their relative PATH order: a Node directory can also contain an old
+# claude/codex installation and must not shadow the user's selected executors.
+remaining_path="${PATH:-}"
+while :; do
+  path_entry="${remaining_path%%:*}"
+  if [ -d "${path_entry:-.}" ]; then
+    path_directory=$(cd -- "${path_entry:-.}" && pwd -P)
+    case "$selected_tool_path:" in
+      *":$path_directory:"*) path_add "$path_directory" ;;
+    esac
+  fi
+  case "$remaining_path" in
+    *:*) remaining_path="${remaining_path#*:}" ;;
+    *) break ;;
+  esac
 done
 path_add "$HOME/.local/bin"
 path_add "$HOME/.cargo/bin"

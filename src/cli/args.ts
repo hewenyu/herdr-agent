@@ -6,6 +6,7 @@ export type Command =
   | "setup"
   | "configure"
   | "doctor"
+  | "status"
   | "version"
   | "help"
   | "migrate"
@@ -14,6 +15,7 @@ export interface Arguments {
   command: Command;
   stateDir?: string;
   json: boolean;
+  traceWarnings: boolean;
   listen?: string;
   configUI: boolean;
   open: boolean;
@@ -31,6 +33,7 @@ const commands = new Set<Command>([
   "setup",
   "configure",
   "doctor",
+  "status",
   "version",
   "help",
   "migrate",
@@ -40,6 +43,7 @@ export function parseArguments(argv: string[]): Arguments {
   const out: Arguments = {
     command: "serve",
     json: false,
+    traceWarnings: false,
     configUI: true,
     open: false,
     dryRun: false,
@@ -84,6 +88,9 @@ export function parseArguments(argv: string[]): Arguments {
         break;
       case "--json":
         out.json = true;
+        break;
+      case "--trace-warnings":
+        out.traceWarnings = true;
         break;
       case "--config-listen":
       case "--listen":
@@ -132,7 +139,11 @@ export function parseArguments(argv: string[]): Arguments {
     setup: ["--app", "--update-permissions", "--reregister", "--yes", "--no-open", "--timeout"],
   };
   for (const flag of used)
-    if (!["--state-dir", "--json", ...(permitted[out.command] ?? [])].includes(flag))
+    if (
+      !["--state-dir", "--json", "--trace-warnings", ...(permitted[out.command] ?? [])].includes(
+        flag,
+      )
+    )
       throw usage(`${out.command} 不接受 ${flag}。`);
   if (out.command !== "debug" && out.positionals.length) throw usage("存在多余的位置参数。");
   if (out.reregister && (out.appId || out.updatePermissions))
@@ -155,6 +166,7 @@ export const HELP = `herdr-agent — pi 调度与 herdr 托管的 Claude / Codex
   setup       复用或注册飞书应用，验证消息与卡片回调
   configure   启动本机会话记录页（不连接飞书）
   doctor      只读检查配置、herdr、执行器与飞书权限
+  status      只读查看本机状态锁、进程及已有服务的重启指引
   migrate     导入旧版状态；--dry-run 仅预览
   version     显示构建版本
   help        显示帮助
@@ -162,7 +174,8 @@ export const HELP = `herdr-agent — pi 调度与 herdr 托管的 Claude / Codex
 serve: --config-listen IP:PORT --no-config-ui --open
 configure: --listen IP:PORT --open
 setup: --app cli_ID --update-permissions --reregister --yes --no-open --timeout 12m
-全局：--state-dir PATH --json --help --version
+全局：--state-dir PATH --json --help --version --trace-warnings
+--trace-warnings 显示运行时警告的完整调用栈，不隐藏警告。
 
 诊断接口：debug ls | debug screen PANE | debug transcript PANE
 终端写入通过任务参与者与审批操作完成。`;

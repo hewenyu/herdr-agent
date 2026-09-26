@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -73,10 +73,12 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     };
     const help = spawnSync(executable, ["help"], options);
     assert.equal(help.status, 0, help.stderr || help.error?.message);
+    assert.equal(help.stderr, "", "Help must not initialize SQLite");
     assert.match(help.stdout, /serve/);
     assert.match(help.stdout, /configure/);
     const version = spawnSync(executable, ["version", "--json"], options);
     assert.equal(version.status, 0, version.stderr || version.error?.message);
+    assert.equal(version.stderr, "", "Version must not initialize SQLite");
     const stamp = JSON.parse(version.stdout) as {
       version: string;
       commit: string;
@@ -87,6 +89,24 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     if (expectedVersion) assert.equal(stamp.version, expectedVersion);
     if (process.env.COMMIT) assert.equal(stamp.commit, process.env.COMMIT);
     if (process.env.BUILD_DATE) assert.equal(stamp.date, process.env.BUILD_DATE);
+    const absentState = join(directory, "absent-state");
+    const inactive = spawnSync(
+      executable,
+      ["status", "--json", "--state-dir", absentState],
+      options,
+    );
+    assert.equal(inactive.status, 0, inactive.stderr || inactive.error?.message);
+    assert.equal(inactive.stderr, "");
+    assert.equal(JSON.parse(inactive.stdout).state, "unlocked");
+    await assert.rejects(stat(absentState), { code: "ENOENT" });
+    const traced = spawnSync(
+      executable,
+      ["--trace-warnings", "migrate", "--dry-run", "--state-dir", stateDir],
+      options,
+    );
+    assert.equal(traced.status, 0, traced.stderr || traced.error?.message);
+    assert.doesNotMatch(traced.stderr, /未知参数|Use .*--trace-warnings/);
+    if (traced.stderr.includes("ExperimentalWarning")) assert.match(traced.stderr, /\n\s+at /);
     child = spawn(
       executable,
       ["configure", "--listen", "127.0.0.1:0", "--state-dir", join(directory, "state")],
@@ -97,6 +117,11 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
       },
     );
     const origin = await ready(child);
+    const active = spawnSync(executable, ["status", "--json", "--state-dir", stateDir], options);
+    assert.equal(active.status, 0, active.stderr || active.error?.message);
+    assert.equal(active.stderr, "");
+    assert.equal(JSON.parse(active.stdout).state, "locked");
+    assert.equal(JSON.parse(active.stdout).pid, child.pid);
     const duplicate = spawnSync(
       executable,
       ["configure", "--listen", "127.0.0.1:0", "--state-dir", stateDir],
@@ -104,6 +129,8 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     );
     assert.equal(duplicate.status, 1, duplicate.stderr || duplicate.error?.message);
     assert.match(duplicate.stderr, /状态锁/, "Native lock must reject a duplicate instance");
+    assert.match(duplicate.stderr, /myrix status/);
+    assert.doesNotMatch(duplicate.stderr, /ExperimentalWarning|SQLite/);
     for (const [path, type] of [
       ["/", "text/html"],
       ["/styles.css", "text/css"],

@@ -1,6 +1,6 @@
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { OperationError } from "../core/errors.js";
 
 /** Small transactional record store. Namespaces separate durable business facts. */
@@ -24,6 +24,8 @@ export class Store {
           }
         }
       }
+      // Merely importing the CLI must not initialize SQLite or emit its warning.
+      const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
       this.database = new DatabaseSync(path);
       this.database.exec(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;",

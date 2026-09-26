@@ -98,6 +98,28 @@ myrix doctor --json
 
 长期运行使用 [deploy](deploy/) 中的 launchd/systemd user 模板与安装脚本；先检查路径与运行账户。服务 stdout/stderr 由服务管理器收集。停止桥接程序不等于销毁已在 herdr 中运行的任务。
 
+### 升级与已有实例
+
+不带参数的 `myrix` 等同于 `myrix serve`，会尝试启动服务。若已有实例持有同一状态目录的锁，它会拒绝再开一条飞书连接。先检查当前实例：
+
+```sh
+myrix status
+myrix status --state-dir ~/.herdr-agent --json
+```
+
+`status` 不连接飞书、不打开数据库，也不要求配置文件有效。它检查内核状态锁并提供进程及服务管理器的诊断信息；PID 文件中的数字仅为记录，锁被占用也不代表飞书连接健康。不要删除持锁进程的 PID 文件来绕过检查。前台启动的实例在原终端按 Ctrl+C 停止，再用新版本启动；后台实例按 `status` 核实的服务指引操作。
+
+`npm install -g @yuebanlaosiji/myrix@latest` 更新磁盘上的包，不会替换运行中的进程；`myrix version --json` 显示本次命令使用的安装版本，不代表后台实例已经升级。若 launchd 仍指向以前下载的二进制，请从包含本修复的源码目录，用当前 npm 命令重新安装桥接服务：
+
+```sh
+HERDR_AGENT_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
+launchctl print "gui/$(id -u)/com.hewenyu.herdr-agent"
+```
+
+该安装会保留配置和 herdr 服务，只更新并重启桥接程序；npm 包本身不包含 `deploy/install.sh`。已经绑定相同 npm 全局目录的服务，后续更新后可用 `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.herdr-agent"` 重启。切换 nvm Node 版本或 npm 全局目录时需重新运行安装脚本，更新可执行路径和 Node PATH。
+
+SQLite 的 `ExperimentalWarning` 是内置 Node 对 SQLite API 的提示，不是状态锁故障。`help`、`version`、`status` 和拒绝重复启动不再为此加载 SQLite；真正打开数据库时仍保留运行时警告。需要完整警告调用栈时使用 `myrix --trace-warnings serve` 或 `herdr-agent --trace-warnings serve`，不要把提示中的省略号 `...` 当作参数。
+
 ## 使用方式
 
 在飞书主私聊中创建项目、任务或切换 pi session，在对应任务群中续聊和处理审批。讨论可以不绑定项目；开发、评审和测试任务使用已配置项目。可对 pi 说：“开个讨论任务，让 Claude 和 Codex 一起讨论这个需求”“把已确认方案交给 Codex 实现，Claude 评审”“切回昨天的调度会话”。pi 调用工具组织工作，参与者负责业务内容。一个机器人在群内标明发言来源，Claude/Codex 不是另两个飞书账号。

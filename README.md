@@ -92,6 +92,28 @@ The local page maintains machine configuration and shows conversation history; i
 
 For supervised operation, review the launchd/systemd user templates and installer in [deploy](deploy/). Use the correct account and paths. Stopping the bridge does not automatically destroy herdr-managed tasks.
 
+### Upgrades and an existing instance
+
+Running `myrix` without arguments means `myrix serve`. If another process holds the state lock, a second Feishu connection is refused. Inspect the existing instance first:
+
+```sh
+myrix status
+myrix status --state-dir ~/.herdr-agent --json
+```
+
+`status` checks the kernel lock and reports process and service-manager diagnostics without connecting to Feishu, opening SQLite or requiring valid configuration. A recorded PID is only a hint; a held lock does not prove the Feishu connection is healthy. Do not delete the PID file of a lock holder. Stop a foreground instance with Ctrl+C in its original terminal, then start the updated program. For a supervised instance, follow the service instructions verified by `status`.
+
+An npm upgrade changes installed files, not an already-running process. `myrix version --json` reports the installation used by that command, not the version of a background instance. If launchd still points to an older standalone binary, run the corrected installer from a source checkout to bind the bridge to the current npm command:
+
+```sh
+HERDR_AGENT_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
+launchctl print "gui/$(id -u)/com.hewenyu.herdr-agent"
+```
+
+This preserves configuration and the herdr service, and reinstalls/restarts only the bridge. The npm package does not include `deploy/install.sh`. Once the service uses the same npm global directory, subsequent upgrades require `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.herdr-agent"`. Changing an nvm Node version or npm global prefix requires rerunning the installer to update the executable and Node PATH.
+
+SQLite's `ExperimentalWarning` is a notice from the embedded Node runtime, not a lock failure. Help, version, status and a refused duplicate startup no longer load SQLite; warnings remain visible when the database is actually opened. Use `myrix --trace-warnings serve` or `herdr-agent --trace-warnings serve` for warning stacks. The `...` in Node's hint is a placeholder, not a literal argument.
+
 ## Workflow and commands
 
 Use the main Feishu private conversation to create projects and tasks or switch pi sessions; use each task group to continue its discussion and handle approvals. Ask pi to start a requirements discussion with Claude and Codex or arrange implementation and review. Discussions may omit a project; development, review and test tasks use a configured project. One Feishu bot labels participant output; Claude and Codex are not separate Feishu accounts.
@@ -104,7 +126,7 @@ At startup, pi automatically confirms only the native Claude/Codex directory-tru
 
 New tasks dissolve their group after confirmed completion by default; explicitly request `keepGroup: true` to retain it. `review` never triggers dissolution. Explicit retention remains effective. Legacy default or unproven retention is resolved to deletion when completion or closure begins; active historical tasks are not rewritten in bulk. `complete`, including manual Feishu completion, closes the corresponding execution resources through herdr and applies the group policy. Any group dissolution also closes the corresponding herdr-managed Claude/Codex sessions. Explicit `keepExecution: true` on completion is an exception and requires `keepGroup: true` for tasks with a group; `close` confirms completion before execution cleanup; `destroy` cleans up without accepting the task; `reopen` applies to completed tasks whose resources remain. If execution has already closed and a group was retained, explicitly request its dissolution; pi can use `destroy` with `keepGroup: false` (or `close` for an already accepted task). This keeps the original acceptance history and never restarts execution. Session archiving is independent. Shared project directories are the default. Explicit worktree mode isolates only the first directory; additional directories remain shared, and task closure does not delete code or worktrees.
 
-The everyday CLI is `serve / setup / configure / doctor / version / help`; `configure` opens the local configuration and conversation-history page, while business controls remain in Feishu. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
+The everyday CLI is `serve / setup / configure / doctor / status / version / help`; `configure` opens the local configuration and conversation-history page, while business controls remain in Feishu. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
 
 The main Feishu private conversation automatically compacts long pi context when its configured context capacity is reached; compaction preserves the original history and durable operation receipts. Send `/clear` there only when you want to manually archive the current pi session and select a new one. Only after that transaction succeeds does the program reply `CLEAR_NEW_SESSION_OK`. This works with AI disabled or unavailable, preserves history and tasks, and leaves herdr sessions intact. Groups reject the command. Matching uses only the actual message body, with surrounding whitespace removed; quoted text, `/CLEAR`, `／clear`, `/clear now` and mentions of `/clear` do not trigger it. Web has no chat box, `/clear` entry point or clear/reset button. Browsing another history record never changes the active Feishu session.
 
