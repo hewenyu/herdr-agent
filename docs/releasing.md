@@ -11,7 +11,7 @@
 3. tag 自动触发三平台原生 SEA 构建和独立烟测。打包包含完整 LICENSES，禁止用一个平台的二进制伪装其他平台。
 4. 从原始构建产物生成 npm 包，验证架构、执行位、版本、提交及离线全局安装。平台包先发布，主包最后发布；主包精确依赖同版本平台包。
 5. npm publish 步骤在写入前逐包核对已存在版本的 integrity；已存在且 integrity 相同的不可变版本会跳过，主包仍最后发布。npm 接受发布后可能需要几分钟才在公共 registry 暴露 metadata，Release workflow 不等待这段传播。
-6. npm 发布完成后创建或补全 GitHub Release，上传三个原生压缩包与 SHA256SUMS。新 Release 先创建为草稿，全部资产核验通过后再公开发布；同 tag 的已有草稿也按此顺序完成发布。已有 Release 保留正文、标题及预发布设置；脚本先核对全部同名资产的大小与 SHA-256，相同则跳过，冲突立即停止，仅补传缺失文件。Release workflow 不执行公共 registry 下载验收。
+6. npm 发布完成后创建或补全 GitHub Release，上传三个原生压缩包与 SHA256SUMS。新 Release 先创建为草稿，保留创建响应中的 Release ID，后续上传、发布和确认均使用该 ID，不要求草稿立即能按 tag 或列表查到。全部资产核验通过后再公开发布；同 tag 的已有草稿也按此顺序完成发布。已有 Release 保留正文、标题及预发布设置；脚本先核对全部同名资产的大小与 SHA-256，相同则跳过，冲突立即停止，仅补传缺失文件。Release workflow 不执行公共 registry 下载验收。
 
 GitHub environment 名为 `NPM`，secret 名为 `TOKEN`。仅 npm publish 步骤注入 NODE_AUTH_TOKEN。TOKEN 必须对 `@yuebanlaosiji` scope 具有写权限。稳定版发布到 `latest`，预发布版到 `next`。默认三个平台包为 `@yuebanlaosiji/myrix-darwin-arm64`、`@yuebanlaosiji/myrix-linux-arm64`、`@yuebanlaosiji/myrix-linux-x64`。
 
@@ -30,6 +30,8 @@ npm 启动器要求 Node >=18，不能关闭 optional dependencies。独立压�
 部分 npm 发布失败时，在同一次 Actions 运行中仅重跑失败的 npm-publish 及下游任务，复用成功 build 的原始产物。脚本先核对全部已存在版本的 integrity：相同内容才跳过，任何不一致都在继续发布前拒绝。主包最后发布，避免正常安装提前引用未发布平台包。
 
 不能移动公开 tag、覆盖或撤销已发布版本来制造通过。原产物过期或完整性不符时，先核对并恢复原产物；不能用重建的不同字节强行续发。源码或工作流需要修改时，按正常 PR 修复并发布新的 v0.3.x 版本。npm 成功但 GitHub Release 失败时，保留已发布版本，仅重跑尚未成功的步骤。
+
+若 npm 任务成功、仅最后的 `publish` 任务失败，先检查该 tag 是否已有草稿或部分附件，再仅重跑这个任务，继续使用原 run 的安装包。npm 已发布的版本可独立于 GitHub Release 安装使用。创建或发布请求的响应丢失时，脚本会有限次数重读状态来确认结果；不会重复创建草稿，也不会接受另一个 Release ID 作为发布成功的证据。权限错误和无效响应会直接失败，不能当作 Release 不存在。
 
 发布成功必须有 Actions 与实际 registry 安装证据；本地 pack 成功不等于已发布。
 

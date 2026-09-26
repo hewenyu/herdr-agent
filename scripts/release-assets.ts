@@ -5,6 +5,7 @@ import { closeSync, createReadStream, openSync } from "node:fs";
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 export interface LocalAsset {
@@ -29,11 +30,12 @@ export interface Release {
 export interface ReleasePort {
   tagCommit(tag: string): Promise<string>;
   find(tag: string): Promise<Release | undefined>;
-  create(tag: string, notes?: string): Promise<void>;
-  publish(tag: string): Promise<void>;
+  create(tag: string, notes?: string): Promise<Release>;
+  get(release: Release): Promise<Release | undefined>;
+  publish(release: Release): Promise<Release>;
   assets(release: Release): Promise<ReleaseAsset[]>;
   hash(asset: ReleaseAsset): Promise<string>;
-  upload(tag: string, asset: LocalAsset): Promise<void>;
+  upload(release: Release, asset: LocalAsset): Promise<void>;
 }
 
 export async function sha256(path: string): Promise<string> {
@@ -113,6 +115,45 @@ async function inspect(
   return missing;
 }
 
+function checkedRelease(value: unknown, tag: string, id?: number): Release {
+  assert.ok(value && typeof value === "object", "Invalid release response");
+  const release = value as Release;
+  assert.ok(Number.isSafeInteger(release.id) && release.id > 0, "Invalid release ID");
+  if (id !== undefined) assert.equal(release.id, id, "Release ID changed");
+  assert.equal(release.tag_name, tag, "Release lookup returned a different tag");
+  assert.equal(typeof release.draft, "boolean", "Invalid release state");
+  return release;
+}
+
+export class GitHubRequestError extends Error {
+  recoverable: boolean;
+  constructor(message: string, recoverable: boolean) {
+    super(message);
+    this.recoverable = recoverable;
+  }
+}
+
+type Wait = (milliseconds: number) => Promise<unknown>;
+
+/** Retry only confirmation reads after an uncertain ACK, never repeat the mutation. */
+async function recover<T>(
+  error: unknown,
+  read: () => Promise<T | undefined>,
+  wait: Wait,
+): Promise<T> {
+  if (!(error instanceof GitHubRequestError) || !error.recoverable) throw error;
+  for (const milliseconds of [0, 200, 500, 1_000, 2_000, 4_000]) {
+    if (milliseconds) await wait(milliseconds);
+    try {
+      const result = await read();
+      if (result !== undefined) return result;
+    } catch (readError) {
+      if (!(readError instanceof GitHubRequestError) || !readError.recoverable) throw readError;
+    }
+  }
+  throw error;
+}
+
 /** Preflight the complete existing set before writing; never edit release notes or replace assets. */
 export async function publishAssets(
   port: ReleasePort,
@@ -120,6 +161,7 @@ export async function publishAssets(
   commit: string,
   expected: LocalAsset[],
   notes?: string,
+  wait: Wait = delay,
 ): Promise<{ uploaded: string[]; skipped: string[] }> {
   assert.match(commit, /^[a-f0-9]{40}$/i, "Expected the full original build commit SHA");
   assert.equal(
@@ -130,17 +172,14 @@ export async function publishAssets(
   let release = await port.find(tag);
   if (!release) {
     try {
-      await port.create(tag, notes);
+      // The successful response identifies the draft even before tag/list lookups expose it.
+      release = checkedRelease(await port.create(tag, notes), tag);
+      assert.equal(release.draft, true, "New release must remain draft until assets are verified");
     } catch (error) {
-      // A create may succeed remotely before its response is lost. Re-read;
-      // never create a second release or overwrite metadata to repair the ACK.
-      release = await port.find(tag);
-      if (!release) throw error;
+      release = await recover(error, () => port.find(tag), wait);
     }
-    release ??= await port.find(tag);
   }
-  assert.ok(release, "Created release could not be confirmed");
-  assert.equal(release.tag_name, tag, "Release lookup returned a different tag");
+  release = checkedRelease(release, tag);
   const missing = await inspect(port, release, expected);
   assert.ok(
     !release.immutable || !missing.length,
@@ -151,29 +190,39 @@ export async function publishAssets(
     assert.equal((await lstat(local.path)).size, local.size, `Local asset changed: ${local.name}`);
     assert.equal(await sha256(local.path), local.sha256, `Local asset changed: ${local.name}`);
     try {
-      await port.upload(tag, local);
+      await port.upload(release, local);
     } catch (error) {
-      // A racing uploader or lost upload ACK is safe only when the exact
-      // remote bytes are now proven. Missing or conflicting data stays failed.
-      const remaining = await inspect(port, release, expected);
-      if (remaining.some((asset) => asset.name === local.name)) throw error;
+      // A lost ACK is safe only when the same release now has the exact expected bytes.
+      await recover(
+        error,
+        async () => {
+          const remaining = await inspect(port, release, expected);
+          return remaining.some((asset) => asset.name === local.name) ? undefined : true;
+        },
+        wait,
+      );
     }
     uploaded.push(local.name);
   }
   assert.deepEqual(await inspect(port, release, expected), [], "Release assets remain incomplete");
   assert.equal(await port.tagCommit(tag), commit, "Release tag changed during publication");
   if (release.draft) {
+    let published: Release;
     try {
-      await port.publish(tag);
+      published = checkedRelease(await port.publish(release), tag, release.id);
+      assert.equal(published.draft, false, "Release publication was not confirmed");
     } catch (error) {
-      const current = await port.find(tag);
-      if (!current || current.tag_name !== tag || current.draft) throw error;
+      published = await recover(
+        error,
+        async () => {
+          const current = await port.get(release);
+          if (!current) return;
+          checkedRelease(current, tag, release.id);
+          return current.draft ? undefined : current;
+        },
+        wait,
+      );
     }
-    const published = await port.find(tag);
-    assert.ok(
-      published && published.tag_name === tag && !published.draft,
-      "Release publication was not confirmed",
-    );
     assert.deepEqual(
       await inspect(port, published, expected),
       [],
@@ -192,39 +241,60 @@ export interface CommandResult {
   stderr: string;
   error?: Error;
 }
-type Command = (args: string[]) => CommandResult;
-function run(args: string[]): CommandResult {
-  return spawnSync("gh", args, { encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+type Command = (args: string[], input?: string) => CommandResult;
+function run(args: string[], input?: string): CommandResult {
+  return spawnSync("gh", args, {
+    input,
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
 }
 
 /** Only a real HTTP 404 is absence. Authentication, network and parse failures are errors. */
-export function apiResponse(result: CommandResult, allowMissing = false): unknown {
-  if (result.error) throw new Error(`GitHub request failed: ${result.error.message}`);
+export function apiResponse(
+  result: CommandResult,
+  allowMissing = false,
+  expectedStatus?: number,
+): unknown {
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    throw new GitHubRequestError(
+      `GitHub request failed: ${result.error.message}`,
+      !code || ["ETIMEDOUT", "ENOBUFS"].includes(code),
+    );
+  }
   const header = result.stdout.match(/^HTTP\/\S+\s+(\d{3})[^\r\n]*\r?\n/);
   const status = Number(header?.[1]);
   if (allowMissing && status === 404) return undefined;
   if (result.status !== 0 || status < 200 || status >= 300 || !header)
-    throw new Error(
+    throw new GitHubRequestError(
       `GitHub request failed (HTTP ${header?.[1] ?? "unknown"}, exit ${result.status})`,
+      !header || status >= 500 || [408, 409, 422].includes(status),
     );
+  if (expectedStatus !== undefined && status !== expectedStatus)
+    throw new GitHubRequestError(`Expected HTTP ${expectedStatus}, received ${status}`, false);
   const separator = result.stdout.match(/\r?\n\r?\n/);
-  if (separator?.index === undefined) throw new Error("GitHub response has no JSON body");
-  return JSON.parse(result.stdout.slice(separator.index + separator[0].length));
+  if (separator?.index === undefined)
+    throw new GitHubRequestError("GitHub response has no JSON body", false);
+  try {
+    return JSON.parse(result.stdout.slice(separator.index + separator[0].length));
+  } catch {
+    throw new GitHubRequestError("GitHub response has invalid JSON", false);
+  }
 }
 
 export function githubPort(repository: string, command: Command = run): ReleasePort {
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Expected OWNER/REPO");
   const base = `repos/${repository}`;
-  const api = (path: string, missing = false) =>
-    apiResponse(command(["api", "--hostname", "github.com", "--include", path]), missing);
-  const checkedRelease = (value: unknown, tag: string): Release => {
-    assert.ok(value && typeof value === "object", "Invalid release response");
-    const release = value as Release;
-    assert.ok(Number.isSafeInteger(release.id) && release.id > 0, "Invalid release ID");
-    assert.equal(release.tag_name, tag, "Release lookup returned a different tag");
-    assert.equal(typeof release.draft, "boolean", "Invalid release state");
-    return release;
-  };
+  const apiArgs = ["api", "--hostname", "github.com", "--include"];
+  const api = (path: string, missing = false) => apiResponse(command([...apiArgs, path]), missing);
+  const write = (path: string, method: string, body: unknown, status: number) =>
+    apiResponse(
+      command([...apiArgs, "--method", method, "--input", "-", path], JSON.stringify(body)),
+      false,
+      status,
+    );
   return {
     async tagCommit(tag) {
       let object = (
@@ -244,47 +314,74 @@ export function githubPort(repository: string, command: Command = run): ReleaseP
     async find(tag) {
       const value = api(`${base}/releases/tags/${encodeURIComponent(tag)}`, true);
       if (value !== undefined) return checkedRelease(value, tag);
-      // The by-tag endpoint only promises published releases. Authenticated
-      // writers can see drafts in this list, including interrupted prior runs.
+      // Authenticated writers can recover drafts from interrupted runs, across all pages.
       for (let page = 1; ; page++) {
         const batch = api(`${base}/releases?per_page=100&page=${page}`);
         assert.ok(Array.isArray(batch), "GitHub release list is not an array");
         const matching = batch.filter((item) => item?.tag_name === tag);
         assert.ok(matching.length <= 1, "Duplicate releases for the requested tag");
         if (matching.length) return checkedRelease(matching[0], tag);
-        if (batch.length < 100) return;
+        if (batch.length < 100) break;
       }
+      // gh itself resolves a draft's pending tag via GraphQL, then fetches it by database ID.
+      const [owner, name] = repository.split("/");
+      const response = write(
+        "graphql",
+        "POST",
+        {
+          query:
+            "query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}",
+          variables: { owner, name, tag },
+        },
+        200,
+      ) as {
+        errors?: unknown;
+        data?: { repository?: { release?: { databaseId?: number } | null } | null };
+      };
+      assert.ok(!response.errors, "GitHub GraphQL release lookup failed");
+      const repositoryData = response.data?.repository;
+      assert.ok(repositoryData && "release" in repositoryData, "Invalid GraphQL release lookup");
+      if (repositoryData.release === null) return;
+      const id = repositoryData.release?.databaseId;
+      assert.ok(Number.isSafeInteger(id) && (id ?? 0) > 0, "Invalid GraphQL release ID");
+      return checkedRelease(api(`${base}/releases/${id}`), tag, id);
     },
     async create(tag, notes) {
-      const args = [
-        "release",
-        "create",
-        tag,
-        "--repo",
-        `github.com/${repository}`,
-        "--verify-tag",
-        "--draft",
-        "--title",
-        `myrix ${tag}`,
-      ];
-      if (notes) args.push("--notes-file", notes);
-      else args.push("--notes", "");
-      if (tag.includes("-")) args.push("--prerelease");
-      const result = command(args);
-      if (result.error || result.status !== 0)
-        throw new Error("GitHub release creation was not confirmed");
+      const value = write(
+        `${base}/releases`,
+        "POST",
+        {
+          tag_name: tag,
+          name: `myrix ${tag}`,
+          body: notes ? await readFile(notes, "utf8") : "",
+          draft: true,
+          prerelease: tag.includes("-"),
+        },
+        201,
+      );
+      const release = checkedRelease(value, tag);
+      assert.equal(release.draft, true, "New release must remain draft until assets are verified");
+      return release;
     },
-    async publish(tag) {
-      const result = command([
-        "release",
-        "edit",
-        tag,
-        "--repo",
-        `github.com/${repository}`,
-        "--draft=false",
-      ]);
-      if (result.error || result.status !== 0)
-        throw new Error("GitHub release publication was not confirmed");
+    async get(release) {
+      checkedRelease(release, release.tag_name);
+      const value = api(`${base}/releases/${release.id}`, true);
+      return value === undefined ? undefined : checkedRelease(value, release.tag_name, release.id);
+    },
+    async publish(release) {
+      checkedRelease(release, release.tag_name);
+      const value = write(
+        `${base}/releases/${release.id}`,
+        "PATCH",
+        {
+          tag_name: release.tag_name,
+          draft: false,
+        },
+        200,
+      );
+      const published = checkedRelease(value, release.tag_name, release.id);
+      assert.equal(published.draft, false, "Release publication was not confirmed");
+      return published;
     },
     async assets(release) {
       const assets: ReleaseAsset[] = [];
@@ -331,17 +428,24 @@ export function githubPort(repository: string, command: Command = run): ReleaseP
         await rm(directory, { recursive: true, force: true });
       }
     },
-    async upload(tag, asset) {
-      const result = command([
-        "release",
-        "upload",
-        tag,
-        asset.path,
-        "--repo",
-        `github.com/${repository}`,
-      ]);
-      if (result.error || result.status !== 0)
-        throw new Error(`Upload was not confirmed: ${asset.name}`);
+    async upload(release, asset) {
+      checkedRelease(release, release.tag_name);
+      const endpoint = `https://uploads.github.com/${base}/releases/${release.id}/assets?name=${encodeURIComponent(asset.name)}`;
+      // --input opens and streams the file; gh supplies its exact Content-Length.
+      apiResponse(
+        command([
+          ...apiArgs,
+          "--method",
+          "POST",
+          "--input",
+          asset.path,
+          "-H",
+          "Content-Type: application/octet-stream",
+          endpoint,
+        ]),
+        false,
+        201,
+      );
     },
   };
 }
