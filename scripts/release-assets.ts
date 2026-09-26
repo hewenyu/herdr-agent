@@ -42,17 +42,19 @@ export async function sha256(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
+function archiveNames(tag: string, prefix: string): string[] {
+  return ["darwin_arm64", "linux_arm64", "linux_amd64"]
+    .map((target) => `${prefix}_${tag}_${target}.tar.gz`)
+    .sort();
+}
+
 /** Preserve original bytes and names when restoring releases from either branding era. */
 export async function releaseAssets(tag: string, directory: string): Promise<LocalAsset[]> {
   assert.match(tag, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "Expected a vSEMVER tag");
   const manifest = await readFile(resolve(directory, "SHA256SUMS"), "utf8");
   const entries = manifest.split("\n");
   const names = ["myrix", "herdr-agent"]
-    .map((prefix) =>
-      ["darwin_arm64", "linux_arm64", "linux_amd64"]
-        .map((target) => `${prefix}_${tag}_${target}.tar.gz`)
-        .sort(),
-    )
+    .map((prefix) => archiveNames(tag, prefix))
     .find(
       (candidate) =>
         entries.length === 4 &&
@@ -93,6 +95,14 @@ async function inspect(
   expected: LocalAsset[],
 ): Promise<LocalAsset[]> {
   const remote = await port.assets(release);
+  const localNames = new Set(expected.map((asset) => asset.name));
+  const installers = new Set(
+    ["myrix", "herdr-agent"].flatMap((prefix) => archiveNames(release.tag_name, prefix)),
+  );
+  const conflict = remote.find(
+    (asset) => installers.has(asset.name) && !localNames.has(asset.name),
+  );
+  assert.ok(!conflict, `Conflicting release archive branding: ${conflict?.name}`);
   const missing: LocalAsset[] = [];
   for (const local of expected) {
     const sameName = remote.filter((asset) => asset.name === local.name);

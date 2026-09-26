@@ -17,6 +17,57 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { defaultPackageName, launcher } from "../../scripts/npm/config.js";
+
+const probeFixture = `
+const fs = require("node:fs");
+const path = require("node:path");
+const root = path.dirname(process.env.MYRIX_TEST_LAUNCH_LOG);
+const args = process.argv.slice(2);
+if (args[0] === "version") {
+  console.log(JSON.stringify({ version: "0.3.15-test" }));
+} else if (args[0] === "status") {
+  if (process.env.MYRIX_TEST_STATUS_MODE === "unsupported") process.exit(2);
+  const plist = path.join(process.env.HOME, "Library/LaunchAgents/com.hewenyu.myrix.plist");
+  if (!fs.existsSync(plist)) {
+    console.log(JSON.stringify({ state: "unlocked" }));
+  } else {
+    const mode = process.env.MYRIX_TEST_STATUS_MODE;
+    if (mode === "exited") process.exit(1);
+    const counter = path.join(root, "startup-probes");
+    const sequence = Number(fs.existsSync(counter) ? fs.readFileSync(counter, "utf8") : 0) + 1;
+    fs.writeFileSync(counter, String(sequence));
+    const executable = fs.readFileSync(plist, "utf8").split("<key>ProgramArguments</key>")[1].split("<string>")[1].split("</string>")[0];
+    const pid = mode === "flapping" ? sequence + 1000 : 1001;
+    console.log(JSON.stringify({
+      state: mode === "unlocked" ? "unlocked" : "locked",
+      stateDir: args[args.indexOf("--state-dir") + 1],
+      pid,
+      process: { pid: mode === "wrong-pid" ? 9999 : pid },
+      launchd: {
+        target: "gui/" + process.getuid() + "/com.hewenyu.myrix",
+        pid: 1000,
+        executable,
+        matched: mode !== "unmatched",
+      },
+      feishu: { authorized: false },
+    }));
+  }
+} else process.exit(2);
+`;
+
+const plutilFixture = `
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "-lint") process.exit(0);
+if (args[0] !== "-extract" || args[2] !== "raw" || args[3] !== "-o" || args[4] !== "-") process.exit(1);
+try {
+  let value = JSON.parse(fs.readFileSync(args[5], "utf8"));
+  for (const key of args[1].split(".")) value = value[key];
+  if (value === undefined || value === null || typeof value === "object") process.exit(1);
+  process.stdout.write(String(value) + "\\n");
+} catch { process.exit(1); }
+`;
 
 function executable(path: string, body: string): void {
   writeFileSync(path, body);
@@ -38,18 +89,19 @@ function fixture(stateName = ".herdr-agent") {
   });
   writeFileSync(join(state, "config.toml"), '[feishu]\nallowed_open_ids = ["test"]\n');
   const old = join(state, "bin", "herdr-agent");
-  executable(old, "#!/bin/sh\nexit 0\n");
-  executable(join(nodeBin, "node"), "#!/bin/sh\nexit 0\n");
+  executable(old, `#!${process.execPath}\n${probeFixture}`);
+  executable(join(nodeBin, "node"), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
   for (const [name, body] of Object.entries({
     uname: "echo Darwin",
     sw_vers: "echo 14.0",
     stat: "echo 600",
     dscl: "echo 'UserShell: /bin/sh'",
-    plutil: "exit 0",
+    sleep: "exit 0",
     launchctl:
       'printf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in print) exit 1;; print-disabled) echo "{}";; esac',
   }))
     executable(join(tools, name), `#!/bin/sh\n${body}\n`);
+  executable(join(tools, "plutil"), `#!${process.execPath}\n${plutilFixture}`);
   const log = join(directory, "launchctl.log");
   return {
     directory,
@@ -79,10 +131,7 @@ for (const selected of ["npm", "explicit", "alias", "legacy"] as const)
       const npmLauncher = join(f.npmBin, "myrix");
       if (selected !== "legacy") {
         const launcher = join(f.directory, "myrix.cjs");
-        executable(
-          launcher,
-          '#!/usr/bin/env node\nthrow new Error("must not execute launcher");\n',
-        );
+        executable(launcher, `#!/usr/bin/env node\n${probeFixture}`);
         symlinkSync(launcher, npmLauncher);
       }
       if (selected === "explicit") {
@@ -247,7 +296,10 @@ test("a rejected new plist never disables or unloads the previous bridge", () =>
     mkdirSync(agents, { recursive: true });
     const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
     writeFileSync(legacyPlist, "old bridge deployment");
-    executable(join(f.tools, "plutil"), "#!/bin/sh\nexit 1\n");
+    executable(
+      join(f.tools, "plutil"),
+      `#!${process.execPath}\nif (process.argv[2] === "-lint") process.exit(1);\n${plutilFixture}`,
+    );
     const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
       env: f.env,
       encoding: "utf8",
@@ -412,5 +464,153 @@ esac
     );
   } finally {
     rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const unavailable of ["native-package", "status-command"] as const)
+  test(`entry preflight rejects a missing ${unavailable} before changing the old bridge`, () => {
+    const f = fixture();
+    try {
+      const agents = join(f.home, "Library", "LaunchAgents");
+      mkdirSync(agents, { recursive: true });
+      const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+      writeFileSync(legacyPlist, "original bridge configuration");
+      const env: NodeJS.ProcessEnv = { ...f.env };
+      if (unavailable === "native-package") {
+        const npmEntry = join(f.npmBin, "myrix");
+        executable(npmEntry, launcher(defaultPackageName));
+        env.MYRIX_BIN = npmEntry;
+      } else env.MYRIX_TEST_STATUS_MODE = "unsupported";
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /cannot (execute version|inspect status)/);
+      assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
+      assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+      assert.equal(existsSync(f.log), false);
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+test("a nonresponsive executable probe is bounded without changing the old deployment", () => {
+  const f = fixture();
+  try {
+    const agents = join(f.home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+    writeFileSync(legacyPlist, "original bridge configuration");
+    executable(
+      f.old,
+      `#!${process.execPath}\nprocess.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n`,
+    );
+    const started = Date.now();
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.ok(Date.now() - started < 15_000);
+    assert.match(result.stderr, /cannot execute version/);
+    assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
+    assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.equal(existsSync(f.log), false);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const mode of ["stable", "exited", "unlocked", "wrong-pid", "unmatched", "flapping"] as const)
+  test(`successful bootstrap commits the migration only after stable state-lock ownership (${mode})`, () => {
+    const f = fixture();
+    try {
+      const agents = join(f.home, "Library", "LaunchAgents");
+      mkdirSync(agents, { recursive: true });
+      const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+      writeFileSync(legacyPlist, "original bridge configuration");
+      writeFileSync(join(f.directory, "old-loaded"), "true");
+      executable(
+        join(f.tools, "launchctl"),
+        `#!/bin/sh
+printf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"
+root=$(dirname "$MYRIX_TEST_LAUNCH_LOG")
+case "$1" in
+  print-disabled) echo '{}' ;;
+  print) case "$2" in */com.hewenyu.herdr-agent) test -f "$root/old-loaded";; *) test -f "$root/new-loaded";; esac ;;
+  bootout) case "$2" in */com.hewenyu.herdr-agent) rm -f "$root/old-loaded";; *) rm -f "$root/new-loaded";; esac ;;
+  bootstrap) case "$3" in */com.hewenyu.myrix.plist) touch "$root/new-loaded";; *) touch "$root/old-loaded";; esac ;;
+esac
+`,
+      );
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: { ...f.env, MYRIX_TEST_STATUS_MODE: mode },
+        encoding: "utf8",
+        timeout: 40_000,
+      });
+      assert.equal(result.status, mode === "stable" ? 0 : 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(existsSync(join(f.directory, "old-loaded")), mode !== "stable");
+      assert.equal(existsSync(join(f.directory, "new-loaded")), mode === "stable");
+      assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), mode === "stable");
+      if (mode === "stable") {
+        assert.equal(Number(readFileSync(join(f.directory, "startup-probes"), "utf8")), 3);
+        assert.equal(existsSync(legacyPlist), false);
+        assert.match(result.stdout, /stable process and the selected state lock/);
+      } else {
+        assert.match(result.stderr, /did not acquire a stable state lock/);
+        assert.match(result.stderr, /previous bridge definition and service state restored/);
+        assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
+      }
+      assert.ok(!readdirSync(agents).some((name) => name.startsWith(".myrix-previous-bridge.")));
+      assert.doesNotMatch(readFileSync(f.log, "utf8"), /herdr-server/);
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+test("Darwin plutil extracts raw version and status evidence without Node", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const directory = mkdtempSync(join(tmpdir(), "myrix-plutil-test-"));
+  try {
+    const file = join(directory, "status.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: "0.3.15",
+        state: "locked",
+        stateDir: "/Users/test/.myrix",
+        pid: 1001,
+        process: { pid: 1001 },
+        launchd: {
+          target: "gui/501/com.hewenyu.myrix",
+          matched: true,
+          pid: 1000,
+          executable: "/opt/bin/myrix",
+        },
+      }),
+    );
+    for (const [key, value] of Object.entries({
+      version: "0.3.15",
+      state: "locked",
+      stateDir: "/Users/test/.myrix",
+      pid: "1001",
+      "process.pid": "1001",
+      "launchd.target": "gui/501/com.hewenyu.myrix",
+      "launchd.matched": "true",
+      "launchd.pid": "1000",
+      "launchd.executable": "/opt/bin/myrix",
+    })) {
+      const result = spawnSync("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", file], {
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), value);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

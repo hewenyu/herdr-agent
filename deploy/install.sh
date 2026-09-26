@@ -504,6 +504,102 @@ path_add "/sbin"
 assert_xml_safe "PATH for panes" "$clean_path"
 ok "pane PATH      $clean_path"
 
+# Run only the selected executable's read-only probes, with the same PATH as
+# launchd. Bound each spawned probe even if a broken npm launcher never exits.
+bridge_probe() {
+  local output=$1 timeout=$2 probe_pid deadline probe_status
+  shift 2
+  PATH="$clean_path" "$bridge_bin" "$@" >"$output" 2>"$output.err" &
+  probe_pid=$!
+  deadline=$((SECONDS + timeout))
+  while kill -0 "$probe_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$probe_pid" 2>/dev/null || true
+      /bin/sleep 0.1
+      kill -KILL "$probe_pid" 2>/dev/null || true
+      wait "$probe_pid" 2>/dev/null || true
+      return 124
+    fi
+    /bin/sleep 0.1
+  done
+  probe_status=0
+  wait "$probe_pid" || probe_status=$?
+  return "$probe_status"
+}
+
+probe_field() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
+
+preflight_bridge() {
+  local probe_dir version state
+  probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/myrix-preflight.XXXXXX")
+  if ! bridge_probe "$probe_dir/version.json" 10 version --json; then
+    rm -rf "$probe_dir"
+    die "the selected myrix entry cannot execute version --json; repair its npm native dependency or executable before restarting the old bridge"
+  fi
+  version=$(probe_field "$probe_dir/version.json" version || true)
+  if [ -z "$version" ]; then
+    rm -rf "$probe_dir"
+    die "the selected myrix entry did not return a valid version; the old bridge was not changed"
+  fi
+  if ! bridge_probe "$probe_dir/status.json" 10 status --json --state-dir "$STATE_DIR"; then
+    rm -rf "$probe_dir"
+    die "the selected myrix entry cannot inspect status --json; use a current myrix executable before restarting the old bridge"
+  fi
+  state=$(probe_field "$probe_dir/status.json" state || true)
+  rm -rf "$probe_dir"
+  case "$state" in
+    locked|unlocked) ok "myrix $version entry and read-only status verified" ;;
+    *) die "the selected myrix entry returned an unverifiable status; the old bridge was not changed" ;;
+  esac
+}
+
+wait_for_bridge() {
+  local probe_dir deadline remaining attempt=0 stable=0 previous=""
+  local state state_dir pid process_pid target matched job_pid executable identity
+  probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/myrix-startup.XXXXXX")
+  deadline=$((SECONDS + 30))
+  while [ "$attempt" -lt 30 ] && [ "$SECONDS" -lt "$deadline" ]; do
+    attempt=$((attempt + 1))
+    remaining=$((deadline - SECONDS))
+    if [ "$remaining" -gt 10 ]; then remaining=10; fi
+    identity=""
+    if bridge_probe "$probe_dir/status.json" "$remaining" status --json --state-dir "$STATE_DIR"; then
+      state=$(probe_field "$probe_dir/status.json" state || true)
+      state_dir=$(probe_field "$probe_dir/status.json" stateDir || true)
+      pid=$(probe_field "$probe_dir/status.json" pid || true)
+      process_pid=$(probe_field "$probe_dir/status.json" process.pid || true)
+      target=$(probe_field "$probe_dir/status.json" launchd.target || true)
+      matched=$(probe_field "$probe_dir/status.json" launchd.matched || true)
+      job_pid=$(probe_field "$probe_dir/status.json" launchd.pid || true)
+      executable=$(probe_field "$probe_dir/status.json" launchd.executable || true)
+      if [ "$state" = "locked" ] && [ "$state_dir" = "$STATE_DIR" ] &&
+         [ "$pid" = "$process_pid" ] && [ "$target" = "$DOMAIN/$LABEL_BRIDGE" ] &&
+         [ "$matched" = "true" ] && [ "$executable" = "$bridge_bin" ]; then
+        case "$pid:$job_pid" in
+          *[!0-9:]*|:*|*:) ;;
+          *) if [ "$pid" -gt 0 ] && [ "$job_pid" -gt 0 ]; then identity="$pid:$job_pid"; fi ;;
+        esac
+      fi
+    fi
+    if [ -n "$identity" ]; then
+      if [ "$identity" = "$previous" ]; then stable=$((stable + 1)); else stable=1; fi
+    else
+      stable=0
+    fi
+    previous="$identity"
+    if [ "$stable" -ge 3 ]; then
+      rm -rf "$probe_dir"
+      ok "myrix is running with a stable process and the selected state lock"
+      return 0
+    fi
+    if [ "$SECONDS" -lt "$deadline" ]; then sleep 0.5; fi
+  done
+  rm -rf "$probe_dir"
+  return 1
+}
+
+if [ "$do_bridge" -eq 1 ]; then preflight_bridge; fi
+
 for tool in claude codex; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     warn "$tool is not on your PATH, so panes started by herdr will not find it either"
@@ -629,6 +725,9 @@ if [ "$do_bridge" -eq 1 ]; then
   install_plist "$LA_DIR/$LABEL_BRIDGE.plist" "$bridge_plist_tmp"
   bridge_plist_tmp=""
   load_job "$LABEL_BRIDGE" "$LA_DIR/$LABEL_BRIDGE.plist"
+  if ! wait_for_bridge; then
+    die "myrix did not acquire a stable state lock under its new launchd job; previous deployment recovery will run if available"
+  fi
   legacy_migration_active=0
 fi
 
