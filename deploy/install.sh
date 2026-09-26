@@ -254,16 +254,24 @@ remove_job() {
 legacy_backup=""
 legacy_was_loaded=0
 legacy_was_disabled=0
-legacy_migration_active=0
+canonical_backup=""
+canonical_was_loaded=0
+canonical_was_disabled=0
+bridge_transaction_active=0
+legacy_touched=0
+canonical_touched=0
+replacement_started=0
 
-prepare_legacy_bridge() {
-  local disabled_snapshot disabled_value
-  if job_loaded "$LEGACY_LABEL_BRIDGE"; then legacy_was_loaded=1; fi
-  if [ ! -f "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist" ]; then
-    if [ "$legacy_was_loaded" -eq 1 ]; then
-      die "cannot migrate $LEGACY_LABEL_BRIDGE without its original plist; restore that definition before retrying"
-    fi
-    return
+# Capture both labels before changing either of them. The output variables are
+# copied by the caller; indexed arrays/namerefs are unnecessary on macOS Bash.
+snapshot_bridge() {
+  local label=$1 disabled_snapshot disabled_value
+  snapshot_backup=""
+  snapshot_loaded=0
+  snapshot_disabled=0
+  if job_loaded "$label"; then snapshot_loaded=1; fi
+  if [ ! -f "$LA_DIR/$label.plist" ] && [ "$snapshot_loaded" -eq 1 ]; then
+    die "cannot migrate $label without its original plist; restore that definition before retrying"
   fi
   if ! disabled_snapshot=$(launchctl print-disabled "$DOMAIN" 2>/dev/null); then
     die "cannot read the previous bridge enablement; the old service was not changed"
@@ -272,62 +280,113 @@ prepare_legacy_bridge() {
     *'{'*'}'*) ;;
     *) die "cannot verify the previous bridge enablement; the old service was not changed" ;;
   esac
-  disabled_value=$(printf '%s\n' "$disabled_snapshot" | awk -v label="\"$LEGACY_LABEL_BRIDGE\"" '$1 == label && $2 == "=>" { gsub(/[,;]/, "", $3); print $3 }')
+  disabled_value=$(printf '%s\n' "$disabled_snapshot" | awk -v label="\"$label\"" '$1 == label && $2 == "=>" { gsub(/[,;]/, "", $3); print $3 }')
   case "$disabled_value" in
-    true) legacy_was_disabled=1 ;;
-    false|'') legacy_was_disabled=0 ;;
+    true) snapshot_disabled=1 ;;
+    false|'') snapshot_disabled=0 ;;
     *) die "cannot verify the previous bridge enablement; the old service was not changed" ;;
   esac
-  legacy_backup=$(mktemp "$LA_DIR/.myrix-previous-bridge.XXXXXX")
-  if ! cp "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist" "$legacy_backup"; then
-    rm -f "$legacy_backup"
-    legacy_backup=""
+  if [ ! -f "$LA_DIR/$label.plist" ]; then return; fi
+  snapshot_backup=$(mktemp "$LA_DIR/.myrix-previous-bridge.XXXXXX")
+  if ! cp "$LA_DIR/$label.plist" "$snapshot_backup"; then
+    rm -f "$snapshot_backup"
+    snapshot_backup=""
     die "cannot preserve the previous bridge definition; the old service was not changed"
   fi
-  chmod 600 "$legacy_backup"
+  chmod 600 "$snapshot_backup"
 }
 
-rollback_legacy_bridge() {
-  warn "myrix installation failed; restoring the previous bridge deployment"
-  unload_job "$LABEL_BRIDGE"
-  if job_loaded "$LABEL_BRIDGE"; then
-    warn "$LABEL_BRIDGE is still loaded; the old service was not restarted to avoid duplicate instances"
-    warn "previous configuration retained at $legacy_backup"
-    return
+prepare_bridge_transaction() {
+  snapshot_bridge "$LEGACY_LABEL_BRIDGE"
+  legacy_backup=$snapshot_backup
+  legacy_was_loaded=$snapshot_loaded
+  legacy_was_disabled=$snapshot_disabled
+  snapshot_bridge "$LABEL_BRIDGE"
+  canonical_backup=$snapshot_backup
+  canonical_was_loaded=$snapshot_loaded
+  canonical_was_disabled=$snapshot_disabled
+  if [ "$legacy_was_loaded" -eq 1 ] && [ "$canonical_was_loaded" -eq 1 ]; then
+    die "both bridge labels are loaded; stop the duplicate bridge before retrying; neither service was changed"
   fi
-  if ! rm -f "$LA_DIR/$LABEL_BRIDGE.plist" ||
-     ! install -m 600 "$legacy_backup" "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist"; then
-    warn "cannot restore the previous plist; private recovery copy retained at $legacy_backup"
-    return
-  fi
-  if [ "$legacy_was_disabled" -eq 1 ]; then
-    if ! launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
-      warn "cannot restore disabled state; recovery copy retained at $legacy_backup"
-      return
+}
+
+discard_bridge_backups() {
+  if [ -n "$legacy_backup" ]; then rm -f "$legacy_backup"; fi
+  if [ -n "$canonical_backup" ]; then rm -f "$canonical_backup"; fi
+}
+
+retain_bridge_backups() {
+  if [ -n "$canonical_backup" ]; then warn "$LABEL_BRIDGE configuration retained at $canonical_backup"; fi
+  if [ -n "$legacy_backup" ]; then warn "$LEGACY_LABEL_BRIDGE configuration retained at $legacy_backup"; fi
+}
+
+restore_bridge() {
+  local label=$1 backup=$2 was_loaded=$3 was_disabled=$4 other_label=$5
+  if [ -n "$backup" ]; then
+    if ! install -m 600 "$backup" "$LA_DIR/$label.plist"; then
+      warn "cannot restore the previous $label plist"
+      return 1
     fi
-  elif ! launchctl enable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
-    warn "cannot restore enabled state; recovery copy retained at $legacy_backup"
-    return
+  elif ! rm -f "$LA_DIR/$label.plist"; then
+    warn "cannot remove the failed $label plist"
+    return 1
   fi
-  if [ "$legacy_was_loaded" -eq 1 ]; then
+  if [ "$was_disabled" -eq 1 ]; then
+    if ! launchctl disable "$DOMAIN/$label"; then
+      warn "cannot restore $label disabled state"
+      return 1
+    fi
+  elif ! launchctl enable "$DOMAIN/$label"; then
+    warn "cannot restore $label enabled state"
+    return 1
+  fi
+  if [ "$was_loaded" -eq 1 ] && ! job_loaded "$label"; then
+    if job_loaded "$other_label"; then
+      warn "$other_label is still loaded; $label was not restarted to avoid duplicate instances"
+      return 1
+    fi
     # A loaded but disabled job can exist. Temporarily enable it to restore the
     # loaded registration, then put its persisted disabled preference back.
-    if ! launchctl enable "$DOMAIN/$LEGACY_LABEL_BRIDGE" ||
-       ! launchctl bootstrap "$DOMAIN" "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist"; then
-      if [ "$legacy_was_disabled" -eq 1 ]; then
-        launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE" >/dev/null 2>&1 || true
+    if ! launchctl enable "$DOMAIN/$label" ||
+       ! launchctl bootstrap "$DOMAIN" "$LA_DIR/$label.plist"; then
+      if [ "$was_disabled" -eq 1 ]; then
+        launchctl disable "$DOMAIN/$label" >/dev/null 2>&1 || true
       fi
-      warn "previous plist restored but restart failed; recovery copy retained at $legacy_backup"
-      return
+      warn "previous $label plist restored but restart failed"
+      return 1
     fi
-    if [ "$legacy_was_disabled" -eq 1 ] &&
-       ! launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
-      warn "previous job restored but disabled preference was not restored; recovery copy retained at $legacy_backup"
+    if [ "$was_disabled" -eq 1 ] && ! launchctl disable "$DOMAIN/$label"; then
+      warn "previous $label job restored but disabled preference was not restored"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+rollback_bridge() {
+  warn "myrix installation failed; restoring the previous bridge deployment"
+  if [ "$replacement_started" -eq 1 ]; then
+    launchctl disable "$DOMAIN/$LABEL_BRIDGE" >/dev/null 2>&1 || true
+    unload_job "$LABEL_BRIDGE"
+    if job_loaded "$LABEL_BRIDGE"; then
+      warn "$LABEL_BRIDGE is still loaded; the old service was not restarted to avoid duplicate instances"
+      retain_bridge_backups
       return
     fi
   fi
-  rm -f "$legacy_backup"
-  legacy_backup=""
+  # A legacy retirement failure happens before canonical is touched. Leave its
+  # working process alone rather than replacing it while restoring the other label.
+  if [ "$canonical_touched" -eq 1 ] &&
+     ! restore_bridge "$LABEL_BRIDGE" "$canonical_backup" "$canonical_was_loaded" "$canonical_was_disabled" "$LEGACY_LABEL_BRIDGE"; then
+    retain_bridge_backups
+    return
+  fi
+  if [ "$legacy_touched" -eq 1 ] &&
+     ! restore_bridge "$LEGACY_LABEL_BRIDGE" "$legacy_backup" "$legacy_was_loaded" "$legacy_was_disabled" "$LABEL_BRIDGE"; then
+    retain_bridge_backups
+    return
+  fi
+  discard_bridge_backups
   warn "previous bridge definition and service state restored"
 }
 
@@ -340,7 +399,6 @@ retire_legacy_bridge() {
       die "cannot disable $LEGACY_LABEL_BRIDGE; myrix was not installed or started"
     fi
   fi
-  if [ -n "$legacy_backup" ]; then legacy_migration_active=1; fi
   unload_job "$LEGACY_LABEL_BRIDGE"
   if job_loaded "$LEGACY_LABEL_BRIDGE"; then
     die "$LEGACY_LABEL_BRIDGE is still loaded; myrix was not started"
@@ -643,12 +701,12 @@ bridge_plist_tmp=""
 finish_install() {
   local install_status=$?
   trap - EXIT
-  if [ "$install_status" -ne 0 ] && [ "$legacy_migration_active" -eq 1 ]; then
+  if [ "$install_status" -ne 0 ] && [ "$bridge_transaction_active" -eq 1 ]; then
     # Preserve the original failure even if best-effort recovery cannot finish.
     set +e
-    rollback_legacy_bridge
-  elif [ -n "$legacy_backup" ]; then
-    rm -f "$legacy_backup"
+    rollback_bridge
+  else
+    discard_bridge_backups
   fi
   if [ -n "$bridge_plist_tmp" ]; then rm -f "$bridge_plist_tmp"; fi
   exit "$install_status"
@@ -720,15 +778,23 @@ if [ "$do_server" -eq 1 ]; then
 fi
 
 if [ "$do_bridge" -eq 1 ]; then
-  prepare_legacy_bridge
+  prepare_bridge_transaction
+  bridge_transaction_active=1
+  legacy_touched=1
   retire_legacy_bridge
+  canonical_touched=1
+  unload_job "$LABEL_BRIDGE"
+  if job_loaded "$LABEL_BRIDGE"; then
+    die "$LABEL_BRIDGE is still loaded; its replacement was not installed or started"
+  fi
   install_plist "$LA_DIR/$LABEL_BRIDGE.plist" "$bridge_plist_tmp"
   bridge_plist_tmp=""
+  replacement_started=1
   load_job "$LABEL_BRIDGE" "$LA_DIR/$LABEL_BRIDGE.plist"
   if ! wait_for_bridge; then
     die "myrix did not acquire a stable state lock under its new launchd job; previous deployment recovery will run if available"
   fi
-  legacy_migration_active=0
+  bridge_transaction_active=0
 fi
 
 # ----------------------------------------------------------- next steps -----

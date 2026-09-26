@@ -29,7 +29,8 @@ if (args[0] === "version") {
 } else if (args[0] === "status") {
   if (process.env.MYRIX_TEST_STATUS_MODE === "unsupported") process.exit(2);
   const plist = path.join(process.env.HOME, "Library/LaunchAgents/com.hewenyu.myrix.plist");
-  if (!fs.existsSync(plist)) {
+  if (!fs.existsSync(plist) ||
+      (process.env.MYRIX_TEST_WAIT_FOR_BOOTSTRAP && !fs.existsSync(path.join(root, "replacement-started")))) {
     console.log(JSON.stringify({ state: "unlocked" }));
   } else {
     const mode = process.env.MYRIX_TEST_STATUS_MODE;
@@ -120,6 +121,75 @@ function fixture(stateName = ".herdr-agent") {
       HERDR_AGENT_BIN: "",
       MYRIX_TEST_LAUNCH_LOG: log,
       PATH: [tools, npmBin, nodeBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
+    },
+  };
+}
+
+function canonicalFixture(
+  options: {
+    installed?: boolean;
+    loaded?: boolean;
+    disabled?: boolean;
+    legacy?: boolean;
+    legacyLoaded?: boolean;
+    failure?: "bootstrap" | "readiness" | "install" | "legacy-disable" | "stuck-replacement";
+  } = {},
+) {
+  const f = fixture();
+  const agents = join(f.home, "Library", "LaunchAgents");
+  mkdirSync(agents, { recursive: true });
+  const canonical = join(agents, "com.hewenyu.myrix.plist");
+  const legacy = join(agents, "com.hewenyu.herdr-agent.plist");
+  if (options.installed !== false) writeFileSync(canonical, "original canonical configuration");
+  if (options.loaded) writeFileSync(join(f.directory, "canonical-loaded"), "original");
+  if (options.legacy) writeFileSync(legacy, "original legacy configuration");
+  if (options.legacyLoaded) writeFileSync(join(f.directory, "legacy-loaded"), "original");
+  executable(
+    join(f.tools, "launchctl"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"
+root=$(dirname "$MYRIX_TEST_LAUNCH_LOG")
+case "$1" in
+  print-disabled) printf '{\\n "com.hewenyu.myrix" => ${options.disabled ?? false},\\n "com.hewenyu.herdr-agent" => true,\\n}\\n' ;;
+  print) case "$2" in */com.hewenyu.myrix) test -f "$root/canonical-loaded";; *) test -f "$root/legacy-loaded";; esac ;;
+  disable) if [ "${options.failure}" = legacy-disable ]; then case "$2" in */com.hewenyu.herdr-agent) exit 5;; esac; fi ;;
+  bootout) case "$2" in
+    */com.hewenyu.myrix)
+      if [ "${options.failure}" != stuck-replacement ] || [ ! -f "$root/replacement-started" ]; then rm -f "$root/canonical-loaded"; fi ;;
+    *) rm -f "$root/legacy-loaded";;
+  esac ;;
+  bootstrap) case "$3" in
+    */com.hewenyu.myrix.plist)
+      if test -f "$root/legacy-loaded" || test -f "$root/canonical-loaded"; then touch "$root/overlap"; exit 9; fi
+      if grep -q 'original canonical configuration' "$3"; then
+        echo original > "$root/canonical-loaded"
+      else
+        touch "$root/replacement-started"
+        echo replacement > "$root/canonical-loaded"
+        case "${options.failure}" in bootstrap|stuck-replacement) exit 5;; esac
+      fi ;;
+    *)
+      if test -f "$root/canonical-loaded" || test -f "$root/legacy-loaded"; then touch "$root/overlap"; exit 9; fi
+      touch "$root/legacy-loaded" ;;
+  esac ;;
+esac
+`,
+  );
+  if (options.failure === "install") {
+    executable(
+      join(f.tools, "install"),
+      '#!/bin/sh\nif [ "$2" = 644 ]; then exit 7; fi\nexec /usr/bin/install "$@"\n',
+    );
+  }
+  return {
+    ...f,
+    agents,
+    canonical,
+    legacy,
+    env: {
+      ...f.env,
+      MYRIX_TEST_WAIT_FOR_BOOTSTRAP: "1",
+      MYRIX_TEST_STATUS_MODE: options.failure === "readiness" ? "exited" : "stable",
     },
   };
 }
@@ -570,6 +640,201 @@ esac
       rmSync(f.directory, { recursive: true, force: true });
     }
   });
+
+for (const loaded of [false, true])
+  for (const disabled of [false, true])
+    for (const failure of ["bootstrap", "readiness"] as const)
+      test(`canonical ${failure} failure restores its definition and prior state (loaded=${loaded}, disabled=${disabled})`, () => {
+        const f = canonicalFixture({ loaded, disabled, failure, legacy: disabled });
+        try {
+          const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+            env: f.env,
+            encoding: "utf8",
+            timeout: 40_000,
+          });
+          assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+          assert.match(result.stderr, /previous bridge definition and service state restored/);
+          assert.equal(readFileSync(f.canonical, "utf8"), "original canonical configuration");
+          assert.equal(statSync(f.canonical).mode & 0o777, 0o600);
+          if (disabled) {
+            assert.equal(readFileSync(f.legacy, "utf8"), "original legacy configuration");
+            assert.equal(statSync(f.legacy).mode & 0o777, 0o600);
+          } else assert.equal(existsSync(f.legacy), false);
+          assert.equal(existsSync(join(f.directory, "canonical-loaded")), loaded);
+          if (loaded)
+            assert.equal(
+              readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(),
+              "original",
+            );
+          assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
+          assert.equal(existsSync(join(f.directory, "overlap")), false);
+          assert.ok(
+            !readdirSync(f.agents).some((name) => name.startsWith(".myrix-previous-bridge.")),
+          );
+          const calls = readFileSync(f.log, "utf8").trim().split("\n");
+          assert.equal(
+            calls.filter((line) => /^bootstrap .*com\.hewenyu\.myrix\.plist$/.test(line)).length,
+            loaded ? 2 : 1,
+          );
+          for (const [label, expectedDisabled] of [
+            ["myrix", disabled],
+            ["herdr-agent", true],
+          ] as const) {
+            const preference = calls.filter(
+              (line) => /^(enable|disable) /.test(line) && line.endsWith(`/com.hewenyu.${label}`),
+            );
+            assert.ok(preference.at(-1)?.startsWith(expectedDisabled ? "disable " : "enable "));
+          }
+          assert.doesNotMatch(calls.join("\n"), /bootstrap .*herdr-agent\.plist|herdr-server/);
+        } finally {
+          rmSync(f.directory, { recursive: true, force: true });
+        }
+      });
+
+for (const failure of ["bootstrap", "readiness"] as const)
+  test(`fresh ${failure} failure removes the failed job and definition`, () => {
+    const f = canonicalFixture({ installed: false, failure, disabled: true });
+    try {
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: f.env,
+        encoding: "utf8",
+        timeout: 40_000,
+      });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(existsSync(f.canonical), false);
+      assert.equal(existsSync(f.legacy), false);
+      assert.equal(existsSync(join(f.directory, "canonical-loaded")), false);
+      assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
+      assert.equal(existsSync(join(f.directory, "overlap")), false);
+      assert.deepEqual(readdirSync(f.agents), []);
+      const calls = readFileSync(f.log, "utf8").trim().split("\n");
+      assert.equal(calls.filter((line) => line.startsWith("bootstrap ")).length, 1);
+      const preferences = calls.filter((line) =>
+        /^(enable|disable) .*com\.hewenyu\.myrix$/.test(line),
+      );
+      assert.ok(preferences.at(-1)?.startsWith("disable "));
+      assert.doesNotMatch(calls.join("\n"), /herdr-server/);
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+test("successful canonical upgrade keeps the verified replacement and removes both backups", () => {
+  const f = canonicalFixture({ loaded: true, legacy: true });
+  try {
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(readFileSync(f.canonical, "utf8"), /<string>com\.hewenyu\.myrix<\/string>/);
+    assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "replacement");
+    assert.equal(Number(readFileSync(join(f.directory, "startup-probes"), "utf8")), 3);
+    assert.equal(existsSync(f.legacy), false);
+    assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
+    assert.equal(existsSync(join(f.directory, "overlap")), false);
+    assert.deepEqual(readdirSync(f.agents), ["com.hewenyu.myrix.plist"]);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const failure of ["install", "legacy-disable"] as const)
+  test(`${failure} failure preserves an existing canonical bridge before replacement bootstrap`, () => {
+    const f = canonicalFixture({ loaded: true, legacy: true, failure });
+    try {
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: f.env,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(
+        result.status,
+        failure === "install" ? 7 : 1,
+        `${result.stdout}\n${result.stderr}`,
+      );
+      assert.equal(readFileSync(f.canonical, "utf8"), "original canonical configuration");
+      assert.equal(readFileSync(f.legacy, "utf8"), "original legacy configuration");
+      assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "original");
+      assert.equal(existsSync(join(f.directory, "replacement-started")), false);
+      assert.equal(existsSync(join(f.directory, "overlap")), false);
+      if (failure === "legacy-disable") {
+        assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootout .*myrix|bootstrap /);
+      }
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+for (const conflict of ["missing-plist", "both-loaded"] as const)
+  test(`unsafe ${conflict} original state is rejected before either bridge is changed`, () => {
+    const f = canonicalFixture({
+      installed: conflict !== "missing-plist",
+      loaded: true,
+      legacy: true,
+      legacyLoaded: conflict === "both-loaded",
+    });
+    try {
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: f.env,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(
+        result.stderr,
+        conflict === "missing-plist"
+          ? /without its original plist/
+          : /both bridge labels are loaded/,
+      );
+      assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "original");
+      assert.equal(readFileSync(f.legacy, "utf8"), "original legacy configuration");
+      assert.doesNotMatch(
+        readFileSync(f.log, "utf8"),
+        /(?:^|\n)(?:disable|enable|bootout|bootstrap) /,
+      );
+      assert.ok(!readdirSync(f.agents).some((name) => name.startsWith(".myrix-previous-bridge.")));
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+test("a stuck replacement retains private backups for both previous labels and restarts neither", () => {
+  const f = canonicalFixture({ loaded: true, legacy: true, failure: "stuck-replacement" });
+  try {
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
+    const backups = readdirSync(f.agents).filter((name) =>
+      name.startsWith(".myrix-previous-bridge."),
+    );
+    assert.equal(backups.length, 2);
+    assert.deepEqual(backups.map((name) => readFileSync(join(f.agents, name), "utf8")).sort(), [
+      "original canonical configuration",
+      "original legacy configuration",
+    ]);
+    for (const name of backups) {
+      assert.equal(statSync(join(f.agents, name)).mode & 0o777, 0o600);
+      assert.ok(result.stderr.includes(join(f.agents, name)));
+    }
+    assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "replacement");
+    assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
+    assert.equal(existsSync(join(f.directory, "overlap")), false);
+    assert.equal(
+      readFileSync(f.log, "utf8")
+        .split("\n")
+        .filter((line) => line.startsWith("bootstrap ")).length,
+      1,
+    );
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
 
 test("Darwin plutil extracts raw version and status evidence without Node", {
   skip: process.platform !== "darwin",
