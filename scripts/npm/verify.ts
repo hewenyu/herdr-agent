@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { verifyWarningDiagnostics } from "../warning-diagnostics.js";
 import { packageName, platformPackage, releaseVersion, targets } from "./config.js";
 import { command, integrity, offlineEnvironment } from "./io.js";
 import type { Distribution } from "./prepare.js";
@@ -121,9 +122,7 @@ export async function verifyDistribution(
           { cwd: temporary, env, encoding: "utf8", timeout: 10_000 },
         );
         assert.equal(migrated.status, 0, migrated.stderr || migrated.error?.message);
-        assert.doesNotMatch(migrated.stderr, /herdr-agent/);
-        if (migrated.stderr.includes("ExperimentalWarning"))
-          assert.match(migrated.stderr, trace ? /\n\s+at / : /myrix --trace-warnings/);
+        verifyWarningDiagnostics(migrated.stderr, trace);
       }
     }
     await writeFile(

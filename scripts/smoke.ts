@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { smokeModels } from "./smoke-model.js";
+import { verifyWarningDiagnostics } from "./warning-diagnostics.js";
 
 function isolatedEnvironment(): NodeJS.ProcessEnv {
   // Explicit --state-dir isolates application data. Do not inherit keys, NODE_OPTIONS or herdr config.
@@ -109,17 +110,15 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
       options,
     );
     assert.equal(warning.status, 0, warning.stderr || warning.error?.message);
-    assert.doesNotMatch(warning.stderr, /herdr-agent/);
-    if (warning.stderr.includes("ExperimentalWarning"))
-      assert.match(warning.stderr, /myrix --trace-warnings/);
+    verifyWarningDiagnostics(warning.stderr, false);
     const traced = spawnSync(
       executable,
       ["--trace-warnings", "migrate", "--dry-run", "--state-dir", stateDir],
       options,
     );
     assert.equal(traced.status, 0, traced.stderr || traced.error?.message);
-    assert.doesNotMatch(traced.stderr, /未知参数|Use .*--trace-warnings/);
-    if (traced.stderr.includes("ExperimentalWarning")) assert.match(traced.stderr, /\n\s+at /);
+    assert.doesNotMatch(traced.stderr, /未知参数/);
+    verifyWarningDiagnostics(traced.stderr, true);
     child = spawn(
       executable,
       ["configure", "--listen", "127.0.0.1:0", "--state-dir", join(directory, "state")],

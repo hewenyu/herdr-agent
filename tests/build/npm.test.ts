@@ -216,7 +216,21 @@ test("npm pack retains every platform license and executable mode, produces repr
     await extract(join(temporary, "one", current.tarball), installedFixture);
     await writeFile(
       join(installedFixture, "package", "bin/myrix"),
-      `#!/bin/sh\nif [ "$1" = "version" ]; then\n  printf '%s\\n' '{"version":"${tag}"}'\nelif [ "$1" = "help" ]; then\n  printf '%s\\n' 'serve'\nelse\n  printf '%s\\n' 'myrix ${tag}'\nfi\n`,
+      `#!/bin/sh
+if [ "$1" = "version" ]; then
+  printf '%s\\n' '{"version":"${tag}"}'
+elif [ "$1" = "help" ]; then
+  printf '%s\\n' 'serve'
+elif [ "$1" = "migrate" ]; then
+  printf '%s\\n' '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time' >&2
+  printf '%s\\n' '(Use \`myrix --trace-warnings ...\` to show where the warning was created)' >&2
+elif [ "$1" = "--trace-warnings" ]; then
+  printf '%s\\n' '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time' >&2
+  printf '%s\\n' '    at new Store (/home/runner/work/herdr-agent/herdr-agent/dist/myrix.cjs:200353:44)' >&2
+else
+  printf '%s\\n' 'myrix ${tag}'
+fi
+`,
       { mode: 0o755 },
     );
     const packed = JSON.parse(
