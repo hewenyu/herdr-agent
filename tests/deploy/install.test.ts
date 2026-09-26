@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -126,10 +126,14 @@ test("adding the selected Node directory never shadows earlier selected executor
     assert.ok(path.split(":").indexOf(agentBin) < path.split(":").indexOf(f.nodeBin));
     assert.ok(!path.includes(f.npmBin), "unrelated PATH directories are not copied");
     for (const name of ["claude", "codex", "node"]) {
-      const resolved = spawnSync("/bin/sh", ["-c", `command -v ${name}`], {
-        env: { PATH: path },
-        encoding: "utf8",
-      });
+      const resolved: SpawnSyncReturns<string> = spawnSync(
+        "/bin/sh",
+        ["-c", `command -v ${name}`],
+        {
+          env: { PATH: path },
+          encoding: "utf8",
+        },
+      );
       assert.equal(resolved.status, 0);
       assert.equal(resolved.stdout.trim(), join(name === "node" ? f.nodeBin : agentBin, name));
     }
