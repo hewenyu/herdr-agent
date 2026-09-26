@@ -1,5 +1,7 @@
 import { runCLI } from "./run.js";
 
+process.title = "myrix";
+
 const control = new AbortController();
 const stop = () => control.abort();
 process.once("SIGINT", stop);
@@ -9,7 +11,7 @@ void runCLI(process.argv.slice(2), { signal: control.signal })
     process.exitCode = code;
   })
   .catch(() => {
-    process.stderr.write("herdr-agent 启动失败。\n");
+    process.stderr.write("myrix 启动失败。\n");
     process.exitCode = 1;
   })
   .finally(() => {

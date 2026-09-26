@@ -177,7 +177,7 @@ async function command(
       await reply(
         context,
         message,
-        `herdr ${status.version} · 协议 ${status.protocol}\n完整环境检查请在本机运行 herdr-agent doctor。`,
+        `herdr ${status.version} · 协议 ${status.protocol}\n完整环境检查请在本机运行 myrix doctor。`,
       );
       return true;
     }

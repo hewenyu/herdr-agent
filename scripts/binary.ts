@@ -30,7 +30,7 @@ export async function buildBinary(options: { outdir?: string; stamp?: BuildStamp
   await mkdir(work, { recursive: true });
   const require = createRequire(import.meta.url);
   const addon = require.resolve("fs-ext/build/Release/fs_ext.node");
-  const binary = resolve(outdir, "herdr-agent");
+  const binary = resolve(outdir, "myrix");
   const blob = resolve(work, "sea-prep.blob");
   const config = resolve(work, "sea-config.json");
   await writeFile(

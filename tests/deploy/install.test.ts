@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -18,13 +23,14 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "myrix-launchd-test-"));
+function fixture(stateName = ".herdr-agent") {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "myrix-launchd-test-")));
+  cpSync(resolve("deploy"), join(directory, "deploy"), { recursive: true });
   const home = join(directory, "home");
   const tools = join(directory, "mock-tools");
   const npmBin = join(directory, "npm-bin");
   const nodeBin = join(directory, "selected-node", "bin");
-  const state = join(home, ".herdr-agent");
+  const state = join(home, stateName);
   for (const path of [home, tools, npmBin, nodeBin, join(state, "bin")])
     mkdirSync(path, { recursive: true });
   writeFileSync(join(state, ".env"), "FEISHU_APP_ID=test\nFEISHU_APP_SECRET=test\n", {
@@ -41,20 +47,24 @@ function fixture() {
     dscl: "echo 'UserShell: /bin/sh'",
     plutil: "exit 0",
     launchctl:
-      'printf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in print) exit 1;; esac',
+      'printf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in print) exit 1;; print-disabled) echo "{}";; esac',
   }))
     executable(join(tools, name), `#!/bin/sh\n${body}\n`);
   const log = join(directory, "launchctl.log");
   return {
     directory,
+    script: join(directory, "deploy", "install.sh"),
     home,
     nodeBin,
     npmBin,
     old,
+    state,
+    tools,
     log,
     env: {
       ...process.env,
       HOME: home,
+      MYRIX_BIN: "",
       HERDR_AGENT_BIN: "",
       MYRIX_TEST_LAUNCH_LOG: log,
       PATH: [tools, npmBin, nodeBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
@@ -62,7 +72,7 @@ function fixture() {
   };
 }
 
-for (const selected of ["npm", "explicit", "legacy"] as const)
+for (const selected of ["npm", "explicit", "alias", "legacy"] as const)
   test(`launchd installer selects ${selected} bridge and preserves the selected Node path`, () => {
     const f = fixture();
     try {
@@ -75,15 +85,19 @@ for (const selected of ["npm", "explicit", "legacy"] as const)
         );
         symlinkSync(launcher, npmLauncher);
       }
-      if (selected === "explicit") f.env.HERDR_AGENT_BIN = f.old;
-      const result = spawnSync("/bin/bash", [resolve("deploy/install.sh"), "--bridge-only"], {
+      if (selected === "explicit") {
+        f.env.MYRIX_BIN = f.old;
+        f.env.HERDR_AGENT_BIN = npmLauncher;
+      }
+      if (selected === "alias") f.env.HERDR_AGENT_BIN = f.old;
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
         env: f.env,
         encoding: "utf8",
         timeout: 10_000,
       });
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       const plist = readFileSync(
-        join(f.home, "Library", "LaunchAgents", "com.hewenyu.herdr-agent.plist"),
+        join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
         "utf8",
       );
       const binary = /<key>ProgramArguments<\/key>\s*<array>\s*<string>(.*?)<\/string>/.exec(
@@ -94,7 +108,7 @@ for (const selected of ["npm", "explicit", "legacy"] as const)
       assert.ok(path?.split(":").includes(f.nodeBin));
       assert.doesNotMatch(plist, /__[A-Z_]+__/);
       const calls = readFileSync(f.log, "utf8");
-      assert.match(calls, /bootstrap .*com\.hewenyu\.herdr-agent\.plist/);
+      assert.match(calls, /bootstrap .*com\.hewenyu\.myrix\.plist/);
       assert.doesNotMatch(calls, /herdr-server/);
     } finally {
       rmSync(f.directory, { recursive: true, force: true });
@@ -111,14 +125,14 @@ test("adding the selected Node directory never shadows earlier selected executor
       executable(join(f.nodeBin, name), "#!/bin/sh\necho obsolete\n");
     }
     f.env.PATH = `${agentBin}:${f.env.PATH}`;
-    const result = spawnSync("/bin/bash", [resolve("deploy/install.sh"), "--bridge-only"], {
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
       env: f.env,
       encoding: "utf8",
       timeout: 10_000,
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const plist = readFileSync(
-      join(f.home, "Library", "LaunchAgents", "com.hewenyu.herdr-agent.plist"),
+      join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
       "utf8",
     );
     const path = /<key>PATH<\/key>\s*<string>(.*?)<\/string>/.exec(plist)?.[1];
@@ -138,6 +152,264 @@ test("adding the selected Node directory never shadows earlier selected executor
       assert.equal(resolved.stdout.trim(), join(name === "node" ? f.nodeBin : agentBin, name));
     }
     assert.doesNotMatch(readFileSync(f.log, "utf8"), /herdr-server/);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const directories of ["new", "legacy", "both"] as const)
+  test(`myrix launchd install preserves ${directories} state directories and retires only the old bridge`, () => {
+    const f = fixture(directories === "new" ? ".myrix" : ".herdr-agent");
+    try {
+      const agents = join(f.home, "Library", "LaunchAgents");
+      mkdirSync(agents, { recursive: true });
+      const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+      writeFileSync(legacyPlist, "old bridge deployment");
+      const database = join(f.state, "state.sqlite");
+      writeFileSync(database, "existing task and conversation history");
+      if (directories === "both") mkdirSync(join(f.home, ".myrix"));
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: f.env,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      const plist = readFileSync(join(agents, "com.hewenyu.myrix.plist"), "utf8");
+      assert.match(plist, /<key>Label<\/key>\s*<string>com\.hewenyu\.myrix<\/string>/);
+      assert.ok(plist.includes(`<string>${f.state}</string>`));
+      assert.ok(plist.includes(`${f.state}/log/myrix.out.log`));
+      assert.ok(plist.includes(`${f.state}/log/myrix.err.log`));
+      assert.equal(readFileSync(database, "utf8"), "existing task and conversation history");
+      assert.equal(existsSync(legacyPlist), false);
+      if (directories === "legacy") assert.equal(existsSync(join(f.home, ".myrix")), false);
+      const calls = readFileSync(f.log, "utf8").trim().split("\n");
+      const disabled = calls.findIndex((line) =>
+        /^disable .*com\.hewenyu\.herdr-agent$/.test(line),
+      );
+      const stopped = calls.findIndex((line) => /^bootout .*com\.hewenyu\.herdr-agent$/.test(line));
+      const started = calls.findIndex((line) =>
+        /^bootstrap .*com\.hewenyu\.myrix\.plist$/.test(line),
+      );
+      assert.ok(disabled >= 0 && stopped > disabled && started > stopped);
+      assert.ok(calls.every((line) => !line.includes("herdr-server")));
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+for (const legacy of ["plist", "loaded", "absent"] as const)
+  test(`failed legacy disable only blocks installation when the old bridge exists (${legacy})`, () => {
+    const f = fixture();
+    try {
+      const agents = join(f.home, "Library", "LaunchAgents");
+      mkdirSync(agents, { recursive: true });
+      const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+      if (legacy === "plist") writeFileSync(legacyPlist, "old bridge deployment");
+      executable(
+        join(f.tools, "launchctl"),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in disable) exit 1;; print) exit ${legacy === "loaded" ? 0 : 1};; print-disabled) echo "{}";; esac\n`,
+      );
+      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+        env: f.env,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(
+        result.status,
+        legacy === "absent" ? 0 : 1,
+        `${result.stdout}\n${result.stderr}`,
+      );
+      assert.equal(existsSync(legacyPlist), legacy === "plist");
+      assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), legacy === "absent");
+      if (legacy !== "absent") {
+        assert.match(result.stderr, /cannot (disable|migrate) com\.hewenyu\.herdr-agent/);
+        assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootstrap/);
+      }
+      assert.doesNotMatch(readFileSync(f.log, "utf8"), /herdr-server/);
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+
+test("the canonical systemd bridge delegates default state selection to myrix", () => {
+  const unit = readFileSync(resolve("deploy/myrix.service"), "utf8");
+  assert.match(unit, /^ExecStart=%h\/\.local\/bin\/myrix serve$/m);
+  assert.match(unit, /^SyslogIdentifier=myrix$/m);
+  assert.match(unit, /disable --now herdr-agent\.service/);
+  assert.doesNotMatch(unit, /ExecStart=.*--state-dir/);
+  assert.equal(existsSync(resolve("deploy/herdr-agent.service")), false);
+});
+
+test("a rejected new plist never disables or unloads the previous bridge", () => {
+  const f = fixture();
+  try {
+    const agents = join(f.home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+    writeFileSync(legacyPlist, "old bridge deployment");
+    executable(join(f.tools, "plutil"), "#!/bin/sh\nexit 1\n");
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /com\.hewenyu\.myrix\.plist did not render into a valid plist/);
+    assert.equal(readFileSync(legacyPlist, "utf8"), "old bridge deployment");
+    assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.equal(existsSync(f.log), false);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const loaded of [false, true])
+  for (const disabled of [false, true])
+    test(`failed myrix bootstrap restores the old bridge (loaded=${loaded}, disabled=${disabled})`, () => {
+      const f = fixture();
+      try {
+        const agents = join(f.home, "Library", "LaunchAgents");
+        mkdirSync(agents, { recursive: true });
+        const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+        writeFileSync(legacyPlist, "original bridge configuration");
+        if (loaded) writeFileSync(join(f.directory, "old-loaded"), "true");
+        executable(
+          join(f.tools, "launchctl"),
+          `#!/bin/sh
+printf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"
+root=$(dirname "$MYRIX_TEST_LAUNCH_LOG")
+case "$1" in
+  print-disabled) printf '{\\n "com.hewenyu.herdr-agent" => ${disabled},\\n}\\n' ;;
+  print) case "$2" in */com.hewenyu.herdr-agent) test -f "$root/old-loaded";; *) exit 1;; esac ;;
+  bootout) case "$2" in */com.hewenyu.herdr-agent) rm -f "$root/old-loaded";; esac ;;
+  bootstrap) case "$3" in */com.hewenyu.myrix.plist) exit 5;; */com.hewenyu.herdr-agent.plist) touch "$root/old-loaded";; esac ;;
+esac
+`,
+        );
+        const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+          env: f.env,
+          encoding: "utf8",
+          timeout: 10_000,
+        });
+        assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+        assert.match(result.stderr, /previous bridge definition and service state restored/);
+        assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
+        assert.equal(statSync(legacyPlist).mode & 0o777, 0o600);
+        assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+        assert.equal(existsSync(join(f.directory, "old-loaded")), loaded);
+        assert.ok(!readdirSync(agents).some((name) => name.startsWith(".myrix-previous-bridge.")));
+        const calls = readFileSync(f.log, "utf8").trim().split("\n");
+        const oldStarts = calls.filter((line) =>
+          /^bootstrap .*com\.hewenyu\.herdr-agent\.plist$/.test(line),
+        );
+        assert.equal(oldStarts.length, loaded ? 1 : 0);
+        const enablement = calls.filter((line) =>
+          /^(enable|disable) .*com\.hewenyu\.herdr-agent$/.test(line),
+        );
+        assert.ok(enablement.at(-1)?.startsWith(disabled ? "disable " : "enable "));
+        assert.ok(calls.every((line) => !line.includes("herdr-server")));
+      } finally {
+        rmSync(f.directory, { recursive: true, force: true });
+      }
+    });
+
+test("legacy enablement read failure preserves the old service before any mutation", () => {
+  const f = fixture();
+  try {
+    const agents = join(f.home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+    writeFileSync(legacyPlist, "original bridge configuration");
+    executable(
+      join(f.tools, "launchctl"),
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\nexit 1\n',
+    );
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /cannot read the previous bridge enablement/);
+    assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
+    assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.doesNotMatch(
+      readFileSync(f.log, "utf8"),
+      /(?:^|\n)(?:disable|enable|bootout|bootstrap) /,
+    );
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("failure to install the new plist still restores the preserved old definition", () => {
+  const f = fixture();
+  try {
+    const agents = join(f.home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
+    writeFileSync(legacyPlist, "original private configuration", { mode: 0o600 });
+    executable(
+      join(f.tools, "install"),
+      '#!/bin/sh\ncase "$*" in */com.hewenyu.myrix.plist) exit 7;; esac\nexec /usr/bin/install "$@"\n',
+    );
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 7);
+    assert.match(result.stderr, /previous bridge definition and service state restored/);
+    assert.equal(readFileSync(legacyPlist, "utf8"), "original private configuration");
+    assert.equal(statSync(legacyPlist).mode & 0o777, 0o600);
+    assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootstrap|herdr-server/);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("rollback retains a private old definition without restarting it while the new job remains loaded", () => {
+  const f = fixture();
+  try {
+    const agents = join(f.home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "com.hewenyu.herdr-agent.plist"), "original private configuration");
+    writeFileSync(join(f.directory, "old-loaded"), "true");
+    executable(join(f.tools, "sleep"), "#!/bin/sh\nexit 0\n");
+    executable(
+      join(f.tools, "launchctl"),
+      `#!/bin/sh
+printf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"
+root=$(dirname "$MYRIX_TEST_LAUNCH_LOG")
+case "$1" in
+  print-disabled) echo '{}' ;;
+  print) case "$2" in */com.hewenyu.herdr-agent) test -f "$root/old-loaded";; *) test -f "$root/new-loaded";; esac ;;
+  bootout) case "$2" in */com.hewenyu.herdr-agent) rm -f "$root/old-loaded";; esac ;;
+  bootstrap) case "$3" in */com.hewenyu.myrix.plist) touch "$root/new-loaded"; exit 5;; *) touch "$root/old-loaded";; esac ;;
+esac
+`,
+    );
+    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+      env: f.env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
+    const backupName = readdirSync(agents).find((name) =>
+      name.startsWith(".myrix-previous-bridge."),
+    );
+    assert.ok(backupName);
+    const backup = join(agents, backupName);
+    assert.equal(readFileSync(backup, "utf8"), "original private configuration");
+    assert.equal(statSync(backup).mode & 0o777, 0o600);
+    assert.ok(result.stderr.includes(backup));
+    assert.equal(existsSync(join(f.directory, "old-loaded")), false);
+    assert.doesNotMatch(
+      readFileSync(f.log, "utf8"),
+      /bootstrap .*com\.hewenyu\.herdr-agent\.plist|herdr-server/,
+    );
   } finally {
     rmSync(f.directory, { recursive: true, force: true });
   }

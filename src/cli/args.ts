@@ -158,9 +158,9 @@ function usage(message: string) {
   return new OperationError("usage", message);
 }
 
-export const HELP = `herdr-agent — pi 调度与 herdr 托管的 Claude / Codex
+export const HELP = `myrix — pi 调度与 herdr 托管的 Claude / Codex
 
-用法：herdr-agent [命令] [--state-dir PATH]
+用法：myrix [命令] [--state-dir PATH]
 
   serve       启动飞书服务与本机 Web（默认命令）
   setup       复用或注册飞书应用，验证消息与卡片回调

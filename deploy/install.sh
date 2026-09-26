@@ -3,7 +3,7 @@
 # install.sh — install and (re)start the two LaunchAgents the bridge needs:
 #
 #   com.hewenyu.herdr-server   herdr itself, started from a scrubbed environment
-#   com.hewenyu.herdr-agent    the Feishu bridge (`herdr-agent serve`)
+#   com.hewenyu.myrix          the Feishu bridge (`myrix serve`)
 #
 # Idempotent. Run it again after rebuilding the binary, after editing a plist,
 # or whenever you are not sure what state things are in: it rewrites both unit
@@ -14,14 +14,18 @@
 # credentials, or kill a herdr server you started by hand — that would take
 # every running agent down with it.
 #
-# Overrides:  HERDR_BIN=/path/to/herdr  HERDR_AGENT_BIN=/path/to/herdr-agent
+# Overrides:  HERDR_BIN=/path/to/herdr  MYRIX_BIN=/path/to/myrix
+# Compatibility: HERDR_AGENT_BIN remains an alias for MYRIX_BIN.
 # Flags:      --bridge-only  --server-only  --uninstall  --help
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
-STATE_DIR="$HOME/.herdr-agent"
+STATE_DIR="$HOME/.myrix"
+if [ -d "$HOME/.herdr-agent" ]; then
+  STATE_DIR="$HOME/.herdr-agent"
+fi
 ENV_FILE="$STATE_DIR/.env"
 CONFIG_FILE="$STATE_DIR/config.toml"
 LOG_DIR="$STATE_DIR/log"
@@ -30,7 +34,8 @@ UID_NUM=$(id -u)
 DOMAIN="gui/$UID_NUM"
 
 LABEL_SERVER="com.hewenyu.herdr-server"
-LABEL_BRIDGE="com.hewenyu.herdr-agent"
+LABEL_BRIDGE="com.hewenyu.myrix"
+LEGACY_LABEL_BRIDGE="com.hewenyu.herdr-agent"
 
 do_server=1
 do_bridge=1
@@ -48,9 +53,9 @@ usage() {
   cat <<'EOF'
 usage: deploy/install.sh [--bridge-only | --server-only] [--uninstall]
 
-  --bridge-only   install only com.hewenyu.herdr-agent (you run herdr yourself)
+  --bridge-only   install only com.hewenyu.myrix (you run herdr yourself)
   --server-only   install only com.hewenyu.herdr-server
-  --uninstall     bootout and remove the plists; leaves ~/.herdr-agent alone.
+  --uninstall     bootout and remove the plists; leaves the state directory alone.
                   Obeys the two flags above: --bridge-only --uninstall keeps the
                   herdr server, and therefore every pane, running.
 EOF
@@ -84,10 +89,23 @@ LaunchAgent here to remove, and this script has removed NOTHING.
 
 The systemd counterpart, if that is what you installed:
 
+EOF
+    if [ "$do_bridge" -eq 1 ]; then
+      cat >&2 <<'EOF'
+  systemctl --user disable --now myrix.service
+  # If the previous bridge unit is still installed:
   systemctl --user disable --now herdr-agent.service
-  systemctl --user disable --now herdr-server.service   # this closes every pane,
-                                                        # and every agent in one
-  rm -f ~/.config/systemd/user/herdr-agent.service ~/.config/systemd/user/herdr-server.service
+  rm -f ~/.config/systemd/user/myrix.service ~/.config/systemd/user/herdr-agent.service
+EOF
+    fi
+    if [ "$do_server" -eq 1 ]; then
+      cat >&2 <<'EOF'
+  # This closes every herdr pane and every agent in one:
+  systemctl --user disable --now herdr-server.service
+  rm -f ~/.config/systemd/user/herdr-server.service
+EOF
+    fi
+    cat >&2 <<EOF
   systemctl --user daemon-reload
   loginctl disable-linger "\$USER"   # only if nothing else of yours needs linger
 
@@ -96,6 +114,9 @@ that. Remove it yourself if you mean it:  rm -rf $STATE_DIR
 EOF
     exit 1
   fi
+  systemd_units=""
+  if [ "$do_server" -eq 1 ]; then systemd_units="herdr-server.service"; fi
+  if [ "$do_bridge" -eq 1 ]; then systemd_units="$systemd_units myrix.service"; fi
   cat >&2 <<EOF
 
 install.sh: this machine is $(uname -s). launchd is macOS only, so this script
@@ -107,12 +128,12 @@ start from a scrubbed environment — an inherited CLAUDE_CODE_CHILD_SESSION tur
 claude's transcript saving off and kills the mirror silently (G7). Read that file
 before you start it:
 
-  $SCRIPT_DIR/herdr-agent.service
+  $SCRIPT_DIR/myrix.service
   $SCRIPT_DIR/herdr-server.service
 
   mkdir -p "$STATE_DIR" ~/.local/bin ~/.config/systemd/user
   chmod 700 "$STATE_DIR"
-  install -m 755 ./herdr-agent ~/.local/bin/herdr-agent   # what the unit expects
+  install -m 755 ./myrix ~/.local/bin/myrix   # what the unit expects
 
   # Credentials and the allowlist, before either unit is enabled. setup writes
   # the .env at mode 0600, creates config.toml from the same example that ships
@@ -120,7 +141,7 @@ before you start it:
   # then makes you send a real message and press a real button, because each of
   # those fails the same invisible way when it is wrong. With no browser here it
   # prints the confirmation link instead of claiming it opened one.
-  ~/.local/bin/herdr-agent setup
+  ~/.local/bin/myrix setup
 
   # By hand instead — the supported fallback, since the endpoint setup uses is
   # undocumented (G18). Two files, and a console change on this path only takes
@@ -135,7 +156,20 @@ before you start it:
   #   printf 'FEISHU_APP_ID=cli_xxx\nFEISHU_APP_SECRET=xxx\n' > "$ENV_FILE"
   #   chmod 600 "$ENV_FILE"
 
-  cp "$SCRIPT_DIR/herdr-agent.service" "$SCRIPT_DIR/herdr-server.service" ~/.config/systemd/user/
+  cp "$SCRIPT_DIR/myrix.service" "$SCRIPT_DIR/herdr-server.service" ~/.config/systemd/user/
+
+EOF
+  if [ "$do_bridge" -eq 1 ]; then
+    cat >&2 <<'EOF'
+  # Retire a previous bridge unit before enabling the renamed one. Keep herdr
+  # running: it owns executor processes and is a separate service.
+  if systemctl --user cat herdr-agent.service >/dev/null 2>&1; then
+    systemctl --user disable --now herdr-agent.service
+    rm -f ~/.config/systemd/user/herdr-agent.service
+  fi
+EOF
+  fi
+  cat >&2 <<EOF
 
   # In herdr-server.service, check the herdr binary path and the PATH the panes
   # inherit from it: that PATH has to contain claude / codex or no pane will
@@ -143,15 +177,15 @@ before you start it:
   \$EDITOR ~/.config/systemd/user/herdr-server.service
 
   systemctl --user daemon-reload
-  systemctl --user enable --now herdr-server.service herdr-agent.service
+  systemctl --user enable --now $systemd_units
 
   # Without linger both units stop when you log out, and nothing starts at boot.
   loginctl enable-linger "\$USER"
 
 Then check it and watch it:
 
-  ~/.local/bin/herdr-agent doctor
-  journalctl --user -u herdr-agent -f
+  ~/.local/bin/myrix doctor
+  journalctl --user -u myrix -f
 EOF
   exit 1
 fi
@@ -217,11 +251,111 @@ remove_job() {
   ok "$label removed"
 }
 
+legacy_backup=""
+legacy_was_loaded=0
+legacy_was_disabled=0
+legacy_migration_active=0
+
+prepare_legacy_bridge() {
+  local disabled_snapshot disabled_value
+  if job_loaded "$LEGACY_LABEL_BRIDGE"; then legacy_was_loaded=1; fi
+  if [ ! -f "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist" ]; then
+    if [ "$legacy_was_loaded" -eq 1 ]; then
+      die "cannot migrate $LEGACY_LABEL_BRIDGE without its original plist; restore that definition before retrying"
+    fi
+    return
+  fi
+  if ! disabled_snapshot=$(launchctl print-disabled "$DOMAIN" 2>/dev/null); then
+    die "cannot read the previous bridge enablement; the old service was not changed"
+  fi
+  case "$disabled_snapshot" in
+    *'{'*'}'*) ;;
+    *) die "cannot verify the previous bridge enablement; the old service was not changed" ;;
+  esac
+  disabled_value=$(printf '%s\n' "$disabled_snapshot" | awk -v label="\"$LEGACY_LABEL_BRIDGE\"" '$1 == label && $2 == "=>" { gsub(/[,;]/, "", $3); print $3 }')
+  case "$disabled_value" in
+    true) legacy_was_disabled=1 ;;
+    false|'') legacy_was_disabled=0 ;;
+    *) die "cannot verify the previous bridge enablement; the old service was not changed" ;;
+  esac
+  legacy_backup=$(mktemp "$LA_DIR/.myrix-previous-bridge.XXXXXX")
+  if ! cp "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist" "$legacy_backup"; then
+    rm -f "$legacy_backup"
+    legacy_backup=""
+    die "cannot preserve the previous bridge definition; the old service was not changed"
+  fi
+  chmod 600 "$legacy_backup"
+}
+
+rollback_legacy_bridge() {
+  warn "myrix installation failed; restoring the previous bridge deployment"
+  unload_job "$LABEL_BRIDGE"
+  if job_loaded "$LABEL_BRIDGE"; then
+    warn "$LABEL_BRIDGE is still loaded; the old service was not restarted to avoid duplicate instances"
+    warn "previous configuration retained at $legacy_backup"
+    return
+  fi
+  if ! rm -f "$LA_DIR/$LABEL_BRIDGE.plist" ||
+     ! install -m 600 "$legacy_backup" "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist"; then
+    warn "cannot restore the previous plist; private recovery copy retained at $legacy_backup"
+    return
+  fi
+  if [ "$legacy_was_disabled" -eq 1 ]; then
+    if ! launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
+      warn "cannot restore disabled state; recovery copy retained at $legacy_backup"
+      return
+    fi
+  elif ! launchctl enable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
+    warn "cannot restore enabled state; recovery copy retained at $legacy_backup"
+    return
+  fi
+  if [ "$legacy_was_loaded" -eq 1 ]; then
+    # A loaded but disabled job can exist. Temporarily enable it to restore the
+    # loaded registration, then put its persisted disabled preference back.
+    if ! launchctl enable "$DOMAIN/$LEGACY_LABEL_BRIDGE" ||
+       ! launchctl bootstrap "$DOMAIN" "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist"; then
+      if [ "$legacy_was_disabled" -eq 1 ]; then
+        launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE" >/dev/null 2>&1 || true
+      fi
+      warn "previous plist restored but restart failed; recovery copy retained at $legacy_backup"
+      return
+    fi
+    if [ "$legacy_was_disabled" -eq 1 ] &&
+       ! launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE"; then
+      warn "previous job restored but disabled preference was not restored; recovery copy retained at $legacy_backup"
+      return
+    fi
+  fi
+  rm -f "$legacy_backup"
+  legacy_backup=""
+  warn "previous bridge definition and service state restored"
+}
+
+# Retire only the former bridge label. herdr owns executor processes and must
+# keep running during this rename. Refuse to start a second bridge if bootout
+# has not finished instead of relying on its state lock to reject duplicates.
+retire_legacy_bridge() {
+  if ! launchctl disable "$DOMAIN/$LEGACY_LABEL_BRIDGE" >/dev/null 2>&1; then
+    if [ -f "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist" ] || job_loaded "$LEGACY_LABEL_BRIDGE"; then
+      die "cannot disable $LEGACY_LABEL_BRIDGE; myrix was not installed or started"
+    fi
+  fi
+  if [ -n "$legacy_backup" ]; then legacy_migration_active=1; fi
+  unload_job "$LEGACY_LABEL_BRIDGE"
+  if job_loaded "$LEGACY_LABEL_BRIDGE"; then
+    die "$LEGACY_LABEL_BRIDGE is still loaded; myrix was not started"
+  fi
+  rm -f "$LA_DIR/$LEGACY_LABEL_BRIDGE.plist"
+}
+
 # ------------------------------------------------------------- uninstall ----
 
 if [ "$do_uninstall" -eq 1 ]; then
   step "uninstalling"
-  if [ "$do_bridge" -eq 1 ]; then remove_job "$LABEL_BRIDGE"; fi
+  if [ "$do_bridge" -eq 1 ]; then
+    remove_job "$LABEL_BRIDGE"
+    retire_legacy_bridge
+  fi
   # --uninstall honours --bridge-only / --server-only for the same reason the
   # install path refuses to restart a hand-started server: booting this label
   # out SIGTERMs herdr, and herdr owns every pane, so every agent in one dies
@@ -284,14 +418,14 @@ done
 # Binaries: launchd has no PATH worth speaking of, so both are baked in as
 # absolute paths and both have to exist now rather than at first launch.
 if [ "$do_bridge" -eq 1 ]; then
-  bridge_bin="${HERDR_AGENT_BIN:-}"
+  bridge_bin="${MYRIX_BIN:-${HERDR_AGENT_BIN:-}}"
   # npm upgrades replace the executable behind this launcher. Prefer that
   # installation over an older standalone copy left in the state directory.
   if [ -z "$bridge_bin" ]; then
     bridge_bin=$(command -v myrix || true)
   fi
   if [ -z "$bridge_bin" ]; then
-    for candidate in "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../dist/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
+    for candidate in "$STATE_DIR/bin/myrix" "$SCRIPT_DIR/../dist/myrix" "$SCRIPT_DIR/../myrix" "$STATE_DIR/bin/herdr-agent" "$SCRIPT_DIR/../dist/herdr-agent" "$SCRIPT_DIR/../herdr-agent"; do
       if [ -x "$candidate" ]; then bridge_bin="$candidate"; break; fi
     done
   fi
@@ -299,12 +433,12 @@ if [ "$do_bridge" -eq 1 ]; then
     bridge_bin=$(command -v herdr-agent || true)
   fi
   if [ -z "$bridge_bin" ] || [ ! -x "$bridge_bin" ]; then
-    die "cannot find the herdr-agent binary.
+    die "cannot find the myrix executable.
      build it:     (cd $(dirname "$SCRIPT_DIR") && npm ci && npm run binary)
-     or point at it: HERDR_AGENT_BIN=/path/to/herdr-agent $0"
+     or point at it: MYRIX_BIN=/path/to/myrix $0"
   fi
   bridge_bin=$(abspath "$bridge_bin")
-  assert_xml_safe "herdr-agent path" "$bridge_bin"
+  assert_xml_safe "myrix path" "$bridge_bin"
   if LC_ALL=C head -c 64 "$bridge_bin" | LC_ALL=C grep -q '^#!/usr/bin/env node'; then
     if ! command -v node >/dev/null 2>&1; then
       die "the npm launcher $bridge_bin requires Node.js on PATH; select your Node installation and run this installer again"
@@ -324,6 +458,7 @@ if [ "$do_server" -eq 1 ]; then
 fi
 
 assert_xml_safe "home directory" "$HOME"
+assert_xml_safe "state directory" "$STATE_DIR"
 
 # Both the bridge and the scrubbed herdr server use this PATH. npm launchers
 # need the selected Node installation even when it comes from nvm/fnm rather
@@ -408,14 +543,31 @@ fi
 
 # --------------------------------------------------------------- plists -----
 
+bridge_plist_tmp=""
+finish_install() {
+  local install_status=$?
+  trap - EXIT
+  if [ "$install_status" -ne 0 ] && [ "$legacy_migration_active" -eq 1 ]; then
+    # Preserve the original failure even if best-effort recovery cannot finish.
+    set +e
+    rollback_legacy_bridge
+  elif [ -n "$legacy_backup" ]; then
+    rm -f "$legacy_backup"
+  fi
+  if [ -n "$bridge_plist_tmp" ]; then rm -f "$bridge_plist_tmp"; fi
+  exit "$install_status"
+}
+trap finish_install EXIT
+
 render_plist() {
   local src="$SCRIPT_DIR/$1"
   local dst="$LA_DIR/$1"
   local tmp
-  tmp=$(mktemp "${TMPDIR:-/tmp}/herdr-plist.XXXXXX")
+  tmp=$(mktemp "${TMPDIR:-/tmp}/myrix-plist.XXXXXX")
 
   sed -e "s|__HOME__|$HOME|g" \
-      -e "s|__HERDR_AGENT_BIN__|${bridge_bin:-}|g" \
+      -e "s|__STATE_DIR__|$STATE_DIR|g" \
+      -e "s|__MYRIX_BIN__|${bridge_bin:-}|g" \
       -e "s|__HERDR_BIN__|${server_bin:-}|g" \
       -e "s|__CLEAN_PATH__|$clean_path|g" \
       -e "s|__LOGIN_SHELL__|$login_shell|g" \
@@ -432,6 +584,16 @@ render_plist() {
     die "$1 did not render into a valid plist"
   fi
 
+  if [ "${2:-}" = "stage" ]; then
+    bridge_plist_tmp="$tmp"
+    return
+  fi
+  install_plist "$dst" "$tmp"
+}
+
+install_plist() {
+  local dst=$1
+  local tmp=$2
   if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
     ok "$dst (unchanged)"
   else
@@ -443,7 +605,7 @@ render_plist() {
 
 step "unit files"
 if [ "$do_server" -eq 1 ]; then render_plist "$LABEL_SERVER.plist"; fi
-if [ "$do_bridge" -eq 1 ]; then render_plist "$LABEL_BRIDGE.plist"; fi
+if [ "$do_bridge" -eq 1 ]; then render_plist "$LABEL_BRIDGE.plist" stage; fi
 
 # ------------------------------------------------------------ (re)launch ----
 
@@ -462,7 +624,12 @@ if [ "$do_server" -eq 1 ]; then
 fi
 
 if [ "$do_bridge" -eq 1 ]; then
+  prepare_legacy_bridge
+  retire_legacy_bridge
+  install_plist "$LA_DIR/$LABEL_BRIDGE.plist" "$bridge_plist_tmp"
+  bridge_plist_tmp=""
   load_job "$LABEL_BRIDGE" "$LA_DIR/$LABEL_BRIDGE.plist"
+  legacy_migration_active=0
 fi
 
 # ----------------------------------------------------------- next steps -----
@@ -471,11 +638,11 @@ cat <<EOF
 
 next steps
 
-  1. ${bridge_bin:-herdr-agent} doctor
+  1. ${bridge_bin:-myrix} doctor
      Check configuration, herdr, installed executors and Feishu permissions.
      Fix failures for the executors you actually use.
 
-  2. tail -f $LOG_DIR/herdr-agent.err.log
+  2. tail -f $LOG_DIR/myrix.err.log
      Open http://127.0.0.1:18790/ for local management and authorization status.
 
   3. From your phone, message the bot: /help
@@ -488,7 +655,7 @@ worth knowing
   * After changing ANY permission, event or the interactive-card toggle in the
     Feishu console, you must create and publish a version. Nothing takes effect
     otherwise, and the failure looks like a bug in the bridge. That is about
-    later hand edits only: an app registered by herdr-agent setup arrived with
+    later hand edits only: an app registered by myrix setup arrived with
     its scopes granted and a version already published, so there is nothing to
     publish after it runs.
   * stop:     launchctl bootout   $DOMAIN/$LABEL_BRIDGE

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, openSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,6 +122,7 @@ test("release cannot unlink a replacement lock inode and symlinks are refused", 
   t.after(() => rm(dir, { recursive: true, force: true }));
   const first = acquireLock(dir);
   await rename(first.path, join(dir, "old-inode"));
+  await rename(join(dir, "herdr-agent.pid"), join(dir, "old-compatibility-inode"));
   const next = acquireLock(dir);
   first.release();
   assert.equal(await readFile(next.path, "utf8"), `${process.pid}\n`);
@@ -131,4 +132,60 @@ test("release cannot unlink a replacement lock inode and symlinks are refused", 
   await symlink(target, first.path);
   assert.throws(() => acquireLock(dir), { code: "state_lock" });
   assert.equal(await readFile(target, "utf8"), "do not truncate");
+});
+
+test("myrix holds both lock protocols and cannot start beside a legacy-only holder", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "myrix-dual-lock-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const legacyPath = join(dir, "herdr-agent.pid");
+  const fd = openSync(legacyPath, constants.O_CREAT | constants.O_RDWR, 0o600);
+  const binding = flockBinding();
+  binding.flock(fd, binding.constants.LOCK_EX | binding.constants.LOCK_NB);
+  writeFileSync(fd, `${process.pid}\n`);
+  try {
+    assert.equal(inspectStateLock(dir).state, "locked");
+    assert.equal(inspectStateLock(dir).path, legacyPath);
+    assert.throws(() => acquireLock(dir), { code: "already_running" });
+    await assert.rejects(stat(join(dir, "myrix.pid")), { code: "ENOENT" });
+  } finally {
+    closeSync(fd);
+  }
+  const lock = acquireLock(dir);
+  try {
+    assert.equal(lock.path, join(dir, "myrix.pid"));
+    assert.equal(await readFile(legacyPath, "utf8"), `${process.pid}\n`);
+    assert.equal(await readFile(lock.path, "utf8"), `${process.pid}\n`);
+    assert.equal(inspectStateLock(dir).path, lock.path, "canonical held lock is shown first");
+    const oldClient = openSync(legacyPath, constants.O_RDWR);
+    try {
+      assert.throws(() =>
+        binding.flock(oldClient, binding.constants.LOCK_EX | binding.constants.LOCK_NB),
+      );
+    } finally {
+      closeSync(oldClient);
+    }
+  } finally {
+    lock.release();
+  }
+  await assert.rejects(stat(legacyPath), { code: "ENOENT" });
+  await assert.rejects(stat(join(dir, "myrix.pid")), { code: "ENOENT" });
+});
+
+test("failure to acquire the canonical lock releases the compatibility lock without disturbing its holder", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "myrix-partial-lock-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "myrix.pid");
+  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR, 0o600);
+  const binding = flockBinding();
+  binding.flock(fd, binding.constants.LOCK_EX | binding.constants.LOCK_NB);
+  writeFileSync(fd, `${process.pid}\n`);
+  try {
+    assert.throws(() => acquireLock(dir), { code: "already_running" });
+    assert.equal(inspectStateLock(dir).state, "locked");
+    assert.equal(await readFile(path, "utf8"), `${process.pid}\n`);
+    await assert.rejects(stat(join(dir, "herdr-agent.pid")), { code: "ENOENT" });
+  } finally {
+    closeSync(fd);
+  }
+  acquireLock(dir).release();
 });

@@ -4,9 +4,10 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { COMMIT, VERSION } from "../build-info.js";
+import { defaultStateDir } from "../config/state-path.js";
 import { inspectStateLock, type StateLockStatus } from "../storage/lock.js";
 
-const LABEL = "com.hewenyu.herdr-agent";
+const LABELS = ["com.hewenyu.myrix", "com.hewenyu.herdr-agent"];
 const execute = promisify(execFile);
 type Runner = (file: string, args: string[]) => Promise<string>;
 
@@ -74,8 +75,9 @@ async function launchdStatus(
   home: string,
   uid: number,
   run: Runner,
+  label: string,
 ): Promise<StatusReport["launchd"]> {
-  const target = `gui/${uid}/${LABEL}`;
+  const target = `gui/${uid}/${label}`;
   let job: ReturnType<typeof launchdDetails>;
   try {
     job = launchdDetails(await run("/bin/launchctl", ["print", target]));
@@ -92,7 +94,9 @@ async function launchdStatus(
   );
   const stateDir =
     locations.length === 0
-      ? join(home, ".herdr-agent")
+      ? label === "com.hewenyu.herdr-agent"
+        ? join(home, ".herdr-agent")
+        : defaultStateDir(home)
       : locations.length === 1
         ? locations[0]
         : undefined;
@@ -124,7 +128,7 @@ export async function status(
   options: StatusOptions = {},
 ): Promise<number> {
   const home = options.home ?? homedir();
-  const input = args.stateDir ?? join(home, ".herdr-agent");
+  const input = args.stateDir ?? defaultStateDir(home);
   const stateDir = resolve(
     input === "~" ? home : input.startsWith("~/") ? join(home, input.slice(2)) : input,
   );
@@ -153,7 +157,14 @@ export async function status(
     if ((options.platform ?? process.platform) === "darwin") {
       const uid = options.uid ?? process.getuid?.();
       if (uid !== undefined)
-        report.launchd = await launchdStatus(report, report.process, home, uid, run);
+        for (const label of LABELS) {
+          const service = await launchdStatus(report, report.process, home, uid, run, label);
+          report.launchd ??= service;
+          if (service?.matched) {
+            report.launchd = service;
+            break;
+          }
+        }
     }
     if (report.launchd?.matched) {
       report.guidance.push(
@@ -168,9 +179,10 @@ export async function status(
         "尚未确认服务管理器归属；若在终端前台运行，请回原终端按 Ctrl+C。不要仅凭记录 PID 终止进程。",
       );
       if ((options.platform ?? process.platform) === "darwin")
-        report.guidance.push(
-          `可只读检查：launchctl print gui/${options.uid ?? process.getuid?.() ?? "$(id -u)"}/${LABEL}`,
-        );
+        for (const label of LABELS)
+          report.guidance.push(
+            `可只读检查：launchctl print gui/${options.uid ?? process.getuid?.() ?? "$(id -u)"}/${label}`,
+          );
     }
     report.guidance.push("状态锁不证明飞书连接或调度健康；此命令不停止进程、不删除锁。");
   } else if (report.state === "unlocked") {

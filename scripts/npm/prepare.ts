@@ -91,7 +91,7 @@ async function pack(
   const packed = result[0];
   assert.ok(packed && basename(packed.filename) === packed.filename);
   assert.equal(await integrity(join(destination, packed.filename)), packed.integrity);
-  const executable = target === "launcher" ? "bin/myrix.cjs" : "bin/herdr-agent";
+  const executable = target === "launcher" ? "bin/myrix.cjs" : "bin/myrix";
   assert.ok(
     (packed.files.find((file) => file.path === executable)?.mode ?? 0) & 0o111,
     `${executable} lost its executable mode during npm pack`,
@@ -129,8 +129,8 @@ export async function prepareDistribution(
     let projectLicense: Buffer | undefined;
     for (const target of targets) {
       const unpacked = join(temporary, `archive-${target.suffix}`);
-      await extract(join(archives, `herdr-agent_${tag}_${target.archive}.tar.gz`), unpacked);
-      const binary = join(unpacked, "herdr-agent");
+      await extract(join(archives, `myrix_${tag}_${target.archive}.tar.gz`), unpacked);
+      const binary = join(unpacked, "myrix");
       assert.ok(
         (await lstat(binary)).mode & 0o111,
         `${target.suffix} archive binary is not executable`,
@@ -148,17 +148,17 @@ export async function prepareDistribution(
         );
       const directory = join(temporary, target.suffix);
       await mkdir(join(directory, "bin"), { recursive: true });
-      await copyFile(binary, join(directory, "bin/herdr-agent"));
-      await chmod(join(directory, "bin/herdr-agent"), 0o755);
+      await copyFile(binary, join(directory, "bin/myrix"));
+      await chmod(join(directory, "bin/myrix"), 0o755);
       await cp(join(unpacked, "LICENSES"), join(directory, "LICENSES"), { recursive: true });
       await writeFile(join(directory, "LICENSE"), license);
       await json(join(directory, "package.json"), {
         ...metadata(platformPackage(name, target), release.version),
-        description: `Native herdr-agent executable for myrix (${target.suffix})`,
+        description: `Native myrix executable (${target.suffix})`,
         os: [target.os],
         cpu: [target.cpu],
         ...(target.os === "linux" ? { libc: ["glibc"] } : {}),
-        files: ["bin/herdr-agent", "LICENSE", "LICENSES"],
+        files: ["bin/myrix", "LICENSE", "LICENSES"],
       });
       distribution.packages.push(await pack(directory, destination, target.suffix, env));
     }

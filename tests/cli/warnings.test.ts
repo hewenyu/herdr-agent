@@ -53,6 +53,14 @@ test("help, version and invalid arguments do not load SQLite or configuration", 
     );
     assert.equal(parsed.modules.includes("NativeModule sqlite"), false);
     assert.ok(!parsed.errors.includes("unexpected configuration load"));
+    if (
+      args.includes("help") ||
+      args.includes("--help") ||
+      (args.includes("version") && !args.includes("--json"))
+    ) {
+      assert.match(parsed.output[0] ?? "", /^myrix\b/);
+      assert.doesNotMatch(parsed.output[0] ?? "", /herdr-agent/);
+    }
   }
 });
 

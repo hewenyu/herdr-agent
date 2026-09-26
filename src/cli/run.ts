@@ -34,7 +34,7 @@ export async function runCLI(
       io.stdout(
         args.json
           ? JSON.stringify({ version: VERSION, commit: COMMIT, date: BUILD_DATE })
-          : `herdr-agent ${VERSION} (${COMMIT}, ${BUILD_DATE})`,
+          : `myrix ${VERSION} (${COMMIT}, ${BUILD_DATE})`,
       );
       return 0;
     }

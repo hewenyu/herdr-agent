@@ -8,7 +8,7 @@ A local orchestration tool built with **Node, TypeScript and pi**, distributed a
 
 With AI enabled, the model decides conversational replies, lifecycle notices and tool calls. The application provides tools, permission checks and durable operation receipts. An explicit business request must result in at least one tool attempt; a text-only acknowledgement such as “received” cannot finish that request. Capability and explanation questions remain ordinary conversation. Claims about completed business actions require real write evidence; lifecycle notices use the current task and participant snapshots with read-only tools. The exact `/clear` command rotates the main private pi session directly, without a model call.
 
-The frontend, backend, Node runtime and native locking addon are bundled into one executable. The repository, standalone executable and state directory retain the names `herdr-agent` and `~/.herdr-agent` for compatibility.
+The frontend, backend, Node runtime and native locking addon are bundled into one executable. The executable, version output, runtime messages and service names use `myrix`. The GitHub repository keeps its existing URL. Fresh installations use `~/.myrix`; an existing `~/.herdr-agent` directory is reused in place so upgrades retain configuration and conversations.
 
 New AI-created tasks use result-driven pi orchestration: the model delegates, checks results, requests revisions and asks a participant to produce the final deliverable. Existing tasks and explicit manual/round-robin policies retain their scheduling mode. Delivery still requires user acceptance; ordinary approvals remain with the user. See the [orchestration audit](docs/ai-orchestration-audit-2026-09-25.md) for recovery and validation boundaries.
 
@@ -35,9 +35,9 @@ npm install -g @yuebanlaosiji/myrix@latest
 For an installation without Node, download and extract the matching archive from [Releases](https://github.com/hewenyu/herdr-agent/releases), verify it against the attached `SHA256SUMS`, then run the included executable:
 
 ```sh
-./herdr-agent version --json
-./herdr-agent setup
-./herdr-agent serve
+./myrix version --json
+./myrix setup
+./myrix serve
 ```
 
 Read the setup section before starting task orchestration. Both installation methods require herdr, Git and the selected authenticated Claude/Codex CLI. Linux also requires compatible system libraries. macOS archives have an ad-hoc signature, without notarization; platform requirements and checksum commands are included in the release notes.
@@ -62,18 +62,18 @@ npm run check
 npm run build
 npm run binary
 npm run smoke
-./dist/herdr-agent version --json
+./dist/myrix version --json
 ```
 
-`check` runs the 1000-line-per-file limit, strict TypeScript, Biome formatting/lint and tests. `build` produces `dist/herdr-agent.cjs` with embedded Web assets. `binary` rebuilds the application and uses Node SEA to produce `dist/herdr-agent`, including the Node runtime and native flock extension. The standalone executable needs neither an external Node installation nor `node_modules` or separate frontend files; the npm launcher still requires Node >=18.
+`check` runs the 1000-line-per-file limit, strict TypeScript, Biome formatting/lint and tests. `build` produces `dist/myrix.cjs` with embedded Web assets. `binary` rebuilds the application and uses Node SEA to produce `dist/myrix`, including the Node runtime and native flock extension. The standalone executable needs neither an external Node installation nor `node_modules` or separate frontend files; the npm launcher still requires Node >=18.
 
 Build natively for each target: macOS arm64, Linux x64 and Linux arm64. A macOS executable is not a Linux executable. `smoke` copies only the binary to a fresh temporary directory and verifies help, version, native locking, SQLite, embedded Web resources, history browsing, protected configuration writes and rejection of Web business writes. Isolated Feishu adapter events are queued before startup; the copied SEA executes the bundled pi loop against local Responses and Anthropic protocol fixtures. Reading history never acknowledges delivery; without a Feishu connection, the reply remains undelivered. This is packaging coverage, with no real Feishu, herdr or model service. Current platform evidence is recorded in [acceptance](docs/acceptance.md); macOS ad-hoc signing is not notarization.
 
-For source development: `npm run dev -- help`. Use the built program to verify embedded Web assets. The examples below use the npm command `myrix`; for a source build, substitute `./dist/herdr-agent`.
+For source development: `npm run dev -- help`. Use the built program to verify embedded Web assets. The examples below use the npm command `myrix`; for a source build, substitute `./dist/myrix`.
 
 ## Setup
 
-Copy [config.example.toml](deploy/config.example.toml) to `~/.herdr-agent/config.toml`, mode 0600. Enable `tasks.enabled` before setup if you want task/group permissions, then run:
+Copy [config.example.toml](deploy/config.example.toml) to the selected state directory as `config.toml`, mode 0600 (`~/.myrix` on a fresh installation; existing `~/.herdr-agent` takes precedence). Enable `tasks.enabled` before setup if you want task/group permissions, then run:
 
 ```sh
 myrix setup
@@ -98,7 +98,7 @@ Running `myrix` without arguments means `myrix serve`. If another process holds 
 
 ```sh
 myrix status
-myrix status --state-dir ~/.herdr-agent --json
+myrix status --json
 ```
 
 `status` checks the kernel lock and reports process and service-manager diagnostics without connecting to Feishu, opening SQLite or requiring valid configuration. A recorded PID is only a hint; a held lock does not prove the Feishu connection is healthy. Do not delete the PID file of a lock holder. Stop a foreground instance with Ctrl+C in its original terminal, then start the updated program. For a supervised instance, follow the service instructions verified by `status`.
@@ -106,13 +106,13 @@ myrix status --state-dir ~/.herdr-agent --json
 An npm upgrade changes installed files, not an already-running process. `myrix version --json` reports the installation used by that command, not the version of a background instance. If launchd still points to an older standalone binary, run the corrected installer from a source checkout to bind the bridge to the current npm command:
 
 ```sh
-HERDR_AGENT_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
-launchctl print "gui/$(id -u)/com.hewenyu.herdr-agent"
+MYRIX_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
+launchctl print "gui/$(id -u)/com.hewenyu.myrix"
 ```
 
-This preserves configuration and the herdr service, and reinstalls/restarts only the bridge. The npm package does not include `deploy/install.sh`. Once the service uses the same npm global directory, subsequent upgrades require `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.herdr-agent"`. Changing an nvm Node version or npm global prefix requires rerunning the installer to update the executable and Node PATH.
+This preserves configuration and the herdr service, retires the legacy bridge launchd label, and installs/restarts `com.hewenyu.myrix`. The npm package does not include `deploy/install.sh`. Once the service uses the same npm global directory, subsequent upgrades require `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.myrix"`. Changing an nvm Node version or npm global prefix requires rerunning the installer to update the executable and Node PATH.
 
-SQLite's `ExperimentalWarning` is a notice from the embedded Node runtime, not a lock failure. Help, version, status and a refused duplicate startup no longer load SQLite; warnings remain visible when the database is actually opened. Use `myrix --trace-warnings serve` or `herdr-agent --trace-warnings serve` for warning stacks. The `...` in Node's hint is a placeholder, not a literal argument.
+SQLite's `ExperimentalWarning` is a notice from the embedded Node runtime, not a lock failure. Help, version, status and a refused duplicate startup no longer load SQLite; warnings remain visible when the database is actually opened. Use `myrix --trace-warnings serve` for warning stacks. The `...` in Node's hint is a placeholder, not a literal argument.
 
 ## Workflow and commands
 

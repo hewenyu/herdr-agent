@@ -27,6 +27,28 @@ test("status does not create missing state and ignores an invalid configuration 
   assert.equal(await readFile(join(stateDir, "herdr-agent.pid"), "utf8"), "9999999\n");
 });
 
+test("status shares the .myrix fresh default and never switches away from an existing legacy directory", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "myrix-status-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  let output = "";
+  const options = {
+    home,
+    stdout: (line: string) => {
+      output = line;
+    },
+  };
+  await status({ json: true }, options);
+  assert.equal(JSON.parse(output).stateDir, join(home, ".myrix"));
+  assert.deepEqual(await readdir(home), []);
+  await mkdir(join(home, ".myrix"));
+  await mkdir(join(home, ".herdr-agent"));
+  await writeFile(join(home, ".herdr-agent", "config.toml"), "invalid = [");
+  await status({ json: true }, options);
+  assert.equal(JSON.parse(output).stateDir, join(home, ".herdr-agent"));
+  await status({ json: true, stateDir: join(home, ".myrix") }, options);
+  assert.equal(JSON.parse(output).stateDir, join(home, ".myrix"));
+});
+
 test("locked status shows bounded process identity and guidance without argv, environment or signals", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "myrix-status-pid-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
@@ -56,9 +78,82 @@ test("locked status shows bounded process identity and guidance without argv, en
   }
 });
 
-function job(pid: number, stateDir: string): string {
-  return `gui/501/com.hewenyu.herdr-agent = {\n arguments = {\n /opt/npm/bin/myrix\n serve\n --state-dir\n ${stateDir}\n }\n pid = ${pid}\n environment = {\n FEISHU_APP_SECRET => must-not-print\n }\n}`;
+function job(pid: number, stateDir?: string, label = "com.hewenyu.herdr-agent"): string {
+  return `gui/501/${label} = {\n arguments = {\n /opt/npm/bin/myrix\n serve\n${stateDir ? ` --state-dir\n ${stateDir}\n` : ""} }\n pid = ${pid}\n environment = {\n FEISHU_APP_SECRET => must-not-print\n }\n}`;
 }
+
+test("legacy launchd jobs without an explicit state directory retain the legacy default", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "myrix-status-old-default-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const lock = acquireLock(join(home, ".herdr-agent"));
+  await mkdir(join(home, ".myrix"));
+  try {
+    let output = "";
+    await status(
+      { json: true },
+      {
+        home,
+        platform: "darwin",
+        uid: 501,
+        stdout: (line) => {
+          output = line;
+        },
+        run: async (file, args) => {
+          if (file === "/bin/ps") return `${process.pid} 1 /opt/legacy/herdr-agent\n`;
+          if (args[1]?.endsWith("/com.hewenyu.myrix")) throw new Error("job not loaded");
+          return job(process.pid);
+        },
+      },
+    );
+    const report = JSON.parse(output);
+    assert.equal(report.stateDir, join(home, ".herdr-agent"));
+    assert.equal(report.launchd.matched, true);
+    assert.equal(report.launchd.target, "gui/501/com.hewenyu.herdr-agent");
+    assert.deepEqual(await readdir(join(home, ".myrix")), []);
+  } finally {
+    lock.release();
+  }
+});
+
+for (const label of ["com.hewenyu.myrix", "com.hewenyu.herdr-agent"])
+  test(`status selects the matching ${label} service rather than an unrelated label`, async (t) => {
+    const stateDir = await mkdtemp(join(tmpdir(), "myrix-status-label-"));
+    t.after(() => rm(stateDir, { recursive: true, force: true }));
+    const lock = acquireLock(stateDir);
+    try {
+      let output = "";
+      const queries: string[] = [];
+      await status(
+        { stateDir, json: true },
+        {
+          platform: "darwin",
+          uid: 501,
+          stdout: (line) => {
+            output = line;
+          },
+          run: async (file, args) => {
+            if (file === "/bin/ps") return `${process.pid} 1 /opt/npm/myrix\n`;
+            queries.push(args[1] ?? "");
+            const selected = args[1]?.endsWith(`/${label}`);
+            return job(
+              process.pid,
+              selected ? stateDir : join(stateDir, "other"),
+              args[1]?.split("/").at(-1),
+            );
+          },
+        },
+      );
+      const report = JSON.parse(output);
+      assert.equal(report.launchd.target, `gui/501/${label}`);
+      assert.equal(report.launchd.matched, true);
+      assert.ok(
+        report.guidance.some((line: string) => line.includes(`kickstart -k 'gui/501/${label}'`)),
+      );
+      assert.equal(queries.length, label === "com.hewenyu.myrix" ? 1 : 2);
+    } finally {
+      lock.release();
+    }
+  });
 
 for (const wrapper of [false, true])
   test(`launchd guidance requires a matching live holder and selected state directory (npm wrapper=${wrapper})`, async (t) => {

@@ -1,9 +1,13 @@
 # User service: copy to ~/.config/systemd/user/, then daemon-reload and enable.
-# Install the standalone binary at ~/.local/bin/herdr-agent; run setup first.
+# When upgrading the old unit, disable --now herdr-agent.service before enabling
+# myrix.service, then remove the old unit file to avoid duplicate instances.
+# New installs use ~/.myrix; an existing ~/.herdr-agent is always reused first.
+# Set --state-dir only if you intentionally use another store.
+# Install the standalone binary at ~/.local/bin/myrix; run setup first.
 # For unattended operation, explicitly enable lingering for your user.
 # herdr and its Claude/Codex processes remain a separately managed service.
 [Unit]
-Description=herdr-agent: pi orchestration for herdr coding agents
+Description=myrix: pi orchestration for herdr coding agents
 Documentation=https://github.com/hewenyu/herdr-agent
 # Ordering only: starting this service does not start or stop herdr.
 After=herdr-server.service
@@ -11,7 +15,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/herdr-agent serve --state-dir %h/.herdr-agent
+ExecStart=%h/.local/bin/myrix serve
 WorkingDirectory=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Credentials load from private state-dir/.env and config.toml, never this unit.
@@ -21,7 +25,7 @@ Restart=on-failure
 RestartSec=30
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=herdr-agent
+SyslogIdentifier=myrix
 NoNewPrivileges=yes
 
 [Install]

@@ -64,7 +64,7 @@ if (!dependency) {
   fail("unsupported platform " + target + "; supported: " + Object.keys(packages).join(", "));
 } else {
   let executable;
-  try { executable = join(dirname(require.resolve(dependency + "/package.json")), "bin", "herdr-agent"); }
+  try { executable = join(dirname(require.resolve(dependency + "/package.json")), "bin", "myrix"); }
   catch { fail("missing native package " + dependency + ". Reinstall ${name} with optional dependencies enabled."); }
   if (executable) {
     const child = spawn(executable, process.argv.slice(2), { stdio: "inherit" });

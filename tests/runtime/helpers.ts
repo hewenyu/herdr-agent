@@ -16,7 +16,7 @@ export function response(text: string, calls: ToolCall[] = []): AssistantMessage
   return {
     role: "assistant",
     api: "openai-responses",
-    provider: "herdr-agent",
+    provider: "myrix",
     model: "test",
     timestamp: Date.now(),
     content: [...(text ? [{ type: "text" as const, text }] : []), ...calls],

@@ -122,7 +122,7 @@ export async function verifyPlatform(
     cardId = await platform.sendCard(
       message.chatId,
       {
-        header: { title: { tag: "plain_text", content: "herdr-agent 连接验证" } },
+        header: { title: { tag: "plain_text", content: "myrix 连接验证" } },
         elements: [
           {
             tag: "div",

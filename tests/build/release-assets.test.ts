@@ -23,7 +23,7 @@ const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).di
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "herdr-release-test-"));
   const names = ["darwin_arm64", "linux_amd64", "linux_arm64"].map(
-    (target) => `herdr-agent_${tag}_${target}.tar.gz`,
+    (target) => `myrix_${tag}_${target}.tar.gz`,
   );
   let manifest = "";
   for (const name of names) {
@@ -339,7 +339,7 @@ test("GitHub adapter peels annotated tags, paginates assets and uses only draft-
         "--verify-tag",
         "--draft",
         "--title",
-        `herdr-agent ${tag}`,
+        `myrix ${tag}`,
         "--notes-file",
         "notes.md",
       ],

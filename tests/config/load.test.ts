@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { duration, loadConfig, readEnv } from "../../src/config/load.js";
 import { saveConfigSection } from "../../src/config/save.js";
+import { defaultStateDir } from "../../src/config/state-path.js";
 import { listenAddress, safeEndpoint, validateConfig } from "../../src/config/validate.js";
 
 async function fixture(t: TestContext) {
@@ -13,6 +14,27 @@ async function fixture(t: TestContext) {
   const load = () => loadConfig({ stateDir: dir, home: dir, cwd: dir, env: {} });
   return { dir, load };
 }
+
+test("fresh installs select .myrix without creating it and existing legacy data takes priority", async (t) => {
+  const { dir } = await fixture(t);
+  const current = join(dir, ".myrix");
+  const legacy = join(dir, ".herdr-agent");
+  const load = (stateDir?: string) => loadConfig({ home: dir, cwd: dir, env: {}, stateDir });
+  assert.equal(defaultStateDir(dir), current);
+  assert.equal(load().stateDir, current);
+  await assert.rejects(stat(current), { code: "ENOENT" });
+  await mkdir(current);
+  await writeFile(join(current, "config.toml"), '[ui]\nconfig_listen="127.0.0.1:18791"\n');
+  assert.equal(load().ui.listen, "127.0.0.1:18791");
+  await mkdir(legacy);
+  await writeFile(join(legacy, "config.toml"), '[ui]\nconfig_listen="127.0.0.1:18792"\n');
+  assert.equal(defaultStateDir(dir), legacy);
+  assert.equal(load().stateDir, legacy);
+  assert.equal(load().ui.listen, "127.0.0.1:18792");
+  assert.equal(load(current).stateDir, current, "an explicit directory is never redirected");
+  assert.equal(load(current).ui.listen, "127.0.0.1:18791");
+  assert.match(await readFile(join(legacy, "config.toml"), "utf8"), /18792/);
+});
 
 test("new tasks default to deleting completed groups while explicit retention survives reload", async (t) => {
   const { dir, load } = await fixture(t);

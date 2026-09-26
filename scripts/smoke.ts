@@ -52,10 +52,10 @@ async function ready(child: ChildProcess): Promise<string> {
 
 /** Run the copied executable without a checkout, credentials, herdr or external services. */
 export async function smokeBinary(binary: string, expectedVersion?: string): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "herdr-agent-smoke-"));
+  const directory = await mkdtemp(join(tmpdir(), "myrix-smoke-"));
   let child: ChildProcess | undefined;
   try {
-    const executable = join(directory, "herdr-agent");
+    const executable = join(directory, "myrix");
     const stateDir = join(directory, "state");
     await mkdir(stateDir, { mode: 0o700 });
     await writeFile(
@@ -76,6 +76,10 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     assert.equal(help.stderr, "", "Help must not initialize SQLite");
     assert.match(help.stdout, /serve/);
     assert.match(help.stdout, /configure/);
+    const humanVersion = spawnSync(executable, ["--version"], options);
+    assert.equal(humanVersion.status, 0, humanVersion.stderr || humanVersion.error?.message);
+    assert.equal(humanVersion.stderr, "");
+    assert.match(humanVersion.stdout, /^myrix /);
     const version = spawnSync(executable, ["version", "--json"], options);
     assert.equal(version.status, 0, version.stderr || version.error?.message);
     assert.equal(version.stderr, "", "Version must not initialize SQLite");
@@ -99,6 +103,15 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
     assert.equal(inactive.stderr, "");
     assert.equal(JSON.parse(inactive.stdout).state, "unlocked");
     await assert.rejects(stat(absentState), { code: "ENOENT" });
+    const warning = spawnSync(
+      executable,
+      ["migrate", "--dry-run", "--state-dir", stateDir],
+      options,
+    );
+    assert.equal(warning.status, 0, warning.stderr || warning.error?.message);
+    assert.doesNotMatch(warning.stderr, /herdr-agent/);
+    if (warning.stderr.includes("ExperimentalWarning"))
+      assert.match(warning.stderr, /myrix --trace-warnings/);
     const traced = spawnSync(
       executable,
       ["--trace-warnings", "migrate", "--dry-run", "--state-dir", stateDir],
@@ -204,5 +217,5 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  await smokeBinary(process.argv[2] ?? "dist/herdr-agent", process.env.VERSION);
+  await smokeBinary(process.argv[2] ?? "dist/myrix", process.env.VERSION);
 }

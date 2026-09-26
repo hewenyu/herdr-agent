@@ -15,7 +15,7 @@ export function flockBinding(): FlockBinding {
   const require = createRequire(import.meta.url);
   let path: string;
   if (isSea()) {
-    const directory = mkdtempSync(join(tmpdir(), "herdr-agent-native-"));
+    const directory = mkdtempSync(join(tmpdir(), "myrix-native-"));
     path = join(directory, "fs_ext.node");
     writeFileSync(path, Buffer.from(getAsset("fs_ext.node")), { mode: 0o600, flag: "wx" });
     process.once("exit", () => rmSync(directory, { recursive: true, force: true }));

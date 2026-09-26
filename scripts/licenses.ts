@@ -199,7 +199,7 @@ export async function generateLicenses(
     const index = [
       "# Third-party notices",
       "",
-      "This directory accompanies the herdr-agent executable. Keep it with redistributed release archives.",
+      "This directory accompanies the myrix executable. Keep it with redistributed release archives.",
       "Original license and notice texts are copied without rewriting. Native fs-ext/nan and the complete Node distribution notice are included.",
       "",
       `Node ${process.versions.node}: NODE-LICENSE.txt`,

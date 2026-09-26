@@ -1,5 +1,6 @@
-# herdr-agent Node + pi configuration.
-# Copy to ~/.herdr-agent/config.toml and chmod 600.
+# myrix Node + pi configuration.
+# Copy to ~/.myrix/config.toml and chmod 600.
+# Existing ~/.herdr-agent installations are always reused in place by default.
 # Feishu credentials: setup writes FEISHU_APP_ID/FEISHU_APP_SECRET to .env.
 # Credential precedence: process environment > state .env > repository .env.
 # .env is literal KEY=VALUE: quotes and # are literal, not shell syntax.
