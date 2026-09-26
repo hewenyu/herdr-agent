@@ -90,8 +90,8 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
     for (const [key, value] of Object.entries({
       from: "sdk",
       tp: "sdk",
-      source: "node-sdk/herdr-agent",
-      name: "herdr-agent",
+      source: "node-sdk/myrix",
+      name: "myrix",
       desc: "通过 herdr 管理 Claude 与 Codex 的任务、讨论和人工审批。",
       addons: gzipSync(JSON.stringify(addons)).toString("base64url"),
     }))

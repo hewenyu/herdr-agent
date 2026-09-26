@@ -121,7 +121,7 @@ export class FeishuPlatform implements PlatformPort {
             logger: sdkLogger(this.options.logger),
             loggerLevel: LoggerLevel.warn,
             httpInstance: new FetchHttpClient(),
-            source: "herdr-agent",
+            source: "myrix",
             autoReconnect: true,
             handshakeTimeoutMs: 15_000,
             wsConfig: { pingTimeout: 15 },

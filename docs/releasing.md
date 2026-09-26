@@ -1,6 +1,8 @@
 # v0.3.x 与 npm 分发
 
-重构首版计划为 `v0.3.0`，后续按 SemVer 发布。npm 包名为 `@yuebanlaosiji/myrix`，薄启动器提供 `myrix` 和兼容命令 `herdr-agent`；状态目录仍使用 `~/.herdr-agent`。根 package.json 是私有源码包，不直接发布。
+重构首版计划为 `v0.3.0`，后续按 SemVer 发布。npm 包名为 `@yuebanlaosiji/myrix`，薄启动器提供 `myrix` 和兼容命令 `herdr-agent`；独立程序与服务使用 `myrix`，新状态目录为 `~/.myrix`，已有 `~/.herdr-agent` 原地沿用。根 package.json 是私有源码包，不直接发布。
+
+新版产物命名为 `myrix_<tag>_<target>.tar.gz`，包内程序为 `myrix`，平台 npm 包使用 `bin/myrix`。历史版本恢复必须保留当时的归档名称、校验和与原始构建，不得把旧二进制重新标记成修复版。
 
 ## 发布条件与顺序
 

@@ -42,12 +42,29 @@ export async function sha256(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-/** Use only the three original build archives and their exact checksum manifest. */
+function archiveNames(tag: string, prefix: string): string[] {
+  return ["darwin_arm64", "linux_arm64", "linux_amd64"]
+    .map((target) => `${prefix}_${tag}_${target}.tar.gz`)
+    .sort();
+}
+
+/** Preserve original bytes and names when restoring releases from either branding era. */
 export async function releaseAssets(tag: string, directory: string): Promise<LocalAsset[]> {
   assert.match(tag, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "Expected a vSEMVER tag");
-  const names = ["darwin_arm64", "linux_arm64", "linux_amd64"]
-    .map((target) => `herdr-agent_${tag}_${target}.tar.gz`)
-    .sort();
+  const manifest = await readFile(resolve(directory, "SHA256SUMS"), "utf8");
+  const entries = manifest.split("\n");
+  const names = ["myrix", "herdr-agent"]
+    .map((prefix) => archiveNames(tag, prefix))
+    .find(
+      (candidate) =>
+        entries.length === 4 &&
+        entries[3] === "" &&
+        candidate.every((name, index) => entries[index]?.slice(66) === name),
+    );
+  assert.ok(
+    names,
+    "SHA256SUMS must list exactly three sorted myrix or legacy herdr-agent archives from one release",
+  );
   const assets: LocalAsset[] = [];
   for (const name of [...names, "SHA256SUMS"]) {
     const path = resolve(directory, name);
@@ -59,11 +76,7 @@ export async function releaseAssets(tag: string, directory: string): Promise<Loc
     .slice(0, -1)
     .map((asset) => `${asset.sha256}  ${asset.name}\n`)
     .join("");
-  assert.equal(
-    await readFile(resolve(directory, "SHA256SUMS"), "utf8"),
-    checksums,
-    "SHA256SUMS must match the original archives exactly",
-  );
+  assert.equal(manifest, checksums, "SHA256SUMS must match the original archives exactly");
   return assets;
 }
 
@@ -82,6 +95,14 @@ async function inspect(
   expected: LocalAsset[],
 ): Promise<LocalAsset[]> {
   const remote = await port.assets(release);
+  const localNames = new Set(expected.map((asset) => asset.name));
+  const installers = new Set(
+    ["myrix", "herdr-agent"].flatMap((prefix) => archiveNames(release.tag_name, prefix)),
+  );
+  const conflict = remote.find(
+    (asset) => installers.has(asset.name) && !localNames.has(asset.name),
+  );
+  assert.ok(!conflict, `Conflicting release archive branding: ${conflict?.name}`);
   const missing: LocalAsset[] = [];
   for (const local of expected) {
     const sameName = remote.filter((asset) => asset.name === local.name);
@@ -244,7 +265,7 @@ export function githubPort(repository: string, command: Command = run): ReleaseP
         "--verify-tag",
         "--draft",
         "--title",
-        `herdr-agent ${tag}`,
+        `myrix ${tag}`,
       ];
       if (notes) args.push("--notes-file", notes);
       else args.push("--notes", "");

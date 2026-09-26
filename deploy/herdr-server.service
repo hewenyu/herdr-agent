@@ -2,7 +2,7 @@
 #
 # A systemd USER unit, the Linux counterpart of
 # deploy/com.hewenyu.herdr-server.plist. Install it the same way as
-# deploy/herdr-agent.service (see the INSTALL block there) and read this whole
+# deploy/myrix.service (see the INSTALL block there) and read this whole
 # comment first: the two paths and one variable you have to check are all below,
 # and getting the environment wrong here breaks a feature silently rather than
 # loudly.
@@ -100,7 +100,7 @@
 #
 #     locale -a | grep -i -E 'utf-?8'
 #
-# Verify after install:  herdr-agent doctor
+# Verify after install:  myrix doctor
 # (the "herdr server environment is clean" check reads this process's real
 # environment with `ps eww`, so it confirms the scrub actually happened.)
 #
@@ -116,7 +116,7 @@ Documentation=https://herdr.dev https://github.com/hewenyu/herdr-agent
 
 # The product assumes this machine is up and reachable; a server that stayed
 # down would just make the phone show nothing. See the same key in
-# herdr-agent.service for why the default rate limiter is the wrong end state.
+# myrix.service for why the default rate limiter is the wrong end state.
 StartLimitIntervalSec=0
 
 [Service]
@@ -157,5 +157,5 @@ SyslogIdentifier=herdr-server
 [Install]
 # Not enabled by anything shipping in this repo. `systemctl --user enable
 # herdr-server.service` is yours to type, and remember `loginctl enable-linger`
-# (see herdr-agent.service) or this stops when you log out.
+# (see myrix.service) or this stops when you log out.
 WantedBy=default.target

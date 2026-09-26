@@ -51,7 +51,7 @@ export class FeishuAPI {
       logger: sdkLogger(options.logger),
       loggerLevel: LoggerLevel.warn,
       httpInstance: new FetchHttpClient(),
-      source: "herdr-agent",
+      source: "myrix",
     });
     this.request = (input, signal) =>
       client.request<unknown>({ ...input, signal, timeout: timeoutMs });

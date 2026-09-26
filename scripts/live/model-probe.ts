@@ -126,7 +126,7 @@ function oldHistory(): AgentMessage[] {
         },
       ],
       api: "openai-responses",
-      provider: "herdr-agent",
+      provider: "myrix",
       model: "history",
       stopReason: "stop",
       timestamp: 2,

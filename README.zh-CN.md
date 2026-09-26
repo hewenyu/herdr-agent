@@ -8,7 +8,7 @@
 
 AI 开启时，普通回复、生命周期通知和工具选择由模型决定。程序提供工具、权限检查和持久化操作回执；明确的业务请求至少要尝试一次工具调用，模型只回复“收到”等确认文字时不能算请求完成；能力说明或解释性问题仍按普通对话处理。对已经执行的业务动作要求真实写入证据，生命周期通知以当前任务与参与者快照为依据，仅开放只读工具。精确的 `/clear` 命令由程序直接轮转主私聊 pi session，不调用模型。
 
-前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。仓库名、独立二进制名和状态目录继续保留 `herdr-agent`、`~/.herdr-agent`，兼容已有安装。
+前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。独立二进制、版本输出、运行提示和服务名称统一使用 `myrix`。GitHub 仓库地址保持不变。全新安装使用 `~/.myrix`；检测到已有 `~/.herdr-agent` 时原地沿用，保留配置和对话。
 
 新建 AI 任务默认由 pi 根据真实执行结果持续调度：自主分派、复核、返工并委托参与者汇总交付，不再要求每一步人工接力。历史任务及显式手动/轮转策略保留调度模式；交付仍等待用户验收，普通审批仍由用户选择。中断、投递核验和本分支验证边界见[持续调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
 
@@ -35,9 +35,9 @@ npm install -g @yuebanlaosiji/myrix@latest
 无需安装 Node 的方式：从 [Releases](https://github.com/hewenyu/herdr-agent/releases) 下载对应平台压缩包，解压并核对随包发布的 `SHA256SUMS`，再使用包内可执行文件：
 
 ```sh
-./herdr-agent version --json
-./herdr-agent setup
-./herdr-agent serve
+./myrix version --json
+./myrix setup
+./myrix serve
 ```
 
 启用任务调度前请完成下文配置。两种安装方式都需要本机 herdr、Git，以及已登录的 Claude/Codex CLI。Linux 需要兼容的系统库；macOS 包使用 ad-hoc 签名，尚未公证。平台要求和校验命令见对应 Release 说明。
@@ -69,16 +69,16 @@ npm run check
 npm run build
 npm run binary
 npm run smoke
-./dist/herdr-agent version --json
+./dist/myrix version --json
 ```
 
-`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/herdr-agent.cjs`；`binary` 会重新构建应用并在当前系统生成 `dist/herdr-agent`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、历史浏览、受保护的配置写入和业务写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
+`check` 执行 1000 行上限检查、TypeScript、Biome 格式/lint 和测试。`build` 生成带静态资源的 `dist/myrix.cjs`；`binary` 会重新构建应用并在当前系统生成 `dist/myrix`，包含 Node 和原生扩展。`smoke` 将单个可执行文件复制到空临时目录，验证嵌入资源、锁、SQLite、历史浏览、受保护的配置写入和业务写请求拒绝。模型烟测先在隔离状态中排入飞书适配器事件，再由复制后的 SEA 执行 pi 循环和本地 Responses/Anthropic 协议替身；GET 查看记录不 ACK，没有飞书连接时回复保持未送达。这属于打包验证，不连接真实飞书/herdr/模型服务。macOS 本机烟测通过不代表 Linux 已通过；各平台证据见验收文档。
 
-开发时可用 `npm run dev -- help`；本地 Web 资源以构建后的程序为验收入口。后续示例使用 npm 安装后的 `myrix`；源码构建时可替换为 `./dist/herdr-agent`。
+开发时可用 `npm run dev -- help`；本地 Web 资源以构建后的程序为验收入口。后续示例使用 npm 安装后的 `myrix`；源码构建时可替换为 `./dist/myrix`。
 
 ## 配置与启动
 
-1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（默认 `~/.herdr-agent/config.toml`），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
+1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（全新安装为 `~/.myrix/config.toml`；已有 `~/.herdr-agent` 时优先沿用），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
 2. 运行 `myrix setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
 3. Web 可添加、编辑或删除项目登记，设置默认项目、默认参与者及新任务的 Bypass。按顺序填写已存在的目录；保存时检查全部目录，首目录需要时自动初始化 Git，附加目录按原顺序传给 Claude/Codex。删除登记不删除代码；项目和 Bypass 修改用于新任务，不改动已有执行会话。模型连接也可在 Web 保存，启用时必须显式填写 `base_url`，模型配置修改后重启服务。任务、讨论和审批仍通过飞书提出。
 4. 运行 `myrix serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
@@ -97,6 +97,28 @@ myrix doctor --json
 飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型 key 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
 
 长期运行使用 [deploy](deploy/) 中的 launchd/systemd user 模板与安装脚本；先检查路径与运行账户。服务 stdout/stderr 由服务管理器收集。停止桥接程序不等于销毁已在 herdr 中运行的任务。
+
+### 升级与已有实例
+
+不带参数的 `myrix` 等同于 `myrix serve`，会尝试启动服务。若已有实例持有同一状态目录的锁，它会拒绝再开一条飞书连接。先检查当前实例：
+
+```sh
+myrix status
+myrix status --json
+```
+
+`status` 不连接飞书、不打开数据库，也不要求配置文件有效。它检查内核状态锁并提供进程及服务管理器的诊断信息；PID 文件中的数字仅为记录，锁被占用也不代表飞书连接健康。不要删除持锁进程的 PID 文件来绕过检查。前台启动的实例在原终端按 Ctrl+C 停止，再用新版本启动；后台实例按 `status` 核实的服务指引操作。
+
+`npm install -g @yuebanlaosiji/myrix@latest` 更新磁盘上的包，不会替换运行中的进程；`myrix version --json` 显示本次命令使用的安装版本，不代表后台实例已经升级。若 launchd 仍指向以前下载的二进制，请从包含本修复的源码目录，用当前 npm 命令重新安装桥接服务：
+
+```sh
+MYRIX_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
+launchctl print "gui/$(id -u)/com.hewenyu.myrix"
+```
+
+该安装会保留配置和 herdr 服务，卸载旧桥接标签并注册、重启 `com.hewenyu.myrix`；npm 包本身不包含 `deploy/install.sh`。已经绑定相同 npm 全局目录的服务，后续更新后可用 `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.myrix"` 重启。切换 nvm Node 版本或 npm 全局目录时需重新运行安装脚本，更新可执行路径和 Node PATH。
+
+SQLite 的 `ExperimentalWarning` 是内置 Node 对 SQLite API 的提示，不是状态锁故障。`help`、`version`、`status` 和拒绝重复启动不再为此加载 SQLite；真正打开数据库时仍保留运行时警告。需要完整警告调用栈时使用 `myrix --trace-warnings serve`，不要把提示中的省略号 `...` 当作参数。
 
 ## 使用方式
 

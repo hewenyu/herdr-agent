@@ -40,6 +40,7 @@ export async function inspectHost(
   probe: HostProbe = hostProbe,
 ): Promise<Check[]> {
   const results = await Promise.allSettled([
+    // This filename belongs to upstream herdr integration, not the myrix service.
     hook(probe, "claude", [".claude", "hooks", "herdr-agent-state.sh"]),
     hook(probe, "codex", [".codex", "hooks.json"]),
     environment(probe, signal),

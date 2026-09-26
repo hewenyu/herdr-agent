@@ -8,7 +8,7 @@
 
 ## 核心职责
 
-**pi 只负责 herdr-agent 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。**
+**pi 只负责 myrix 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。**
 
 **启用 AI 后，pi 的普通业务沟通和工具调用由模型决定；exact `/clear` 是用户明确指定的确定性会话命令。** 程序提供飞书、会话、项目、任务、参与者、消息投递和查询工具，执行身份、作用域、幂等和状态约束；不生成普通业务答复或把关键词变成固定操作。模型直接输出可识别的业务完成性声称而没有本轮工具事实时，程序只审计来源并触发一次工具受限重试；仍无工具调用则记录模型失败，不发送成功答复，也不改写模型文本。用户说“关闭”、贴出 `/new` 或问业务问题，都由模型结合上下文决定是否调用工具。程序不把模型故障降级为向终端转发用户原文。飞书真实审批按钮、CLI 诊断和关闭 AI 后的飞书兼容命令仍走确定性操作。
 
@@ -65,15 +65,15 @@ flowchart LR
 
 exact `/clear` 经 `rotateEntry` 将命令记录、`source:command` 成功答复、旧会话归档、新会话及其选中状态、`session_rotations`、命令回执和本轮回执写入同一事务。按 owner/chat/messageId 加命令锁，飞书重复事件复用原答复，不重复轮转；事务回滚时不返回成功答复。成功提交与答复送达分别记录，投递结果未知不自动重发。命令记录保存规范化的 `/clear`，不把引用内容作为命令正文。旧会话归档后的排队命令在 AI 关闭时同样拒绝执行，不仅限制模型路径。
 
-默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`herdr-agent.pid`；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，飞书业务工具的项目修改写 SQLite。不要靠编辑旧 JSON 更新已运行的新 catalog。
+默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`myrix.pid` 及兼容旧版的 `herdr-agent.pid`（同时持锁，不能绕开旧实例）；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，飞书业务工具的项目修改写 SQLite。不要靠编辑旧 JSON 更新已运行的新 catalog。
 
 ### 迁移与回退
 
 先停止旧进程及其 launchd/systemd 自动重启，保持同一飞书应用只有一个事件消费者。可先对显式状态目录运行：
 
 ```sh
-herdr-agent migrate --state-dir /absolute/state --dry-run
-herdr-agent migrate --state-dir /absolute/state
+myrix migrate --state-dir /absolute/state --dry-run
+myrix migrate --state-dir /absolute/state
 ```
 
 CLI 取得共享 POSIX flock；服务启动执行同一幂等迁移。`configure` 保留为不连接飞书的本机记录页入口；仍打开/迁移状态并运行既有后台 tick。HTTP 浏览不触发业务工具或写入，不能把这一约束扩张为 CLI 启动整体无副作用。预览不导入或建立备份；CLI 仍需临时取得状态锁，已有数据库会以正常 SQLite 方式打开。应用备份写入 `backups/<timestamp>-<id>/`，包含原始文件和 hash/大小清单，目录 0700、文件 0600。备份后重新核对源快照，再在一个事务里保存导入和版本标记。

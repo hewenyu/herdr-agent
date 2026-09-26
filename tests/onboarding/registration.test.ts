@@ -43,7 +43,8 @@ test("registration builds SDK-compatible addons and follows Lark switch only to 
   assert.equal(forms[1]?.get("device_code"), "private-device-code");
   const url = new URL(shown);
   assert.equal(url.searchParams.get("clientID"), "cli_new");
-  assert.equal(url.searchParams.get("source"), "node-sdk/herdr-agent");
+  assert.equal(url.searchParams.get("source"), "node-sdk/myrix");
+  assert.equal(url.searchParams.get("name"), "myrix");
   const addons = JSON.parse(
     gunzipSync(Buffer.from(url.searchParams.get("addons") ?? "", "base64url")).toString(),
   );

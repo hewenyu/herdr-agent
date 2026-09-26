@@ -131,7 +131,7 @@ export async function setup(
       args.json
         ? JSON.stringify({ event: "setup", appId: credentials.appId, ...verification })
         : verification.cardOK && verification.inboundOK
-          ? "配置完成，可以运行 herdr-agent serve。"
+          ? "配置完成，可以运行 myrix serve。"
           : "凭据已保存，连接验证未完成。请重新运行 setup 完成私聊与卡片验证。",
     );
     return verification.cardOK && verification.inboundOK ? 0 : 3;

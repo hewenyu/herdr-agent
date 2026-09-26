@@ -49,15 +49,15 @@ jobs:
           npm run binary
           npm run smoke
           mkdir -p build/release
-          cp dist/herdr-agent README.md README.zh-CN.md LICENSE build/release/
+          cp dist/myrix README.md README.zh-CN.md LICENSE build/release/
           cp -R dist/LICENSES build/release/LICENSES
           cp -R docs deploy licenses build/release/
           export COPYFILE_DISABLE=1
-          tar -czf "dist/herdr-agent_${VERSION}_${TARGET}.tar.gz" -C build/release herdr-agent README.md README.zh-CN.md LICENSE LICENSES docs deploy licenses
+          tar -czf "dist/myrix_${VERSION}_${TARGET}.tar.gz" -C build/release myrix README.md README.zh-CN.md LICENSE LICENSES docs deploy licenses
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: binary-${{ matrix.target }}
-          path: dist/herdr-agent_*.tar.gz
+          path: dist/myrix_*.tar.gz
           if-no-files-found: error
           retention-days: 7
   npm-publish:
@@ -120,12 +120,12 @@ jobs:
       - name: Checksums and release notes
         run: |
           cd dist
-          sha256sum herdr-agent_*.tar.gz > SHA256SUMS
+          sha256sum myrix_*.tar.gz > SHA256SUMS
           cat > notes.md <<'MD'
           Download the archive for your OS and architecture, unpack it, then run:
 
-              ./herdr-agent setup
-              ./herdr-agent serve
+              ./myrix setup
+              ./myrix serve
 
           Node.js, the frontend, SQLite, and the native locking addon are embedded in the executable. No Node installation or node_modules directory is needed. herdr and authenticated Claude/Codex executors remain separate prerequisites.
 
@@ -133,7 +133,7 @@ jobs:
 
           The LICENSES directory contains the bundled runtime and dependency license notices and must accompany redistribution of the executable.
 
-          `./herdr-agent configure --open` opens the local configuration and session-record page without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
+          `./myrix configure --open` opens the local configuration and session-record page without a Feishu connection. Business operations are performed in Feishu; browsing Web records does not acknowledge message delivery. `doctor` checks configuration and dependencies; `version` reports the build stamp. See the included READMEs for configuration, migration, and service installation.
 
           Each target is built and smoke-tested natively. Linux x64 is built on Ubuntu 22.04, Linux arm64 on Ubuntu 24.04, and macOS arm64 on macOS 15. Compatible system libraries are required; these are not fully static executables.
 
@@ -141,7 +141,7 @@ jobs:
 
           Verify downloads with `sha256sum --ignore-missing -c SHA256SUMS` (Linux) or `shasum -a 256 --ignore-missing -c SHA256SUMS` (macOS).
 
-          The macOS binary has an ad-hoc signature, with no Developer ID signature or notarization. A downloaded binary may need `xattr -d com.apple.quarantine ./herdr-agent` after you verify its source and checksum.
+          The macOS binary has an ad-hoc signature, with no Developer ID signature or notarization. A downloaded binary may need `xattr -d com.apple.quarantine ./myrix` after you verify its source and checksum.
           MD
       - name: Publish complete release
         env:

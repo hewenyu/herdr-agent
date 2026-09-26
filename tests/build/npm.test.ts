@@ -106,7 +106,7 @@ test("launcher forwards arguments, exit status and termination to only the insta
       if (name === "node:child_process")
         return {
           spawn(path: string, args: string[], options: unknown) {
-            assert.equal(path, `/packages/${defaultPackageName}-linux-arm64/bin/herdr-agent`);
+            assert.equal(path, `/packages/${defaultPackageName}-linux-arm64/bin/myrix`);
             assert.deepEqual(Array.from(args), ["serve", "--state-dir", "/tmp/a b"]);
             assert.equal(JSON.stringify(options), '{"stdio":"inherit"}');
             return child;
@@ -178,7 +178,7 @@ test("npm pack retains every platform license and executable mode, produces repr
     for (const target of targets) {
       const source = join(temporary, target.suffix);
       await mkdir(join(source, "LICENSES", "fixture@1.0.0"), { recursive: true });
-      await writeFile(join(source, "herdr-agent"), executable(target), { mode: 0o755 });
+      await writeFile(join(source, "myrix"), executable(target), { mode: 0o755 });
       await writeFile(join(source, "LICENSE"), "Project license fixture\n");
       for (const file of [
         "manifest.json",
@@ -192,10 +192,10 @@ test("npm pack retains every platform license and executable mode, produces repr
         );
       command("tar", [
         "-czf",
-        join(archives, `herdr-agent_${tag}_${target.archive}.tar.gz`),
+        join(archives, `myrix_${tag}_${target.archive}.tar.gz`),
         "-C",
         source,
-        "herdr-agent",
+        "myrix",
         "LICENSE",
         "LICENSES",
       ]);
@@ -215,8 +215,8 @@ test("npm pack retains every platform license and executable mode, produces repr
     const installedFixture = join(temporary, "installed-fixture");
     await extract(join(temporary, "one", current.tarball), installedFixture);
     await writeFile(
-      join(installedFixture, "package", "bin/herdr-agent"),
-      `#!/bin/sh\nif [ "$1" = "version" ]; then\n  printf '%s\\n' '{"version":"${tag}"}'\nelif [ "$1" = "help" ]; then\n  printf '%s\\n' 'serve'\nelse\n  printf '%s\\n' '${tag}'\nfi\n`,
+      join(installedFixture, "package", "bin/myrix"),
+      `#!/bin/sh\nif [ "$1" = "version" ]; then\n  printf '%s\\n' '{"version":"${tag}"}'\nelif [ "$1" = "help" ]; then\n  printf '%s\\n' 'serve'\nelse\n  printf '%s\\n' 'myrix ${tag}'\nfi\n`,
       { mode: 0o755 },
     );
     const packed = JSON.parse(
@@ -239,13 +239,13 @@ test("npm pack retains every platform license and executable mode, produces repr
       loadDistribution(join(temporary, "one"), tag, "@team/myrix"),
       /integrity changed/,
     );
-    await chmod(join(temporary, targets[0].suffix, "herdr-agent"), 0o644);
+    await chmod(join(temporary, targets[0].suffix, "myrix"), 0o644);
     command("tar", [
       "-czf",
-      join(archives, `herdr-agent_${tag}_${targets[0].archive}.tar.gz`),
+      join(archives, `myrix_${tag}_${targets[0].archive}.tar.gz`),
       "-C",
       join(temporary, targets[0].suffix),
-      "herdr-agent",
+      "myrix",
       "LICENSE",
       "LICENSES",
     ]);

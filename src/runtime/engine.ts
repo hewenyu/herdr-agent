@@ -59,7 +59,7 @@ export class PiEngine implements ConversationEngine {
       id: config.model,
       name: config.model,
       api: config.provider,
-      provider: "herdr-agent",
+      provider: "myrix",
       baseUrl,
       reasoning: false,
       input: ["text"],
@@ -296,7 +296,17 @@ export class PiEngine implements ConversationEngine {
             toolChoice,
           } as unknown as NonNullable<Parameters<StreamFn>[2]>;
         }
-        const response = await this.stream(model, context, requestOptions);
+        // Old checkpoints retain their protocol identity on disk. Treat the former
+        // product name as an alias only for transport, preserving signatures and IDs.
+        const requestContext = {
+          ...context,
+          messages: context.messages.map((message) =>
+            message.role === "assistant" && message.provider === "herdr-agent"
+              ? { ...message, provider: "myrix" }
+              : message,
+          ),
+        };
+        const response = await this.stream(model, requestContext, requestOptions);
         // Receiving the stream object is not completion: cover stalled bodies
         // and adapters that ignore AbortSignal until their final result exists.
         void response.result().then(stopWatching, stopWatching);

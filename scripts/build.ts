@@ -77,7 +77,7 @@ export async function buildApplication(options: { outdir?: string; stamp?: Build
     },
   };
   await mkdir(outdir, { recursive: true });
-  const bundle = resolve(outdir, "herdr-agent.cjs");
+  const bundle = resolve(outdir, "myrix.cjs");
   const result = await build({
     absWorkingDir: root,
     entryPoints: ["src/cli/main.ts"],

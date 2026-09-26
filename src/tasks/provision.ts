@@ -86,7 +86,7 @@ export async function provisionParticipant(
       () =>
         herdr.createWorkspace(
           task.directories[0] as string,
-          `herdr-agent ${task.id} ${participant.name}`,
+          `myrix ${task.id} ${participant.name}`,
         ),
     );
     participant.execution = { ...workspace, kind: participant.kind };

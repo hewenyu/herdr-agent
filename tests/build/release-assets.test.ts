@@ -20,10 +20,10 @@ const tag = "v0.3.14";
 const commit = "46cd870a0371c4be2d34685378e1e68bcd4666ec";
 const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 
-async function fixture() {
+async function fixture(prefix = "myrix") {
   const directory = await mkdtemp(join(tmpdir(), "herdr-release-test-"));
   const names = ["darwin_arm64", "linux_amd64", "linux_arm64"].map(
-    (target) => `herdr-agent_${tag}_${target}.tar.gz`,
+    (target) => `${prefix}_${tag}_${target}.tar.gz`,
   );
   let manifest = "";
   for (const name of names) {
@@ -117,6 +117,67 @@ test("an existing manual release is completed once without changing its metadata
     assert.equal(port.prerelease, true);
   } finally {
     await f.dispose();
+  }
+});
+
+for (const prefix of ["myrix", "herdr-agent"]) {
+  test(`${prefix} restoration rejects opposite-brand partial archives before any write, without checksums`, async () => {
+    const f = await fixture(prefix);
+    try {
+      const other = prefix === "myrix" ? "herdr-agent" : "myrix";
+      for (const draft of [false, true]) {
+        const port = new MemoryRelease();
+        assert.ok(port.release);
+        port.release.draft = draft;
+        const first = f.assets[0];
+        assert.ok(first);
+        port.existing = [
+          remote(first, 1),
+          { ...remote(first, 2), name: `${other}_${tag}_linux_arm64.tar.gz`, digest: null },
+        ];
+        const before = structuredClone(port.existing);
+        await assert.rejects(
+          publishAssets(port, tag, commit, f.assets, "must-not-write-notes.md"),
+          /Conflicting release archive branding/,
+        );
+        assert.deepEqual(port.writes, []);
+        assert.deepEqual(port.hashes, []);
+        assert.deepEqual(port.existing, before);
+        assert.equal(port.release.draft, draft);
+        assert.equal(port.notes, "Hand-written release notes");
+        assert.equal(port.title, "My release title");
+        assert.equal(port.prerelease, true);
+      }
+    } finally {
+      await f.dispose();
+    }
+  });
+}
+
+test("unrelated manual attachments survive release completion without blocking publication", async () => {
+  for (const prefix of ["myrix", "herdr-agent"]) {
+    const f = await fixture(prefix);
+    try {
+      const port = new MemoryRelease();
+      assert.ok(port.release);
+      port.release.draft = true;
+      const attachments = ["manual-notes.pdf", "herdr-agent_v0.3.13_linux_arm64.tar.gz"].map(
+        (name, index) => ({ id: 100 + index, name, size: 7, state: "uploaded", digest: null }),
+      );
+      port.existing = [...attachments];
+      await publishAssets(port, tag, commit, f.assets, "unused-notes.md");
+      assert.deepEqual(port.writes, [
+        ...f.assets.map((asset) => `upload ${asset.name}`),
+        "publish",
+      ]);
+      assert.deepEqual(port.existing.slice(0, attachments.length), attachments);
+      assert.deepEqual(port.hashes, []);
+      assert.equal(port.notes, "Hand-written release notes");
+      assert.equal(port.title, "My release title");
+      assert.equal(port.prerelease, true);
+    } finally {
+      await f.dispose();
+    }
   }
 });
 
@@ -339,7 +400,7 @@ test("GitHub adapter peels annotated tags, paginates assets and uses only draft-
         "--verify-tag",
         "--draft",
         "--title",
-        `herdr-agent ${tag}`,
+        `myrix ${tag}`,
         "--notes-file",
         "notes.md",
       ],

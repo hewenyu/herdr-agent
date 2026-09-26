@@ -80,7 +80,7 @@
       user /var/folders/... directory. Usually harmless: it costs the per user
       isolation and the automatic cleanup, and a few tools are noisier about it.
 
-  Verify after install:  herdr-agent doctor
+  Verify after install:  myrix doctor
   (the "herdr server environment is clean" check reads this process's real
   environment with `ps eww`, so it confirms the scrub actually happened.)
 -->
@@ -140,9 +140,9 @@
   <integer>30</integer>
 
   <key>StandardOutPath</key>
-  <string>__HOME__/.herdr-agent/log/herdr-server.out.log</string>
+  <string>__STATE_DIR__/log/herdr-server.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__HOME__/.herdr-agent/log/herdr-server.err.log</string>
+  <string>__STATE_DIR__/log/herdr-server.err.log</string>
 
   <!-- Deliberately no EnvironmentVariables dict: see the comment above. -->
 </dict>

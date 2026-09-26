@@ -16,7 +16,7 @@
 
 重构目标是使用 Node 技术栈和 pi 调度本工具，统一前后端语言，并整体打包为可执行文件。前后端统一使用 TypeScript 是实施建议；具体 pi 包、运行时版本和打包路线尚未核验。
 
-**pi 只负责 herdr-agent 自身的业务。用户项目的需求讨论、方案设计、开发、测试和评审交给 Claude／Codex，始终通过 herdr 托管。**
+**pi 只负责 myrix 自身的业务。用户项目的需求讨论、方案设计、开发、测试和评审交给 Claude／Codex，始终通过 herdr 托管。**
 
 | 角色 | 负责的业务 | 边界 |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ E15 历史部署与验收记录：`ab79cc0470f28c65473fc3810e6b8e39dc0a296f` 已
 
 ```mermaid
 flowchart TD
-    U[用户：飞书入口 / 本地 Web] --> P[pi：herdr-agent 业务调度]
+    U[用户：飞书入口 / 本地 Web] --> P[pi：myrix 业务调度]
     P --> T[任务 / 参与者 / 群关联 / 调度状态]
     T --> H[herdr]
     H --> C[Claude：讨论与执行]

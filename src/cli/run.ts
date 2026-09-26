@@ -3,41 +3,67 @@ import { join } from "node:path";
 import { BUILD_DATE, COMMIT, VERSION } from "../build-info.js";
 import { safeError } from "../core/errors.js";
 import { HELP, parseArguments } from "./args.js";
-import { type Dependencies, dependencies } from "./dependencies.js";
-import { debug, doctor } from "./diagnostics.js";
-import { service } from "./service.js";
-import { setup } from "./setup.js";
+import type { Dependencies } from "./dependencies.js";
+import { configureWarningTraces } from "./warnings.js";
 
 export async function runCLI(
   argv: string[],
   overrides: Partial<Dependencies> = {},
 ): Promise<number> {
-  const deps = dependencies(overrides);
+  const io = {
+    signal: overrides.signal ?? new AbortController().signal,
+    stdout:
+      overrides.stdout ??
+      ((line: string) => {
+        process.stdout.write(`${line}\n`);
+      }),
+    stderr:
+      overrides.stderr ??
+      ((line: string) => {
+        process.stderr.write(`${line}\n`);
+      }),
+  };
   try {
     const args = parseArguments(argv);
+    configureWarningTraces(args.traceWarnings);
     if (args.command === "help") {
-      deps.stdout(HELP);
+      io.stdout(HELP);
       return 0;
     }
     if (args.command === "version") {
-      deps.stdout(
+      io.stdout(
         args.json
           ? JSON.stringify({ version: VERSION, commit: COMMIT, date: BUILD_DATE })
-          : `herdr-agent ${VERSION} (${COMMIT}, ${BUILD_DATE})`,
+          : `myrix ${VERSION} (${COMMIT}, ${BUILD_DATE})`,
       );
       return 0;
     }
+    if (args.command === "status") {
+      const { status } = await import("./status.js");
+      return await status(args, { stdout: io.stdout });
+    }
+    // Informational commands and usage errors must not initialize the service graph.
+    const { dependencies } = await import("./dependencies.js");
+    const deps = dependencies({ ...overrides, ...io });
     const config = deps.loadConfig({ stateDir: args.stateDir });
     switch (args.command) {
       case "serve":
-      case "configure":
+      case "configure": {
+        const { service } = await import("./service.js");
         return await service(args, config, deps);
-      case "setup":
+      }
+      case "setup": {
+        const { setup } = await import("./setup.js");
         return await setup(args, config, deps);
-      case "doctor":
+      }
+      case "doctor": {
+        const { doctor } = await import("./diagnostics.js");
         return await doctor(args, config, deps);
-      case "debug":
+      }
+      case "debug": {
+        const { debug } = await import("./diagnostics.js");
         return await debug(args, config, deps);
+      }
       case "migrate": {
         const lock = deps.acquireLock(config.stateDir);
         let store: ReturnType<Dependencies["openStore"]> | undefined;
@@ -58,7 +84,7 @@ export async function runCLI(
     }
   } catch (error) {
     const failure = safeError(error);
-    deps.stderr(failure.message);
-    return deps.signal.aborted ? 130 : failure.code === "usage" ? 2 : 1;
+    io.stderr(failure.message);
+    return io.signal.aborted ? 130 : failure.code === "usage" ? 2 : 1;
   }
 }

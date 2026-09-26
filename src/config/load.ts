@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { fail, OperationError } from "../core/errors.js";
 import type { AgentKind, Catalog, Project } from "../core/types.js";
+import { defaultStateDir } from "./state-path.js";
 import type { AppConfig, MemoryConfig } from "./types.js";
 import { modelProvider } from "./validate.js";
 
@@ -124,7 +125,7 @@ export function loadConfig(
   options: { stateDir?: string; home?: string; cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): AppConfig {
   const home = options.home ?? homedir();
-  const stateDir = options.stateDir ?? join(home, ".herdr-agent");
+  const stateDir = options.stateDir ?? defaultStateDir(home);
   const raw = readToml(join(stateDir, "config.toml"));
   const fs = fields(raw.feishu),
     hd = fields(raw.herdr),

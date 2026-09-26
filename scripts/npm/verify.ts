@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -52,6 +53,7 @@ export async function loadDistribution(
     } else {
       const target = targets.find((target) => target.suffix === item.target);
       assert.ok(target);
+      assert.deepEqual(manifest.files, ["bin/myrix", "LICENSE", "LICENSES"]);
       assert.deepEqual(manifest.os, [target.os]);
       assert.deepEqual(manifest.cpu, [target.cpu]);
       if (target.os === "linux") assert.deepEqual(manifest.libc, ["glibc"]);
@@ -102,8 +104,27 @@ export async function verifyDistribution(
         stamp.version === tag || stamp.version === distribution.version,
         `${alias} version must match ${tag}`,
       );
-      assert.ok(command(executable, ["--version"], temporary, env).includes(stamp.version));
+      const version = command(executable, ["--version"], temporary, env);
+      assert.match(version, /^myrix /, `${alias} must identify the service as myrix`);
+      assert.ok(version.includes(stamp.version));
       assert.match(command(executable, ["help"], temporary, env), /serve/);
+      for (const trace of [false, true]) {
+        const migrated = spawnSync(
+          executable,
+          [
+            ...(trace ? ["--trace-warnings"] : []),
+            "migrate",
+            "--dry-run",
+            "--state-dir",
+            join(temporary, `state-${alias}`),
+          ],
+          { cwd: temporary, env, encoding: "utf8", timeout: 10_000 },
+        );
+        assert.equal(migrated.status, 0, migrated.stderr || migrated.error?.message);
+        assert.doesNotMatch(migrated.stderr, /herdr-agent/);
+        if (migrated.stderr.includes("ExperimentalWarning"))
+          assert.match(migrated.stderr, trace ? /\n\s+at / : /myrix --trace-warnings/);
+      }
     }
     await writeFile(
       join(directory, "verified.json"),

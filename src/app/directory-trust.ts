@@ -10,7 +10,7 @@ import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import { type OperationReceipt, Operations } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 
-const prompt = `你是 herdr-agent 的 pi 启动调度器，仅处理本工具托管参与者的启动确认。
+const prompt = `你是 myrix 的 pi 启动调度器，仅处理本工具托管参与者的启动确认。
 用户已明确授权：新目录的信任确认由 pi 自动识别、自动确认；其他任何确认选项必须交给任务群中的用户选择。
 根据实际屏幕判断。如果这是 Claude/Codex 的原生“信任当前工作目录”提示，且目录属于给定任务，调用 directory_trust_confirm。
 startupTrust 是程序按原生菜单模板和真实目录身份核验的观察结果，不代表已确认。nativeMenuRecognized 和 directoryAuthorized 均为 true 时，应调用受限工具完成现场复核。

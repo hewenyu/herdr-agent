@@ -6,13 +6,13 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.hewenyu.herdr-agent</string>
+  <string>com.hewenyu.myrix</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__HERDR_AGENT_BIN__</string>
+    <string>__MYRIX_BIN__</string>
     <string>serve</string>
     <string>--state-dir</string>
-    <string>__HOME__/.herdr-agent</string>
+    <string>__STATE_DIR__</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__HOME__</string>
@@ -25,9 +25,9 @@
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
-  <string>__HOME__/.herdr-agent/log/herdr-agent.out.log</string>
+  <string>__STATE_DIR__/log/myrix.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__HOME__/.herdr-agent/log/herdr-agent.err.log</string>
+  <string>__STATE_DIR__/log/myrix.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>

@@ -750,3 +750,171 @@ test("tool calls continue past twelve and invalid arguments cannot reach execute
   await invalid.run(input(tools));
   assert.equal(executed, 14);
 });
+
+for (const provider of ["openai-responses", "anthropic-messages"] as const) {
+  test(`${provider} resumes legacy brand checkpoints without changing signatures or replaying writes`, async () => {
+    const id = provider === "openai-responses" ? "call_legacy|fc_legacy" : "toolu_legacy";
+    const reasoning = {
+      id: "rs_legacy",
+      type: "reasoning",
+      encrypted_content: "opaque",
+      summary: [],
+    };
+    const legacy = {
+      ...response(""),
+      provider: "herdr-agent",
+      api: provider,
+      content: [
+        {
+          type: "thinking" as const,
+          thinking: provider === "openai-responses" ? "" : "Known completed work",
+          thinkingSignature:
+            provider === "openai-responses" ? JSON.stringify(reasoning) : "legacy-signature",
+        },
+        {
+          type: "text" as const,
+          text: "记录",
+          textSignature: JSON.stringify({ v: 1, id: "msg_legacy", phase: "commentary" }),
+        },
+        { type: "toolCall" as const, id, name: "create", arguments: { title: "existing" } },
+      ],
+      stopReason: "toolUse" as const,
+    };
+    const original = structuredClone(legacy);
+    let requests = 0;
+    let writes = 0;
+    let checkpoints = 0;
+    const engine = new PiEngine(
+      { ...config, provider },
+      {
+        fetch: async (_url, init) => {
+          requests++;
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          if (provider === "openai-responses") {
+            assert.deepEqual(
+              body.input.find((item: { type: string }) => item.type === "reasoning"),
+              reasoning,
+            );
+            const message = body.input.find((item: { id: string }) => item.id === "msg_legacy");
+            assert.equal(message.phase, "commentary");
+            const call = body.input.find((item: { type: string }) => item.type === "function_call");
+            assert.equal(call.id, "fc_legacy");
+            assert.equal(call.call_id, "call_legacy");
+            assert.equal(
+              body.input.find((item: { type: string }) => item.type === "function_call_output")
+                .call_id,
+              "call_legacy",
+            );
+            return openAiResponse("text");
+          }
+          const message = body.messages.find((item: { role: string }) => item.role === "assistant");
+          assert.deepEqual(
+            message.content.find((item: { type: string }) => item.type === "thinking"),
+            {
+              type: "thinking",
+              thinking: "Known completed work",
+              signature: "legacy-signature",
+            },
+          );
+          assert.equal(
+            message.content.find((item: { type: string }) => item.type === "tool_use").id,
+            id,
+          );
+          const results = body.messages.flatMap((item: { content: unknown[] }) => item.content);
+          assert.equal(
+            results.find((item: { type: string }) => item.type === "tool_result").tool_use_id,
+            id,
+          );
+          return anthropicResponse("text");
+        },
+      },
+    );
+    const result = await engine.run({
+      ...input([
+        {
+          name: "create",
+          description: "create",
+          parameters: schema,
+          readOnly: false,
+          execute: async () => {
+            writes++;
+            return { accepted: true };
+          },
+        },
+      ]),
+      resume: true,
+      messages: [
+        legacy,
+        {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: "create",
+          content: [{ type: "text", text: JSON.stringify({ accepted: true }) }],
+          isError: false,
+          timestamp: Date.now(),
+        },
+      ],
+      onCheckpoint: (messages) => {
+        checkpoints++;
+        assert.deepEqual(
+          messages.find((item) => item.role === "assistant" && item.provider === "herdr-agent"),
+          original,
+        );
+      },
+    });
+    assert.equal(requests, 1);
+    assert.equal(writes, 0);
+    assert.ok(checkpoints > 0);
+    assert.deepEqual(legacy, original);
+    const last = result.messages.at(-1);
+    assert.ok(last?.role === "assistant");
+    assert.equal(last.provider, "myrix");
+    assert.equal(result.text, "已根据工具结果登记。");
+  });
+}
+
+for (const provider of ["openai-responses", "anthropic-messages"] as const) {
+  test(`${provider} legacy brand alias still rejects signatures from a different model`, async () => {
+    let requests = 0;
+    const engine = new PiEngine(
+      { ...config, provider },
+      {
+        fetch: async (_url, init) => {
+          requests++;
+          assert.doesNotMatch(String(init?.body), /must-drop-signature/);
+          return provider === "openai-responses"
+            ? openAiResponse("text", "你好。")
+            : anthropicResponse("text", "你好。");
+        },
+      },
+    );
+    const result = await engine.run({
+      ...input([], "你好"),
+      messages: [
+        {
+          ...response(""),
+          provider: "herdr-agent",
+          api: provider,
+          model: "previous-model",
+          content: [
+            {
+              type: "thinking",
+              thinking: "",
+              thinkingSignature:
+                provider === "openai-responses"
+                  ? JSON.stringify({
+                      id: "must-drop-signature",
+                      type: "reasoning",
+                      encrypted_content: "opaque",
+                      summary: [],
+                    })
+                  : "must-drop-signature",
+            },
+          ],
+        },
+      ],
+    });
+    assert.equal(requests, 1);
+    assert.equal(result.text, "你好。");
+  });
+}

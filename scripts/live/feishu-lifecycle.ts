@@ -150,7 +150,7 @@ async function run() {
     const created = await step("create-task", () =>
       platform.createTask({
         title: name,
-        description: "herdr-agent Node/pi 真实REST生命周期验收，仅为本轮测试资源。",
+        description: "myrix Node/pi 真实REST生命周期验收，仅为本轮测试资源。",
         ownerId,
         key: randomUUID(),
       }),
@@ -215,7 +215,7 @@ async function run() {
       if (lastAPIError?.code === 99991672) scopeGap = true;
       else throw error;
     }
-    const text = `这是 herdr-agent Node/pi 真实REST生命周期验收消息。测试名称：${name}。本群仅邀请本次请求用户；将验证任务完成、重开、再完成，随后解散本测试群，不影响原有群或任务。`;
+    const text = `这是 myrix Node/pi 真实REST生命周期验收消息。测试名称：${name}。本群仅邀请本次请求用户；将验证任务完成、重开、再完成，随后解散本测试群，不影响原有群或任务。`;
     const messageId = await step(
       "send-test-message",
       () => platform.sendText(chatId, text, randomUUID()),
