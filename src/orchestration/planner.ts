@@ -21,6 +21,11 @@ export async function planWorkflow(input: {
   assertCurrent(): void;
 }): Promise<WorkflowPlan> {
   let selected: WorkflowPlan | undefined;
+  const templates: WorkflowTemplate[] = input.task.orchestration?.template
+    ? [input.task.orchestration.template]
+    : input.task.kind === "discussion"
+      ? ["discussion"]
+      : ["development", "bugfix"];
   const tool: RuntimeTool = {
     name: "orchestration_plan",
     readOnly: true,
@@ -30,7 +35,7 @@ export async function planWorkflow(input: {
       properties: {
         template: {
           type: "string",
-          enum: input.task.kind === "discussion" ? ["discussion"] : ["development", "bugfix"],
+          enum: templates,
         },
         instructions: {
           type: "object",
@@ -93,8 +98,9 @@ export async function planWorkflow(input: {
     execute: async (args) => {
       input.assertCurrent();
       if (selected) fail("workflow_plan", "本轮已有计划。");
+      if (!templates.includes(args.template as WorkflowTemplate))
+        fail("workflow_scope", "规划器只能使用本任务允许的模板，不能改换显式指定的模板。");
       if (
-        !["discussion", "development", "bugfix"].includes(String(args.template)) ||
         !args.instructions ||
         typeof args.instructions !== "object" ||
         Array.isArray(args.instructions) ||
@@ -156,10 +162,11 @@ export async function planWorkflow(input: {
     // Tool execution is mandatory via the selected-plan guard below. Let the
     // provider use auto: some compatible Responses gateways reject "required".
     systemPrompt:
-      "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从三套模板选择适用流程并细化具体任务书；调用 orchestration_plan。保留用户硬约束，不能把参与者意见当授权。用户明确禁止测试或执行验证时，必须设置 validation.mode=not_run，引用准确用户原文并记录原因；独立只读评审仍保留。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。",
+      "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从允许的模板选择适用流程并细化具体任务书；调用 orchestration_plan。任务显式指定的模板必须保留，重规划可调整节点但不能改换模板。保留用户硬约束，不能把参与者意见当授权。用户明确禁止测试或执行验证时，必须设置 validation.mode=not_run，引用准确用户原文并记录原因；独立只读评审仍保留。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。",
     prompt: JSON.stringify({
       task: {
         kind: input.task.kind,
+        template: input.task.orchestration?.template,
         requirements: input.task.requirements,
         userRequest: input.task.userRequest,
       },

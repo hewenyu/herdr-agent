@@ -60,6 +60,8 @@ LLM 理解需求、生成和修订计划；Jev 在运行时提供的合法候选
 
 `bugfix` 是 workflow 模板类型，首版映射现有 `TaskKind.development`；不为模板增加一套任务生命周期。业务阶段可用 `clarifying / discussing / planning / implementing / validating / reviewing / reporting / awaiting_acceptance`，与现有 `TaskStatus` 分开保存。
 
+任务显式保存 `orchestration.template` 时，Planner 的候选枚举、工具执行及计划校验均保留该模板。重规划可以调整同模板下的节点，不能静默改换模板；未显式指定时才由 Planner 在任务类型允许的模板中选择。
+
 程序校验节点引用、依赖可达性、动作注册、输入证据、交付或阻塞出口及授权范围。返工以明确状态转移表达，普通依赖不形成环。首次由受限 Planner 选择并细化模板，复杂任务或重规划可提交经过校验的自定义节点图；不在每次发言后重做整张计划。当前模板将需求核对与方案合并为 analysis；小 Bug 将针对性验证与独立评审合并为 validate，默认只有 analysis → implement → validate → report 四个节点。复杂化阻塞可选择 replan，增加讨论或补证据节点。
 
 ## 4. 状态、revision 与僵局检测
@@ -141,6 +143,8 @@ workflow 扩展现有 `OrchestrationEvent.decision` 的候选和报告引用，�
 | 服务重启 | 从事件、派发与操作回执恢复，重建阶段活动集合和目录占用事实 |
 
 数据库与外部系统没有共同事务，不承诺天然 exactly-once。取消不等于已发生的文件修改自动回滚。
+
+同一派发的每次尝试只计一次；明确未执行的暂时拒绝保留初次加两次重试，恢复后仍复用原 operationId。目录准入等待不消耗重试次数，未知执行结果不自动重发。这是单操作故障恢复，不是任务轮数或决策预算。
 
 ### 6.2 按阶段等待
 

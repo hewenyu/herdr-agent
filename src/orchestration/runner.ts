@@ -213,6 +213,10 @@ export class WorkflowOrchestrator {
     );
     if (pending) {
       if (pending.nextAttemptAt && Date.parse(pending.nextAttemptAt) > Date.now()) return;
+      // Count every execution attempt once, including successful retries after restart.
+      pending.attempts++;
+      pending.state = "processing";
+      ports.save(pending);
       await this.executeSafely(task, state, pending);
       return;
     }
@@ -658,6 +662,8 @@ export class WorkflowOrchestrator {
             this.verification?.blockingDirectories() ?? [],
           ))
         ) {
+          // Directory admission only waits; polling must not consume failure retries.
+          event.attempts--;
           event.state = "pending";
           ports.save(event);
           return;
@@ -731,6 +737,7 @@ export class WorkflowOrchestrator {
         return { running: this.runVerification(task, state, event) };
       });
       if (!admitted) {
+        event.attempts--;
         event.state = "pending";
         ports.save(event);
         return;
@@ -872,7 +879,6 @@ export class WorkflowOrchestrator {
 
   private async failed(task: Task, event: OrchestrationEvent, error: unknown): Promise<void> {
     const safe = safeError(error);
-    if (event.workflow && !event.workflow.applied) event.attempts++;
     event.error = safe;
     if (
       ["orchestration_superseded", "workflow_artifact_changed"].includes(safe.code) ||

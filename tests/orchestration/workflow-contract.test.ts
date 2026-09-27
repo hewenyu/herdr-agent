@@ -200,6 +200,160 @@ test("planner accepts a custom dependent graph and preserves mandatory report se
   }
 });
 
+test("planner freezes an explicit template in its schema and rejects bypassed choices", async () => {
+  const h = setup();
+  try {
+    h.config.ai.enabled = true;
+    for (const template of ["discussion", "development", "bugfix"] as const) {
+      const task = await h.service.create(
+        { ...actor, messageId: `explicit-${template}` },
+        {
+          ...discussion,
+          kind: template === "discussion" ? "discussion" : "development",
+          orchestration: { mode: "workflow", template },
+        },
+      );
+      const state = workflowState(h.store, task, "user-revision");
+      const engine = new Engine();
+      engine.handler = async (input) => {
+        const tool = input.tools[0];
+        assert.ok(tool);
+        const properties = tool.parameters.properties as Record<string, { enum?: string[] }>;
+        assert.deepEqual(properties.template?.enum, [template]);
+        const rejected = template === "development" ? "bugfix" : "development";
+        await assert.rejects(
+          tool.execute(
+            { template: rejected, instructions: {}, deliveryRequirements: [] },
+            input.actor,
+          ),
+          /不能改换显式指定的模板/,
+        );
+        await tool.execute({ template, instructions: {}, deliveryRequirements: [] }, input.actor);
+        return { text: "", messages: [] };
+      };
+      const plan = await planWorkflow({
+        task,
+        state,
+        engine,
+        actor,
+        userMessages: [],
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      });
+      assert.equal(plan.template, template);
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test("plan validation independently rejects changing an explicit execution template", async () => {
+  const h = setup();
+  try {
+    h.config.ai.enabled = true;
+    for (const template of ["development", "bugfix"] as const) {
+      const task = await h.service.create(
+        { ...actor, messageId: `validate-${template}` },
+        { ...discussion, kind: "development", orchestration: { mode: "workflow", template } },
+      );
+      const changed = templatePlan(task, template === "bugfix" ? "development" : "bugfix");
+      assert.throws(() => validatePlan(changed, task), /必须保留任务显式指定的模板/);
+      validatePlan(templatePlan(task, template), task);
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test("planner can choose either execution template when the task did not select one", async () => {
+  const h = setup();
+  try {
+    const task = await h.service.create(actor, { ...discussion, kind: "development" });
+    const state = workflowState(h.store, task, "user-revision");
+    for (const template of ["development", "bugfix"] as const) {
+      const engine = new Engine();
+      engine.handler = async (input) => {
+        const tool = input.tools[0];
+        assert.ok(tool);
+        const properties = tool.parameters.properties as Record<string, { enum?: string[] }>;
+        assert.deepEqual(properties.template?.enum, ["development", "bugfix"]);
+        await tool.execute({ template, instructions: {}, deliveryRequirements: [] }, input.actor);
+        return { text: "", messages: [] };
+      };
+      const plan = await planWorkflow({
+        task,
+        state,
+        engine,
+        actor,
+        userMessages: [],
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      });
+      assert.equal(plan.template, template);
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test("replanning an explicit bugfix can extend its graph while retaining its delivery contract", async () => {
+  const h = setup();
+  try {
+    h.config.ai.enabled = true;
+    const task = await h.service.create(actor, {
+      ...discussion,
+      kind: "development",
+      requirements: "修复间歇性故障并提供回归证据。",
+      orchestration: { mode: "workflow", template: "bugfix" },
+    });
+    const state = workflowState(h.store, task, "user-revision");
+    state.plan.version = 2;
+    state.planningReason = "复现证据表明需增加一次根因调查。";
+    const base = structuredClone(state.plan);
+    const analysis = base.nodes.find((node) => node.id === "analysis");
+    const implement = base.nodes.find((node) => node.id === "implement");
+    assert.ok(analysis && implement);
+    base.nodes.splice(1, 0, {
+      ...analysis,
+      id: "root-cause",
+      dependsOn: ["analysis"],
+      instruction: "调查间歇性故障根因并补充可复现证据。",
+    });
+    implement.dependsOn = ["root-cause"];
+    const engine = new Engine();
+    engine.handler = async (input) => {
+      await input.tools[0]?.execute(
+        {
+          template: "bugfix",
+          nodes: base.nodes,
+          instructions: {},
+          deliveryRequirements: ["间歇性故障回归证据"],
+        },
+        input.actor,
+      );
+      return { text: "", messages: [] };
+    };
+    const plan = await planWorkflow({
+      task,
+      state,
+      engine,
+      actor,
+      userMessages: [],
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    assert.equal(plan.template, "bugfix");
+    assert.equal(plan.version, 2);
+    assert.deepEqual(plan.nodes.find((node) => node.id === "implement")?.dependsOn, ["root-cause"]);
+    assert.deepEqual(plan.deliveryRequirements, [
+      ...state.plan.deliveryRequirements,
+      "间歇性故障回归证据",
+    ]);
+  } finally {
+    h.close();
+  }
+});
+
 test("custom plans cannot run validation and review before their implementation inputs", async () => {
   const h = setup();
   try {

@@ -143,6 +143,8 @@ export function validatePlan(plan: WorkflowPlan, task: Task): void {
     fail("workflow_plan", "不运行验证必须记录用户约束和原因。");
   if ((task.kind === "discussion") !== (plan.template === "discussion"))
     fail("workflow_scope", "讨论计划不能自行切换到开发，执行任务不能套用讨论授权。");
+  if (task.orchestration?.template && plan.template !== task.orchestration.template)
+    fail("workflow_scope", "工作流计划必须保留任务显式指定的模板。");
   const ids = new Set<string>();
   for (const node of plan.nodes) {
     if (
