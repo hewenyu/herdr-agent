@@ -11,7 +11,9 @@ import type { ActorContext, Participant, StoredMessage, Task } from "../core/typ
 import { verificationConfigRevision } from "../projects/verification-config.js";
 import type { InputDelivery } from "../tasks/input-delivery.js";
 import {
+  implementationNode,
   independentReviewer,
+  observeImplementationParticipants,
   rememberImplementer,
   restoreImplementationParticipants,
 } from "./authorship.js";
@@ -153,6 +155,7 @@ export class WorkflowOrchestrator {
       { ...task, participantIds: participants.map((entry) => entry.id) },
       ports.baseRevision(task),
     );
+    await observeImplementationParticipants(ports.store, task, state, participants);
     const events = ports.events(task.id);
     for (const event of events) {
       await ports.recoverNotification(task, event);
@@ -534,12 +537,17 @@ export class WorkflowOrchestrator {
         output.entry.text,
       );
       try {
+        const artifactRevision = await workspaceRevision(task.directories);
+        if (progress.artifactRevision !== artifactRevision) {
+          // Attribute observed writes conservatively, even if the status block is invalid.
+          rememberImplementer(state, participant.id);
+          this.save(state);
+        }
         const block = parseStatusBlock(output.entry.text, {
           nodeId: node.id,
           operationId: progress.operationId,
           inputRevision: progress.inputRevision,
         });
-        const artifactRevision = await workspaceRevision(task.directories);
         if (
           (node.access === "read" || node.role === "reviewer") &&
           progress.artifactRevision !== artifactRevision
@@ -801,7 +809,7 @@ export class WorkflowOrchestrator {
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
     if (node?.role === "reviewer" && !independentReviewer(state, dispatch.participantId))
       fail("workflow_review_author", "该评审委派属于历史实现者，请重新安排独立评审。");
-    if (node?.role === "implementer") rememberImplementer(state, dispatch.participantId);
+    if (node && implementationNode(node)) rememberImplementer(state, dispatch.participantId);
     const old = state.nodes[dispatch.nodeId];
     state.nodes[dispatch.nodeId] = {
       status: "dispatched",

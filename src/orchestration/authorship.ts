@@ -1,17 +1,22 @@
 import type { OrchestrationEvent } from "../app/task-orchestrator.js";
+import type { Participant, Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
-import { WORKFLOWS, type WorkflowPlan, type WorkflowState } from "./workflow.js";
+import { WORKFLOWS, type WorkflowNode, type WorkflowPlan, type WorkflowState } from "./workflow.js";
+import { workspaceRevision } from "./workspace.js";
+
+/** Reviewers may run checks; other writable roles can author code regardless of their label. */
+export function implementationNode(node: WorkflowNode): boolean {
+  return node.role === "implementer" || (node.access === "write" && node.role !== "reviewer");
+}
 
 /** A new snapshot does not prove that earlier authors' changes disappeared. */
 export function implementationParticipants(state: WorkflowState): Set<string> {
   return new Set([
     ...(state.implementationParticipants ?? []),
-    ...state.plan.nodes
-      .filter((node) => node.role === "implementer")
-      .flatMap((node) => {
-        const participant = state.nodes[node.id]?.participantId;
-        return participant ? [participant] : [];
-      }),
+    ...state.plan.nodes.filter(implementationNode).flatMap((node) => {
+      const participant = state.nodes[node.id]?.participantId;
+      return participant ? [participant] : [];
+    }),
   ]);
 }
 
@@ -23,6 +28,33 @@ export function rememberImplementer(state: WorkflowState, participantId: string)
   state.implementationParticipants = [
     ...new Set([...implementationParticipants(state), participantId]),
   ].sort();
+}
+
+/** Capture possible writes before malformed outputs or a new plan can discard their baseline. */
+export async function observeImplementationParticipants(
+  store: Store,
+  task: Task,
+  state: WorkflowState,
+  participants: Participant[],
+): Promise<void> {
+  const settled = Object.values(state.nodes).filter(
+    (progress) =>
+      ["dispatched", "blocked"].includes(progress.status) &&
+      progress.participantId &&
+      participants.some(
+        (participant) =>
+          participant.id === progress.participantId && participant.status !== "working",
+      ) &&
+      !store.get("participant_awaiting_output", progress.participantId),
+  );
+  if (!settled.length) return;
+  const revision = await workspaceRevision(task.directories);
+  const before = JSON.stringify(state.implementationParticipants);
+  for (const progress of settled)
+    if (progress.artifactRevision !== revision && progress.participantId)
+      rememberImplementer(state, progress.participantId);
+  if (JSON.stringify(state.implementationParticipants) !== before)
+    store.set(WORKFLOWS, state.taskId, state);
 }
 
 /** Recover authors from the existing event/plan archive, including superseded revisions. */
@@ -42,7 +74,7 @@ export function restoreImplementationParticipants(store: Store, state: WorkflowS
     for (const dispatch of event.dispatches) {
       const node = plan?.nodes.find((entry) => entry.id === dispatch.nodeId);
       // Missing historical role evidence must not certify an independent reviewer.
-      if (!node || node.role === "implementer") authors.add(dispatch.participantId);
+      if (!node || implementationNode(node)) authors.add(dispatch.participantId);
     }
   }
   const participants = [...authors].sort();

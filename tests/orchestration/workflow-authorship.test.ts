@@ -8,12 +8,13 @@ import { implementationParticipants } from "../../src/orchestration/authorship.j
 import { type WorkflowCandidate, workflowCandidates } from "../../src/orchestration/candidates.js";
 import { reportContract } from "../../src/orchestration/report.js";
 import { invalidateFrom, mergeStatus, workflowState } from "../../src/orchestration/state.js";
+import { templatePlan } from "../../src/orchestration/templates.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-async function harness() {
+async function harness(settings: { writableAnalysis?: boolean } = {}) {
   const h = setup();
   h.config.ai.enabled = true;
   const repo = join(h.directory, "repo");
@@ -31,13 +32,25 @@ async function harness() {
   const [first, second] = task.participantIds;
   assert.ok(first && second);
   const selection = { implementer: first };
+  const plan = templatePlan(task);
+  if (settings.writableAnalysis) {
+    const analysis = plan.nodes.find((node) => node.id === "analysis");
+    assert.ok(analysis);
+    analysis.access = "write";
+    analysis.instruction = "分析并写入复现代码，随后由另一位参与者实现。";
+  }
   const engine = new Engine();
   engine.handler = async (input) => {
     const tool = input.tools[0];
     assert.ok(tool);
     if (tool.name === "orchestration_plan")
       await tool.execute(
-        { template: "development", instructions: {}, deliveryRequirements: [] },
+        {
+          template: "development",
+          instructions: {},
+          deliveryRequirements: [],
+          ...(settings.writableAnalysis ? { nodes: plan.nodes } : {}),
+        },
         input.actor,
       );
     else {
@@ -82,7 +95,7 @@ async function harness() {
     assert.ok(current);
     return current;
   };
-  const finish = async (nodeId: string, override: Record<string, unknown> = {}) => {
+  const finish = async (nodeId: string, override: Record<string, unknown> = {}, raw?: string) => {
     const current = state();
     const progress = current.nodes[nodeId];
     assert.ok(progress?.operationId && progress.participantId && progress.inputRevision);
@@ -112,7 +125,7 @@ async function harness() {
     };
     h.herdr.finish(
       participant.execution.paneId,
-      `工作结果\n\n\`\`\`myrix-status\n${JSON.stringify(block)}\n\`\`\``,
+      raw ?? `工作结果\n\n\`\`\`myrix-status\n${JSON.stringify(block)}\n\`\`\``,
     );
     await h.service.reconcile(task.id);
   };
@@ -440,3 +453,178 @@ test("restoring obsolete author review proof retires an unsent delivery into att
     h.close();
   }
 });
+
+test("a custom writable analyst is an author during dispatch and after historical plan recovery", async () => {
+  const h = await harness({ writableAnalysis: true });
+  try {
+    h.selection.implementer = h.second;
+    await h.worker.tick();
+    await h.worker.tick();
+    const analysis = h.state().plan.nodes.find((node) => node.id === "analysis");
+    assert.equal(analysis?.role, "analyst");
+    assert.equal(analysis?.phase, "planning");
+    assert.equal(analysis?.access, "write");
+    assert.equal(h.state().nodes.analysis?.participantId, h.first);
+    assert.ok(
+      implementationParticipants(h.state()).has(h.first),
+      "authorization to write counts before a possibly incomplete status receipt",
+    );
+    writeFileSync(join(h.repo, "app.txt"), "reproduction code written by analyst A");
+    await h.finish("analysis");
+    await h.worker.tick();
+    assert.equal(h.state().nodes.implement?.participantId, h.second);
+    writeFileSync(join(h.repo, "app.txt"), "analyst A's reproduction with B's implementation");
+    await h.finish("implement");
+    await h.worker.tick();
+    assert.deepEqual([...implementationParticipants(h.state())].sort(), [h.first, h.second].sort());
+    const third = h.currentTask().participantIds.find((id) => id !== h.first && id !== h.second);
+    assert.ok(third, "a different role label cannot make either writer an independent reviewer");
+    await h.service.reconcile(h.task.id);
+    const candidates = workflowCandidates(
+      h.currentTask(),
+      h.state(),
+      h.service.records.participants(h.currentTask()),
+      [],
+      false,
+    );
+    assert.deepEqual(
+      candidates
+        .flatMap((candidate) => candidate.assignments ?? [])
+        .map((assignment) => assignment.participantId),
+      [third],
+    );
+
+    const legacy = h.state();
+    delete legacy.implementationParticipants;
+    invalidateFrom(legacy, "analysis");
+    legacy.plan.version++;
+    for (const node of legacy.plan.nodes) {
+      if (node.id === "analysis") node.id = "new-analysis";
+      node.dependsOn = node.dependsOn.map((id) => (id === "analysis" ? "new-analysis" : id));
+    }
+    assert.ok(legacy.nodes.analysis);
+    legacy.nodes["new-analysis"] = legacy.nodes.analysis;
+    delete legacy.nodes.analysis;
+    h.store.set(WORKFLOWS, h.task.id, legacy);
+    const restored = workflowState(h.store, h.currentTask(), legacy.userRevision);
+    assert.deepEqual(
+      [...implementationParticipants(restored)].sort(),
+      [h.first, h.second].sort(),
+      "the archived analyst/write node must recover A even after its current identity is gone",
+    );
+  } finally {
+    h.controller.abort();
+    h.close();
+  }
+});
+
+for (const receipt of ["completed", "malformed", "foreign", "resume", "legacy-blocked"] as const)
+  test(`a reviewer who changes artifacts is remembered before its ${receipt} status is parsed`, async () => {
+    const h = await harness();
+    try {
+      await h.worker.tick();
+      await h.worker.tick();
+      await h.finish("analysis");
+      await h.worker.tick();
+      writeFileSync(join(h.repo, "app.txt"), "implementation by A");
+      await h.finish("implement");
+      await h.worker.tick();
+      assert.equal(h.state().nodes.validate?.participantId, h.second);
+      assert.equal(implementationParticipants(h.state()).has(h.second), false);
+      writeFileSync(join(h.repo, "app.txt"), "implementation by A rewritten by reviewer B");
+      await h.finish(
+        "validate",
+        {
+          evidence: [{ command: "node review", result: "passed", description: "reviewer-rewrite" }],
+          ...(receipt === "foreign" ? { operationId: "foreign-previous-operation" } : {}),
+        },
+        receipt === "malformed" || receipt === "legacy-blocked"
+          ? "没有合法状态块，但已修改仓库。"
+          : undefined,
+      );
+      if (receipt === "resume")
+        await h.service.action(
+          { ...actor, messageId: "resume-before-settle" },
+          h.task.id,
+          "resume",
+        );
+      if (receipt === "legacy-blocked") {
+        const legacy = h.state();
+        assert.ok(legacy.nodes.validate);
+        legacy.nodes.validate.status = "blocked";
+        delete legacy.implementationParticipants;
+        h.store.set(WORKFLOWS, h.task.id, legacy);
+      }
+      await h.worker.tick();
+      assert.deepEqual(
+        [...implementationParticipants(h.state())].sort(),
+        [h.first, h.second].sort(),
+      );
+      assert.notEqual(h.state().nodes.validate?.status, "completed");
+      assert.equal(
+        h
+          .state()
+          .evidence.some(
+            (item) => item.participantId === h.second && item.source === "agent_review",
+          ),
+        false,
+      );
+      if (receipt === "resume") assert.equal(h.state().plan.version, 2);
+      const retryState = h.state();
+      assert.ok(retryState.nodes.validate);
+      retryState.nodes.validate.status = "blocked";
+      const retryCandidates = workflowCandidates(
+        h.currentTask(),
+        retryState,
+        h.service.records.participants(h.currentTask()),
+        [],
+        false,
+      );
+      assert.equal(
+        retryCandidates.some((candidate) =>
+          candidate.assignments?.some(
+            (assignment) =>
+              assignment.nodeId === "validate" &&
+              [h.first, h.second].includes(assignment.participantId),
+          ),
+        ),
+        false,
+        "neither earlier writer may be selected for another validation attempt",
+      );
+      assert.ok(
+        reportContract(h.state(), await workspaceRevision([h.repo]), []).some((reason) =>
+          reason.includes("独立"),
+        ),
+      );
+      // A foreign receipt must stay unmerged; only the writer attribution is recoverable.
+      if (receipt === "foreign") return;
+      const restarted = new TaskOrchestrator(h.options);
+      for (let step = 0; step < 16; step++) {
+        const validation = h.state().nodes.validate;
+        if (validation?.status === "dispatched") break;
+        for (const [nodeId, progress] of Object.entries(h.state().nodes))
+          if (progress.status === "dispatched") await h.finish(nodeId);
+        await h.service.reconcile(h.task.id);
+        await restarted.tick();
+      }
+      const next = h.state().nodes.validate;
+      assert.equal(next?.status, "dispatched", "a fresh independent review must remain possible");
+      assert.ok(next.participantId);
+      assert.notEqual(next.participantId, h.first);
+      assert.notEqual(next.participantId, h.second);
+      assert.ok(h.currentTask().participantIds.includes(next.participantId));
+      await h.finish("validate", {
+        evidence: [
+          { command: "node regression.test", result: "passed", description: "新的独立核验" },
+        ],
+      });
+      await restarted.tick();
+      assert.equal(
+        h.state().evidence.find((item) => item.description === "新的独立核验")?.source,
+        "agent_review",
+      );
+    } finally {
+      h.controller.abort();
+      h.close();
+    }
+  });
