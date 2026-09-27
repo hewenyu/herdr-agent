@@ -10,6 +10,11 @@ import { KeyedMutex } from "../core/mutex.js";
 import type { ActorContext, Participant, StoredMessage, Task } from "../core/types.js";
 import { verificationConfigRevision } from "../projects/verification-config.js";
 import type { InputDelivery } from "../tasks/input-delivery.js";
+import {
+  independentReviewer,
+  rememberImplementer,
+  restoreImplementationParticipants,
+} from "./authorship.js";
 import { inspectArtifact, publishBoard, publishOutput } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
@@ -120,6 +125,7 @@ export class WorkflowOrchestrator {
   }
 
   async assertDelivery(task: Task, state: WorkflowState): Promise<void> {
+    restoreImplementationParticipants(this.ports.store, state);
     const missing = reportContract(
       state,
       await workspaceRevision(task.directories),
@@ -169,8 +175,21 @@ export class WorkflowOrchestrator {
         await ports.attention(task, event);
         return;
       }
-      if (event.state === "done" && event.decision && !event.notified)
-        await ports.notify(task, event);
+      if (event.state === "done" && event.decision && !event.notified) {
+        try {
+          await ports.notify(task, event);
+        } catch (error) {
+          const safe = safeError(error);
+          if (!["workflow_report", "workflow_artifact"].includes(safe.code)) throw error;
+          // An old frozen delivery may fail the repaired evidence contract on restart.
+          // Make that visible instead of retrying the same invalid report every tick.
+          event.state = "attention";
+          event.error = safe;
+          ports.save(event);
+          await ports.attention(task, event);
+          return;
+        }
+      }
       if (
         event.decision?.action === "deliver" &&
         event.notified &&
@@ -779,6 +798,10 @@ export class WorkflowOrchestrator {
     if (!dispatch.nodeId || !dispatch.text || !dispatch.inputRevision)
       fail("workflow_dispatch", "派发缺少已保存任务书。");
     this.ports.assertCurrent(event);
+    const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
+    if (node?.role === "reviewer" && !independentReviewer(state, dispatch.participantId))
+      fail("workflow_review_author", "该评审委派属于历史实现者，请重新安排独立评审。");
+    if (node?.role === "implementer") rememberImplementer(state, dispatch.participantId);
     const old = state.nodes[dispatch.nodeId];
     state.nodes[dispatch.nodeId] = {
       status: "dispatched",

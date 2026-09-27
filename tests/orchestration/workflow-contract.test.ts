@@ -431,7 +431,12 @@ test("required artifacts must be declared for the current revision before a repo
     const revision = "current-source-revision";
     state.plan.requiredArtifacts = ["src/module.ts", "/repo/release-notes.md"];
     for (const node of state.plan.nodes)
-      state.nodes[node.id] = { status: "completed", attempt: 1, artifactRevision: revision };
+      state.nodes[node.id] = {
+        status: "completed",
+        attempt: 1,
+        artifactRevision: revision,
+        participantId: node.role === "implementer" ? "author" : "reviewer",
+      };
     state.report = {
       id: "immutable-report",
       path: "/state/report.md",
@@ -442,6 +447,7 @@ test("required artifacts must be declared for the current revision before a repo
     state.evidence = [
       {
         id: "independent-review",
+        participantId: "reviewer",
         source: "agent_review",
         description: "独立复核者实际运行命令。",
         command: "node test",

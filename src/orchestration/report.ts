@@ -5,6 +5,7 @@ import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
+import { independentReviewer } from "./authorship.js";
 import { boardDirectory } from "./board.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
@@ -28,6 +29,14 @@ export function reportContract(
     missing.push("仍有未处理阻塞问题");
   if (state.plan.nodes.some((node) => state.nodes[node.id]?.status !== "completed"))
     missing.push("计划节点尚未完成");
+  if (
+    state.plan.nodes.some(
+      (node) =>
+        node.role === "reviewer" &&
+        !independentReviewer(state, state.nodes[node.id]?.participantId),
+    )
+  )
+    missing.push("评审必须由未参与本任务实现的独立参与者完成");
   for (const required of state.plan.requiredArtifacts ?? [])
     if (
       !state.artifacts.some(
@@ -55,7 +64,11 @@ export function reportContract(
       !notRun &&
       !requiredCommands.length &&
       !current.some(
-        (item) => item.source === "agent_review" && item.command && item.result === "passed",
+        (item) =>
+          item.source === "agent_review" &&
+          item.command &&
+          item.result === "passed" &&
+          independentReviewer(state, item.participantId),
       )
     )
       missing.push("缺少独立 agent 实际重跑的本版本证据");
@@ -64,6 +77,7 @@ export function reportContract(
       !current.some(
         (item) =>
           item.source === "not_run" &&
+          independentReviewer(state, item.participantId) &&
           state.plan.nodes.some(
             (node) =>
               node.phase === "validating" && state.nodes[node.id]?.outputId === item.outputId,

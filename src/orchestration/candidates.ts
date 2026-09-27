@@ -1,4 +1,5 @@
 import type { Participant, Task } from "../core/types.js";
+import { independentReviewer } from "./authorship.js";
 import { readyNodes } from "./state.js";
 import type { VerificationCandidate } from "./verify.js";
 import type { WorkflowState } from "./workflow.js";
@@ -36,18 +37,12 @@ export function workflowCandidates(
   const blocked = Object.entries(state.nodes).filter(([, entry]) => entry.status === "blocked");
   const ready = readyNodes(state);
   const candidates: WorkflowCandidate[] = [];
-  const implementers = new Set(
-    state.plan.nodes
-      .filter((entry) => entry.role === "implementer")
-      .map((node) => state.nodes[node.id]?.participantId)
-      .filter(Boolean),
-  );
   const eligible = (nodeId: string) => {
     const node = state.plan.nodes.find((entry) => entry.id === nodeId);
     return available.filter(
       (entry) =>
         (!node?.participantId || node.participantId === entry.id) &&
-        (node?.role !== "reviewer" || !implementers.has(entry.id)),
+        (node?.role !== "reviewer" || independentReviewer(state, entry.id)),
     );
   };
   if (

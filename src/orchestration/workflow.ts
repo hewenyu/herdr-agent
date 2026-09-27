@@ -80,6 +80,8 @@ export interface WorkflowState {
   /** Existing user hash before adding the plan and phase. */
   userRevision: string;
   nodes: Record<string, NodeProgress>;
+  /** Cumulative implementation authors across retries, plan versions and source snapshots. */
+  implementationParticipants?: string[];
   issues: WorkflowIssue[];
   evidence: WorkflowEvidence[];
   artifacts: Array<{

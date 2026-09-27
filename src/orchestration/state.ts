@@ -1,13 +1,17 @@
 import { canonical, stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import { independentReviewer, restoreImplementationParticipants } from "./authorship.js";
 import type { StatusBlock } from "./status-block.js";
 import { templatePlan } from "./templates.js";
 import { validatePlan, WORKFLOWS, type WorkflowNode, type WorkflowState } from "./workflow.js";
 
 export function workflowState(store: Store, task: Task, userRevision: string): WorkflowState {
   const existing = store.get<WorkflowState>(WORKFLOWS, task.id);
-  if (existing) return existing;
+  if (existing) {
+    restoreImplementationParticipants(store, existing);
+    return existing;
+  }
   const plan = templatePlan(task, task.orchestration?.template);
   validatePlan(plan, task);
   const state: WorkflowState = {
@@ -19,6 +23,7 @@ export function workflowState(store: Store, task: Task, userRevision: string): W
       plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
     ),
     issues: [],
+    implementationParticipants: [],
     evidence: [],
     artifacts: [],
     consumedOutputs: [],
@@ -70,6 +75,12 @@ export function mergeStatus(
     block.status === "completed" && !block.blockers.length ? "completed" : "blocked";
   progress.error =
     block.blockers.join("；") || (block.status === "needs_work" ? "需要返工或补证据。" : undefined);
+  const independent =
+    node.role === "reviewer" && independentReviewer(state, progress.participantId);
+  if (node.role === "reviewer" && !independent) {
+    progress.status = "blocked";
+    progress.error = "实现参与者不能提供本任务的独立评审，请安排未参与实现的评审者。";
+  }
   for (const issue of block.issues) {
     let old = state.issues.find((entry) => entry.id === issue.id);
     // A renamed duplicate must not reset the open-set stall window.
@@ -85,11 +96,6 @@ export function mergeStatus(
       });
   }
   for (const [index, evidence] of block.evidence.entries()) {
-    const independent =
-      node.role === "reviewer" &&
-      state.plan.nodes
-        .filter((entry) => entry.role === "implementer")
-        .every((entry) => state.nodes[entry.id]?.participantId !== progress.participantId);
     state.evidence.push({
       ...evidence,
       id: stableId(outputId, String(index)),
