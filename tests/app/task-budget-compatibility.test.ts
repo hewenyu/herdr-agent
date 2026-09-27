@@ -62,6 +62,9 @@ test("task creation tool no longer advertises local execution quotas", () => {
   const schema = tool.parameters as {
     properties: Record<string, { properties: Record<string, unknown> }>;
   };
-  assert.deepEqual(Object.keys(schema.properties.orchestration?.properties ?? {}), ["mode"]);
+  assert.deepEqual(Object.keys(schema.properties.orchestration?.properties ?? {}), [
+    "mode",
+    "template",
+  ]);
   assert.deepEqual(Object.keys(schema.properties.discussion?.properties ?? {}), ["mode"]);
 });

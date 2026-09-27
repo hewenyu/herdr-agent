@@ -1,3 +1,4 @@
+import type { AppConfig } from "../config/types.js";
 import { fail, OperationError, safeError } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
 import type { Logger } from "../core/ports.js";
@@ -10,6 +11,11 @@ import type {
   TranscriptEntry,
   UserRequestSource,
 } from "../core/types.js";
+import type { WorkflowCandidate } from "../orchestration/candidates.js";
+import { reportText } from "../orchestration/report.js";
+import { WorkflowOrchestrator } from "../orchestration/runner.js";
+import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
+import type { ProjectCatalog } from "../projects/catalog.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
@@ -29,9 +35,16 @@ export interface OrchestrationDecision {
   reason: string;
   outputId?: string;
   participantId?: string;
+  reportId?: string;
+  candidateId?: string;
+  source?: "rule" | "jev" | "pi";
 }
 
-interface Dispatch {
+export interface Dispatch {
+  nodeId?: string;
+  text?: string;
+  inputRevision?: string;
+  artifactRevision?: string;
   operationId: string;
   participantId: string;
   state: "pending" | "sent" | "failed" | "uncertain";
@@ -48,6 +61,13 @@ export interface OrchestrationEvent {
   nextAttemptAt?: string;
   dispatches: Dispatch[];
   decision?: OrchestrationDecision;
+  selectionLogId?: string;
+  workflow?: {
+    candidate: WorkflowCandidate;
+    planVersion: number;
+    artifactRevision?: string;
+    applied?: boolean;
+  };
   error?: ReturnType<typeof safeError>;
   retiredBudgetRecovery?: { at: string; error: ReturnType<typeof safeError> };
   notified?: boolean;
@@ -59,6 +79,9 @@ export interface OrchestrationEvent {
 }
 
 export interface TaskOrchestratorOptions {
+  config?: AppConfig;
+  projects?: ProjectCatalog;
+  fetch?: typeof fetch;
   store: Store;
   engine: ConversationEngine;
   tasks(): TaskService;
@@ -93,9 +116,26 @@ export class TaskOrchestrator {
   private readonly active = new Map<string, Promise<void>>();
   private readonly clock: () => number;
   private admissionCursor = 0;
+  private readonly workflow: WorkflowOrchestrator;
 
   constructor(private readonly options: TaskOrchestratorOptions) {
     this.clock = options.clock ?? Date.now;
+    this.workflow = new WorkflowOrchestrator({
+      ...options,
+      current: (id) => this.current(id),
+      foregroundPending: (task) => this.foregroundPending(task),
+      revision: (task) => this.revision(task),
+      baseRevision: (task) => this.revision(task, false),
+      userMessages: (task) => this.userMessages(task),
+      events: (id) => this.events(id),
+      outputs: (id) => this.outputs(id),
+      save: (event) => this.save(event),
+      assertCurrent: (event) => this.assertCurrent(event),
+      reconcile: (event) => this.reconcileDispatches(event),
+      notify: (task, event) => this.notify(task, event),
+      attention: (task, event) => this.attention(task, event),
+      recoverNotification: (task, event) => this.recoverNotification(task, event),
+    });
   }
 
   async tick(): Promise<void> {
@@ -107,7 +147,11 @@ export class TaskOrchestrator {
       const index = (start + offset) % tasks.length;
       const task = tasks[index] as Task;
       this.admissionCursor = index + 1;
-      if (task.orchestration?.mode !== "model" || this.active.has(task.id)) continue;
+      if (
+        !["model", "workflow"].includes(task.orchestration?.mode ?? "") ||
+        this.active.has(task.id)
+      )
+        continue;
       const run = this.processTask(task.id)
         .catch((error) => {
           this.options.logger.error("任务调度暂未完成", {
@@ -178,7 +222,7 @@ export class TaskOrchestrator {
     );
   }
 
-  private revision(task: Task): string {
+  private revision(task: Task, includeWorkflow = true): string {
     const resumes = this.options.store
       .entries<{ action?: string; at?: string }>("task_actions")
       .filter(([id, action]) => id.startsWith(`${task.id}:`) && action.action === "resume")
@@ -194,6 +238,12 @@ export class TaskOrchestrator {
       ...this.userMessages(task).map((message) => message.id),
       ...resumes,
       ...mutations,
+      ...(includeWorkflow && task.orchestration?.mode === "workflow"
+        ? (() => {
+            const state = this.options.store.get<WorkflowState>(WORKFLOWS, task.id);
+            return state ? [String(state.plan.version), state.phase] : [];
+          })()
+        : []),
     );
   }
 
@@ -219,7 +269,7 @@ export class TaskOrchestrator {
     const task = this.options.store.get<Task>("tasks", taskId);
     if (
       !task ||
-      task.orchestration?.mode !== "model" ||
+      !["model", "workflow"].includes(task.orchestration?.mode ?? "") ||
       task.discussion.paused ||
       task.closeRequested ||
       task.completionRequest ||
@@ -257,6 +307,9 @@ export class TaskOrchestrator {
         message: "参与者输入投递尚未核验，自动调度已停止；不会重复发送。",
         outcome: "unknown",
       };
+    } else if (event.workflow && !event.workflow.applied) {
+      event.state = "pending";
+      event.error = undefined;
     } else if (event.dispatches.some((dispatch) => dispatch.state === "sent")) {
       event.state = "done";
       event.decision ??= {
@@ -280,6 +333,10 @@ export class TaskOrchestrator {
     let task = this.current(taskId);
     if (!task) return;
     if (this.foregroundPending(task)) return;
+    if (task.orchestration?.mode === "workflow") {
+      await this.workflow.process(task);
+      return;
+    }
     const events = this.events(task.id);
     const revision = this.revision(task);
     for (const event of events) {
@@ -498,32 +555,44 @@ export class TaskOrchestrator {
             )
           )
             fail("orchestration_duplicate", "本轮已安排该参与者，等待真实输出，不重复发送。");
-          const operationId = `${task.id}:send:${stableId(actor.messageId, participant.id, args.text)}`;
-          const dispatch: Dispatch = {
-            operationId,
-            participantId: participant.id,
-            state: "pending",
-          };
-          event.dispatches.push(dispatch);
-          this.save(event);
-          try {
-            const result = await this.options
-              .tasks()
-              .send(actor, task.id, participant.id, args.text, () => {
-                if (signal?.aborted) fail("cancelled", "本轮调度已取消，未执行输入。");
-                this.assertCurrent(event);
-              });
-            const delivery = result as { verified?: boolean; outcome?: string } | undefined;
-            if (!delivery?.verified)
-              throw new OperationError("delivery_unconfirmed", "参与者输入尚未确认。", "unknown");
-            dispatch.state = "sent";
-            this.save(event);
-            return result;
-          } catch (error) {
-            dispatch.state = safeError(error).outcome === "not_executed" ? "failed" : "uncertain";
-            this.save(event);
-            throw error;
-          }
+          const text = args.text;
+          return this.workflow.admit(
+            task,
+            task.kind === "discussion" || task.kind === "review" ? "read" : "write",
+            async () => {
+              const operationId = `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`;
+              const dispatch: Dispatch = {
+                operationId,
+                participantId: participant.id,
+                state: "pending",
+              };
+              event.dispatches.push(dispatch);
+              this.save(event);
+              try {
+                const result = await this.options
+                  .tasks()
+                  .send(actor, task.id, participant.id, text, () => {
+                    if (signal?.aborted) fail("cancelled", "本轮调度已取消，未执行输入。");
+                    this.assertCurrent(event);
+                  });
+                const delivery = result as { verified?: boolean; outcome?: string } | undefined;
+                if (!delivery?.verified)
+                  throw new OperationError(
+                    "delivery_unconfirmed",
+                    "参与者输入尚未确认。",
+                    "unknown",
+                  );
+                dispatch.state = "sent";
+                this.save(event);
+                return result;
+              } catch (error) {
+                dispatch.state =
+                  safeError(error).outcome === "not_executed" ? "failed" : "uncertain";
+                this.save(event);
+                throw error;
+              }
+            },
+          );
         },
       }));
   }
@@ -803,7 +872,13 @@ export class TaskOrchestrator {
     )
       return;
     let text = event.decision.reason;
-    if (event.decision.action === "deliver") {
+    if (event.decision.action === "deliver" && event.decision.reportId) {
+      const state = this.options.store.get<WorkflowState>(WORKFLOWS, task.id);
+      if (!state || state.report?.id !== event.decision.reportId)
+        fail("workflow_report", "交付报告引用已失效。");
+      await this.workflow.assertDelivery(task, state);
+      text = await reportText(state);
+    } else if (event.decision.action === "deliver") {
       const output = this.outputs(task.id).find(
         (item) => item.entry.id === event.decision?.outputId,
       );

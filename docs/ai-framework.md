@@ -2,6 +2,8 @@
 
 > Go 历史参考（基线 [7b75511](https://github.com/hewenyu/herdr-agent/blob/7b7551182bbc7ed962672720f54f7b06072888ee/README.md)）：本文保留旧实现与当时验证记录，不描述当前 Node 程序。当前能力请看 [实施设计](node-pi-design.md) 与 [验收证据](acceptance.md)。文中的 `internal/`、`cmd/` 源码路径均指该固定历史版本。
 
+> 当前版本说明（2026-09-27）：S3/S4 实施中的 Node 入口采用“规则 → Jev → LLM”，私聊 Jev 分类独立开关且默认关闭；只有显式开启才外发适用私聊原文及项目候选。配置 key 使新 AI 任务默认 workflow，失败/低置信度在同一候选集内由受限 pi 选择。项目显式 verify 可由 myrix 在固定任务 cwd 执行有限超时命令，固定 cwd 不代表沙箱；无配置时仅标 agent 复核或未运行。旧调度模式保留，僵局转用户裁决而非固定轮数截断。现行合同与验收边界见 [Node 实施设计](node-pi-design.md) 和 [Jev/LLM 设计](myrix-jev-llm-orchestration-design.md)。以下 Go 选型及模型统一入口约定保留为历史事实，不作为当前版本原则。
+
 更新日期：2026-09-17。目标是在现有 Go 服务中通过连续自然语言对话调用飞书任务工具，让用户配置 API 地址、模型和 key，仅支持 OpenAI Responses 与 Anthropic Messages。
 
 选择 **CloudWeGo Eino**，使用官方模型组件、agent 工具调用循环和原生 summarization middleware，不引入 Node.js。

@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { fail } from "../core/errors.js";
+import { validateVerificationConfig } from "../projects/verification-config.js";
 import type { AppConfig, MemoryConfig, ModelConfig } from "./types.js";
 
 export function modelProvider(value: string): ModelConfig["provider"] {
@@ -107,6 +108,27 @@ export function validateConfig(config: AppConfig, options: { requireFeishu?: boo
     }
   }
   validateMemory(config.memory);
+  if (config.jev) {
+    safeEndpoint(config.jev.baseUrl);
+    if (!config.jev.model.trim()) fail("jev_model", "Jev 模型不能为空。");
+    if (
+      !Number.isInteger(config.jev.timeoutMs) ||
+      config.jev.timeoutMs < 1 ||
+      config.jev.timeoutMs > 120_000
+    )
+      fail("jev_timeout", "Jev 单次超时必须为 1 到 120000 毫秒的整数。");
+    if (
+      !Number.isFinite(config.jev.confidenceThreshold) ||
+      config.jev.confidenceThreshold < 0 ||
+      config.jev.confidenceThreshold > 1
+    )
+      fail("jev_confidence", "Jev 置信门槛必须为 0 到 1。");
+    if (!Number.isSafeInteger(config.jev.stallRounds) || config.jev.stallRounds < 1)
+      fail("jev_stall", "僵局检测窗口必须为正整数。");
+    if (config.jev.ingressEnabled && !config.jev.apiKey.trim())
+      fail("jev_key", "启用私聊分类需要 Jev API key。");
+  }
+  for (const project of config.catalog.projects) validateVerificationConfig(project);
   for (const [owner, memory] of Object.entries(config.memory.users)) {
     if (!owner.trim() || owner !== owner.trim())
       fail("memory_user", "记忆用户标识不能为空或包含两侧空白。");

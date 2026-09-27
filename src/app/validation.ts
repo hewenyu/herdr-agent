@@ -49,7 +49,7 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
   if (discussion?.mode && discussion.mode !== "manual" && discussion.mode !== "round_robin")
     fail("input", "讨论模式无效。");
   const orchestration = input.orchestration === undefined ? undefined : object(input.orchestration);
-  if (orchestration && orchestration.mode !== "model" && orchestration.mode !== "manual")
+  if (orchestration && !["model", "manual", "workflow"].includes(String(orchestration.mode)))
     fail("input", "调度模式无效。");
   return {
     kind: kind as TaskKind,
@@ -75,7 +75,12 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
     // must retain their canonical task identity. Creation never stores/enforces them.
     orchestration: orchestration
       ? {
-          mode: orchestration.mode as "model" | "manual",
+          mode: orchestration.mode as "model" | "manual" | "workflow",
+          ...(orchestration.template !== undefined
+            ? {
+                template: String(orchestration.template) as "discussion" | "development" | "bugfix",
+              }
+            : {}),
           maxDecisions:
             orchestration.maxDecisions === undefined
               ? undefined

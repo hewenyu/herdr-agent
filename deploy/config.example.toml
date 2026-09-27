@@ -52,11 +52,18 @@ poll_interval = "30s"
 # [tasks.projects.example]
 # directories = ["~/code/example", "~/code/shared-library"]
 # agent = "codex"
+# verify = ["npm run check"] # optional owner commands; absent/[] runs nothing
+# verify_timeout = "2m" # per command: 1ms..10m; default 2m
+# Runs with this account's permissions in the task's actual primary cwd/worktree.
+# A fixed cwd is NOT an OS sandbox. Models cannot supply commands or another cwd.
+# Edit existing SQLite projects in the local Web; changing a verified project's
+# directories requires that local configuration path to authorize the new scope.
 
 [ai]
 # Requires tasks.enabled=true. pi handles this tool's orchestration only.
-# In AI mode the model decides conversations and tool calls; keyword branches
-# and fixed business replies must not replace the model's decisions.
+# Routing is rules -> opt-in Jev intent/project choice -> pi conversation/tools.
+# With jev.ingress_enabled=false, ordinary AI private text still goes to pi.
+# Rules enforce protocol/identity/receipts; they do not guess business intent.
 enabled = false
 provider = "openai-responses" # or "anthropic-messages"
 model = ""
@@ -66,6 +73,23 @@ api_key = "" # model key is read from TOML; keep this file private
 # Changing model configuration requires service restart.
 timeout = "2m"
 context_tokens = 50000 # integer 16384..1048576; older context is summarized
+
+[jev]
+# A key defaults NEW AI tasks to workflow unless a mode was explicitly selected.
+# Existing model/manual/round_robin tasks retain their mode. Missing key preserves
+# existing creation defaults. Failed/low-confidence workflow choices use pi's
+# restricted orchestration_decide on the same candidates and record the source.
+api_key = "" # TOML only; never commit a real key or expose it in logs/reports/Web
+base_url = "https://api.typesafe.ai"
+model = "jev-1.13.0"
+timeout = "10s" # per request: 1ms..2m, not a task duration quota
+confidence_threshold = 0.8 # number 0..1, not a correctness guarantee
+ingress_enabled = false
+# Enabling ingress sends eligible private text and registered project names to
+# third-party Jev, not whole history/repositories/attachments. Low confidence,
+# failure, complex requests or uncertain projects retain the original pi route.
+# A key alone does not enable this data flow. Restart after changing [jev].
+stall_rounds = 3 # unchanged open issues -> user decision, never forced closure
 
 [memory]
 # Compatibility name "file" means SQLite local summary storage in this version.

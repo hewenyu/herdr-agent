@@ -7,6 +7,7 @@ import { expandPath } from "../config/load.js";
 import { fail, OperationError } from "../core/errors.js";
 import type { AgentKind, Catalog, Project } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import { validateVerificationConfig } from "./verification-config.js";
 
 const execute = promisify(execFile);
 
@@ -37,25 +38,55 @@ export class ProjectCatalog {
     return project;
   }
 
-  async save(input: Project, makeDefault = false): Promise<Project> {
+  async save(
+    input: Project,
+    makeDefault = false,
+    options: { localConfiguration?: boolean } = {},
+  ): Promise<Project> {
     projectName(input.name);
     if (input.agent !== "codex" && input.agent !== "claude")
       fail("project_agent", "agent 必须是 codex 或 claude。");
     if (!input.directories.length) fail("project_directory", "至少需要一个项目目录。");
+    validateVerificationConfig(input);
     const directories = [...new Set(input.directories.map((path) => expandPath(path, this.home)))];
     await this.verifyDirectories(directories);
+    const assertVerificationScope = (previous: Project | undefined) => {
+      if (
+        previous?.verify?.length &&
+        !options.localConfiguration &&
+        JSON.stringify(previous.directories) !== JSON.stringify(directories)
+      )
+        fail(
+          "project_verify_scope",
+          "项目已配置本机验证命令，变更目录需要在本机项目设置中重新确认。",
+        );
+    };
+    assertVerificationScope(this.snapshot().projects.find((entry) => entry.name === input.name));
     await this.ensureGit(directories[0] as string);
-    const project = { ...input, directories };
-    this.store.transaction(() => {
+    // Model/chat callers omit verification fields and cannot erase local owner settings.
+    return this.store.transaction(() => {
       const catalog = this.snapshot();
+      const previous = catalog.projects.find((entry) => entry.name === input.name);
+      assertVerificationScope(previous);
+      const project = {
+        ...previous,
+        ...input,
+        directories,
+        ...(input.verify === undefined && previous?.verify !== undefined
+          ? { verify: previous.verify }
+          : {}),
+        ...(input.verifyTimeoutMs === undefined && previous?.verifyTimeoutMs !== undefined
+          ? { verifyTimeoutMs: previous.verifyTimeoutMs }
+          : {}),
+      };
       catalog.projects = [
         ...catalog.projects.filter((entry) => entry.name !== input.name),
         project,
       ];
       if (makeDefault || !catalog.defaultProject) catalog.defaultProject = input.name;
       this.store.set("catalog", "current", catalog);
+      return project;
     });
-    return project;
   }
 
   async create(name: string, agent: AgentKind = "codex"): Promise<Project> {

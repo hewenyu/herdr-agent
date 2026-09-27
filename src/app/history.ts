@@ -100,6 +100,7 @@ export function historySnapshot(context: ApplicationContext, requestedOwner?: st
   const secrets = [
     context.config.feishu.appSecret,
     context.config.ai.apiKey,
+    context.config.jev?.apiKey ?? "",
     context.config.memory.apiKey,
     ...Object.values(context.config.memory.users).map((memory) => memory.apiKey),
   ].filter(Boolean);

@@ -1,0 +1,235 @@
+import { createHash } from "node:crypto";
+import type { Outbox } from "../app/outbox.js";
+import { OperationError, safeError } from "../core/errors.js";
+import { canonical, stableId } from "../core/ids.js";
+import { KeyedMutex } from "../core/mutex.js";
+import type { PlatformPort } from "../core/ports.js";
+import type { StoredMessage } from "../core/types.js";
+import type { Store } from "../storage/store.js";
+
+export interface ReportEnvelope {
+  taskId: string;
+  eventId: string;
+  reportId: string;
+  reportHash: string;
+  chatId: string;
+  text: string;
+  card: Record<string, unknown>;
+  channel: "platform" | "web";
+}
+
+export interface ReportDelivery extends ReportEnvelope {
+  version: 1;
+  fingerprint: string;
+  bodyId: string;
+  cardId: string;
+  cardState: "prepared" | "sending" | "delivered" | "uncertain" | "retryable";
+  cardMessageId?: string;
+  webBodyId?: string;
+  webCardId?: string;
+  error?: ReturnType<typeof safeError>;
+  updatedAt: string;
+}
+
+const namespace = "workflow_report_deliveries";
+
+/** Two independently recoverable notification components, never a dispatch authority. */
+export class ReportDeliveries {
+  private readonly mutex = new KeyedMutex();
+  constructor(
+    private readonly store: Store,
+    private readonly outbox: Outbox,
+    private readonly platform: () => PlatformPort | undefined,
+  ) {}
+
+  prepare(input: ReportEnvelope): ReportDelivery {
+    if (createHash("sha256").update(input.text).digest("hex") !== input.reportHash)
+      throw new OperationError("workflow_report", "报告正文与冻结版本不匹配。");
+    const previous = this.store.get<ReportDelivery>(namespace, input.eventId);
+    if (previous) {
+      if (
+        !valid(previous) ||
+        previous.taskId !== input.taskId ||
+        previous.reportId !== input.reportId ||
+        previous.reportHash !== input.reportHash ||
+        previous.text !== input.text ||
+        previous.chatId !== input.chatId ||
+        previous.channel !== input.channel
+      )
+        throw new OperationError("report_delivery_conflict", "报告送达回执与原报告不匹配。");
+      return previous;
+    }
+    const prefix = `workflow-report:${input.taskId}:${input.eventId}:${input.reportId}`;
+    const record: ReportDelivery = {
+      ...structuredClone(input),
+      version: 1,
+      fingerprint: fingerprint(input),
+      bodyId: `${prefix}:body`,
+      cardId: `${prefix}:card`,
+      cardState: "prepared",
+      updatedAt: new Date().toISOString(),
+    };
+    this.save(record);
+    return record;
+  }
+
+  async send(input: ReportEnvelope): Promise<ReportDelivery> {
+    return this.mutex.run(input.eventId, async () => {
+      const record = this.prepare(input);
+      if (record.channel !== "platform")
+        throw new OperationError("report_channel", "网页报告需页面确认展示。");
+      // Outbox freezes text and resumes only confirmed-unsent parts.
+      await this.outbox.send(record.chatId, record.text, record.bodyId);
+      if (record.cardState === "delivered") return record;
+      if (["sending", "uncertain"].includes(record.cardState))
+        throw new OperationError(
+          "delivery_uncertain",
+          "报告摘要卡片送达未知，不能自动重发。",
+          "unknown",
+        );
+      const platform = this.platform();
+      if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
+      record.cardState = "sending";
+      this.save(record);
+      try {
+        const id = await platform.sendCard(record.chatId, record.card, stableId(record.cardId));
+        if (!id)
+          throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
+        record.cardMessageId = id;
+        record.cardState = "delivered";
+        record.error = undefined;
+        this.save(record);
+      } catch (error) {
+        record.error = safeError(error);
+        record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+        this.save(record);
+        throw error;
+      }
+      return record;
+    });
+  }
+
+  bindWeb(record: ReportDelivery, bodyId: string, cardId: string): void {
+    if (
+      record.channel !== "web" ||
+      !valid(record) ||
+      (record.webBodyId && record.webBodyId !== bodyId) ||
+      (record.webCardId && record.webCardId !== cardId)
+    )
+      throw new OperationError("report_delivery_conflict", "网页报告消息归属不匹配。");
+    this.save({ ...record, webBodyId: bodyId, webCardId: cardId });
+  }
+
+  async confirmed(taskId: string, eventId: string, reportId: string): Promise<boolean> {
+    const record = this.store.get<ReportDelivery>(namespace, eventId);
+    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (record.channel === "web") {
+      const body = record.webBodyId
+        ? this.store.get<StoredMessage>("messages", record.webBodyId)
+        : undefined;
+      const card = record.webCardId
+        ? this.store.get<StoredMessage>("messages", record.webCardId)
+        : undefined;
+      return (
+        body?.taskId === taskId &&
+        card?.taskId === taskId &&
+        body.delivery === "delivered" &&
+        card.delivery === "delivered" &&
+        body.text === record.text &&
+        card.text === reportSummaryText(record.card)
+      );
+    }
+    if (
+      this.outbox.receipt(record.bodyId)?.state !== "delivered" ||
+      record.cardState !== "delivered" ||
+      !record.cardMessageId
+    )
+      return false;
+    try {
+      // This delivered-only call validates the complete existing envelope without sending.
+      await this.outbox.send(record.chatId, record.text, record.bodyId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  retryable(taskId: string, eventId: string, reportId: string): boolean {
+    const record = this.store.get<ReportDelivery>(namespace, eventId);
+    if (!record) return true;
+    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (record.channel === "web") return true;
+    const body = this.outbox.receipt(record.bodyId);
+    return (
+      (!body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
+      ["prepared", "retryable", "delivered"].includes(record.cardState)
+    );
+  }
+
+  private save(record: ReportDelivery): void {
+    this.store.set(namespace, record.eventId, { ...record, updatedAt: new Date().toISOString() });
+  }
+
+  pendingInChat(chatId: string): boolean {
+    return this.store
+      .list<ReportDelivery>(namespace)
+      .some(
+        (record) =>
+          record.chatId === chatId &&
+          record.channel === "platform" &&
+          (!valid(record) ||
+            record.cardState !== "delivered" ||
+            this.outbox.receipt(record.bodyId)?.state !== "delivered"),
+      );
+  }
+}
+
+export function reportSummaryText(card: Record<string, unknown>): string {
+  const value = card as {
+    header?: { title?: { content?: string } };
+    body?: { elements?: Array<{ content?: string }> };
+  };
+  return [
+    value.header?.title?.content ?? "报告摘要",
+    ...(value.body?.elements ?? []).map((entry) => entry.content ?? ""),
+  ].join("\n\n");
+}
+
+function fingerprint(input: ReportEnvelope): string {
+  return stableId(
+    canonical({
+      taskId: input.taskId,
+      eventId: input.eventId,
+      reportId: input.reportId,
+      reportHash: input.reportHash,
+      chatId: input.chatId,
+      text: input.text,
+      card: input.card,
+      channel: input.channel,
+    }),
+  );
+}
+function valid(record: ReportDelivery): boolean {
+  const prefix = `workflow-report:${record.taskId}:${record.eventId}:${record.reportId}`;
+  return (
+    record.version === 1 &&
+    record.bodyId === `${prefix}:body` &&
+    record.cardId === `${prefix}:card` &&
+    record.fingerprint === fingerprint(record) &&
+    createHash("sha256").update(record.text).digest("hex") === record.reportHash
+  );
+}
+function matches(
+  record: ReportDelivery | undefined,
+  taskId: string,
+  eventId: string,
+  reportId: string,
+): record is ReportDelivery {
+  return (
+    !!record &&
+    valid(record) &&
+    record.taskId === taskId &&
+    record.eventId === eventId &&
+    record.reportId === reportId
+  );
+}

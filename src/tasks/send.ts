@@ -106,7 +106,7 @@ export async function relayDiscussion(
       )
     : undefined;
   if (
-    task.orchestration?.mode === "model" ||
+    ["model", "workflow"].includes(task.orchestration?.mode ?? "") ||
     task.kind !== "discussion" ||
     task.discussion.mode !== "round_robin" ||
     (task.discussion.activeParticipant !== participant.id && !departedActive) ||

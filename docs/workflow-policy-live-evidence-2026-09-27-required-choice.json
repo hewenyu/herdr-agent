@@ -1,0 +1,55 @@
+{
+  "at": "2026-09-27T04:21:53.125Z",
+  "kind": "real_pi_with_synthetic_inputs_no_business_effects",
+  "model": "kimi-k2.5",
+  "protocol": "openai-responses",
+  "transportOverrides": {
+    "nonStrictTools": false,
+    "autoToolChoice": false
+  },
+  "passed": false,
+  "phase": "planner",
+  "failure": "model_failed",
+  "requests": [
+    {
+      "phase": "planner",
+      "method": "POST",
+      "tools": [
+        {
+          "name": "orchestration_plan"
+        }
+      ],
+      "toolChoice": "required",
+      "streaming": true,
+      "status": 400,
+      "headersMs": 1531,
+      "error": {
+        "type": "invalid_request_error",
+        "message": "Invalid request Error"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "phase": "planner",
+      "stopReason": "error",
+      "error": "模型响应失败",
+      "toolCalls": [],
+      "usage": {
+        "input": 0,
+        "output": 0
+      }
+    },
+    {
+      "phase": "planner",
+      "stopReason": "error",
+      "error": "模型响应失败",
+      "toolCalls": [],
+      "usage": {
+        "input": 0,
+        "output": 0
+      }
+    }
+  ],
+  "limits": "Synthetic inputs only. No real participants, messages, project writes or verification commands."
+}

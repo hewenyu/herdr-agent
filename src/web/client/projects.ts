@@ -34,10 +34,24 @@ function editProject(action: Action, project?: Project) {
     ],
     project?.agent ?? "codex",
   );
+  const verify = field(
+    "本机验证命令",
+    project?.verify?.join("\n"),
+    "textarea",
+    "可选，每行一条。myrix 将以本机权限在任务主目录运行；留空关闭新的验证运行。",
+  );
+  const verifyTimeout = field(
+    "单条验证超时（毫秒）",
+    String(project?.verifyTimeoutMs ?? 120_000),
+    "number",
+    "1 到 600000 毫秒。超时或任务取消会停止命令进程组。",
+  );
   body.append(
     name.wrapper,
     directories.wrapper,
     agent.wrapper,
+    verify.wrapper,
+    verifyTimeout.wrapper,
     actions(
       button("取消", closeModal),
       button(
@@ -55,6 +69,8 @@ function editProject(action: Action, project?: Project) {
                 .map((path) => path.trim())
                 .filter(Boolean),
               agent: agent.input.value,
+              verify: verify.input.value.split("\n").filter((command) => command.trim()),
+              verifyTimeoutMs: Number(verifyTimeout.input.value),
             })
           )
             closeModal();

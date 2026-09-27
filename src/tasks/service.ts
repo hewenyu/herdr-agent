@@ -186,13 +186,21 @@ export class TaskService {
     participantId: string | undefined,
     text: string,
     beforeSend?: () => void,
+    workflowOperationId?: string,
   ): Promise<unknown> {
     return this.locks.run(id, async () => {
       beforeSend?.();
       const task = this.records.get(actor, id);
+      if (
+        workflowOperationId &&
+        (actor.source !== "system" ||
+          task.orchestration?.mode !== "workflow" ||
+          !workflowOperationId.startsWith(`${task.id}:workflow:`))
+      )
+        fail("task_scope", "工作流投递标识只能用于当前任务的系统调度。");
       const participant = this.selectParticipant(task, participantId);
       this.associateUserRequest(actor, task);
-      if (task.orchestration?.mode !== "model") {
+      if (!["model", "workflow"].includes(task.orchestration?.mode ?? "")) {
         this.pauseScheduling(task);
       }
       return sendParticipant(
@@ -200,7 +208,7 @@ export class TaskService {
         task,
         participant,
         text,
-        `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
+        workflowOperationId ?? `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
         currentUserRequest(this.context.store, actor),
         beforeSend,
       );
@@ -458,7 +466,7 @@ export class TaskService {
             (participant) =>
               participant.status !== "removed" &&
               (!participant.started ||
-                (task.orchestration?.mode !== "model" &&
+                (!["model", "workflow"].includes(task.orchestration?.mode ?? "") &&
                   participant.id === task.participantIds[0] &&
                   !participant.initialSent)),
           );

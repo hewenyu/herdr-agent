@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { fail, OperationError } from "../core/errors.js";
 import type { AgentKind, Catalog, Project } from "../core/types.js";
+import { validateVerificationConfig } from "../projects/verification-config.js";
 import { defaultStateDir } from "./state-path.js";
 import type { AppConfig, MemoryConfig } from "./types.js";
 import { modelProvider } from "./validate.js";
@@ -112,12 +113,18 @@ function project(name: string, raw: Fields, home: string): Project {
   const agent = text(raw.agent, "codex");
   if (agent !== "codex" && agent !== "claude")
     fail("project_agent", "项目 agent 只能为 codex 或 claude。");
+  const verification: Pick<Project, "verify" | "verifyTimeoutMs"> = {};
+  if (raw.verify !== undefined) verification.verify = raw.verify as string[];
+  if (raw.verify_timeout !== undefined)
+    verification.verifyTimeoutMs = duration(raw.verify_timeout, 120_000);
+  validateVerificationConfig(verification);
   return {
     name,
     directories: directories
       .filter((item): item is string => typeof item === "string")
       .map((item) => expandPath(item, home)),
     agent: agent as AgentKind,
+    ...verification,
   };
 }
 
@@ -132,6 +139,7 @@ export function loadConfig(
     ui = fields(raw.ui);
   const tasks = fields(raw.tasks),
     ai = fields(raw.ai),
+    jev = fields(raw.jev),
     rt = fields(raw.runtime);
   const credentials = {
     ...repositoryEnv(options.cwd ?? process.cwd()),
@@ -211,6 +219,15 @@ export function loadConfig(
       contextTokens: number(ai.context_tokens, 50_000),
     },
     memory: memory(fields(raw.memory)),
+    jev: {
+      apiKey: text(jev.api_key),
+      baseUrl: text(jev.base_url, "https://api.typesafe.ai"),
+      model: text(jev.model, "jev-1.13.0"),
+      timeoutMs: duration(jev.timeout, 10_000),
+      confidenceThreshold: number(jev.confidence_threshold, 0.8),
+      ingressEnabled: bool(jev.ingress_enabled, false),
+      stallRounds: number(jev.stall_rounds, 3),
+    },
     catalog,
     mirrorDefaultOn: bool(fields(raw.mirror).default_on, false),
     runtime: {

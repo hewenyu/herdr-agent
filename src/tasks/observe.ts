@@ -254,7 +254,10 @@ export async function flushPendingTaskEvents(
     const participant = context.store.get<Participant>("participants", pending.participantId);
     if (!participant)
       throw new OperationError("participant_missing", "待转发发言的参与者记录不存在。");
-    if (latest.get(pending.participantId) !== key) {
+    const isLatest = latest.get(pending.participantId) === key;
+    // Workflow binds each settled fact to its dispatch. A later stale protocol
+    // record must not erase an earlier valid reply from the same transcript page.
+    if (!isLatest && task.orchestration?.mode !== "workflow") {
       context.store.delete("pending_relays", key);
       continue;
     }
@@ -278,6 +281,10 @@ export async function flushPendingTaskEvents(
           });
         context.store.delete("participant_awaiting_output", participant.id);
       });
+    }
+    if (!isLatest) {
+      context.store.delete("pending_relays", key);
+      continue;
     }
     if (await relayDiscussion(context, task, participant, pending.outputId, pending.text))
       context.store.delete("pending_relays", key);

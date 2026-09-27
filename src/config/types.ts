@@ -18,6 +18,16 @@ export interface MemoryConfig {
   users: Record<string, Omit<MemoryConfig, "users">>;
 }
 
+export interface JevConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  timeoutMs: number;
+  confidenceThreshold: number;
+  ingressEnabled: boolean;
+  stallRounds: number;
+}
+
 export interface AppConfig {
   stateDir: string;
   feishu: { appId: string; appSecret: string; allowedOpenIds: string[]; notifyChatId: string };
@@ -25,6 +35,8 @@ export interface AppConfig {
   ui: { listen: string; maxCols: number; tailLines: number; notifyCooldownMs: number };
   tasks: { enabled: boolean; pollIntervalMs: number };
   ai: ModelConfig;
+  /** Optional for historical embedded configurations; private ingress remains opt-in. */
+  jev?: JevConfig;
   memory: MemoryConfig;
   catalog: Catalog;
   mirrorDefaultOn: boolean;
