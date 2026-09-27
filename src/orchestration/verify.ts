@@ -18,6 +18,8 @@ export interface VerificationCandidate {
   configRevision: string;
   artifactRevision: string;
   description: string;
+  /** New selection after a confirmed lifecycle cancellation; replay keeps the old identity. */
+  retryOf?: string;
 }
 
 export interface VerificationRun extends VerificationCandidate {
@@ -57,6 +59,16 @@ const blocks = (run: VerificationRun): boolean =>
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const now = (): string => new Date().toISOString();
+const runId = (taskId: string, candidate: VerificationCandidate): string =>
+  digest([
+    taskId,
+    candidate.commandIndex,
+    candidate.configRevision,
+    candidate.artifactRevision,
+    ...(candidate.retryOf ? [candidate.retryOf] : []),
+  ]);
+const safelyCancelled = (run: VerificationRun): boolean =>
+  run.status === "cancelled" && run.exitConfirmed;
 
 function groupExists(pid: number): boolean {
   try {
@@ -114,12 +126,23 @@ export class VerificationRunner {
     if (!task.project) return [];
     const project = this.options.projects.get(task.project);
     const configRevision = verificationConfigRevision(project);
-    return (project.verify ?? []).map((command, commandIndex) => ({
-      commandIndex,
-      configRevision,
-      artifactRevision,
-      description: `运行项目已配置的验证命令 ${commandIndex + 1}：${command}`,
-    }));
+    return (project.verify ?? []).flatMap((command, commandIndex) => {
+      const candidate: VerificationCandidate = {
+        commandIndex,
+        configRevision,
+        artifactRevision,
+        description: `运行项目已配置的验证命令 ${commandIndex + 1}：${command}`,
+      };
+      let previous = this.options.store.get<VerificationRun>(namespace, runId(task.id, candidate));
+      while (previous && safelyCancelled(previous)) {
+        candidate.retryOf = previous.id;
+        previous = this.options.store.get<VerificationRun>(namespace, runId(task.id, candidate));
+      }
+      return previous &&
+        ["failed", "timed_out", "cancelled", "unknown", "not_started"].includes(previous.status)
+        ? []
+        : [candidate];
+    });
   }
 
   run(
@@ -129,12 +152,7 @@ export class VerificationRunner {
   ): Promise<VerificationRun> {
     if (!candidate.artifactRevision || !candidate.configRevision)
       fail("verify_revision", "验证运行必须绑定配置与产物版本。");
-    const id = digest([
-      task.id,
-      candidate.commandIndex,
-      candidate.configRevision,
-      candidate.artifactRevision,
-    ]);
+    const id = runId(task.id, candidate);
     const active = this.active.get(id);
     if (active) return active.result;
     const previous = this.options.store.get<VerificationRun>(namespace, id);
@@ -191,6 +209,18 @@ export class VerificationRunner {
     if (process.platform === "win32")
       fail("verify_platform", "当前验证执行器需要 POSIX 进程组支持。");
     const { project, command } = this.configuration(task, candidate);
+    if (candidate.retryOf) {
+      const previous = this.options.store.get<VerificationRun>(namespace, candidate.retryOf);
+      if (
+        !previous ||
+        !safelyCancelled(previous) ||
+        previous.taskId !== task.id ||
+        previous.commandIndex !== candidate.commandIndex ||
+        previous.configRevision !== candidate.configRevision ||
+        previous.artifactRevision !== candidate.artifactRevision
+      )
+        fail("verify_retry", "只能重新选择同任务、同配置和产物版本且已安全取消的验证。");
+    }
     const primary = task.directories[0];
     if (!primary) fail("verify_directory", "验证任务缺少主工作目录。");
     const directories = task.directories.map((directory) => realpathSync(directory));
@@ -246,6 +276,7 @@ export class VerificationRunner {
         return this.save({
           ...record,
           status: "cancelled",
+          exitConfirmed: true,
           finishedAt: now(),
           error: "cancelled_before_start",
         });

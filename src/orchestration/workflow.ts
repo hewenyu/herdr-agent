@@ -37,6 +37,8 @@ export interface WorkflowPlan {
 }
 
 export interface WorkflowIssue {
+  /** Set only by myrix for configured verification; participant IDs remain independent. */
+  verificationCommandIndex?: number;
   id: string;
   description: string;
   status: "open" | "resolved" | "deferred";

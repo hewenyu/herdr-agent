@@ -5,7 +5,7 @@ import type {
   TaskOrchestratorOptions,
 } from "../app/task-orchestrator.js";
 import { fail, safeError } from "../core/errors.js";
-import { now, stableId } from "../core/ids.js";
+import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { ActorContext, Participant, StoredMessage, Task } from "../core/types.js";
 import { verificationConfigRevision } from "../projects/verification-config.js";
@@ -291,18 +291,6 @@ export class WorkflowOrchestrator {
         : [];
     verify = verify.filter(
       (candidate) =>
-        !this.verification
-          ?.list(task.id)
-          .some(
-            (run) =>
-              run.commandIndex === candidate.commandIndex &&
-              run.configRevision === candidate.configRevision &&
-              run.artifactRevision === candidate.artifactRevision &&
-              ["failed", "timed_out", "cancelled", "unknown", "not_started"].includes(run.status),
-          ),
-    );
-    verify = verify.filter(
-      (candidate) =>
         !state.evidence.some(
           (item) =>
             item.verificationId &&
@@ -363,8 +351,9 @@ export class WorkflowOrchestrator {
       const previous = event.selectionLogId
         ? ports.store.get<DecisionLog>("workflow_decisions", event.selectionLogId)
         : undefined;
+      // Local deferrals refund retries, but each selection keeps immutable evidence.
       if (previous?.state !== "selected")
-        event.selectionLogId = `${event.id}:selection:${event.attempts}`;
+        event.selectionLogId = `${event.id}:selection:${newId("attempt")}`;
       ports.save(event);
       const selection =
         previous?.state === "selected" && previous.revision === event.userRevision && previous.final
@@ -854,11 +843,22 @@ export class WorkflowOrchestrator {
           verificationId: run.id,
           configRevision: run.configRevision,
         });
-      if (result !== "passed") {
-        const id = `verify-${candidate.commandIndex}`;
-        const existing = state.issues.find((issue) => issue.id === id);
+      const id = `verify-${candidate.commandIndex}`;
+      const existing = state.issues.find(
+        (issue) =>
+          issue.raisedBy === "myrix" &&
+          (issue.verificationCommandIndex === candidate.commandIndex ||
+            (issue.verificationCommandIndex === undefined && issue.id === id)),
+      );
+      if (result === "passed" && existing) {
+        existing.status = "resolved";
+        existing.description = `${run.command} 已取得当前版本成功证据。`;
+        existing.evidenceRefs.push(run.id);
+      } else if (result !== "passed") {
         const issue = {
-          id,
+          id:
+            existing?.id ?? (state.issues.some((issue) => issue.id === id) ? newId("verify") : id),
+          verificationCommandIndex: candidate.commandIndex,
           status: "open" as const,
           blocking: true,
           description: `${run.command} 未取得当前版本成功证据。`,
@@ -881,17 +881,22 @@ export class WorkflowOrchestrator {
     const safe = safeError(error);
     event.error = safe;
     if (
-      ["orchestration_superseded", "workflow_artifact_changed"].includes(safe.code) ||
-      !this.ports.current(task.id)
-    )
-      event.state = "superseded";
-    else if (
       safe.code === "workflow_verify_unknown" ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
     )
       event.state = "attention";
-    else if (event.attempts >= 3) event.state = "attention";
+    else if (
+      ["orchestration_superseded", "workflow_artifact_changed"].includes(safe.code) ||
+      !this.ports.current(task.id)
+    )
+      event.state = "superseded";
+    else if (["orchestration_deferred", "stopping", "cancelled"].includes(safe.code)) {
+      // These local guards prove the deferred step never crossed its effect boundary.
+      event.state = event.workflow?.applied ? "done" : "pending";
+      if (!event.workflow?.applied) event.attempts = Math.max(0, event.attempts - 1);
+      event.nextAttemptAt = undefined;
+    } else if (event.attempts >= 3) event.state = "attention";
     else {
       event.state = "pending";
       event.nextAttemptAt = new Date(Date.now() + (this.ports.retryDelayMs ?? 2000)).toISOString();

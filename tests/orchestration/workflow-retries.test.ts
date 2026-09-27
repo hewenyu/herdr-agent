@@ -5,7 +5,9 @@ import test from "node:test";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import type { Participant, Task } from "../../src/core/types.js";
+import type { DecisionLog } from "../../src/orchestration/decision-log.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
+import { TaskService } from "../../src/tasks/service.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
@@ -47,12 +49,13 @@ async function harness() {
     orchestration: { mode: "workflow" },
   });
   await h.service.reconcile(task.id);
+  const control = new AbortController();
   const options = {
     store: h.store,
     engine,
     tasks: () => h.service,
     tools: () => [],
-    signal: new AbortController().signal,
+    signal: control.signal,
     logger,
     config: h.config,
     projects: h.catalog,
@@ -66,7 +69,29 @@ async function harness() {
     assert.ok(event);
     return event;
   };
-  return { ...h, task, options, worker, events, dispatch, calls, fail };
+  const foreground = (state: "queued" | "done") => {
+    h.store.set("inbox", "foreground", {
+      id: "foreground",
+      type: "message",
+      payload: { chatId: task.chatId, text: "新要求待处理" },
+      actor: { ...actor, taskId: task.id },
+      state,
+    });
+  };
+  return {
+    ...h,
+    serviceOptions: h.options,
+    task,
+    engine,
+    control,
+    options,
+    worker,
+    events,
+    dispatch,
+    calls,
+    fail,
+    foreground,
+  };
 }
 
 const refuse = () =>
@@ -221,3 +246,152 @@ for (const stage of ["plan", "selection"] as const) {
     });
   }
 }
+
+test("repeated foreground deferrals retain immutable selection logs and all input retries", async () => {
+  const h = await harness();
+  try {
+    await h.worker.tick();
+    const handler = h.engine.handler;
+    assert.ok(handler);
+    h.engine.handler = async (input) => {
+      const result = await handler(input);
+      if (input.tools[0]?.name === "orchestration_decide") h.foreground("queued");
+      return result;
+    };
+    const logs: DecisionLog[] = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await new TaskOrchestrator(h.options).tick();
+      const event = h.events().find((entry) => entry.selectionLogId);
+      assert.ok(event?.selectionLogId);
+      assert.equal(event.state, "pending");
+      assert.equal(event.attempts, 0);
+      assert.equal(event.error?.code, "orchestration_deferred");
+      assert.equal(h.herdr.sends.length, 0);
+      const log = h.store.get<DecisionLog>("workflow_decisions", event.selectionLogId);
+      assert.ok(log);
+      assert.equal(log.state, "failed");
+      logs.push(log);
+      h.foreground("done");
+    }
+    assert.equal(new Set(logs.map((log) => log.eventId)).size, 4);
+    h.engine.handler = handler;
+    await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.dispatch().state, "done");
+    assert.equal(h.dispatch().attempts, 1);
+    assert.equal(h.herdr.sends.length, 1);
+    assert.equal(h.store.list("workflow_decisions").length, 5);
+    for (const log of logs) assert.deepEqual(h.store.get("workflow_decisions", log.eventId), log);
+  } finally {
+    h.close();
+  }
+});
+
+test("foreground deferral at beforeSend preserves retries after an earlier native refusal", async () => {
+  const h = await harness();
+  try {
+    h.herdr.sendError = refuse();
+    await h.worker.tick();
+    await h.worker.tick();
+    const selectionLogId = h.dispatch().selectionLogId;
+    const operationId = h.dispatch().dispatches[0]?.operationId;
+    assert.ok(operationId);
+    const baseline = h.herdr.sampleLastReply.bind(h.herdr);
+    h.herdr.sampleLastReply = async (ref) => {
+      const result = await baseline(ref);
+      h.foreground("queued");
+      return result;
+    };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await new TaskOrchestrator(h.options).tick();
+      assert.equal(h.dispatch().attempts, 1);
+      assert.equal(h.dispatch().state, "pending");
+      assert.equal(h.dispatch().error?.code, "orchestration_deferred");
+      assert.equal(h.herdr.sends.length, 1);
+      assert.equal(h.store.get<OperationReceipt>("operations", operationId)?.state, "failed");
+      assert.equal(h.store.get<{ count: number }>("input_retry_counts", operationId)?.count, 1);
+      h.foreground("done");
+    }
+    h.herdr.sampleLastReply = baseline;
+    await h.worker.tick();
+    assert.equal(h.dispatch().attempts, 2);
+    assert.equal(h.dispatch().state, "pending");
+    assert.equal(h.herdr.sends.length, 2);
+    h.herdr.sendError = undefined;
+    await h.worker.tick();
+    assert.equal(h.dispatch().attempts, 3);
+    assert.equal(h.dispatch().state, "done");
+    assert.equal(h.herdr.sends.length, 3);
+    assert.equal(h.dispatch().selectionLogId, selectionLogId);
+    assert.equal(h.calls.selection, 1, "a selected durable choice must not ask the model again");
+  } finally {
+    h.close();
+  }
+});
+
+for (const stopped of ["orchestrator", "tasks"] as const) {
+  test(`safe ${stopped} shutdown before native input resumes without spending a retry`, async () => {
+    const h = await harness();
+    try {
+      await h.worker.tick();
+      const baseline = h.herdr.sampleLastReply.bind(h.herdr);
+      h.herdr.sampleLastReply = async (ref) => {
+        const result = await baseline(ref);
+        if (stopped === "orchestrator") h.control.abort();
+        else h.service.stop();
+        return result;
+      };
+      await h.worker.tick();
+      const operationId = h.dispatch().dispatches[0]?.operationId;
+      assert.ok(operationId);
+      assert.equal(h.dispatch().attempts, 0);
+      assert.equal(h.dispatch().state, "pending");
+      assert.equal(h.dispatch().error?.code, "stopping");
+      assert.equal(h.herdr.sends.length, 0);
+      assert.equal(h.store.get<OperationReceipt>("operations", operationId)?.state, "failed");
+      h.herdr.sampleLastReply = baseline;
+      const service = new TaskService(h.serviceOptions);
+      await new TaskOrchestrator({
+        ...h.options,
+        tasks: () => service,
+        signal: new AbortController().signal,
+      }).tick();
+      assert.equal(h.dispatch().attempts, 1);
+      assert.equal(h.dispatch().state, "done");
+      assert.equal(h.herdr.sends.length, 1);
+      assert.equal(h.dispatch().dispatches[0]?.operationId, operationId);
+      assert.equal(h.calls.selection, 1);
+    } finally {
+      h.close();
+    }
+  });
+}
+
+test("abort does not refund an unknown native effect or permit it to replay", async () => {
+  const h = await harness();
+  try {
+    await h.worker.tick();
+    h.herdr.sendError = new OperationError(
+      "delivery_unconfirmed",
+      "Uncertain native effect.",
+      "unknown",
+    );
+    const send = h.herdr.send.bind(h.herdr);
+    h.herdr.send = async (ref, text) => {
+      h.control.abort();
+      return send(ref, text);
+    };
+    await h.worker.tick();
+    assert.equal(h.dispatch().attempts, 1);
+    assert.equal(h.dispatch().state, "attention");
+    assert.equal(h.dispatch().dispatches[0]?.state, "uncertain");
+    h.herdr.sendError = undefined;
+    h.herdr.send = send;
+    for (let poll = 0; poll < 4; poll++)
+      await new TaskOrchestrator({ ...h.options, signal: new AbortController().signal }).tick();
+    assert.equal(h.herdr.sends.length, 1);
+    assert.equal(h.dispatch().state, "attention");
+    assert.equal(h.dispatch().attempts, 1);
+  } finally {
+    h.close();
+  }
+});

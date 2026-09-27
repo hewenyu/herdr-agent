@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Project, Task } from "../../src/core/types.js";
-import { VerificationRunner } from "../../src/orchestration/verify.js";
+import { type VerificationRun, VerificationRunner } from "../../src/orchestration/verify.js";
 import { ProjectCatalog } from "../../src/projects/catalog.js";
 import { Store } from "../../src/storage/store.js";
 
@@ -213,4 +213,67 @@ setInterval(() => {}, 1000);
   );
   assert.notEqual(result.status, "passed");
   assert.ok(["failed", "unknown"].includes(result.status));
+});
+
+test("safe cancellation creates a new selected run while replay preserves every old identity", async (t) => {
+  const h = await fixture(t, ["printf resumed"]);
+  const first = candidateFor(h.runner, h.task, "unchanged");
+  const cancelled = await h.runner.run(h.task, first, AbortSignal.abort());
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.exitConfirmed, true, "no process was started");
+  const second = candidateFor(h.runner, h.task, "unchanged");
+  assert.equal(second.retryOf, cancelled.id);
+  const again = await h.runner.run(h.task, second, AbortSignal.abort());
+  assert.equal(again.status, "cancelled");
+  assert.notEqual(again.id, cancelled.id);
+  assert.notEqual(again.stdoutPath, cancelled.stdoutPath);
+  const restarted = new VerificationRunner(h);
+  const third = candidateFor(restarted, h.task, "unchanged");
+  assert.equal(third.retryOf, again.id);
+  const pending = restarted.run(h.task, third);
+  assert.equal(restarted.run(h.task, third), pending, "same selection shares one process");
+  const passed = await pending;
+  assert.equal(passed.status, "passed");
+  assert.equal(await readFile(passed.stdoutPath, "utf8"), "resumed");
+  assert.equal(await readFile(cancelled.stdoutPath, "utf8"), "");
+  assert.equal(await readFile(again.stdoutPath, "utf8"), "");
+  assert.deepEqual(await restarted.run(h.task, first), cancelled);
+  assert.deepEqual(await restarted.run(h.task, second), again);
+  const recovered = new VerificationRunner(h);
+  assert.deepEqual(candidateFor(recovered, h.task, "unchanged"), third);
+  assert.deepEqual(await recovered.run(h.task, third), passed);
+  assert.equal(recovered.list().length, 3);
+});
+
+test("retry selection cannot bypass a terminal or unconfirmed verification outcome", async (t) => {
+  const h = await fixture(t, ["printf never-replayed"]);
+  const first = candidateFor(h.runner, h.task, "unchanged");
+  const cancelled = await h.runner.run(h.task, first, AbortSignal.abort());
+  const second = candidateFor(h.runner, h.task, "unchanged");
+  const passed = await h.runner.run(h.task, second);
+  const terminal: VerificationRun["status"][] = [
+    "failed",
+    "timed_out",
+    "cancelled",
+    "unknown",
+    "not_started",
+  ];
+  for (const status of terminal) {
+    const saved = { ...passed, status, exitConfirmed: false };
+    h.store.set("verification_runs", passed.id, saved);
+    assert.deepEqual(h.runner.candidates(h.task, "unchanged"), [], status);
+    assert.deepEqual(await h.runner.run(h.task, second), saved);
+    await assert.rejects(h.runner.run(h.task, { ...second, retryOf: passed.id }), {
+      code: "verify_retry",
+    });
+  }
+  h.store.set("verification_runs", passed.id, passed);
+  await assert.rejects(h.runner.run(h.task, { ...second, artifactRevision: "changed" }), {
+    code: "verify_retry",
+  });
+  await assert.rejects(h.runner.run({ ...h.task, id: "other-task" }, second), {
+    code: "verify_retry",
+  });
+  assert.equal(h.runner.list().length, 2);
+  assert.deepEqual(await h.runner.run(h.task, first), cancelled);
 });

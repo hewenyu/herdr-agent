@@ -39,10 +39,19 @@ export async function createTask(
   if (["model", "workflow"].includes(input.orchestration?.mode ?? "") && !config.ai.enabled)
     fail("ai_disabled", "模型调度需要启用 AI。");
   if (
-    input.orchestration?.template &&
+    input.orchestration?.template !== undefined &&
     !["discussion", "development", "bugfix"].includes(input.orchestration.template)
   )
     fail("workflow_template", "工作流模板无效。");
+  if (
+    input.orchestration?.mode === "workflow" &&
+    input.orchestration.template !== undefined &&
+    (input.kind === "discussion") !== (input.orchestration.template === "discussion")
+  )
+    fail(
+      "workflow_template",
+      `任务类型 ${input.kind} 与工作流模板 ${input.orchestration.template} 不兼容；discussion 任务只能使用 discussion 模板，development/review/test 任务只能使用 development 或 bugfix 模板。`,
+    );
   const parent = input.parentTaskId ? records.get(actor, input.parentTaskId) : undefined;
   // A message identity is only unique inside its bound pi session.  Keeping
   // the session in the durable task key prevents two independently selected
