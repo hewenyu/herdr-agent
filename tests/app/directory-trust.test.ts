@@ -212,6 +212,11 @@ test("model text cannot count as confirmation; foreign directory never reaches t
     await h.app.tasks.reconcile(h.task.id); // Engine claims/answers text but invokes no tool.
     assert.equal(writes, 0);
     assert.equal(h.platform.cards.length, 1);
+    assert.equal(
+      h.store.list<{ retryAt?: string }>("directory_trust_decisions")[0]?.retryAt,
+      undefined,
+      "unrecognized menus do not schedule text-only approval retries",
+    );
     const participant = h.app.tasks.records.participants(h.task)[0] as Participant;
     assert.ok(participant.execution);
     participant.execution.cwd = "/outside-task";
@@ -333,8 +338,100 @@ test("model transport failure can retry at the same screen after backoff", async
   }
 });
 
-for (const priorState of ["no_tool", "failed", "pending", "uncertain", "done"] as const) {
-  test(`recognition upgrade re-evaluates unchanged screens only after no effect: ${priorState}`, async () => {
+for (const outcome of ["confirmed", "text_only", "transport_error", "unknown"] as const) {
+  test(`text-only native trust retries survive restart with backoff and a bound: ${outcome}`, async () => {
+    const h = await fixture();
+    try {
+      await h.app.tasks.reconcile(h.task.id);
+      const participant = h.app.tasks.records.participants(h.task)[0] as Participant;
+      const ref = participant.execution;
+      assert.ok(ref);
+      const text = [
+        `> You are in ${ref.cwd}`,
+        "Do you trust the contents of this directory?",
+        "› 1. Yes, continue",
+        "2. No, quit",
+        "Press enter to continue",
+      ].join("\n");
+      const screen = { agent: await h.herdr.get(ref.paneId), text, question: text, options: [] };
+      const actor = {
+        ownerId: "owner",
+        chatId: "entry",
+        sessionId: "s",
+        taskId: h.task.id,
+        messageId: "retry-text-only",
+      };
+      let modelCalls = 0;
+      let writes = 0;
+      const exhaustRetries = outcome === "text_only" || outcome === "transport_error";
+      (h.herdr as HerdrPort).trustDirectory = async () => {
+        writes++;
+        if (outcome === "unknown") throw new OperationError("input_unconfirmed", "未知", "unknown");
+      };
+      h.engine.handler = async (turn) => {
+        modelCalls++;
+        assert.equal(
+          h.store.list<{ attempts: number }>("directory_trust_decisions")[0]?.attempts,
+          modelCalls,
+          "reserve the attempt durably before invoking the model",
+        );
+        if (outcome === "transport_error") throw new Error("temporary model outage");
+        if (modelCalls > 1 && outcome !== "text_only") await turn.tools[0]?.execute({}, turn.actor);
+        return { text: "已确认目录信任。", messages: [] };
+      };
+      // A new controller each time models process restarts with the same durable store.
+      const handle = () =>
+        new DirectoryTrust(h.store, h.herdr, h.engine, logger, h.app.signal).handle(
+          h.task,
+          participant,
+          screen,
+          actor,
+        );
+      for (let attempt = 1; attempt <= (exhaustRetries ? 3 : 2); attempt++) {
+        assert.equal(await handle(), outcome === "confirmed" && attempt === 2);
+        assert.equal(modelCalls, attempt);
+        const [id, decision] =
+          h.store.entries<{ attempts: number; retryAt?: string }>("directory_trust_decisions")[0] ??
+          [];
+        assert.ok(id && decision);
+        const canRetry = attempt < 3 && (exhaustRetries || attempt === 1);
+        assert.equal(Boolean(decision.retryAt), canRetry);
+        assert.equal(decision.attempts, attempt, "restarts preserve the model attempt count");
+        if (canRetry) assert.ok(Date.parse(decision.retryAt ?? "") > Date.now());
+        assert.equal(await handle(), false);
+        assert.equal(modelCalls, attempt, "immediate polling must not bypass cooldown or freeze");
+        if (canRetry)
+          h.store.set("directory_trust_decisions", id, {
+            ...decision,
+            retryAt: new Date(0).toISOString(),
+          });
+      }
+      assert.equal(writes, exhaustRetries ? 0 : 1);
+      if (outcome === "unknown") {
+        const receipt = h.store
+          .entries<{ state: string }>("operations")
+          .find(([id]) => id.startsWith(`${participant.id}:directory-trust`))?.[1];
+        assert.equal(receipt?.state, "uncertain");
+        screen.agent.stateSeq = "99";
+        assert.equal(await handle(), false, "unknown native effect freezes later screens too");
+        assert.equal(modelCalls, 2);
+        assert.equal(writes, 1);
+      }
+    } finally {
+      await h.close();
+    }
+  });
+}
+
+const priorRecognitionDecisions = ["native-directory-v2", "native-directory-v3"].flatMap(
+  (version) =>
+    (["no_tool", "failed", "pending", "uncertain", "done"] as const).map((state) => ({
+      version,
+      state,
+    })),
+);
+for (const { version, state: priorState } of priorRecognitionDecisions) {
+  test(`recognition upgrade re-evaluates unchanged screens only after no effect: ${version}/${priorState}`, async () => {
     const h = await fixture();
     try {
       await h.app.tasks.reconcile(h.task.id);
@@ -344,19 +441,13 @@ for (const priorState of ["no_tool", "failed", "pending", "uncertain", "done"] a
       const screen = await h.herdr.screen(ref);
       for (const [id] of h.store.entries("directory_trust_decisions"))
         h.store.delete("directory_trust_decisions", id);
-      const oldDecision = stableId(
-        participant.id,
-        ref.paneId,
-        screen.agent.stateSeq,
-        "native-directory-v2",
-        "",
-      );
+      const oldDecision = stableId(participant.id, ref.paneId, screen.agent.stateSeq, version, "");
       h.store.set("directory_trust_decisions", oldDecision, {
         confirmed: priorState === "done",
         text: "旧识别版本已处理",
       });
       if (priorState !== "no_tool") {
-        const id = `${participant.id}:directory-trust:native-directory-v2:${screen.agent.stateSeq}`;
+        const id = `${participant.id}:directory-trust:${version}:${screen.agent.stateSeq}`;
         h.store.set("operations", id, {
           id,
           fingerprint: "old-version",
@@ -559,8 +650,12 @@ for (const outcome of ["confirmed", "text_only", "tool_rejected"] as const) {
           ["directory_trust_confirm"],
         );
       }
-      const decision = h.store.list<{ confirmed: boolean }>("directory_trust_decisions")[0];
+      const decision = h.store.list<{ confirmed: boolean; attempts: number; retryAt?: string }>(
+        "directory_trust_decisions",
+      )[0];
       assert.equal(decision?.confirmed, outcome === "confirmed");
+      assert.equal(decision?.attempts, 1);
+      assert.equal(Boolean(decision?.retryAt), outcome === "text_only");
       const receipts = h.store
         .entries<{ state: string }>("operations")
         .filter(([id]) => id.startsWith(`${participant.id}:directory-trust`));

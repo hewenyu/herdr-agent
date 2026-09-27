@@ -22,7 +22,9 @@ Codex 窄终端会在右边缘截断 You are in 标题且不显示省略号；he
 
 // Re-evaluate old no-effect decisions after recognition changes. Native writes
 // remain frozen across every version by the operation-prefix scan below.
-const recognitionVersion = "native-directory-v3";
+const recognitionVersion = "native-directory-v4";
+const maxModelAttempts = 3;
+const retryDelayMs = 30_000;
 
 /** The model decides; the only available effect can confirm native startup directory trust. */
 export class DirectoryTrust {
@@ -63,8 +65,17 @@ export class DirectoryTrust {
       recognitionVersion,
       scope ?? "",
     );
-    const previous = this.store.get<{ retryAt?: string }>("directory_trust_decisions", decisionId);
-    if (previous && (!previous.retryAt || Date.parse(previous.retryAt) > Date.now())) return false;
+    const previous = this.store.get<{ attempts?: number; retryAt?: string }>(
+      "directory_trust_decisions",
+      decisionId,
+    );
+    if (
+      previous &&
+      ((previous.attempts ?? 0) >= maxModelAttempts ||
+        !previous.retryAt ||
+        Date.parse(previous.retryAt) > Date.now())
+    )
+      return false;
     const nativeMenuRecognized = Boolean(
       directoryTrustKeys(ref.kind, screen.text, ref.cwd, worktreeRoot),
     );
@@ -74,6 +85,7 @@ export class DirectoryTrust {
     const repositoryRootNotice =
       nativeMenuRecognized && ref.kind === "codex" && /^\s*Note:/m.test(cleanedScreen);
     let confirmed = false;
+    let toolCalled = false;
     const tool: RuntimeTool = {
       name: "directory_trust_confirm",
       description:
@@ -81,6 +93,7 @@ export class DirectoryTrust {
       readOnly: false,
       parameters: { type: "object", properties: {}, additionalProperties: false },
       execute: async (_args, _actor, signal) => {
+        toolCalled = true;
         const currentTask = this.store.get<Task>("tasks", task.id);
         const current = this.store.get<Participant>("participants", participant.id);
         if (
@@ -122,6 +135,18 @@ export class DirectoryTrust {
         return result;
       },
     };
+    const decision = { attempts: (previous?.attempts ?? 0) + 1, at: new Date().toISOString() };
+    const retryAt = () =>
+      decision.attempts < maxModelAttempts
+        ? new Date(Date.now() + retryDelayMs).toISOString()
+        : undefined;
+    // Reserve the attempt before the model call so restarts cannot reset the
+    // bound. Any native operation recorded during this call freezes its effect.
+    this.store.set("directory_trust_decisions", decisionId, {
+      ...decision,
+      confirmed: false,
+      retryAt: retryAt(),
+    });
     try {
       const answer = await this.engine.run({
         actor,
@@ -163,9 +188,10 @@ export class DirectoryTrust {
         },
       });
       this.store.set("directory_trust_decisions", decisionId, {
+        ...decision,
         confirmed,
         text: answer.text,
-        at: new Date().toISOString(),
+        retryAt: !toolCalled && nativeMenuRecognized && directoryAuthorized ? retryAt() : undefined,
       });
     } catch (error) {
       this.logger.warn("启动目录确认未完成", {
@@ -175,10 +201,10 @@ export class DirectoryTrust {
         code: safeError(error).code,
       });
       this.store.set("directory_trust_decisions", decisionId, {
+        ...decision,
         confirmed,
         code: safeError(error).code,
-        at: new Date().toISOString(),
-        retryAt: new Date(Date.now() + 30_000).toISOString(),
+        retryAt: !toolCalled ? retryAt() : undefined,
       });
     }
     return confirmed;
