@@ -34,10 +34,24 @@ export async function createTask(
     fail("directory_mode", "目录隔离模式无效。");
   if (input.discussion?.mode && !["manual", "round_robin"].includes(input.discussion.mode))
     fail("discussion_mode", "讨论模式无效。");
-  if (input.orchestration && !["model", "manual"].includes(input.orchestration.mode))
+  if (input.orchestration && !["model", "manual", "workflow"].includes(input.orchestration.mode))
     fail("orchestration_mode", "调度模式无效。");
-  if (input.orchestration?.mode === "model" && !config.ai.enabled)
+  if (["model", "workflow"].includes(input.orchestration?.mode ?? "") && !config.ai.enabled)
     fail("ai_disabled", "模型调度需要启用 AI。");
+  if (
+    input.orchestration?.template !== undefined &&
+    !["discussion", "development", "bugfix"].includes(input.orchestration.template)
+  )
+    fail("workflow_template", "工作流模板无效。");
+  if (
+    input.orchestration?.mode === "workflow" &&
+    input.orchestration.template !== undefined &&
+    (input.kind === "discussion") !== (input.orchestration.template === "discussion")
+  )
+    fail(
+      "workflow_template",
+      `任务类型 ${input.kind} 与工作流模板 ${input.orchestration.template} 不兼容；discussion 任务只能使用 discussion 模板，development/review/test 任务只能使用 development 或 bugfix 模板。`,
+    );
   const parent = input.parentTaskId ? records.get(actor, input.parentTaskId) : undefined;
   // A message identity is only unique inside its bound pi session.  Keeping
   // the session in the durable task key prevents two independently selected
@@ -133,12 +147,26 @@ export async function createTask(
       paused: false,
       activeParticipant: participants[0]?.id,
     },
-    orchestration: input.orchestration ? { mode: input.orchestration.mode } : undefined,
+    orchestration: input.orchestration
+      ? {
+          mode: input.orchestration.mode,
+          ...(input.orchestration.mode === "workflow" && input.orchestration.template
+            ? { template: input.orchestration.template }
+            : {}),
+        }
+      : config.ai.enabled && config.jev?.apiKey && !input.discussion?.mode
+        ? { mode: "workflow" }
+        : undefined,
     result: "",
     closeRequested: false,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  if (task.orchestration?.mode === "workflow") {
+    task.promptVersion = 2;
+    task.boardDirectory = join(config.stateDir, "tasks", task.id, "board");
+    await mkdir(task.boardDirectory, { recursive: true, mode: 0o700 });
+  }
   store.transaction(() => {
     records.save(task);
     for (const participant of participants) records.saveParticipant(participant);

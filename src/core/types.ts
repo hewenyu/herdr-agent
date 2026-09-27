@@ -18,6 +18,9 @@ export interface Project {
   name: string;
   directories: string[];
   agent: AgentKind;
+  /** Local owner-configured commands; never supplied by a model or chat request. */
+  verify?: string[];
+  verifyTimeoutMs?: number;
 }
 
 export interface Catalog {
@@ -135,7 +138,8 @@ export interface UserRequestSource {
 }
 
 export interface OrchestrationPolicy {
-  mode: "model" | "manual";
+  mode: "model" | "manual" | "workflow";
+  template?: "discussion" | "development" | "bugfix";
   /** @deprecated Accepted only for old stored records and input replay; never enforced. */
   maxDecisions?: number;
   /** @deprecated Accepted only for old stored records and input replay; never enforced. */
@@ -188,6 +192,9 @@ export interface Task {
   discussion: DiscussionPolicy;
   /** Missing on historical tasks: keep their existing manual/round-robin policy. */
   orchestration?: OrchestrationPolicy;
+  /** Frozen for workflow tasks; absent preserves exact historical prompt rendering. */
+  promptVersion?: 2;
+  boardDirectory?: string;
   result: string;
   error?: string;
   syncError?: string;

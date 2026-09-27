@@ -4,13 +4,13 @@
 
 基于 **Node、TypeScript 和 pi** 的本地调度工具，通过 **@yuebanlaosiji/myrix** 分发。在飞书中创建项目、组织需求讨论和开发任务、跟进结果；本机 Web 用于配置项目和模型、查看会话记录。
 
-**pi 管理本工具的项目、任务、参与者和会话；herdr 托管 Claude/Codex 及其原生 session。** 用户项目的需求讨论、设计、开发、测试和评审交给 Claude/Codex。可以让它们进入同一个任务群，也可以启动同类模型的多个参与者，为不同项目分别创建任务。
+**pi 管理本工具的项目、任务、参与者和会话；herdr 托管 Claude/Codex 及其原生 session。** 用户项目的需求讨论、设计、开发、测试和评审交给 Claude/Codex；myrix 另可运行项目显式配置的本机验证命令。可以让它们进入同一个任务群，也可以启动同类模型的多个参与者，为不同项目分别创建任务。
 
-AI 开启时，普通回复、生命周期通知和工具选择由模型决定。程序提供工具、权限检查和持久化操作回执；明确的业务请求至少要尝试一次工具调用，模型只回复“收到”等确认文字时不能算请求完成；能力说明或解释性问题仍按普通对话处理。对已经执行的业务动作要求真实写入证据，生命周期通知以当前任务与参与者快照为依据，仅开放只读工具。精确的 `/clear` 命令由程序直接轮转主私聊 pi session，不调用模型。
+AI 入口采用 **规则 → Jev → LLM**：程序先执行身份、作用域、去重和 exact `/clear` 等确定性协议。私聊 Jev 分类独立开关、默认关闭，普通文本仍进入原 pi 对话及工具路径；开启后 Jev 只选择 intent 和已登记 project，只有高置信度且参数完整的请求才用用户完整原文与固定模板默认值创建任务，其余交给 pi。业务完成性声称仍须真实操作证据，文本确认不能算明确执行请求完成。生命周期通知继续依据当前任务事实，只开放只读工具。
 
 前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。独立二进制、版本输出、运行提示和服务名称统一使用 `myrix`。GitHub 仓库地址保持不变。全新安装使用 `~/.myrix`；检测到已有 `~/.herdr-agent` 时原地沿用，保留配置和对话。
 
-新建 AI 任务默认由 pi 根据真实执行结果持续调度：自主分派、复核、返工并委托参与者汇总交付，不再要求每一步人工接力。历史任务及显式手动/轮转策略保留调度模式；交付仍等待用户验收，普通审批仍由用户选择。中断、投递核验和本分支验证边界见[持续调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
+任务和 AI 已启用且配置 Jev key 时，新任务默认保存 `orchestration.mode = "workflow"`；显式指定的模式优先。pi 规划任务，规则和 Jev 从合法候选中选择动作；Jev 失败或低置信度时，本步交给只提供 `orchestration_decide` 的 pi，在同一候选集内选择，并记录规则结论、Jev 分布和最终来源。已有 `model`、`manual`、`round_robin` 任务保留模式；无 key 时沿用既有创建默认。工作流报告汇总参与者结果与验证来源，交付仍等待用户验收。见[当前编排设计](docs/myrix-jev-llm-orchestration-design.md)和[历史调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
 
 ## 安装
 
@@ -80,7 +80,7 @@ npm run smoke
 
 1. 将 [配置示例](deploy/config.example.toml) 放入状态目录（全新安装为 `~/.myrix/config.toml`；已有 `~/.herdr-agent` 时优先沿用），仅本人可读。需要任务/pi 时先设置 `tasks.enabled = true`，使 setup 检查任务与群权限。
 2. 运行 `myrix setup`，复用已有应用或按链接完成授权，再发送一条私聊并点击验证卡片。只有两次往返通过才算完整验证。setup 会保存 `.env` 和允许用户。
-3. Web 可添加、编辑或删除项目登记，设置默认项目、默认参与者及新任务的 Bypass。按顺序填写已存在的目录；保存时检查全部目录，首目录需要时自动初始化 Git，附加目录按原顺序传给 Claude/Codex。删除登记不删除代码；项目和 Bypass 修改用于新任务，不改动已有执行会话。模型连接也可在 Web 保存，启用时必须显式填写 `base_url`，模型配置修改后重启服务。任务、讨论和审批仍通过飞书提出。
+3. Web 可添加、编辑或删除项目登记，设置默认项目、默认参与者及新任务的 Bypass。按顺序填写已存在的目录；保存时检查全部目录，首目录需要时自动初始化 Git，附加目录按原顺序传给 Claude/Codex。删除登记不删除代码；项目目录和 Bypass 默认值用于新任务，不改动已有执行会话；验证配置在每次新运行前重新核对。模型连接也可在 Web 保存，启用时必须显式填写 `base_url`，模型配置修改后重启服务。任务、讨论和审批仍通过飞书提出。
 4. 运行 `myrix serve --open`，打开日志打印的本机地址。Web 用于维护本机配置和查看已有会话记录；先停止 serve 再运行 setup，它们使用同一把状态锁。
 
 ```sh
@@ -94,7 +94,11 @@ myrix doctor --json
 
 `myrix configure --listen 127.0.0.1:0 --open` 继续保留，用于不连接飞书地启动本机配置和会话记录页；网页及 HTTP 接口只开放受保护的本机配置写入口，不开放业务操作。该 CLI 启动仍会打开和迁移本地状态，并可能由既有调度器处理已排队工作；只读承诺针对浏览行为，不表示整个服务启动没有业务副作用。业务操作从飞书发起，安装维护仍用 CLI 与配置文件；连接不可用不能静默取消远端资源意图。端口 0 会打印实际可用地址。`myrix serve --no-config-ui` 可关闭页面。启动补授权只更新同一个 App ID，不以网络故障自动新建应用。`setup --reregister --yes` 才明确要求创建替代应用。
 
-飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型 key 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
+飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型、Jev 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
+
+可选 `[jev]` 配置包括 `api_key`、`base_url`（默认 `https://api.typesafe.ai`）、`model`（`jev-1.13.0`）、`timeout`（默认 `10s`，最多 `2m`）、`confidence_threshold`（`0.8`）、`ingress_enabled`（`false`）和 `stall_rounds`（`3`），修改后重启服务。开启私聊分类会把适用私聊原文和已登记项目名称发给第三方 Jev，不默认发送全量历史、仓库或附件。仅配置 key 不会开启这条数据外发路径。低置信度、失败、项目不确定、引用上下文或复杂安排保留原 pi 路径。
+
+项目所有者可以在初始项目种子中显式设置 `verify = ["npm run check"]` 和可选 `verify_timeout = "2m"`；SQLite 已有项目目录时，通过本机 Web 项目设置修改命令与毫秒超时。缺失或空数组均不启动本机命令。执行器只运行配置命令，固定在任务实际主 cwd（包括 worktree），单命令超时最多 10 分钟。命令使用服务账户的本机权限，固定 cwd 不代表 OS 沙箱；模型不能提供任意命令或另选 cwd，已配置验证的项目变更目录须走本机设置。超时、取消会停止 POSIX 进程组；退出未确认时继续阻塞冲突目录，不自动重跑。证据保存 stdout/stderr、退出事实及配置/代码版本。报告区分“myrix 配置命令验证”“agent 复核”“参与者自述”和“未运行”；无配置时的独立 agent 重跑不标成 myrix 已验证。清空命令阻止新运行，但不自动撤销已经启动的运行。 用户明确禁止测试时，工作流保存用户原文约束、关闭验证命令并保留独立只读评审，报告明确标注“未运行”。
 
 长期运行使用 [deploy](deploy/) 中的 launchd/systemd user 模板与安装脚本；先检查路径与运行账户。服务 stdout/stderr 由服务管理器收集。停止桥接程序不等于销毁已在 herdr 中运行的任务。
 
@@ -124,7 +128,7 @@ SQLite 的 `ExperimentalWarning` 是内置 Node 对 SQLite API 的提示，不�
 
 在飞书主私聊中创建项目、任务或切换 pi session，在对应任务群中续聊和处理审批。讨论可以不绑定项目；开发、评审和测试任务使用已配置项目。可对 pi 说：“开个讨论任务，让 Claude 和 Codex 一起讨论这个需求”“把已确认方案交给 Codex 实现，Claude 评审”“切回昨天的调度会话”。pi 调用工具组织工作，参与者负责业务内容。一个机器人在群内标明发言来源，Claude/Codex 不是另两个飞书账号。
 
-AI 新建任务默认使用模型调度。应用不设置决策次数、讨论轮次、累计时长或工具调用次数配额，AI 预算交由配置的网关统一管理；显式 `round_robin` 讨论持续到暂停或结束。单次操作超时和模型上下文容量管理用于恢复卡住的调用及处理过长请求。可以指定参与者或暂停。多个同种模型实例有不同 participant ID。普通文本不是权限菜单批准，审批使用实际卡片/屏幕选项；结果未知时不能自动重发。
+任务创建时冻结调度模式。应用不设置决策次数、讨论轮次、累计时长或工具调用次数配额，AI 预算交由网关管理。workflow 中 open 问题集合连续 `stall_rounds` 个已结束批次保持不变时转用户裁决，不强制综合或收尾；显式 `round_robin` 持续到暂停或结束。单操作超时和模型上下文管理用于恢复卡住的调用与过长请求。可以指定参与者或暂停，同类实例有不同 participant ID。普通文本不是权限菜单批准，审批使用实际卡片/屏幕选项；结果未知时不能自动重发。
 
 任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后，程序仍保留任务和会话历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。飞书断线重连时，旧任务调度器会先停止，再由新连接启动调度器重新核对当前记录；旧连接不会继续对新连接的同一批记录执行操作。
 
@@ -134,7 +138,7 @@ AI 新建任务默认使用模型调度。应用不设置决策次数、讨论�
 
 主入口飞书私聊达到配置的上下文容量时会自动压缩 pi 历史，保留原始记录和持久化操作回执。只有用户需要手动开启新会话时，才在主入口私聊单独发送 `/clear`；程序直接归档旧 pi session 并创建、选中新 session，事务成功后只回复 `CLEAR_NEW_SESSION_OK`。关闭 AI 或模型不可用时也可用；保留历史、任务和 herdr session，群聊拒绝。只匹配实际正文去掉前后空白后恰好为 `/clear` 的消息；引用内容、`/CLEAR`、`／clear`、`/clear now` 或正文中提到 `/clear` 不触发。Web 没有聊天框、`/clear` 或清空按钮；查看另一段历史不改变飞书活跃 session。
 
-AI 开启时，其余聊天文本由模型理解，包括斜杠形式。关闭 AI 后仍保留任务模式的 `/new /tasks /projects /task /screen /stop` 等兼容入口；关闭 tasks 后可以用 `/ls /card /say /stop /mirror /close` 接管已有 agent。旧桥 `/close` 仅解除选择，不销毁任务。
+AI 开启时，其余聊天文本按上述 opt-in 分类边界处理；exact `/clear` 以外的斜杠形式仍交给 pi。关闭 AI 后仍保留任务模式的 `/new /tasks /projects /task /screen /stop` 等兼容入口；关闭 tasks 后可以用 `/ls /card /say /stop /mirror /close` 接管已有 agent。旧桥 `/close` 仅解除选择，不销毁任务。
 
 旧桥 `/ls` 只列出由 herdr 托管的 Claude/Codex agent；普通 shell pane 不属于可接管目标，也不会出现在选择卡片中。
 
@@ -156,8 +160,12 @@ myrix serve --state-dir /absolute/state
 
 ## 验证边界
 
+[Jev/LLM 编排设计 v1.1](docs/myrix-jev-llm-orchestration-design.md) 对应本地已实现、尚未发布的 S3/S4，已确认入口路由和配置验证命令两项边界变更。[真实 Jev Choice 记录](docs/jev-choice-live-evidence-2026-09-27.json) 使用合成输入；它和本地自动测试都不代表完整飞书、Claude/Codex 工作流已完成真实验收。
+
 自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
 
 [当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。B/N 场景的早期离线证据见 [acceptance.md](docs/acceptance.md)，当前尚待核对项目和部署证据见[现场验收矩阵](docs/live-validation.md)。
 
 本项目采用 MIT，见 [LICENSE](LICENSE)。发布包另带 `LICENSES/`，保留嵌入 npm 依赖、原生扩展和 Node 的许可及第三方声明；重新分发请一并保留。生成规则见 [licenses](licenses/README.md)。
+
+本次实现映射、自动检查、真实模型证据及现场验收缺口见[本地交付与复核记录](docs/workflow-implementation-2026-09-27.md)。

@@ -1,6 +1,6 @@
 # Node + pi 实施设计
 
-日期：2026-09-18。本文记录当前目标设计；Web 配置边界已纳入实现，完整现场验收仍按矩阵记录，不把局部通过写成整体完成。[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
+更新：2026-09-27，纳入实施与验证中的 S3/S4（[Jev/LLM 编排设计](myrix-jev-llm-orchestration-design.md)）。本文记录当前目标设计；Web 配置边界已纳入实现，完整现场验收仍按矩阵记录，不把局部通过写成整体完成。[需求盘点](node-pi-refactor-requirements.md) 保留 Go `7b75511` 时点的讨论记录，不追写为“当时已确认”。实施进度以 [目标](refactor-goal.md) 和 [验收证据](acceptance.md) 为准。
 
 2026-09-18 Web 边界：**真实业务全部从飞书私聊或任务群发起。** Web 可浏览和筛选会话记录，并维护本机项目（有序多目录，首目录保存时自动 Git 初始化）、默认项目、Bypass、模型连接和本机身份；不能发消息、创建任务/项目执行流程、管理参与者、审批、清理资源或操作 pi session。旧 Web 业务管理与聊天设计退出范围；配置写入仅通过受保护的配置 action。
 
@@ -8,18 +8,21 @@
 
 ## 核心职责
 
-**pi 只负责 myrix 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。**
+**pi 只负责 myrix 本工具的业务。用户项目的需求讨论、方案、开发、测试和评审，由 herdr 托管的 Claude/Codex 参与者完成。Codex/Claude 原生 session 始终归 herdr。** myrix 另可按项目所有者的显式 verify 配置执行验证命令，pi 不获得通用 shell 工具。
 
-**启用 AI 后，pi 的普通业务沟通和工具调用由模型决定；exact `/clear` 是用户明确指定的确定性会话命令。** 程序提供飞书、会话、项目、任务、参与者、消息投递和查询工具，执行身份、作用域、幂等和状态约束；不生成普通业务答复或把关键词变成固定操作。模型直接输出可识别的业务完成性声称而没有本轮工具事实时，程序只审计来源并触发一次工具受限重试；仍无工具调用则记录模型失败，不发送成功答复，也不改写模型文本。用户说“关闭”、贴出 `/new` 或问业务问题，都由模型结合上下文决定是否调用工具。程序不把模型故障降级为向终端转发用户原文。飞书真实审批按钮、CLI 诊断和关闭 AI 后的飞书兼容命令仍走确定性操作。
+**AI 入口采用“规则 → Jev → LLM”。** 程序先执行身份、作用域、去重及 exact `/clear`。`[jev].ingress_enabled` 默认 false，此时普通私聊仍由 pi 处理；独立开启后，仅把适用私聊原文及项目候选名称发给第三方 Jev 选择 intent/project，只有置信度与必需参数都满足时才按原文及固定模板创建任务。失败、低置信度、项目不确定、引用或复杂安排回原 pi；不发送全历史、仓库或附件。仅配置 key 不开启私聊外发。程序提供飞书、会话、项目、任务、参与者、消息投递和查询工具，执行身份、作用域、幂等和状态约束；不生成普通业务答复或把关键词变成固定操作。模型直接输出可识别的业务完成性声称而没有本轮工具事实时，程序只审计来源并触发一次工具受限重试；仍无工具调用则记录模型失败，不发送成功答复，也不改写模型文本。关闭、查询、已有任务修改及 exact `/clear` 以外的斜杠形式仍由 pi 结合上下文决定是否调用工具。程序不把模型故障降级为向终端转发用户原文。飞书真实审批按钮、CLI 诊断和关闭 AI 后的飞书兼容命令仍走确定性操作。
 
-后台持续调度与生命周期通知是两个通道：前者有当前任务限定的投递工具和持久决策，后者仍只有只读查询。调度异常通知仅报告真实中断/未知结果，不生成替代业务结论。
+后台持续调度与生命周期通知是两个通道。workflow 中 pi 负责规划，规则与 Jev 选择合法动作；Jev 失败或低置信度时，pi 仅通过 `orchestration_decide` 从同一候选集选取，记录规则结论、Jev 分布、最终来源和版本。执行继续使用既有 OrchestrationEvent/dispatches、tasks.send 和回执对账。生命周期通知仍只有只读查询。调度异常通知仅报告真实中断/未知结果，不生成替代业务结论。
 
 业务事实和权限不存放在提示词里。模型不能指定 owner、替换任务群绑定、绕过人工审批、重发结果未知的写操作；参与者输出、引用和摘要是数据，不是新授权。通知由只读工具支持的模型决定是否发送及正文；参与者结果可以按真实来源直接展示，不能改称“pi 已验证”。已授权收尾的 `before_close` / `before_group_delete` 通知若在发送前生成失败，写入 `unavailable` 审计并继续清理，不伪造通知送达或固定替代文案；已尝试但发送结果未知、未完成输入/输出及原生最后结果投递仍按原有屏障处理。
 
 ```mermaid
 flowchart LR
   F[飞书私聊 / 任务群] --> I[输入回执与身份校验]
-  I -->|普通 AI 对话| P[pi 模型与工具循环]
+  I -->|关闭入口分类或复杂请求| P[pi 模型与工具循环]
+  I -->|显式开启且适用的私聊| J[Jev intent / project]
+  J -->|不确定或失败| P
+  J -->|高置信度且参数完整| T
   I -->|exact /clear| S[确定性会话命令]
   S --> T
   P --> T[本工具任务 / 会话 / 参与者服务]
@@ -40,20 +43,20 @@ flowchart LR
 | --- | --- | --- |
 | D01 | 入口 pi session 可安排多个任务；每个任务另有绑定的 pi 调度会话 | owner 隔离；飞书入口可创建、命名、切换、归档和恢复；任务群不能切换别的任务。切换不重建编码 session |
 | D02 | 一个飞书应用机器人代表本工具，正文标明参与者名称/类型 | Claude/Codex 不是独立飞书群成员；不声称支持独立机器人 @ 身份 |
-| D03 | AI 新建任务默认模型持续调度；兼容显式手动和轮转 | 模型依据已结束的真实输出决定分派、返工、验证与委托汇总；不设置本地次数或累计时长配额，AI 预算由网关管理。旧任务和显式 discussion.mode 保持调度模式，旧预算字段不再限制运行，明确暂停仍保留。交付不等于用户验收；详见[调度审计](ai-orchestration-audit-2026-09-25.md) |
+| D03 | tasks/AI 已启用且配置 Jev key 时，新任务默认 workflow；显式模式优先 | 无 key 沿用既有默认，已有 model/manual/round_robin 保持模式。pi 规划、规则/Jev/受限 pi 选择，共用既有派发链；open 集合连续不变转用户裁决，不强制综合。不设轮数或累计时长预算，旧 maxRounds/maxDecisions 不执行；报告交付仍非验收 |
 | D04 | discussion 可以不绑定项目，使用状态目录下的独立讨论目录 | 默认创建飞书 task 和群，可分别显式关闭；平台暂不可用保留远端意图并等待，不能静默降级为本地。仅本地任务需明确 `createGroup=false/createRemoteTask=false`。development/review/test 使用已登记项目 |
 | D05 | 讨论转执行建立关联的新任务 | `parentTaskId` 关联原讨论，`parentContext` 冻结创建时的要求、结果和参与者反馈，`requirements` 保存本次用户要求。快照只作背景，本次要求优先；指定参与者形成业务结论，pi 只传递，不把讨论终结当作开发授权 |
-| D06 | 默认 shared；显式可选 task 级 Git worktree | 同一执行任务内参与者串行投递；worktree 只隔离项目首目录，其余附加目录仍共享。跨任务 shared 可并行改同文件；关闭任务不删除代码/worktree |
+| D06 | 默认 shared；显式 task 级 Git worktree | 非讨论任务内仍按参与者串行。讨论独立开场只等待本阶段已派发者结束。调度准入按 realpath 及父子目录检查冲突，已有 working/awaiting_output/unknown 或验证退出未知事实保留阻塞，不新增租约，不锁操作系统文件或外部编辑；worktree 只隔离主目录，其余目录共享。关闭任务不删除代码/worktree |
 | D07 | 新任务默认 `group_retention=delete`，completed 确认后自动解散群；明确 `retain` 或每任务 `keepGroup:true` 保留 | review 不收尾；complete/飞书手动完成默认通过herdr关闭执行器并解散群，群任何原因解散都清对应执行资源。明确保留keepExecution仅complete支持，有群任务必须同时keepGroup:true；destroy不自动验收。新任务记录 groupRetentionSource（explicit/default），Go 导入标记 legacy；旧来源未知任务在明确完成/关闭/销毁或外部完成时采用默认解散，历史 task_actions 的显式保留证据优先。已完成旧任务仅凭明确 keepExecution:true 回执保留执行现场；不会批量改写仍活跃的旧任务 |
 | D08 | 飞书承接业务交互，保留关闭 AI 的飞书任务操作及关闭 tasks 的旧桥模式；Web 维护本机项目/模型/Bypass 等配置并查看会话记录，不承接业务操作 | Web 浏览和筛选不写 active session、历史或回执；配置 action 只写本机配置，业务 action 均拒绝，不能仅隐藏按钮 |
 | D09 | Node >=24.13；TypeScript；`@earendil-works/pi-agent-core` / `pi-ai` 0.85.1 | 使用真实 pi 工具循环和两种模型 API 适配；业务 session、工具回执、投递回执由本项目持久化，不假设 SDK 自带群协作或事务 |
 | D10 | Node SEA 可执行文件，嵌 Node 运行时、服务代码、Web HTML/CSS/JS 和 flock 原生扩展 | 目标 macOS arm64、Linux x64/arm64，各平台原生构建；系统浏览器打开本机页面。herdr、已认证 Claude/Codex、Git 仍是外部依赖 |
-| D11 | OpenAI Responses / Anthropic Messages；自定义版本根 URL；file/HTTP 摘要存储 | 模型/记忆 key 来自 TOML；飞书凭据来自 env。`file` 兼容配置名对应新版 SQLite 本地存储。HTTP scope 使用 `chat_id=pi:<sessionId>` 隔离 pi session |
+| D11 | OpenAI Responses / Anthropic Messages；自定义版本根 URL；file/HTTP 摘要存储 | 模型/Jev/记忆 key 来自 TOML；飞书凭据来自 env。`file` 兼容配置名对应新版 SQLite 本地存储。HTTP scope 使用 `chat_id=pi:<sessionId>` 隔离 pi session |
 | D12 | Go JSON 校验后备份并事务导入 SQLite；不修改旧源文件 | 未完成任务保持资源绑定；旧可见历史和摘要导入，归档隔离；旧操作/事件/通知回执保留，不重新执行工具或广播旧结果 |
 | D13 | 单任务 1–8 个参与者，允许同种模型多个实例、增员和退出 | 每位有独立 participant ID/资源引用；明确 ID 或唯一名称选择。退出关闭本任务受管 pane；跨任务复用原生实例不自动进行 |
 | D14 | 文本与富文本中的文字、链接；文本结果与审批卡片 | 不提供图片理解、附件下载、语音转写、飞书文档写作或制品托管管线。富文本中的资源 key 不作为正文指令 |
 | D15 | 单人单机、本地 herdr、loopback Web | 白名单和 owner 隔离是操作边界；Web 按允许身份范围查看记录并维护本机配置，身份/会话筛选仅为本地视图状态，不能持久改变服务端业务选择；不是多用户登录系统。国内飞书是当前接入范围；Lark 注册结果不会保存为可用配置 |
-| D16 | 默认每批同时对账 4 个任务；不设讨论轮数、累计时长或工具调用次数配额 | 并发数用于控制本机负载，费用由 AI 网关管理；单次操作仍有超时保护。暂停不杀进程；中断单独执行；完成或暂停仍观察迟到输出，不恢复轮转。任务 progress 通知按 notify_cooldown 合并最新状态；审批、最终结果、关闭前通知不受该冷却限制。历史/回执暂不自动过期清理 |
+| D16 | 默认每批同时对账 4 个任务；不设讨论轮数、累计时长或工具调用次数配额 | 并发数用于控制本机负载，费用由 AI 网关管理；单次操作仍有超时保护。暂停不自动销毁 herdr 编码资源；中断单独执行，但 myrix 自己启动的 verify 会随取消/暂停终止进程组；完成或暂停仍观察迟到输出，不恢复轮转。任务 progress 通知按 notify_cooldown 合并最新状态；审批、最终结果、关闭前通知不受该冷却限制。历史/回执暂不自动过期清理 |
 
 ## 数据和恢复
 
@@ -65,7 +68,15 @@ flowchart LR
 
 exact `/clear` 经 `rotateEntry` 将命令记录、`source:command` 成功答复、旧会话归档、新会话及其选中状态、`session_rotations`、命令回执和本轮回执写入同一事务。按 owner/chat/messageId 加命令锁，飞书重复事件复用原答复，不重复轮转；事务回滚时不返回成功答复。成功提交与答复送达分别记录，投递结果未知不自动重发。命令记录保存规范化的 `/clear`，不把引用内容作为命令正文。旧会话归档后的排队命令在 AI 关闭时同样拒绝执行，不仅限制模型路径。
 
-默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`myrix.pid` 及兼容旧版的 `herdr-agent.pid`（同时持锁，不能绕开旧实例）；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，飞书业务工具的项目修改写 SQLite。不要靠编辑旧 JSON 更新已运行的新 catalog。
+默认文件：`config.toml`、`.env`、`state.sqlite` 及 WAL/SHM、`myrix.pid` 及兼容旧版的 `herdr-agent.pid`（同时持锁，不能绕开旧实例）；运行日志由服务管理器收集。旧 JSON 仅是迁移源。`projects.json` 或 TOML 用作首次数据库 catalog 种子；已有 SQLite catalog 后，项目修改写 SQLite；verify 命令及超时只能由本机设置或初始种子配置，聊天/模型项目工具不会接受这些字段。含 verify 的项目目录变更须由本机设置重新确认，模型编辑其他字段保留已有验证配置。不要靠编辑旧 JSON 更新已运行的新 catalog。
+
+### 配置验证与产物版本
+
+`[jev]` 的 `api_key`、`base_url`、`model`、`timeout`、`confidence_threshold`、`ingress_enabled`、`stall_rounds` 对应当前 schema，默认分别为空、`https://api.typesafe.ai`、`jev-1.13.0`、`10s`、`0.8`、false、3。单次 Jev 超时限于 1ms–2m，置信门槛不等于正确率；僵局窗口不是任务预算。key 不进入决策快照、报告、日志或 Web 明文回读。
+
+pi runtime 继续没有通用 coding/shell 工具。myrix 新增的验证执行器仅接受项目显式 `verify` 命令编号，在任务实际主 cwd（含 worktree）执行；缺失/空 verify 不执行，默认单命令 2 分钟，`verify_timeout` 可配置为 1ms–10m。本机 Web 使用 `verifyTimeoutMs` 毫秒字段。命令拥有运行账户权限，固定 cwd 不是沙箱。输出保存在 `stateDir/tasks/<id>/verification/`，事实使用既有 SQLite 存储，记录配置/产物版本、stdout/stderr、退出码/信号和超时状态。取消停止进程组，崩溃或退出未确认不自动重跑，保留目录阻塞。
+
+工作流状态、状态块与阶段版本复用现有 revision 和事件过期机制；共享看板和 report.md 位于 `stateDir/tasks/<id>/board/`，通过附加目录提供给 agent，不向用户仓库写 `.myrix` 或 Git 排除配置。工作目录版本对 Git tracked/未跟踪文件的实际内容计算 hash（排除 ignored），不是仅记录 HEAD；代码或验证配置变化使相应证据失效。报告区分 myrix 配置命令、agent 复核、自述和未运行；无配置时须独立 agent 实际重跑并准确标注，不能称 myrix 已验证。交付检查报告合同和实际产物引用，发送正文与摘要卡片，不把报告已送达当用户验收。
 
 ### 迁移与回退
 
@@ -86,13 +97,15 @@ CLI 取得共享 POSIX flock；服务启动执行同一幂等迁移。`configure
 
 日常入口是 `serve / setup / configure / doctor / help / version`；`configure` 用于不连接飞书地启动本机会话记录页，网页管理能力已撤销。另提供维护命令 `migrate` 和只读 `debug ls|screen|transcript`。旧本地 `key / say / watch / dialog / tail / ls / transcript` 不再作为顶层命令；终端输入与审批放在任务参与者和真实卡片上下文里。
 
-命令匹配只检查实际消息正文的 `text.trim() === '/clear'`，不检查拼接后的引用内容；前后空白可忽略，`/CLEAR`、`／clear`、`/clear now` 和正文中提到 `/clear` 均不是该命令。它仅在飞书主入口私聊直接执行，在群内不执行轮转，AI 关闭时也可用。Web 不接收命令。AI 开启时，其余聊天文字及斜杠文本交给 pi。关闭 AI 后，任务模式保留 `/new`、`/tasks`、`/projects`、`/task ...`、`/screen`、`/stop` 等兼容操作；旧 `/new` 仍创建任务。关闭 tasks 时保留旧桥 `/ls /card /say /stop /mirror /close`；此处 `/close` 只解除选择，绝不升级成销毁任务。具体 CLI 选项以 `help` 为准。
+命令匹配只检查实际消息正文的 `text.trim() === '/clear'`，不检查拼接后的引用内容；前后空白可忽略，`/CLEAR`、`／clear`、`/clear now` 和正文中提到 `/clear` 均不是该命令。它仅在飞书主入口私聊直接执行，在群内不执行轮转，AI 关闭时也可用。Web 不接收命令。AI 开启时，其余聊天文字按 opt-in Jev 入口边界处理；斜杠文本仍交给 pi。关闭 AI 后，任务模式保留 `/new`、`/tasks`、`/projects`、`/task ...`、`/screen`、`/stop` 等兼容操作；旧 `/new` 仍创建任务。关闭 tasks 时保留旧桥 `/ls /card /say /stop /mirror /close`；此处 `/close` 只解除选择，绝不升级成销毁任务。具体 CLI 选项以 `help` 为准。
 
 Web 提供会话列表、记录阅读、本机项目配置和模型设置。项目支持多个有序目录，保存时由现有 catalog 逻辑检查目录并确保主目录 Git 初始化；配置 action 只能修改 identity、project、catalog.bypass 和 config.ai。Web 不能创建/重命名/归档/恢复/清空会话，不能切换 active session，不提供任务、参与者、审批、终端屏幕或清理入口。服务端拒绝其它 action，并通过 loopback、Host、Origin 和 CSRF 校验保护写请求。`ui.max_cols/tail_lines` 只裁剪屏幕展示，不修改 Guard、阻塞检测或原始屏幕。停止 Web/服务不会自动销毁所有编码资源。
 
 ## 实现边界与待现场验证
 
 职责划分有工具能力边界，但 Claude/Codex 讨论“只读、不改项目文件”的约束仍通过投递提示表达；Bypass 与 herdr 执行环境决定实际权限，不是本项目额外实现的文件系统沙箱。
+
+[真实 Jev Choice 记录](jev-choice-live-evidence-2026-09-27.json) 仅覆盖合成分类输入；S3/S4 的本地回归不替代完整飞书/Claude/Codex 真实链路验收。
 
 独立二进制已经按实际平台做空目录烟测；不同平台、真实模型、飞书租户权限/群交互、真实 herdr 启动及审批仍按 [验收文档](acceptance.md) 分层报告。新增框架不消除 agent 检测、TUI 宽度、系统权限和供应商协议变化带来的现场差异。
 

@@ -1,0 +1,45 @@
+{
+  "startedAt": "2026-09-27T03:44:30.240Z",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "auth": "Bearer (redacted; loaded from local config)",
+  "request": {
+    "state": {
+      "task": "合成演示：用户要求先比较两个数据库的优缺点，目前两名参与者都尚未发表独立意见；没有任何开发授权。",
+      "stage": "discussion-opening"
+    },
+    "candidates": [
+      {
+        "id": "independent-opening",
+        "description": "请两名参与者分别提供独立分析，比较方案并标注未知问题，不修改代码。"
+      },
+      {
+        "id": "implement-now",
+        "description": "立即修改数据库实现并提交代码。"
+      },
+      {
+        "id": "deliver-now",
+        "description": "无需参与者分析，直接宣布任务完成。"
+      }
+    ]
+  },
+  "result": {
+    "status": "success",
+    "reason": "accepted",
+    "adapterVersion": "typesafe-choice-v1",
+    "requestedModel": "jev-1.13.0",
+    "threshold": 0.8,
+    "model": "jev-1.13.0",
+    "candidateId": "independent-opening",
+    "confidence": 1,
+    "probabilities": {
+      "independent-opening": 1,
+      "deliver-now": 0,
+      "implement-now": 0
+    },
+    "usage": {
+      "inputTokens": 499,
+      "outputTokens": 46
+    },
+    "durationMs": 908
+  }
+}

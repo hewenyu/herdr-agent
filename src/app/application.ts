@@ -11,6 +11,11 @@ import type {
   TranscriptEntry,
 } from "../core/types.js";
 import { isLegacyReplay } from "../migration/index.js";
+import { ingressRouteFor } from "../orchestration/ingress.js";
+import { reportCard } from "../orchestration/report.js";
+import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
+import { visibleOutput } from "../orchestration/status-block.js";
+import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
@@ -54,6 +59,7 @@ export class Application implements ApplicationContext {
   tasks: TaskService;
   readonly approvals: Approvals;
   readonly outbox: Outbox;
+  private readonly reportDeliveries: ReportDeliveries;
   readonly logger: Logger;
   readonly inbox: Inbox;
   readonly legacy: LegacyBridge;
@@ -95,6 +101,7 @@ export class Application implements ApplicationContext {
       tools: (actor) => applicationTools(this, actor),
     });
     this.outbox = new Outbox(this.store, () => this.platform);
+    this.reportDeliveries = new ReportDeliveries(this.store, this.outbox, () => this.platform);
     this.approvals = new Approvals(this.store, this.herdr, () => this.platform, this.config.ui);
     this.directoryTrust = new DirectoryTrust(
       this.store,
@@ -105,6 +112,8 @@ export class Application implements ApplicationContext {
     );
     this.tasks = this.taskService();
     this.taskOrchestrator = new TaskOrchestrator({
+      config: this.config,
+      projects: this.projects,
       store: this.store,
       engine: this.engine,
       tasks: () => this.tasks,
@@ -117,6 +126,12 @@ export class Application implements ApplicationContext {
           "task_orchestration_events",
           eventId,
         )?.decision;
+        if (
+          task.orchestration?.mode === "workflow" &&
+          decision?.action === "deliver" &&
+          decision.reportId
+        )
+          return this.reportDeliveries.confirmed(task.id, eventId, decision.reportId);
         return (
           decision?.action === "deliver" &&
           !!decision.participantId &&
@@ -125,8 +140,17 @@ export class Application implements ApplicationContext {
             ?.state === "delivered"
         );
       },
-      replyRetryable: async (task, eventId) =>
-        this.canResumeOutbox(this.orchestrationReplyId(task, eventId)),
+      replyRetryable: async (task, eventId) => {
+        const decision = this.store.get<OrchestrationEvent>(
+          "task_orchestration_events",
+          eventId,
+        )?.decision;
+        return task.orchestration?.mode === "workflow" &&
+          decision?.action === "deliver" &&
+          decision.reportId
+          ? this.reportDeliveries.retryable(task.id, eventId, decision.reportId)
+          : this.canResumeOutbox(this.orchestrationReplyId(task, eventId));
+      },
     });
     this.legacy = new LegacyBridge(this);
     this.inbox = new Inbox(this.store, (record) => this.process(record), this.logger, 8, {
@@ -265,6 +289,12 @@ export class Application implements ApplicationContext {
     try {
       if (this.sessions.get(actor.ownerId, actor.sessionId).generation !== record.generation)
         return false;
+      const route = ingressRouteFor(this.store, actor);
+      if (route && route.route !== "pi") {
+        if (!this.sessions.canRecover(actor)) return false;
+        if (route.replyId) return this.canResumeOutbox(route.replyId);
+        return !error || transientTurnFailure(error.code);
+      }
       const reply = this.sessions.recoveryReply(actor);
       if (reply) {
         const delivery = this.outbox.receipt(reply.id);
@@ -380,7 +410,9 @@ export class Application implements ApplicationContext {
         outputRetryable: (task, participant, entry) =>
           this.canResumeOutbox(`output:${task.id}:${participant.id}:${entry.id}`),
         notice: (task, kind) => this.notice(task, kind),
-        canDeleteGroup: (task) => canDeleteTaskGroup(this.store, task),
+        canDeleteGroup: (task) =>
+          canDeleteTaskGroup(this.store, task) &&
+          (!task.chatId || !this.reportDeliveries.pendingInChat(task.chatId)),
         blocked: async (task, participant) => {
           if (!participant.execution) return;
           let screen = await this.herdr.screen(participant.execution);
@@ -440,6 +472,8 @@ export class Application implements ApplicationContext {
   private orchestrationReplyId(task: Task, eventId: string): string {
     const event = this.store.get<OrchestrationEvent>("task_orchestration_events", eventId);
     const final = event?.decision?.action === "deliver" ? event.decision : undefined;
+    if (task.orchestration?.mode === "workflow" && final?.reportId)
+      return `workflow-report:${task.id}:${eventId}:${final.reportId}:body`;
     // A selected final is the same native message, not a new send authorization.
     // Reuse its original envelope so a missing ACK cannot be bypassed by a new ID.
     return final?.participantId && final.outputId
@@ -453,6 +487,45 @@ export class Application implements ApplicationContext {
     const final = event?.decision?.action === "deliver" ? event.decision : undefined;
     const outputId = this.orchestrationReplyId(task, eventId);
     const delivered = !!chatId && !chatId.startsWith("web:");
+    if (task.orchestration?.mode === "workflow" && final?.reportId) {
+      const state = this.store.get<WorkflowState>(WORKFLOWS, task.id);
+      if (!state?.report || state.report.id !== final.reportId)
+        throw new OperationError("workflow_report", "交付报告引用已失效。");
+      const envelope = {
+        taskId: task.id,
+        eventId,
+        reportId: state.report.id,
+        reportHash: state.report.hash,
+        chatId: chatId ?? `web:${task.ownerId}`,
+        text,
+        card: reportCard(task, state),
+        channel: delivered ? ("platform" as const) : ("web" as const),
+      };
+      const receipt = delivered
+        ? await this.reportDeliveries.send(envelope)
+        : this.reportDeliveries.prepare(envelope);
+      const actor = this.actor(task, receipt.bodyId);
+      const body = this.sessions.recordExternal(actor, {
+        id: receipt.bodyId,
+        text: receipt.text,
+        source: "workflow_report",
+        pendingDelivery: !delivered,
+      });
+      const summary = this.sessions.recordExternal(actor, {
+        id: receipt.cardId,
+        text: reportSummaryText(receipt.card),
+        source: "workflow_report_summary",
+        pendingDelivery: !delivered,
+      });
+      if (!delivered) this.reportDeliveries.bindWeb(receipt, body.id, summary.id);
+      this.changed();
+      if (!(await this.reportDeliveries.confirmed(task.id, eventId, final.reportId)))
+        throw new OperationError(
+          "report_delivery_pending",
+          "报告正文和摘要已准备，等待页面确认展示。",
+        );
+      return;
+    }
     if (delivered) await this.outbox.send(chatId, text, outputId);
     if (final) {
       this.changed();
@@ -473,7 +546,9 @@ export class Application implements ApplicationContext {
     participant: Participant,
     entry: TranscriptEntry,
   ): Promise<void> {
-    const text = `${participant.name} (${participant.kind})：\n${entry.text}`;
+    const content =
+      task.orchestration?.mode === "workflow" ? visibleOutput(entry.text) : entry.text;
+    const text = `${participant.name} (${participant.kind})：\n${content}`;
     const outputId = `output:${task.id}:${participant.id}:${entry.id}`;
     const actor = this.actor(task, outputId);
     const chatId = this.outputChat(task);

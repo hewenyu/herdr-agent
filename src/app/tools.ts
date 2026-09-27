@@ -1,3 +1,4 @@
+import type { AppConfig } from "../config/types.js";
 import { fail, safeError } from "../core/errors.js";
 import type { HerdrPort } from "../core/ports.js";
 import type { ActorContext } from "../core/types.js";
@@ -9,6 +10,7 @@ import type { TaskService } from "../tasks/service.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
 
 interface Services {
+  config?: AppConfig;
   tasks: TaskService;
   projects: ProjectCatalog;
   sessions: SessionService;
@@ -77,7 +79,20 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
           .list<{ taskId: string; createdAt: string }>("task_orchestration_events")
           .filter((event) => event.taskId === task.id)
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        return { ...task, participants, orchestrationHistory };
+        const workflow = services.store.get("task_workflows", task.id);
+        const ids = new Set(orchestrationHistory.map((event) => (event as { id?: string }).id));
+        const workflowDecisions = services.store
+          .entries<{ eventId: string }>("workflow_decisions")
+          .filter(([, record]) =>
+            [...ids].some((id) => id && record.eventId.startsWith(`${id}:selection:`)),
+          )
+          .map(([, record]) => record);
+        return {
+          ...task,
+          participants,
+          orchestrationHistory,
+          ...(workflow ? { workflow, workflowDecisions } : {}),
+        };
       },
     ),
     tool(
@@ -290,9 +305,10 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         orchestration: {
           type: "object",
           description:
-            "model让pi根据执行结果自主分工、继续、返工和委托汇总；manual仅按用户逐次安排。默认model；明确指定discussion.mode时沿用该策略。",
+            "model让pi根据执行结果自主分工、继续、返工和委托汇总；manual仅按用户逐次安排。配置 Jev key 时默认 workflow，否则 model；明确指定discussion.mode时沿用该策略。",
           properties: {
-            mode: { type: "string", enum: ["model", "manual"] },
+            mode: { type: "string", enum: ["model", "manual", "workflow"] },
+            template: { type: "string", enum: ["discussion", "development", "bugfix"] },
           },
           required: ["mode"],
           additionalProperties: false,
@@ -316,7 +332,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
               args.orchestration ??
               (args.discussion && typeof args.discussion === "object" && "mode" in args.discussion
                 ? undefined
-                : { mode: "model" }),
+                : { mode: services.config?.jev?.apiKey ? "workflow" : "model" }),
           }),
           mutationGuard(signal),
         ),

@@ -1,6 +1,11 @@
 import { fail, OperationError } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { ActorContext, IncomingMessage, StoredMessage } from "../core/types.js";
+import {
+  assertIngressProject,
+  completeIngressRoute,
+  resolveIngressRoute,
+} from "../orchestration/ingress.js";
 import { isClearCommand } from "../runtime/commands.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { ApplicationContext } from "./context.js";
@@ -65,6 +70,43 @@ export async function handleMessage(
     return;
   }
   if (context.config.ai.enabled) {
+    // Keep old/resumed pi turns on their original route even if ingress was enabled later.
+    const priorPiTurn = context.sessions
+      .history(actor.ownerId, actor.sessionId)
+      .some((entry) => entry.role === "user" && entry.deliveryIds.includes(message.messageId));
+    if (!priorPiTurn) {
+      const generation = context.sessions.get(actor.ownerId, actor.sessionId).generation;
+      const route = await resolveIngressRoute({
+        config: context.config,
+        store: context.store,
+        catalog: context.projects.snapshot(),
+        actor,
+        message,
+        signal: context.signal,
+      });
+      if ((route?.route === "create" || route?.route === "created") && route.parameters) {
+        const created = route.taskId
+          ? context.tasks.get(actor, route.taskId)
+          : await context.tasks.create(actor, route.parameters, () => {
+              if (
+                context.signal.aborted ||
+                context.sessions.get(actor.ownerId, actor.sessionId).generation !== generation
+              )
+                fail("cancelled", "入口请求已取消或会话已重置。");
+              assertIngressProject(route, context.projects.snapshot());
+            });
+        completeIngressRoute(context.store, route, created.id);
+        const answer = context.sessions.recordExternal(actor, {
+          id: `${message.messageId}:jev-ingress`,
+          text: `任务已登记：${created.id}。启动与群入口稍后同步。`,
+          source: "jev-ingress",
+          pendingDelivery: true,
+        });
+        completeIngressRoute(context.store, route, created.id, answer.id);
+        await deliverReply(context, actor, message, answer);
+        return;
+      }
+    }
     let prompt = message.unsupportedType
       ? JSON.stringify({
           platformEvent: "unsupported_message",

@@ -295,8 +295,13 @@ async function projectAction(
           name: string(input, "name"),
           agent: agentKind(input.agent),
           directories: strings(input.directories),
+          ...(input.verify === undefined ? {} : { verify: input.verify as string[] }),
+          ...(input.verifyTimeoutMs === undefined
+            ? {}
+            : { verifyTimeoutMs: input.verifyTimeoutMs as number }),
         },
         boolean(input, "makeDefault"),
+        { localConfiguration: true },
       );
       break;
     case "project.create":

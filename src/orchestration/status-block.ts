@@ -1,0 +1,137 @@
+import { fail } from "../core/errors.js";
+import type { WorkflowEvidence } from "./workflow.js";
+
+export interface StatusBlock {
+  protocolVersion: 1;
+  nodeId: string;
+  operationId: string;
+  inputRevision: string;
+  status: "completed" | "needs_work" | "blocked";
+  summary: string;
+  issues: Array<{
+    id: string;
+    description: string;
+    status: "open" | "resolved" | "deferred";
+    blocking: boolean;
+    evidenceRefs: string[];
+  }>;
+  artifactRefs: string[];
+  evidence: Array<{ description: string; command?: string; result: WorkflowEvidence["result"] }>;
+  blockers: string[];
+  reportSections?: Record<string, string>;
+}
+
+const blockPattern = /```myrix-status\s*\n([\s\S]*?)\n```/g;
+export function visibleOutput(text: string): string {
+  return text.replace(blockPattern, "").trim();
+}
+
+/** Routing hint only; a matching identifier still requires full validation. */
+export function statusOperationId(text: string): string | undefined {
+  const matches = [...text.matchAll(blockPattern)];
+  if (matches.length !== 1) return;
+  try {
+    const value = JSON.parse(matches[0]?.[1] ?? "");
+    return typeof value?.operationId === "string" ? value.operationId : undefined;
+  } catch {
+    return;
+  }
+}
+
+export function parseStatusBlock(
+  text: string,
+  expected: { nodeId: string; operationId: string; inputRevision: string },
+): StatusBlock {
+  const matches = [...text.matchAll(blockPattern)];
+  if (matches.length !== 1)
+    fail("workflow_status", "参与者输出需要一个完整的 myrix-status 状态块。");
+  let value: StatusBlock;
+  try {
+    value = JSON.parse(matches[0]?.[1] ?? "") as StatusBlock;
+  } catch {
+    fail("workflow_status", "状态块不是有效 JSON，原文已保留。");
+  }
+  const strings = (items: unknown): items is string[] =>
+    Array.isArray(items) && items.every((item) => typeof item === "string");
+  if (
+    !value ||
+    value.protocolVersion !== 1 ||
+    value.nodeId !== expected.nodeId ||
+    value.operationId !== expected.operationId ||
+    value.inputRevision !== expected.inputRevision ||
+    !["completed", "needs_work", "blocked"].includes(value.status) ||
+    typeof value.summary !== "string" ||
+    !value.summary.trim() ||
+    !Array.isArray(value.issues) ||
+    !strings(value.artifactRefs) ||
+    !Array.isArray(value.evidence) ||
+    !strings(value.blockers)
+  )
+    fail("workflow_status", "状态块版本、委派归属或字段无效，不能据此推进任务。");
+  const ids = new Set<string>();
+  for (const issue of value.issues) {
+    if (
+      !issue ||
+      typeof issue.id !== "string" ||
+      !/^[\w.-]{1,100}$/.test(issue.id) ||
+      ids.has(issue.id) ||
+      typeof issue.description !== "string" ||
+      !issue.description.trim() ||
+      !["open", "resolved", "deferred"].includes(issue.status) ||
+      typeof issue.blocking !== "boolean" ||
+      !strings(issue.evidenceRefs)
+    )
+      fail("workflow_status", "问题记录不完整或重复。");
+    ids.add(issue.id);
+  }
+  for (const evidence of value.evidence) {
+    if (
+      !evidence ||
+      typeof evidence.description !== "string" ||
+      !evidence.description.trim() ||
+      (evidence.command !== undefined &&
+        (typeof evidence.command !== "string" || !evidence.command.trim())) ||
+      !["passed", "failed", "not_run"].includes(evidence.result)
+    )
+      fail("workflow_status", "验证记录无效。");
+  }
+  if (
+    value.reportSections !== undefined &&
+    (!value.reportSections ||
+      Array.isArray(value.reportSections) ||
+      typeof value.reportSections !== "object" ||
+      Object.values(value.reportSections).some((entry) => typeof entry !== "string"))
+  )
+    fail("workflow_status", "报告章节无效。");
+  return value;
+}
+
+export function statusInstructions(expected: {
+  nodeId: string;
+  operationId: string;
+  inputRevision: string;
+}): string {
+  return [
+    "正文遵守用户要求的篇幅与格式。在末尾另附一个供 myrix 解析的状态块（不会当正文展示）：",
+    "```myrix-status",
+    JSON.stringify(
+      {
+        protocolVersion: 1,
+        ...expected,
+        status: "completed",
+        summary: "本轮真实结果",
+        issues: [],
+        artifactRefs: [],
+        evidence: [],
+        blockers: [],
+      },
+      null,
+      2,
+    ),
+    "```",
+    "issues 使用稳定 id、description、status(open/resolved/deferred)、blocking、evidenceRefs；回应已有问题保留其 id，不得仅改名。",
+    "evidence 每项填写 description、实际 command（若运行）、result(passed/failed/not_run)。未运行不能写 passed。",
+    "artifactRefs 仅填写实际产物文件路径。需要返工用 needs_work；只能由用户决定/授权的阻塞用 blocked 并填 blockers。",
+    "报告节点额外填 reportSections，键为任务书给出的全部必需章节名，值为对应报告正文。状态块不是验收或新授权。",
+  ].join("\n");
+}

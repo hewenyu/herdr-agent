@@ -95,17 +95,20 @@ export async function provisionParticipant(
   const ref = participant.execution;
   ref.transcriptReceipt = participant.initialReceipt;
   if (!participant.started) {
+    const directories = task.boardDirectory
+      ? [...task.directories, task.boardDirectory]
+      : task.directories;
     const agent = await operations.run(
       `${participant.id}:start`,
       {
         pane: ref.paneId,
         kind: participant.kind,
-        directories: task.directories,
+        directories,
         bypass: task.bypass,
       },
       () =>
         herdr.startAgent(ref.paneId, participant.kind, participant.name, {
-          directories: task.directories,
+          directories,
           bypass: task.bypass,
         }),
     );
@@ -116,7 +119,8 @@ export async function provisionParticipant(
     participant.cursor = (await herdr.transcript(ref)).cursor;
     records.saveParticipant(participant);
   }
-  if (participant.initialSent || task.orchestration?.mode === "model") return;
+  if (participant.initialSent || ["model", "workflow"].includes(task.orchestration?.mode ?? ""))
+    return;
   // Round-robin discussion starts one participant. Manual mode waits for the
   // owner to address subsequent participants, avoiding unsolicited parallel turns.
   const first = task.participantIds[0] === participant.id;

@@ -22,7 +22,7 @@ export class TaskRecords {
       fail("task_scope", "任务群身份必须使用服务端绑定任务。");
     const localOrchestrator =
       actor.source === "system" &&
-      task.orchestration?.mode === "model" &&
+      ["model", "workflow"].includes(task.orchestration?.mode ?? "") &&
       !task.chatId &&
       actor.taskId === task.id &&
       actor.chatId === task.entryChatId;
