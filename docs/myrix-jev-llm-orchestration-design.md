@@ -1,11 +1,11 @@
 # myrix：Jev 与 LLM 协作的多 Agent 编排设计
 
 日期：2026-09-27
-版本：v1.1（源码对照修订版；已完成本地实现，未发布）
+版本：v1.1（源码对照修订版；S3/S4 已合并，用户已确认验收；未在本轮发布）
 源码核对基线：`d2a0ba0c3e1c302dbb809e66db18a87b6e2974cb`
 来源：2026-09-26 的 `myrix-jev-llm-orchestration-design.md` v1.0，以及后续源码对照修订意见。
 
-本文替代 v1.0 中冲突的设计选择。用户已明确接受 B1/B2 边界变更；S3/S4 的实现随本 PR 提交评审，尚未发布或重启生产服务。实现映射、验证证据和现场验收缺口见[本地交付与复核记录](workflow-implementation-2026-09-27.md)。[持续调度审计](ai-orchestration-audit-2026-09-25.md)保留当时事实，不追写为本版验收证据。
+本文替代 v1.0 中冲突的设计选择。用户已明确接受 B1/B2 边界变更；S3/S4 随 PR #54 合并，用户随后明确确认验收通过。最初实现与审计证据见[本地交付与复核记录](workflow-implementation-2026-09-27.md)，后续修复、可复现实跑及证据范围见[合并后补齐记录](workflow-completion-2026-09-27.md)。本轮没有发布或重启生产服务。[持续调度审计](ai-orchestration-audit-2026-09-25.md)保留当时事实，不追写为本版验收证据。
 
 实施顺序为 [S3：工作流编排](specifications/S3-workflow-orchestration.md) → [S4：入口路由与验证](specifications/S4-ingress-verification.md)，两份 spec 一起发版，不设独立影子阶段。两项边界变更的确认方案单列在 S4 第 1 节。
 

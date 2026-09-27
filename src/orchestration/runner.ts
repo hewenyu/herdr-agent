@@ -17,9 +17,10 @@ import {
   rememberImplementer,
   restoreImplementationParticipants,
 } from "./authorship.js";
-import { inspectArtifact, publishBoard, publishOutput } from "./board.js";
+import { inspectArtifact, latestArtifacts, publishBoard, publishOutput } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
+import { selectWorkflowOutput } from "./output-selection.js";
 import { planWorkflow } from "./planner.js";
 import { selectWorkflowCandidate } from "./policy.js";
 import { publishReport, reportContract } from "./report.js";
@@ -30,7 +31,7 @@ import {
   readyNodes,
   workflowState,
 } from "./state.js";
-import { parseStatusBlock, statusInstructions, statusOperationId } from "./status-block.js";
+import { parseStatusBlock, statusInstructions } from "./status-block.js";
 import { VerificationRunner } from "./verify.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 import { workspaceAvailable, workspaceRevision } from "./workspace.js";
@@ -128,15 +129,15 @@ export class WorkflowOrchestrator {
 
   async assertDelivery(task: Task, state: WorkflowState): Promise<void> {
     restoreImplementationParticipants(this.ports.store, state);
+    const artifactRevision = await workspaceRevision(task.directories);
     const missing = reportContract(
       state,
-      await workspaceRevision(task.directories),
+      artifactRevision,
       this.commands(task),
       this.configRevision(task),
     );
     if (missing.length) fail("workflow_report", missing.join("；"));
-    for (const artifact of state.artifacts) {
-      if (artifact.artifactRevision !== state.report?.artifactRevision) continue;
+    for (const artifact of latestArtifacts(state, artifactRevision)) {
       const current = await inspectArtifact(task, artifact.path);
       if (current.hash !== artifact.hash) fail("workflow_artifact", "交付产物已变化或失效。");
     }
@@ -516,20 +517,22 @@ export class WorkflowOrchestrator {
         "input_deliveries",
         progress.operationId,
       );
+      if (!delivery) continue;
       const eligibleOutputs = this.ports
         .outputs(task.id)
         .filter(
           (entry) =>
             entry.participantId === participant.id &&
             !state.consumedOutputs.includes(entry.entry.id) &&
-            (entry.sequence ?? 0) > (delivery?.outputSequence ?? 0),
+            (entry.sequence ?? 0) > delivery.outputSequence,
         );
-      const output =
-        eligibleOutputs.findLast(
-          (entry) => statusOperationId(entry.entry.text) === progress.operationId,
-        ) ??
-        eligibleOutputs.filter((entry) => statusOperationId(entry.entry.text) === undefined).at(-1);
-      if (!output || !delivery) continue;
+      const output = selectWorkflowOutput(
+        eligibleOutputs,
+        delivery,
+        this.ports.events(task.id).flatMap((event) => event.dispatches),
+        this.ports.store,
+      );
+      if (!output) continue;
       await publishOutput(
         this.ports.config?.stateDir ?? "",
         task.id,

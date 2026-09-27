@@ -160,12 +160,14 @@ Tests cover the real pi loop with protocol fixtures, SQLite/flock/Git, Feishu SD
 
 - [Current business scenarios, command choices and gaps](docs/current-business-scenarios.md)
 - [Current design and D01–D16 decisions](docs/node-pi-design.md)
-- [Jev/LLM orchestration v1.1 and S3/S4 specs (implemented locally, not released)](docs/myrix-jev-llm-orchestration-design.md)
+- [Jev/LLM orchestration v1.1 and S3/S4 specs (merged in PR #54)](docs/myrix-jev-llm-orchestration-design.md)
 - [B/N scenario mapping and acceptance evidence](docs/acceptance.md)
 - [Active refactor goal](docs/refactor-goal.md)
 - [Original Go requirements inventory](docs/node-pi-refactor-requirements.md)
 
 The [live Jev Choice check](docs/jev-choice-live-evidence-2026-09-27.json) uses synthetic input and does not establish full Feishu/Claude/Codex workflow acceptance.
+
+The owner has confirmed acceptance of PR #54. [Follow-up evidence and reproducible probes](docs/workflow-completion-2026-09-27.md) record successful isolated discussion, development and bugfix workflows with real Jev, pi, Claude and Codex, plus synthetic ingress failures and fallback paths. Run `node --import tsx scripts/live/jev-ingress-probe.ts` for classification only, or `node --import tsx scripts/live/workflow-acceptance.ts --template all` for local workflow checks. These manual probes use configured model credentials; they do not send Feishu messages or change service configuration.
 
 Older architecture and audit documents are explicitly marked as Go history and use permanent source links. They are not the current Node runtime specification.
 

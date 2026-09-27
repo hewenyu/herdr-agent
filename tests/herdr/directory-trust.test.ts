@@ -6,7 +6,12 @@ import type { AgentKind, AgentSnapshot, ExecutionRef } from "../../src/core/type
 import { HerdrClient } from "../../src/herdr/client.js";
 import { AgentControl } from "../../src/herdr/control.js";
 import { HerdrRuntime } from "../../src/herdr/runtime.js";
-import { directoryTrustKeys } from "../../src/herdr/screen.js";
+import {
+  directoryTrustKeys,
+  parseOptions,
+  showsDialog,
+  trustKeys,
+} from "../../src/herdr/screen.js";
 import { HerdrTransport } from "../../src/herdr/transport.js";
 
 const claude = await readFile(
@@ -22,6 +27,25 @@ const nativeCodex = await readFile(
   "utf8",
 );
 const nativeCodexDirectory = "/Users/yueban/herder-agent-code/validation-node-pi-0918";
+// Captured Codex 0.157.1 startup screen; only the private workspace path is replaced.
+const codexFolder = `
+  Folder access
+  /tmp/myrix-workflow-acceptance/isolated-discussion
+  /project
+
+  Trust this folder? Codex can read, edit, and run
+  files here, subject to your permission settings.
+  Folder settings can run code automatically, even
+  without a model request. Continue only if you
+  trust these files. Your trust decision will be
+  saved.
+
+› 1. Trust and continue
+  2. Back to Agent Command Center
+
+  enter continue · esc back
+`;
+const codexFolderDirectory = "/tmp/myrix-workflow-acceptance/isolated-discussion/project";
 const guard = () => ({ stateSeq: "3", expiresAt: new Date(Date.now() + 60_000).toISOString() });
 
 class TrustClient extends HerdrClient {
@@ -76,6 +100,140 @@ class TrustClient extends HerdrClient {
     this.agent.status = "idle";
   }
 }
+
+function folderClient(): TrustClient {
+  const client = new TrustClient("codex");
+  client.ref.cwd = codexFolderDirectory;
+  client.agent.cwd = codexFolderDirectory;
+  client.text = codexFolder;
+  return client;
+}
+
+test("Codex folder-access template requires its exact native text and full wrapped directory", () => {
+  assert.deepEqual(directoryTrustKeys("codex", codexFolder, codexFolderDirectory), ["enter"]);
+  assert.deepEqual(
+    directoryTrustKeys(
+      "codex",
+      codexFolder.replace("› 1.", "  1.").replace("  2.", "› 2."),
+      codexFolderDirectory,
+    ),
+    ["up", "enter"],
+  );
+  assert.deepEqual(trustKeys(codexFolder), ["enter"]);
+  assert.equal(showsDialog(codexFolder), true);
+  assert.deepEqual(parseOptions(codexFolder), [
+    { key: "1", label: "Trust and continue" },
+    { key: "2", label: "Back to Agent Command Center" },
+  ]);
+  for (const text of [
+    `Quoted example:\n${codexFolder}`,
+    `${codexFolder}\nRun another action`,
+    codexFolder.replace("Your trust decision", "Your command approval"),
+    codexFolder.replace("Trust and continue", "Run and continue"),
+    codexFolder.replace("  /project", ""),
+    codexFolder.replace("  /project", "  /different"),
+    codexFolder.replace("  2.", "› 2."),
+    codexFolder.replace("› 1.", "  1."),
+    codexFolder.replace("enter continue · esc back", "Press enter to continue"),
+  ])
+    assert.equal(directoryTrustKeys("codex", text, codexFolderDirectory), undefined, text);
+  assert.equal(
+    directoryTrustKeys("codex", codexFolder, `${codexFolderDirectory}-other`),
+    undefined,
+  );
+  assert.equal(directoryTrustKeys("claude", codexFolder, codexFolderDirectory), undefined);
+});
+
+test("Codex folder-access false idle is blocked before task delivery and remains startup scoped", async () => {
+  const client = folderClient();
+  const raw = {
+    pane_id: client.ref.paneId,
+    workspace_id: client.ref.workspaceId,
+    terminal_id: "term1",
+    agent: "codex",
+    cwd: codexFolderDirectory,
+    agent_status: "idle",
+    state_change_seq: 3,
+    interactive_ready: true,
+    launch_pending: false,
+  };
+  assert.equal((await client.normalize(raw)).status, "blocked");
+  client.truncated = true;
+  assert.equal((await client.normalize(raw)).status, "idle");
+  client.truncated = false;
+  assert.equal(
+    (await client.normalize({ ...raw, agent_session: { kind: "id", value: "existing" } })).status,
+    "idle",
+  );
+  client.agent.status = "idle";
+  await assert.rejects(new AgentControl(client).send(client.ref, "task must not enter this menu"), {
+    code: "approval_required",
+  });
+  assert.deepEqual(client.strokes, []);
+});
+
+test("Codex folder-access trust retains startup, directory, menu and one-effect guards", async () => {
+  const accepted = folderClient();
+  await new AgentControl(accepted).trustDirectory(accepted.ref, accepted.ref.cwd, guard());
+  assert.deepEqual(accepted.strokes, [["enter"]]);
+  assert.equal(accepted.reads, 3);
+  const cases: Array<(client: TrustClient) => void> = [
+    (client) => {
+      client.agent.sessionId = "already-running-task";
+    },
+    (client) => {
+      client.agent.cwd = "/other";
+    },
+    (client) => {
+      client.beforeRead = (count) => {
+        if (count === 2) client.text = codexFolder.replace("  /project", "  /other");
+      };
+    },
+    (client) => {
+      client.beforeGet = (count) => {
+        if (count === 3) client.agent.terminalId = "replacement";
+      };
+    },
+    (client) => {
+      client.truncated = true;
+    },
+  ];
+  for (const alter of cases) {
+    const client = folderClient();
+    alter(client);
+    await assert.rejects(
+      new AgentControl(client).trustDirectory(client.ref, client.ref.cwd, guard()),
+    );
+    assert.deepEqual(client.strokes, []);
+  }
+  const client = folderClient();
+  client.error = new OperationError("lost", "lost acknowledgement", "unknown");
+  const control = new AgentControl(client);
+  await assert.rejects(control.trustDirectory(client.ref, client.ref.cwd, guard()), {
+    outcome: "unknown",
+  });
+  client.error = undefined;
+  await assert.rejects(control.trustDirectory(client.ref, client.ref.cwd, guard()), {
+    code: "directory_trust_uncertain",
+  });
+  assert.equal(client.strokes.length, 1);
+});
+
+test("remaining Codex folder-access markers keep confirmation uncertain even with changed menu text", async () => {
+  for (const after of [
+    codexFolder,
+    codexFolder.replace("Trust this folder?", "Loading folder..."),
+    codexFolder.replace("Folder access", ""),
+  ]) {
+    const client = folderClient();
+    client.after = after;
+    await assert.rejects(
+      new AgentControl(client).trustDirectory(client.ref, client.ref.cwd, guard()),
+      { code: "directory_trust_uncertain", outcome: "unknown" },
+    );
+    assert.equal(client.strokes.length, 1);
+  }
+});
 
 test("native Claude directory fixture recognizes wrapped cwd and exact selected trust choice only", async () => {
   assert.deepEqual(directoryTrustKeys("claude", claude, claudeDirectory), ["down", "enter"]);

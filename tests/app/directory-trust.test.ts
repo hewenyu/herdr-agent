@@ -7,6 +7,8 @@ import { OperationError } from "../../src/core/errors.js";
 import { stableId } from "../../src/core/ids.js";
 import type { HerdrPort } from "../../src/core/ports.js";
 import type { AgentScreen, Participant, Task } from "../../src/core/types.js";
+import { PiEngine } from "../../src/runtime/engine.js";
+import { config as modelConfig } from "../runtime/helpers.js";
 import { logger, setup } from "./helpers.js";
 
 async function fixture() {
@@ -148,9 +150,9 @@ test("ordinary confirmation reaches group and requires user's guarded card choic
     assert.equal(answers, 0);
     assert.equal(h.herdr.sends.length, 0);
     assert.equal(h.platform.cards.length, 1);
-    assert.equal(
+    assert.notEqual(
       h.engine.calls.find((turn) => turn.sessionId.startsWith("directory-trust:"))?.requireToolCall,
-      false,
+      true,
       "ordinary menu must not force a confirmation tool",
     );
     const card = h.platform.cards[0];
@@ -342,13 +344,19 @@ for (const priorState of ["no_tool", "failed", "pending", "uncertain", "done"] a
       const screen = await h.herdr.screen(ref);
       for (const [id] of h.store.entries("directory_trust_decisions"))
         h.store.delete("directory_trust_decisions", id);
-      const oldDecision = stableId(participant.id, ref.paneId, screen.agent.stateSeq);
+      const oldDecision = stableId(
+        participant.id,
+        ref.paneId,
+        screen.agent.stateSeq,
+        "native-directory-v2",
+        "",
+      );
       h.store.set("directory_trust_decisions", oldDecision, {
         confirmed: priorState === "done",
         text: "旧识别版本已处理",
       });
       if (priorState !== "no_tool") {
-        const id = `${participant.id}:directory-trust:${screen.agent.stateSeq}`;
+        const id = `${participant.id}:directory-trust:native-directory-v2:${screen.agent.stateSeq}`;
         h.store.set("operations", id, {
           id,
           fingerprint: "old-version",
@@ -424,7 +432,8 @@ test("pi receives strict native-menu and real-directory observations for clipped
         trustTargetDirectory: target,
       });
       assert.equal(input.authorizedWorktreeRoot, undefined);
-      assert.equal(turn.requireToolCall, true);
+      assert.notEqual(turn.requireToolCall, true);
+      assert.equal(turn.enforceClaims, false);
       assert.match(turn.systemPrompt, /不要把截断标题推测成另一个目录/);
       await turn.tools[0]?.execute({}, turn.actor);
       return { text: "已确认", messages: [] };
@@ -437,3 +446,130 @@ test("pi receives strict native-menu and real-directory observations for clipped
     await h.close();
   }
 });
+
+function trustResponse(tool: boolean): Response {
+  const text = "已确认目录信任。";
+  const id = tool ? "fc_trust" : "msg_trust";
+  const item = tool
+    ? {
+        id,
+        type: "function_call",
+        call_id: "call_trust",
+        name: "directory_trust_confirm",
+        arguments: "{}",
+      }
+    : {
+        id,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+      };
+  const events = [
+    { type: "response.created", response: { id: "resp_trust", status: "in_progress" } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: tool ? { ...item, arguments: "" } : { ...item, content: [] },
+    },
+    ...(tool
+      ? [
+          { type: "response.function_call_arguments.delta", output_index: 0, delta: "{}" },
+          { type: "response.function_call_arguments.done", output_index: 0, arguments: "{}" },
+        ]
+      : [{ type: "response.output_text.delta", output_index: 0, delta: text }]),
+    { type: "response.output_item.done", output_index: 0, item },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp_trust",
+        status: "completed",
+        output: [item],
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      },
+    },
+  ];
+  return new Response(
+    events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+for (const outcome of ["confirmed", "text_only", "tool_rejected"] as const) {
+  test(`Responses gateway without required tool choice preserves trust receipt guard: ${outcome}`, async () => {
+    const h = await fixture();
+    try {
+      await h.app.tasks.reconcile(h.task.id);
+      const participant = h.app.tasks.records.participants(h.task)[0] as Participant;
+      const ref = participant.execution;
+      assert.ok(ref);
+      for (const [id] of h.store.entries("directory_trust_decisions"))
+        h.store.delete("directory_trust_decisions", id);
+      let attempts = 0;
+      let writes = 0;
+      (h.herdr as HerdrPort).trustDirectory = async (target, directory, guard) => {
+        attempts++;
+        assert.equal(target.paneId, ref.paneId);
+        assert.equal(directory, ref.cwd);
+        assert.equal(guard.stateSeq, "1");
+        if (outcome === "tool_rejected")
+          throw new OperationError("stale_guard", "现场版本已改变，未按键。");
+        writes++;
+      };
+      const requests: Array<{ tool_choice?: unknown; tools?: Array<{ name: string }> }> = [];
+      const engine = new PiEngine(modelConfig, {
+        fetch: async (_url, init) => {
+          const request = JSON.parse(String(init?.body));
+          requests.push(request);
+          if (request.tool_choice === "required")
+            return Response.json(
+              { error: { type: "invalid_request_error", message: "required is unsupported" } },
+              { status: 400 },
+            );
+          return trustResponse(outcome !== "text_only" && requests.length === 1);
+        },
+      });
+      const text = [
+        `> You are in ${ref.cwd}`,
+        "Do you trust the contents of this directory?",
+        "› 1. Yes, continue",
+        "2. No, quit",
+        "Press enter to continue",
+      ].join("\n");
+      const controller = new DirectoryTrust(h.store, h.herdr, engine, logger, h.app.signal);
+      const confirmed = await controller.handle(
+        h.task,
+        participant,
+        { agent: await h.herdr.get(ref.paneId), text, question: text, options: [] },
+        {
+          ownerId: "owner",
+          chatId: "entry",
+          sessionId: "s",
+          taskId: h.task.id,
+          messageId: "gateway-trust",
+        },
+      );
+      assert.equal(confirmed, outcome === "confirmed");
+      assert.equal(writes, outcome === "confirmed" ? 1 : 0);
+      assert.equal(attempts, outcome === "text_only" ? 0 : 1);
+      assert.equal(requests.length, outcome === "text_only" ? 1 : 2);
+      for (const request of requests) {
+        assert.notEqual(request.tool_choice, "required");
+        assert.deepEqual(
+          request.tools?.map((tool) => tool.name),
+          ["directory_trust_confirm"],
+        );
+      }
+      const decision = h.store.list<{ confirmed: boolean }>("directory_trust_decisions")[0];
+      assert.equal(decision?.confirmed, outcome === "confirmed");
+      const receipts = h.store
+        .entries<{ state: string }>("operations")
+        .filter(([id]) => id.startsWith(`${participant.id}:directory-trust`));
+      assert.deepEqual(
+        receipts.map(([, receipt]) => receipt.state),
+        outcome === "confirmed" ? ["done"] : outcome === "tool_rejected" ? ["failed"] : [],
+      );
+    } finally {
+      await h.close();
+    }
+  });
+}

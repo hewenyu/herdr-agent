@@ -1,6 +1,7 @@
 import { canonical, now, stableId } from "../core/ids.js";
 import type { Delivery, Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
+import { nativeInputCandidates } from "../transcripts/input.js";
 import { assertActive, type TaskContext } from "./context.js";
 import type { InputDelivery } from "./input-delivery.js";
 import { ownsTaskOperation } from "./operation-scope.js";
@@ -35,6 +36,7 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
     );
     assertActive(context);
     if (!input) continue;
+    const inputs = nativeInputCandidates(execution.kind, input);
     const prefixes = participantPromptCandidates(task, participant);
     const initialFingerprint = stableId(canonical({ receipt: participant.initialReceipt }));
     const receiptSuffix = `\n\n投递标识（无需复述）：\n${participant.initialReceipt}`;
@@ -42,17 +44,20 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
     for (const prefix of prefixes) {
       const legacyPrefix = `${prefix}\n\n本轮安排：\n`;
       const arrangedPrefix = `${prefix.slice(0, -receiptSuffix.length)}\n\n本轮安排：\n`;
-      const arrangement = input.startsWith(legacyPrefix)
-        ? input.slice(legacyPrefix.length)
-        : input.startsWith(arrangedPrefix) && input.endsWith(receiptSuffix)
-          ? input.slice(arrangedPrefix.length, -receiptSuffix.length)
-          : undefined;
-      if (arrangement !== undefined)
-        fingerprints.add(stableId(canonical({ participant: participant.id, text: arrangement })));
+      for (const candidate of inputs) {
+        const arrangement = candidate.startsWith(legacyPrefix)
+          ? candidate.slice(legacyPrefix.length)
+          : candidate.startsWith(arrangedPrefix) && candidate.endsWith(receiptSuffix)
+            ? candidate.slice(arrangedPrefix.length, -receiptSuffix.length)
+            : undefined;
+        if (arrangement !== undefined)
+          fingerprints.add(stableId(canonical({ participant: participant.id, text: arrangement })));
+      }
     }
     const matches = operations.filter(([id, operation]) =>
       id === `${participant.id}:initial`
-        ? prefixes.includes(input) && operation.fingerprint === initialFingerprint
+        ? inputs.some((candidate) => prefixes.includes(candidate)) &&
+          operation.fingerprint === initialFingerprint
         : fingerprints.has(operation.fingerprint),
     );
     if (matches.length !== 1) continue;
@@ -160,7 +165,11 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
       ? delivery.prompt
       : await context.herdr.initialInput?.(delivery.execution, delivery.receipt);
     assertActive(context);
-    if (input !== delivery.prompt) continue;
+    if (
+      input === undefined ||
+      !nativeInputCandidates(execution.kind, input).includes(delivery.prompt)
+    )
+      continue;
     const result: Delivery = {
       status: "delivered",
       acked: false,

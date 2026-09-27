@@ -22,7 +22,7 @@ Codex 窄终端会在右边缘截断 You are in 标题且不显示省略号；he
 
 // Re-evaluate old no-effect decisions after recognition changes. Native writes
 // remain frozen across every version by the operation-prefix scan below.
-const recognitionVersion = "native-directory-v2";
+const recognitionVersion = "native-directory-v3";
 
 /** The model decides; the only available effect can confirm native startup directory trust. */
 export class DirectoryTrust {
@@ -153,7 +153,10 @@ export class DirectoryTrust {
           screen,
         }),
         tools: [tool],
-        requireToolCall: nativeMenuRecognized && directoryAuthorized,
+        // Some compatible Responses gateways reject tool_choice="required".
+        // Only the guarded tool's successful receipt can set confirmed; model
+        // text must neither confirm trust nor trigger a generic claims retry.
+        enforceClaims: false,
         signal: this.signal,
         onCheckpoint: (messages) => {
           this.store.set("directory_trust_checkpoints", decisionId, { messages });

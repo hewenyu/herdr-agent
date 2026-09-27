@@ -3,14 +3,19 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionRef } from "../core/types.js";
+import { CodexReceiptSources } from "./codex-receipt.js";
 import { receiptSource, type TranscriptSource } from "./receipt.js";
 
 export class TranscriptResolver {
   private readonly cache = new Map<string, { path?: string; checked: number }>();
+  private readonly codexReceipts = new CodexReceiptSources();
   constructor(private readonly home = homedir()) {}
 
   async resolve(ref: ExecutionRef, strictIO = false): Promise<TranscriptSource | undefined> {
-    if (!ref.sessionId) return receiptSource(this.home, ref, strictIO);
+    if (!ref.sessionId)
+      return ref.kind === "codex"
+        ? this.codexReceipts.resolve(this.home, ref, strictIO)
+        : receiptSource(this.home, ref, strictIO);
     if (!/^[A-Za-z0-9_-]+$/.test(ref.sessionId)) return;
     const key = `${strictIO ? "strict:" : ""}${ref.kind}:${ref.sessionId}`;
     const cached = this.cache.get(key);

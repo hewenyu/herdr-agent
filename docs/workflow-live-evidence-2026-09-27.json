@@ -1,0 +1,169 @@
+{
+  "date": "2026-09-27",
+  "kind": "real_jev_pi_claude_codex_local_workflow",
+  "passed": true,
+  "models": {
+    "jev": "jev-1.13.0",
+    "pi": "kimi-k2.5",
+    "piProtocol": "openai-responses"
+  },
+  "nativeVersions": {
+    "herdr": "0.8.0",
+    "protocol": 19,
+    "claude": "2.1.283",
+    "codex": "0.157.1"
+  },
+  "results": [
+    {
+      "template": "discussion",
+      "passed": true,
+      "evidenceFile": "workflow-live-discussion-2026-09-27.json",
+      "startedAt": "2026-09-27T08:27:24.217Z",
+      "finishedAt": "2026-09-27T08:31:17.252Z",
+      "nodesComplete": 4,
+      "promptAttempts": 4,
+      "checksPassed": 14,
+      "checksTotal": 14,
+      "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-QS6fzf/discussion"
+    },
+    {
+      "template": "development",
+      "passed": true,
+      "evidenceFile": "workflow-live-development-2026-09-27.json",
+      "startedAt": "2026-09-27T08:40:18.032Z",
+      "finishedAt": "2026-09-27T08:45:52.238Z",
+      "nodesComplete": 5,
+      "promptAttempts": 5,
+      "checksPassed": 14,
+      "checksTotal": 14,
+      "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-NKy6oM/development"
+    },
+    {
+      "template": "bugfix",
+      "passed": true,
+      "evidenceFile": "workflow-live-bugfix-2026-09-27.json",
+      "startedAt": "2026-09-27T08:47:24.144Z",
+      "finishedAt": "2026-09-27T08:52:48.617Z",
+      "nodesComplete": 4,
+      "promptAttempts": 4,
+      "checksPassed": 14,
+      "checksTotal": 14,
+      "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-CKLtxN/bugfix"
+    }
+  ],
+  "additionalEvidence": {
+    "realJevRework": [
+      {
+        "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-nO2xjZ/discussion",
+        "rule": {
+          "status": "not-applicable",
+          "reason": "needs_choice"
+        },
+        "jev": {
+          "status": "success",
+          "reason": "accepted",
+          "adapterVersion": "typesafe-choice-v1",
+          "requestedModel": "jev-1.13.0",
+          "threshold": 0.8,
+          "model": "jev-1.13.0",
+          "candidateId": "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1",
+          "confidence": 0.96,
+          "probabilities": {
+            "user:blocked": 0,
+            "replan:blocked": 0.02,
+            "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1": 0.98
+          },
+          "usage": {
+            "inputTokens": 2595,
+            "outputTokens": 125
+          },
+          "durationMs": 1456
+        },
+        "final": {
+          "source": "jev",
+          "candidateId": "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1",
+          "reason": "jev_accepted"
+        }
+      },
+      {
+        "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-nO2xjZ/discussion",
+        "rule": {
+          "status": "not-applicable",
+          "reason": "needs_choice"
+        },
+        "jev": {
+          "status": "success",
+          "reason": "accepted",
+          "adapterVersion": "typesafe-choice-v1",
+          "requestedModel": "jev-1.13.0",
+          "threshold": 0.8,
+          "model": "jev-1.13.0",
+          "candidateId": "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1",
+          "confidence": 0.96,
+          "probabilities": {
+            "user:blocked": 0,
+            "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1": 0.98,
+            "replan:blocked": 0.02
+          },
+          "usage": {
+            "inputTokens": 2594,
+            "outputTokens": 125
+          },
+          "durationMs": 1421
+        },
+        "final": {
+          "source": "jev",
+          "candidateId": "rework:opening-1:task_e95d6f4c95ad46f26e099564aa4c7d53:p1",
+          "reason": "jev_accepted"
+        }
+      }
+    ],
+    "userArbitration": {
+      "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-QS6fzf/development",
+      "result": {
+        "template": "development",
+        "passed": false,
+        "failure": "acceptance_user_arbitration",
+        "startedAt": "2026-09-27T08:31:17.455Z",
+        "finishedAt": "2026-09-27T08:38:55.764Z",
+        "checks": {},
+        "native": {
+          "started": 2,
+          "promptAttempts": 6,
+          "peakNativeAgents": 2,
+          "maxNativeAgents": 2,
+          "capacityReached": []
+        },
+        "cleanup": [
+          {
+            "paneId": "wY:p1",
+            "closed": true
+          },
+          {
+            "paneId": "wZ:p1",
+            "closed": true
+          }
+        ],
+        "evidenceDirectory": "/private/var/folders/vh/fv9dxg9s01v0s6y0bj600ztm0000gn/T/myrix-workflow-acceptance-QS6fzf/development",
+        "kind": "real_jev_pi_claude_codex_local_workflow",
+        "delivery": "local_callback_only_not_feishu",
+        "bypass": true,
+        "acceptedByUser": false
+      },
+      "decisions": [
+        {
+          "action": "wait",
+          "reason": "只有确需用户决定、权限或必需信息时等待用户；常规返工继续安排参与者。",
+          "candidateId": "user:blocked",
+          "source": "pi"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Synthetic isolated projects; successful runs are separate executions after documented fixes.",
+    "Bypass explicitly matches pre-existing local configuration; no production configuration changed.",
+    "Local report/card callbacks only; no Feishu delivery, production service restart, release or new user acceptance.",
+    "Ingress remains disabled; separate synthetic probe records low-confidence fallback."
+  ]
+}

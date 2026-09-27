@@ -2,6 +2,8 @@
 
 日期：2026-09-27。基线：`d2a0ba0c3e1c302dbb809e66db18a87b6e2974cb`。实现与证据随本 PR 提交评审，尚未发布或重启生产服务。
 
+后续状态：PR #54 已合并到 `392a0d3`，用户已明确确认验收通过。下文保留开发和 PR 审计期间的原始证据范围；“未验收”指当时开发者未运行的链路。后续修复与可复现验证见[合并后补齐记录](workflow-completion-2026-09-27.md)。
+
 复核入口：[总设计 v1.1](myrix-jev-llm-orchestration-design.md)、[S3](specifications/S3-workflow-orchestration.md)、[S4](specifications/S4-ingress-verification.md)。用户已接受 S4 的两项边界变更；本次实施无需再次确认这两项授权。真实平台联合验收与发布仍是独立的后续工作。
 
 ## 已实现的行为
