@@ -56,6 +56,7 @@ export async function conversation(
     let matched = false;
     let offset = 0;
     let characters = 0;
+    let entryCount = 0;
     let truncated = false;
     for await (const line of nativeInputLines(file, size)) {
       const start = offset;
@@ -76,10 +77,13 @@ export async function conversation(
       if (!entries.length) continue;
       const compact = entries.map((entry) => ({ ...entry, text: entry.text.slice(0, 4000) }));
       characters += compact.reduce((sum, entry) => sum + entry.text.length, 0);
+      entryCount += compact.length;
       collected.push({ offset: start, entries: compact });
-      while (collected.length > 40 || (characters > 24_000 && collected.length > 1)) {
+      while (entryCount > 40 || (characters > 24_000 && collected.length > 1)) {
+        // Keep all entries from a native record together: pagination is by record offset.
         const removed = collected.shift();
         characters -= removed?.entries.reduce((sum, entry) => sum + entry.text.length, 0) ?? 0;
+        entryCount -= removed?.entries.length ?? 0;
         truncated = true;
       }
       if (entries.some((entry) => entry.text.length > 4000)) truncated = true;

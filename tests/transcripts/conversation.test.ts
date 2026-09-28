@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExecutionRef } from "../../src/core/types.js";
+import type { ExecutionRef, TranscriptEntry } from "../../src/core/types.js";
 import { TranscriptReader } from "../../src/transcripts/reader.js";
 import { TranscriptResolver } from "../../src/transcripts/resolver.js";
 
@@ -58,6 +58,66 @@ test("progress reads a verified task conversation, excludes earlier dialogue and
         "\n",
     );
     await assert.rejects(reader.conversation(ref, receipt));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("Claude progress bounds returned entries and keeps prose/tool records together across pages", async () => {
+  const home = await mkdtemp(join(tmpdir(), "progress-claude-paging-"));
+  try {
+    const directory = join(home, ".claude/projects/code");
+    await mkdir(directory, { recursive: true });
+    const ref: ExecutionRef = {
+      workspaceId: "w",
+      paneId: "p",
+      kind: "claude",
+      cwd: "/code",
+      sessionId: "session",
+    };
+    const row = (type: string, content: unknown) =>
+      JSON.stringify({ type, cwd: ref.cwd, sessionId: ref.sessionId, message: { content } });
+    const expected = Array.from({ length: 45 }, (_, index) => [
+      `正在读取 ${index}`,
+      `Read(docs/${index}.md)`,
+    ]).flat();
+    expected.push("最新进度");
+    await writeFile(
+      join(directory, "session.jsonl"),
+      `${[
+        row("user", `初始要求\n${receipt}`),
+        ...Array.from({ length: 45 }, (_, index) =>
+          row("assistant", [
+            { type: "text", text: `正在读取 ${index}` },
+            { type: "tool_use", name: "Read", input: { file_path: `docs/${index}.md` } },
+          ]),
+        ),
+        row("assistant", "最新进度"),
+      ].join("\n")}\n`,
+    );
+    const reader = new TranscriptReader(new TranscriptResolver(home));
+    const pages: TranscriptEntry[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await reader.conversation(ref, receipt, cursor);
+      assert.ok(page.entries.length <= 40);
+      for (const entry of page.entries.filter((entry) => entry.role === "tool")) {
+        assert.ok(page.entries.some((other) => `${other.id}:tools` === entry.id));
+      }
+      pages.push(page.entries);
+      assert.ok(pages.length <= 3, "pagination must advance without repeating records");
+      cursor = page.cursor;
+    } while (cursor);
+    assert.deepEqual(
+      pages.map((page) => page.length),
+      [39, 40, 12],
+    );
+    const entries = pages.reverse().flat();
+    assert.deepEqual(
+      entries.map((entry) => entry.text),
+      expected,
+    );
+    assert.equal(new Set(entries.map((entry) => entry.id)).size, expected.length);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
