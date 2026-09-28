@@ -48,6 +48,11 @@ test("document source baseline permits all authorized documents but rejects sour
     h.state.plan.documentDelivery = undefined;
     await assert.rejects(h.check(), { code: "workflow_document_scope" });
     writeFileSync(join(h.root, "app.ts"), "original source\n");
+    await assert.rejects(h.check(), {
+      code: "workflow_document_scope",
+      message: /文档范围不能移除/,
+    });
+    h.state.plan.documentDelivery = { paths: original.paths, userRequest: h.task.requirements };
     await h.check();
   } finally {
     h.close();
@@ -60,24 +65,68 @@ test("new document authorization cannot hide preexisting changes and directory c
     await h.prepare();
     const original = structuredClone(h.state.documentSource);
     writeFileSync(join(h.root, "A.md"), "approved document\n");
-    h.state.plan.documentDelivery = { paths: ["A.md", "C.md"], userRequest: h.task.requirements };
+    h.state.plan.documentDelivery = {
+      paths: ["A.md", "B.md", "C.md"],
+      userRequest: h.task.requirements,
+    };
     writeFileSync(join(h.root, "C.md"), "previously unauthorized\n");
     await assert.rejects(h.prepare(), { code: "workflow_document_scope" });
     assert.deepEqual(h.state.documentSource, original);
     unlinkSync(join(h.root, "C.md"));
     await h.prepare();
-    assert.deepEqual(h.state.documentSource?.paths, ["A.md", "C.md"]);
+    assert.deepEqual(h.state.documentSource?.paths, ["A.md", "B.md", "C.md"]);
     writeFileSync(join(h.root, "C.md"), "now authorized\n");
     await h.check();
-    writeFileSync(join(h.root, "B.md"), "authorization removed\n");
-    await assert.rejects(h.check(), { code: "workflow_document_scope" });
-    unlinkSync(join(h.root, "B.md"));
+    writeFileSync(join(h.root, "B.md"), "original authorization retained\n");
+    await h.check();
     const other = join(h.directory, "other");
     mkdirSync(other);
     writeFileSync(join(other, "app.ts"), "original source\n");
     h.task.directories = [other];
     await assert.rejects(h.prepare(), { code: "workflow_document_scope", message: /目录已变化/ });
     await assert.rejects(h.check(), { code: "workflow_document_scope", message: /目录已变化/ });
+  } finally {
+    h.close();
+  }
+});
+
+test("replanning cannot replace or remove an already written document from the source exclusions", async () => {
+  const h = await harness();
+  try {
+    await h.prepare();
+    const original = structuredClone(h.state.documentSource);
+    assert.ok(original);
+    writeFileSync(join(h.root, "B.md"), "document authored under the original plan\n");
+    for (const paths of [["A.md", "C.md"], ["A.md"], undefined]) {
+      h.state.plan.documentDelivery = paths
+        ? { paths, userRequest: h.task.requirements }
+        : undefined;
+      await assert.rejects(h.prepare(), {
+        code: "workflow_document_scope",
+        message: /恢复原计划.*新建任务/,
+      });
+      await assert.rejects(h.check(), {
+        code: "workflow_document_scope",
+        message: /文档范围不能移除/,
+      });
+      assert.deepEqual(h.state.documentSource, original);
+      assert.deepEqual(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.documentSource, original);
+      assert.deepEqual(
+        h.state.plan.documentDelivery?.paths,
+        paths,
+        "the guard must not silently reauthorize removed paths",
+      );
+    }
+    h.task.promptVersion = 2;
+    h.task.kind = "development";
+    await assert.rejects(h.check(), {
+      code: "workflow_document_scope",
+      message: /文档范围不能移除/,
+    });
+    h.state.plan.documentDelivery = { paths: original.paths, userRequest: h.task.requirements };
+    await h.prepare();
+    await h.check();
+    assert.deepEqual(h.state.documentSource, original);
   } finally {
     h.close();
   }

@@ -480,60 +480,70 @@ test("frozen document dispatch retains its narrower scope across restart", async
   }
 });
 
-test("delivery replay refuses source contamination and retires the report to attention once", async () => {
-  const h = await harness(true);
-  const reply = h.options.onReply;
-  try {
-    await h.worker.tick();
-    await h.worker.tick();
-    await h.finish("opening-1");
-    await h.worker.tick();
-    await h.finish("opening-2");
-    await h.worker.tick();
-    mkdirSync(join(h.repo, "docs"));
-    writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Design\n");
-    await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
-    await h.worker.tick();
-    await h.finish("cross-review", { artifactRefs: ["docs/DESIGN.md"] });
-    await h.worker.tick();
-    await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
-    h.options.onReply = async () => {
-      throw new OperationError("offline", "fixture transport unavailable");
-    };
-    await h.worker.tick();
-    const delivery = h.store
-      .list<OrchestrationEvent>("task_orchestration_events")
-      .find((event) => event.decision?.action === "deliver");
-    assert.ok(delivery);
-    assert.equal(delivery.state, "done");
-    assert.equal(delivery.notified, undefined);
-    assert.equal(h.replies.length, 0);
+for (const mutation of ["source contamination", "removed document scope"] as const)
+  test(`delivery replay refuses ${mutation} and retires the report to attention once`, async () => {
+    const h = await harness(true);
+    const reply = h.options.onReply;
+    try {
+      await h.worker.tick();
+      await h.worker.tick();
+      await h.finish("opening-1");
+      await h.worker.tick();
+      await h.finish("opening-2");
+      await h.worker.tick();
+      mkdirSync(join(h.repo, "docs"));
+      writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Design\n");
+      await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+      await h.worker.tick();
+      await h.finish("cross-review", { artifactRefs: ["docs/DESIGN.md"] });
+      await h.worker.tick();
+      await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
+      h.options.onReply = async () => {
+        throw new OperationError("offline", "fixture transport unavailable");
+      };
+      await h.worker.tick();
+      const delivery = h.store
+        .list<OrchestrationEvent>("task_orchestration_events")
+        .find((event) => event.decision?.action === "deliver");
+      assert.ok(delivery);
+      assert.equal(delivery.state, "done");
+      assert.equal(delivery.notified, undefined);
+      assert.equal(h.replies.length, 0);
 
-    writeFileSync(join(h.repo, "app.ts"), "// changed before actual delivery\n");
-    const errors: string[] = [];
-    const restarted = new TaskOrchestrator({
-      ...h.options,
-      onReply: reply,
-      logger: {
-        ...logger,
-        error: (message: string) => {
-          errors.push(message);
+      if (mutation === "source contamination")
+        writeFileSync(join(h.repo, "app.ts"), "// changed before actual delivery\n");
+      else {
+        const changed = h.state();
+        changed.plan.documentDelivery = undefined;
+        h.store.set(WORKFLOWS, h.task.id, changed);
+      }
+      const errors: string[] = [];
+      const restarted = new TaskOrchestrator({
+        ...h.options,
+        onReply: reply,
+        logger: {
+          ...logger,
+          error: (message: string) => {
+            errors.push(message);
+          },
         },
-      },
-    });
-    await restarted.tick();
-    const retired = h.store.get<OrchestrationEvent>("task_orchestration_events", delivery.id);
-    assert.equal(retired?.state, "attention");
-    assert.equal(retired?.error?.code, "workflow_document_scope");
-    assert.equal(h.replies.length, 1);
-    assert.match(h.replies[0] ?? "", /授权文档之外/);
-    for (let tick = 0; tick < 3; tick++) await restarted.tick();
-    assert.equal(h.replies.length, 1);
-    assert.deepEqual(errors, []);
-  } finally {
-    h.close();
-  }
-});
+      });
+      await restarted.tick();
+      const retired = h.store.get<OrchestrationEvent>("task_orchestration_events", delivery.id);
+      assert.equal(retired?.state, "attention");
+      assert.equal(retired?.error?.code, "workflow_document_scope");
+      assert.equal(h.replies.length, 1);
+      assert.match(
+        h.replies[0] ?? "",
+        mutation === "source contamination" ? /授权文档之外/ : /文档范围不能移除/,
+      );
+      for (let tick = 0; tick < 3; tick++) await restarted.tick();
+      assert.equal(h.replies.length, 1);
+      assert.deepEqual(errors, []);
+    } finally {
+      h.close();
+    }
+  });
 
 for (const stage of ["planning", "selection"] as const)
   test(`v3 ${stage} evidence waits survive ticks/restarts without consuming retries and resume on new evidence`, async () => {

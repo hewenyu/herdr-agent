@@ -47,6 +47,12 @@ export async function assertDocumentSource(
       fail("workflow_document_scope", "缺少首次文档写入前的源码基线，不能确认文档交付范围。");
     return;
   }
+  const authorized = new Set(state.plan.documentDelivery?.paths ?? []);
+  if (baseline.paths.some((path) => !authorized.has(path)))
+    fail(
+      "workflow_document_scope",
+      "文档范围不能移除本任务已冻结的路径；请恢复原计划的完整文档范围，或核对工作区后新建任务。",
+    );
   if (JSON.stringify(baseline.directories) !== JSON.stringify(await directories(task)))
     fail("workflow_document_scope", "文档任务目录已变化，不能沿用或重置原源码基线。");
   try {
@@ -72,7 +78,6 @@ export async function prepareDocumentSource(
   state: WorkflowState,
 ): Promise<void> {
   const paths = [...(state.plan.documentDelivery?.paths ?? [])].sort();
-  if (!paths.length) fail("workflow_document_scope", "文档派发缺少已授权的完整文档范围。");
   const previous = state.documentSource;
   if (previous) {
     await assertDocumentSource(store, task, state);
@@ -85,6 +90,7 @@ export async function prepareDocumentSource(
       "旧文档任务缺少可信源码基线，不能从当前现场初始化；请核对恢复后新建任务。",
     );
   }
+  if (!paths.length) fail("workflow_document_scope", "文档派发缺少已授权的完整文档范围。");
   await validateDocumentPaths(task, paths);
   const next = {
     directories: await directories(task),
