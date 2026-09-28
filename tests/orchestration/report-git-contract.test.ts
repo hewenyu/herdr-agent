@@ -330,6 +330,88 @@ test("a Git contract failure after upload persists as attention and cannot becom
   }
 });
 
+for (const failure of ["workflow_report", "workflow_artifact"] as const)
+  test(`first delivery candidate persists ${failure} immediately instead of retrying execution`, async () => {
+    const h = await harness();
+    let uploads = 0;
+    let files = 0;
+    try {
+      // This must create/select/execute the initial candidate, not restore a done notification.
+      h.store.delete("task_orchestration_events", h.event.id);
+      const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+      platform.uploadFile = async () => {
+        uploads++;
+        await h.git.git("checkout", "--quiet", "-b", "feature/first-delivery-drift");
+        return "first-upload-key";
+      };
+      platform.sendFile = async () => {
+        files++;
+        return "file-message";
+      };
+      h.app.attachPlatform(platform);
+      h.app.tasks.records.save({
+        ...h.app.tasks.get(h.actor, h.task.id),
+        entryChatId: "fixture-platform-chat",
+      });
+      if (failure === "workflow_artifact") {
+        h.state.artifacts.push({
+          path: join(h.git.directory, "index.mjs"),
+          reference: "index.mjs",
+          hash: "incorrect-file-evidence",
+          outputId: "implementation-output",
+          artifactRevision: h.revision,
+        });
+        h.store.set(WORKFLOWS, h.task.id, h.state);
+      }
+      await h.scheduler.tick();
+      const events = h.store.list<OrchestrationEvent>("task_orchestration_events");
+      assert.equal(events.length, 1);
+      const event = events[0];
+      assert.ok(event);
+      assert.ok(event.workflow);
+      assert.equal(event.workflow.candidate.kind, "deliver");
+      assert.equal(event.attempts, 1);
+      assert.equal(
+        event.state,
+        "attention",
+        "the first failed execution must not enter pending/backoff",
+      );
+      assert.equal(event.error?.code, failure);
+      assert.equal(event.nextAttemptAt, undefined);
+      assert.equal(h.app.tasks.get(h.actor, h.task.id).status, "attention");
+      assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "reporting");
+      const frozen = h.store.get("workflow_report_deliveries", event.id);
+      if (failure === "workflow_report") {
+        assert.equal(event.workflow.applied, true);
+        assert.ok(frozen);
+        await h.git.git("checkout", "--quiet", branch);
+      } else {
+        assert.notEqual(event.workflow.applied, true);
+        assert.equal(frozen, undefined);
+        h.state.artifacts = [];
+        h.store.set(WORKFLOWS, h.task.id, h.state);
+      }
+      await h.scheduler.workflow.assertDelivery(h.task, h.state);
+      await h.scheduler.tick();
+      await h.scheduler.tick();
+      const current = h.store.get<OrchestrationEvent>("task_orchestration_events", event.id);
+      assert.equal(
+        current?.state,
+        "attention",
+        "restored facts do not revive a rejected candidate",
+      );
+      assert.equal(current.attempts, 1);
+      assert.equal(current.error?.code, failure);
+      assert.equal(h.store.list("task_orchestration_events").length, 1);
+      assert.deepEqual(h.store.get("workflow_report_deliveries", event.id), frozen);
+      assert.equal(uploads, failure === "workflow_report" ? 1 : 0);
+      assert.equal(files, 0);
+      assert.equal(h.platform.cards.length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
 for (const notificationState of ["retryable", "sending", "uncertain"] as const)
   test(`confirmed ${notificationState} receipt revalidates Git after restart without resending or rewriting the envelope`, async () => {
     const h = await harness();

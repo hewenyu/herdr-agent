@@ -470,6 +470,10 @@ export class TaskOrchestrator {
     return this.assertCurrent(event);
   }
 
+  assertNotificationDelivery(task: Task, state: WorkflowState): Promise<void> {
+    return this.workflow.assertDelivery(task, state);
+  }
+
   private assertCurrent(event: OrchestrationEvent): Task {
     if (this.options.signal.aborted) fail("stopping", "服务正在停止。");
     const task = this.current(event.taskId);

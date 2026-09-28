@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import type { Participant, StoredMessage, Task, TranscriptEntry } from "../../src/core/types.js";
+import { inspectArtifact } from "../../src/orchestration/board.js";
 import { assertCodeDelivery } from "../../src/orchestration/code-delivery.js";
+import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
+import { prepareDocumentSource } from "../../src/orchestration/document-source.js";
 import { publishReport, reportText } from "../../src/orchestration/report.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { WORKFLOWS } from "../../src/orchestration/workflow.js";
@@ -19,7 +22,7 @@ interface DeliveryCallbacks {
   output(task: Task, participant: Participant, entry: TranscriptEntry): Promise<void>;
 }
 
-async function developmentReport(dirty = false) {
+async function workflowReport(kind: Task["kind"] = "development", dirty = false) {
   const h = setup();
   const source = await gitFixture();
   await source.initialize();
@@ -31,9 +34,9 @@ async function developmentReport(dirty = false) {
   const task = await h.app.tasks.create(
     { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "code-report" },
     {
-      kind: "development",
+      kind,
       title: "代码交付报告",
-      requirements: "交付当前代码与实际位置",
+      requirements: kind === "discussion" ? "讨论并保存 DESIGN.md" : "交付当前代码与实际位置",
       project: "delivery",
       participants: [{ kind: "codex" }, { kind: "claude" }],
       orchestration: { mode: "workflow" },
@@ -48,7 +51,41 @@ async function developmentReport(dirty = false) {
   };
   const state = workflowState(h.store, task, internals.taskOrchestrator.revision(task, false));
   state.phase = "reporting";
+  state.planning = "ready";
+  if (kind === "discussion") {
+    state.plan.documentDelivery = { paths: ["DESIGN.md"], userRequest: task.requirements };
+    addDocumentDelivery(state.plan);
+    await writeFile(join(repo, "DESIGN.md"), `# 讨论方案\n${"最终正文。".repeat(3000)}`);
+    state.documentSource = await prepareDocumentSource(h.store, task, state);
+  }
   const artifactRevision = await workspaceRevision(task.directories);
+  state.implementationParticipants = [task.participantIds[0] as string];
+  for (const node of state.plan.nodes)
+    state.nodes[node.id] = {
+      status: "completed",
+      attempt: 1,
+      artifactRevision,
+      participantId: task.participantIds[node.role === "reviewer" ? 1 : 0],
+      outputId: `${node.id}-output`,
+    };
+  if (kind === "discussion")
+    state.artifacts.push({
+      ...(await inspectArtifact(task, "DESIGN.md")),
+      reference: "DESIGN.md",
+      outputId: "document-output",
+      artifactRevision,
+    });
+  else
+    state.evidence.push({
+      id: "independent-check",
+      source: "agent_review",
+      result: "passed",
+      command: "node --check index.mjs",
+      description: "独立重跑",
+      participantId: task.participantIds[1],
+      outputId: "validate-output",
+      artifactRevision,
+    });
   await publishReport(
     h.directory,
     task,
@@ -199,36 +236,9 @@ test("application sends complete workflow report and summary under event receipt
 });
 
 test("v3 delivers a report attachment and one compact summary with an owner-bound frozen download", async () => {
-  const h = setup();
+  const h = await workflowReport("discussion");
   try {
-    const task = await h.app.tasks.create(
-      { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "report-v3" },
-      {
-        kind: "discussion",
-        title: "报告",
-        requirements: "讨论",
-        project: "project",
-        participants: [{ kind: "codex" }, { kind: "claude" }],
-        orchestration: { mode: "workflow" },
-      },
-    );
-    task.promptVersion = 3;
-    h.app.tasks.records.save(task);
-    const text = `# 完整报告\n\n${"最终正文。".repeat(3000)}`;
-    const state = workflowState(h.store, task, "revision");
-    state.report = {
-      id: "report",
-      path: "/never-read",
-      hash: createHash("sha256").update(text).digest("hex"),
-      outputId: "output",
-      artifactRevision: "artifact",
-    };
-    h.store.set(WORKFLOWS, task.id, state);
-    h.store.set("task_orchestration_events", "event", {
-      id: "event",
-      taskId: task.id,
-      decision: { action: "deliver", reportId: "report" },
-    });
+    const { task, text } = h;
     let uploaded = "";
     let sent = 0;
     const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
@@ -240,7 +250,7 @@ test("v3 delivers a report attachment and one compact summary with an owner-boun
       sent++;
       return "file-message";
     };
-    await (h.app as unknown as DeliveryCallbacks).orchestrationReply(task, text, "event");
+    await h.send();
     assert.equal(uploaded, text);
     assert.equal(sent, 1);
     assert.equal(h.platform.texts.length, 0);
@@ -266,8 +276,8 @@ test("v3 delivers a report attachment and one compact summary with an owner-boun
     h.config.feishu.allowedOpenIds.push("other-owner");
     assert.throws(() => h.app.reportDownload("other-owner", summary.id));
     assert.throws(() => h.app.reportDownload("owner", "/etc/passwd"));
-    const record = h.store.get<Record<string, unknown>>("workflow_report_deliveries", "event");
-    h.store.set("workflow_report_deliveries", "event", { ...record, text: "modified" });
+    const record = h.store.get<Record<string, unknown>>("workflow_report_deliveries", h.event.id);
+    h.store.set("workflow_report_deliveries", h.event.id, { ...record, text: "modified" });
     assert.throws(() => h.app.reportDownload("owner", summary.id));
   } finally {
     await h.close();
@@ -276,7 +286,7 @@ test("v3 delivers a report attachment and one compact summary with an owner-boun
 
 for (const boundary of ["before upload", "after upload", "after file"] as const)
   test(`application rejects unchanged-source Git drift ${boundary} without replaying sent report stages`, async () => {
-    const h = await developmentReport();
+    const h = await workflowReport();
     const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
     const calls = { uploads: 0, files: 0, cards: 0 };
     let changed = false;
@@ -324,7 +334,7 @@ for (const boundary of ["before upload", "after upload", "after file"] as const)
 
 for (const change of ["report", "directory", "requirements"] as const)
   test(`application rechecks ${change} identity after attachment upload before sending`, async () => {
-    const h = await developmentReport();
+    const h = await workflowReport();
     const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
     let files = 0;
     let cards = 0;
@@ -369,7 +379,7 @@ for (const change of ["report", "directory", "requirements"] as const)
 
 for (const boundary of ["upload", "Git lookup"] as const)
   test(`dirty source changes during ${boundary} are rejected even when Git metadata is unchanged`, async () => {
-    const h = await developmentReport(true);
+    const h = await workflowReport("development", true);
     const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
     let uploads = 0;
     let files = 0;
@@ -416,6 +426,111 @@ for (const boundary of ["upload", "Git lookup"] as const)
       assert.equal(await reportText(h.state), h.text);
       await assert.rejects(h.send(), { code: "workflow_report", message: /文件版本已变化/ });
       assert.equal(uploads, boundary === "upload" ? 1 : 0, "no upload is repeated on retry");
+    } finally {
+      await h.close();
+    }
+  });
+
+for (const kind of ["discussion", "review", "test"] as const)
+  for (const boundary of ["upload", "file"] as const)
+    test(`v3 ${kind} rechecks its report after ${boundary} before the next delivery stage`, async () => {
+      const h = await workflowReport(kind);
+      const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+      const calls = { uploads: 0, files: 0, cards: 0 };
+      const originalDocument =
+        kind === "discussion" ? await readFile(join(h.repo, "DESIGN.md"), "utf8") : undefined;
+      let changed = false;
+      const mutate = async () => {
+        if (changed) return;
+        changed = true;
+        if (kind === "discussion")
+          await writeFile(join(h.repo, "DESIGN.md"), "授权文档在报告冻结后发生变化。\n");
+        else
+          h.app.tasks.records.save({
+            ...h.task,
+            ...(kind === "review"
+              ? { directories: [h.directory] }
+              : { requirements: "用户补充了新的验证要求" }),
+          });
+      };
+      platform.uploadFile = async () => {
+        calls.uploads++;
+        if (boundary === "upload") await mutate();
+        return "file-key";
+      };
+      platform.sendFile = async () => {
+        calls.files++;
+        if (boundary === "file") await mutate();
+        return "file-message";
+      };
+      platform.sendCard = async () => {
+        calls.cards++;
+        return "card-message";
+      };
+      try {
+        const failure = { code: kind === "test" ? "orchestration_superseded" : "workflow_report" };
+        await assert.rejects(h.send(), failure);
+        const expected = { uploads: 1, files: boundary === "file" ? 1 : 0, cards: 0 };
+        assert.deepEqual(calls, expected);
+        await assert.rejects(h.send(), failure);
+        assert.deepEqual(calls, expected);
+        assert.equal(await reportText(h.state), h.text);
+        assert.equal(
+          h.state.deliveryEvidence,
+          undefined,
+          "non-development reports need no Git contract",
+        );
+        h.app.tasks.records.save(h.task);
+        if (originalDocument !== undefined)
+          await writeFile(join(h.repo, "DESIGN.md"), originalDocument);
+        await h.send();
+        assert.deepEqual(calls, { uploads: 1, files: 1, cards: 1 });
+        await h.send();
+        assert.deepEqual(calls, { uploads: 1, files: 1, cards: 1 });
+      } finally {
+        await h.close();
+      }
+    });
+
+for (const kind of ["discussion", "review", "test"] as const)
+  test(`v3 ${kind} checks the full report contract after upload, even with unchanged files`, async () => {
+    const h = await workflowReport(kind);
+    const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+    let uploads = 0;
+    let files = 0;
+    let cards = 0;
+    platform.uploadFile = async () => {
+      uploads++;
+      h.state.issues.push({
+        id: "new-blocker",
+        description: "新的独立复核发现尚未解决。",
+        status: "open",
+        blocking: true,
+        evidenceRefs: [],
+        raisedBy: h.task.participantIds[1] as string,
+        responses: [],
+      });
+      h.store.set(WORKFLOWS, h.task.id, h.state);
+      return "file-key";
+    };
+    platform.sendFile = async () => {
+      files++;
+      return "file-message";
+    };
+    platform.sendCard = async () => {
+      cards++;
+      return "card-message";
+    };
+    try {
+      await assert.rejects(h.send(), { code: "workflow_report", message: /仍有未处理阻塞问题/ });
+      assert.equal(await workspaceRevision(h.task.directories), h.artifactRevision);
+      assert.equal(uploads, 1);
+      assert.equal(files, 0);
+      assert.equal(cards, 0);
+      await assert.rejects(h.send(), { code: "workflow_report" });
+      assert.equal(uploads, 1);
+      assert.equal(files, 0);
+      assert.equal(cards, 0);
     } finally {
       await h.close();
     }

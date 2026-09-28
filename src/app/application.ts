@@ -12,7 +12,6 @@ import type {
   TranscriptEntry,
 } from "../core/types.js";
 import { isLegacyReplay } from "../migration/index.js";
-import { assertCodeDelivery } from "../orchestration/code-delivery.js";
 import { ingressRouteFor } from "../orchestration/ingress.js";
 import { reportCard } from "../orchestration/report.js";
 import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
@@ -601,7 +600,7 @@ export class Application implements ApplicationContext {
       };
       const report = state.report;
       const beforeSend =
-        task.promptVersion === 3 && task.kind === "development"
+        task.promptVersion === 3
           ? async () => {
               const current = () => {
                 const selected = this.store.get<OrchestrationEvent>(
@@ -646,7 +645,7 @@ export class Application implements ApplicationContext {
               };
               await assertArtifact();
               current();
-              await assertCodeDelivery(snapshot.task, snapshot.state);
+              await this.taskOrchestrator.assertNotificationDelivery(snapshot.task, snapshot.state);
               await assertArtifact();
               current();
             }

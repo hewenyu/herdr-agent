@@ -944,9 +944,13 @@ export class WorkflowOrchestrator {
     const safe = safeError(error);
     event.error = safe;
     if (
-      ["workflow_verify_unknown", "workflow_document_scope", "workflow_document_roles"].includes(
-        safe.code,
-      ) ||
+      [
+        "workflow_verify_unknown",
+        "workflow_document_scope",
+        "workflow_document_roles",
+        "workflow_report",
+        "workflow_artifact",
+      ].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
     )
