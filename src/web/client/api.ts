@@ -1,4 +1,4 @@
-import type { WebActionResult, WebState } from "../contracts.js";
+import type { WebActionResult, WebReportReceipt, WebState } from "../contracts.js";
 
 export type Action = (
   name: string,
@@ -41,4 +41,17 @@ export async function dispatch(
   if (!response.ok || !body.ok)
     throw new Error(body.error?.message ?? "配置未完成，请刷新后重试。");
   return body.result ?? {};
+}
+
+/** Rendering a frozen Web report only confirms receipt, never acceptance or a business action. */
+export async function acknowledgeReport(receipt: WebReportReceipt): Promise<void> {
+  const csrf = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? "";
+  const response = await fetch("/api/reports/ack", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    body: JSON.stringify(receipt),
+  });
+  if (!response.ok || !((await response.json()) as { ok?: boolean }).ok)
+    throw new Error("报告展示确认未完成，页面刷新时会重新核对。");
 }

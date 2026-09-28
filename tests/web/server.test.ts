@@ -143,6 +143,7 @@ test("configuration writes require CSRF and business actions stay in Feishu", as
     for (const action of [
       "session.create",
       "chat.send",
+      "chat.ack",
       "task.create",
       "task.action",
       "participant.answer",

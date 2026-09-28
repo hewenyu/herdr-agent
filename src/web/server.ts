@@ -111,6 +111,26 @@ export async function startWeb(
         response.on("close", () => subscribers.delete(response));
         return;
       }
+      if (request.method === "POST" && target.pathname === "/api/reports/ack") {
+        verifyWriteRequest(request, origin, csrf);
+        const body = await readBody(request, 4096);
+        const fields = ["ownerId", "sessionId", "taskId", "messageId"] as const;
+        if (
+          fields.some((name) => typeof body[name] !== "string" || !body[name]) ||
+          Object.keys(body).some((name) => !fields.includes(name as (typeof fields)[number]))
+        )
+          throw new OperationError("receipt_scope", "报告展示回执缺少完整身份或包含无效字段。");
+        if (!options.backend.acknowledgeReport)
+          throw new OperationError("web_unavailable", "当前服务不支持报告展示确认。");
+        options.backend.acknowledgeReport({
+          ownerId: body.ownerId as string,
+          sessionId: body.sessionId as string,
+          taskId: body.taskId as string,
+          messageId: body.messageId as string,
+        });
+        json(response, 200, { ok: true });
+        return;
+      }
       if (request.method === "POST" && target.pathname === "/api/actions") {
         verifyWriteRequest(request, origin, csrf);
         const body = await readBody(request);

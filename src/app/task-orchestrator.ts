@@ -12,7 +12,7 @@ import type {
   UserRequestSource,
 } from "../core/types.js";
 import type { WorkflowCandidate } from "../orchestration/candidates.js";
-import { reportText } from "../orchestration/report.js";
+import { validatedReport } from "../orchestration/report-validation.js";
 import { WorkflowOrchestrator } from "../orchestration/runner.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
@@ -75,6 +75,7 @@ export interface OrchestrationEvent {
   notificationState?: "sending" | "sent" | "retryable" | "uncertain";
   notificationAttempts?: number;
   notificationNextAttemptAt?: string;
+  notificationCause?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -803,9 +804,25 @@ export class TaskOrchestrator {
     if (
       !event.decision ||
       event.decision.action === "continue" ||
-      event.notified ||
-      !["sending", "uncertain"].includes(event.notificationState ?? "") ||
+      (event.notified && event.notificationState !== "retryable") ||
+      !["sending", "uncertain", "retryable"].includes(event.notificationState ?? "") ||
       (!this.options.replyConfirmed && !this.options.replyRetryable)
+    )
+      return;
+    if (
+      event.notificationState === "retryable" &&
+      (event.state === "superseded" ||
+        event.userRevision !== this.revision(task) ||
+        event.decision.action !== "deliver" ||
+        !event.decision.reportId ||
+        event.decision.reportId !==
+          this.options.store.get<WorkflowState>(WORKFLOWS, task.id)?.report?.id ||
+        event.error?.code !== "orchestration_notification_failed" ||
+        (event.notificationCause !== "report_delivery_pending" &&
+          !(
+            !event.notificationCause &&
+            event.error.message === "报告及摘要已准备，等待页面确认展示。"
+          )))
     )
       return;
     let confirmed = false;
@@ -813,7 +830,10 @@ export class TaskOrchestrator {
     try {
       if (event.decision.action === "deliver")
         confirmed = (await this.options.replyConfirmed?.(task, event.id)) ?? false;
-      if (!confirmed) retryable = (await this.options.replyRetryable?.(task, event.id)) ?? false;
+      // A rendered Web report may become confirmed after notification retries were exhausted.
+      // Unconfirmed retryable sends keep their existing backoff and retry budget.
+      if (!confirmed && event.notificationState !== "retryable")
+        retryable = (await this.options.replyRetryable?.(task, event.id)) ?? false;
     } catch (error) {
       this.options.logger.warn("调度通知回执暂未核验", {
         taskId: task.id,
@@ -823,6 +843,24 @@ export class TaskOrchestrator {
       return;
     }
     if (!confirmed && !retryable) return;
+    if (confirmed && event.notificationState === "retryable" && event.decision.reportId) {
+      try {
+        await validatedReport(event, {
+          store: this.options.store,
+          current: () => this.assertCurrent(event),
+          assertDelivery: (current, state) => this.workflow.assertDelivery(current, state),
+        });
+      } catch (error) {
+        const safe = safeError(error);
+        if (["orchestration_deferred", "stopping"].includes(safe.code)) return;
+        event.state = safe.code === "orchestration_superseded" ? "superseded" : "attention";
+        event.error = safe;
+        event.notified = false;
+        this.save(event);
+        if (event.state === "attention") await this.attention(task, event);
+        return;
+      }
+    }
     const previousError = event.error;
     const notificationError =
       previousError?.code.startsWith("orchestration_notification_") === true;
@@ -830,6 +868,7 @@ export class TaskOrchestrator {
       event.notified = confirmed;
       event.notificationState = confirmed ? "sent" : "retryable";
       event.notificationNextAttemptAt = undefined;
+      event.notificationCause = undefined;
       if (event.state !== "superseded") event.state = "done";
       if (notificationError) event.error = undefined;
       this.save(event);
@@ -853,7 +892,7 @@ export class TaskOrchestrator {
 
   private async notify(task: Task, event: OrchestrationEvent): Promise<void> {
     if (!event.decision || event.decision.action === "continue" || event.notified) return;
-    this.assertCurrent(event);
+    task = this.assertCurrent(event);
     if (event.notificationState === "uncertain") return;
     if (event.notificationState === "sending") {
       event.notificationState = "uncertain";
@@ -874,11 +913,11 @@ export class TaskOrchestrator {
       return;
     let text = event.decision.reason;
     if (event.decision.action === "deliver" && event.decision.reportId) {
-      const state = this.options.store.get<WorkflowState>(WORKFLOWS, task.id);
-      if (!state || state.report?.id !== event.decision.reportId)
-        fail("workflow_report", "交付报告引用已失效。");
-      await this.workflow.assertDelivery(task, state);
-      text = await reportText(state);
+      ({ task, text } = await validatedReport(event, {
+        store: this.options.store,
+        current: () => this.assertCurrent(event),
+        assertDelivery: (current, state) => this.workflow.assertDelivery(current, state),
+      }));
     } else if (event.decision.action === "deliver") {
       const output = this.outputs(task.id).find(
         (item) => item.entry.id === event.decision?.outputId,
@@ -895,10 +934,12 @@ export class TaskOrchestrator {
       await this.options.onReply?.(task, text, event.id);
       event.notified = true;
       event.notificationState = "sent";
+      event.notificationCause = undefined;
       event.error = undefined;
       this.save(event);
     } catch (error) {
       const safe = safeError(error);
+      event.notificationCause = safe.code;
       event.error = {
         ...safe,
         code:
@@ -907,7 +948,13 @@ export class TaskOrchestrator {
             : "orchestration_notification_failed",
       };
       event.notificationState = safe.outcome === "unknown" ? "uncertain" : "retryable";
-      if (safe.outcome === "unknown" || event.notificationAttempts >= MAX_ATTEMPTS)
+      if (safe.code === "report_delivery_pending") {
+        // Rendering is an external receipt, not a failed send. Keep one frozen report eligible.
+        event.notificationAttempts = Math.max(0, event.notificationAttempts - 1);
+        event.notificationNextAttemptAt = new Date(
+          this.clock() + (this.options.retryDelayMs ?? 2000),
+        ).toISOString();
+      } else if (safe.outcome === "unknown" || event.notificationAttempts >= MAX_ATTEMPTS)
         event.state = "attention";
       else
         event.notificationNextAttemptAt = new Date(

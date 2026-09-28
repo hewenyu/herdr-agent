@@ -159,6 +159,17 @@ test("v3 delivers a report attachment and one compact summary with an owner-boun
     assert.equal(summary.source, "workflow_report_summary");
     assert.ok(summary.text.length < 2000);
     assert.equal(h.app.reportDownload("owner", summary.id).content, text);
+    assert.throws(
+      () =>
+        h.app.acknowledgeReport({
+          ownerId: "owner",
+          sessionId: summary.sessionId,
+          taskId: task.id,
+          messageId: summary.id,
+        }),
+      { code: "receipt_scope" },
+      "platform report receipts cannot be confirmed through the Web rendering endpoint",
+    );
     h.config.feishu.allowedOpenIds.push("other-owner");
     assert.throws(() => h.app.reportDownload("other-owner", summary.id));
     assert.throws(() => h.app.reportDownload("owner", "/etc/passwd"));

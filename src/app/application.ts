@@ -7,6 +7,7 @@ import type {
   CardAction,
   IncomingMessage,
   Participant,
+  StoredMessage,
   Task,
   TranscriptEntry,
 } from "../core/types.js";
@@ -23,6 +24,7 @@ import { transientTurnFailure } from "../runtime/recovery.js";
 import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
+import type { WebReportReceipt } from "../web/contracts.js";
 import { dispatch, snapshot } from "./actions.js";
 import { approvalIngress } from "./approval-priority.js";
 import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
@@ -145,7 +147,10 @@ export class Application implements ApplicationContext {
           decision?.action === "deliver" &&
           decision.reportId
         )
-          return this.reportDeliveries.confirmed(task.id, eventId, decision.reportId);
+          return (
+            this.store.get<WorkflowState>(WORKFLOWS, task.id)?.report?.id === decision.reportId &&
+            this.reportDeliveries.confirmed(task.id, eventId, decision.reportId)
+          );
         return (
           decision?.action === "deliver" &&
           !!decision.participantId &&
@@ -261,6 +266,34 @@ export class Application implements ApplicationContext {
     );
     this.sessions.get(ownerId, message.sessionId);
     return this.reportDeliveries.download(message.taskId, message.deliveryIds[0] ?? messageId);
+  }
+
+  acknowledgeReport(receipt: WebReportReceipt): void {
+    const { ownerId, sessionId, taskId, messageId } = receipt;
+    const task = this.tasks.get(
+      { source: "web", ownerId, chatId: `web:${ownerId}`, taskId, sessionId, messageId },
+      taskId,
+    );
+    const session = this.sessions.get(ownerId, sessionId);
+    const message = this.store.get<StoredMessage>("messages", messageId);
+    if (
+      session.taskId !== task.id ||
+      !message ||
+      message.sessionId !== session.id ||
+      message.taskId !== task.id ||
+      message.role === "user" ||
+      !this.reportDeliveries.acceptsWebAcknowledgement(task.id, message)
+    )
+      throw new OperationError("receipt_scope", "回执不属于当前身份、任务及会话的网页报告。");
+    if (message.delivery === "delivered" && message.deliveryIds[0] === message.id) return;
+    if (message.delivery !== "prepared" || message.deliveryIds.length)
+      throw new OperationError("receipt_scope", "仅可确认尚未送达的网页报告消息。");
+    this.store.transaction(() => {
+      if (!this.sessions.beginDelivery(ownerId, messageId))
+        throw new OperationError("receipt_scope", "网页报告消息已失效，请刷新后核对。");
+      this.sessions.recordDelivery(ownerId, messageId, { complete: true, ids: [messageId] });
+    });
+    this.changed();
   }
 
   async tick(): Promise<void> {

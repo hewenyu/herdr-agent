@@ -134,6 +134,26 @@ export class ReportDeliveries {
     this.save({ ...record, webBodyId: bodyId, webCardId: cardId });
   }
 
+  /** Only exact messages bound to a valid frozen Web envelope can acknowledge rendering. */
+  acceptsWebAcknowledgement(taskId: string, message: StoredMessage): boolean {
+    return this.store
+      .list<ReportDelivery>(namespace)
+      .some(
+        (record) =>
+          record.channel === "web" &&
+          record.taskId === taskId &&
+          message.taskId === taskId &&
+          valid(record) &&
+          ((record.webCardId === message.id &&
+            message.source === "workflow_report_summary" &&
+            message.text === reportSummaryText(record.card)) ||
+            (record.presentation !== "attachment" &&
+              record.webBodyId === message.id &&
+              message.source === "workflow_report" &&
+              message.text === record.text)),
+      );
+  }
+
   async confirmed(taskId: string, eventId: string, reportId: string): Promise<boolean> {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
     if (!matches(record, taskId, eventId, reportId)) return false;

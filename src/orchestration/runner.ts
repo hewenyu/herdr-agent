@@ -47,6 +47,18 @@ export interface WorkflowPorts extends TaskOrchestratorOptions {
   recoverNotification(task: Task, event: OrchestrationEvent): Promise<void>;
 }
 
+function workspaceReady(task: Task): boolean {
+  return task.directoryMode !== "worktree" || task.worktreeReady;
+}
+
+function sameWorkspace(left: Task, right: Task): boolean {
+  return (
+    left.directoryMode === right.directoryMode &&
+    left.worktreeReady === right.worktreeReady &&
+    JSON.stringify(left.directories) === JSON.stringify(right.directories)
+  );
+}
+
 /** A workflow policy over the existing events/dispatches, not another execution queue. */
 export class WorkflowOrchestrator {
   private readonly admission = new KeyedMutex();
@@ -62,6 +74,13 @@ export class WorkflowOrchestrator {
 
   private save(state: WorkflowState): void {
     this.ports.store.set(WORKFLOWS, state.taskId, state);
+  }
+
+  private assertWorkspace(task: Task, event: OrchestrationEvent): Task {
+    const current = this.ports.assertCurrent(event);
+    if (!workspaceReady(current) || !sameWorkspace(task, current))
+      fail("orchestration_deferred", "任务工作目录尚未就绪或已变化，等待最新目录状态后继续。");
+    return current;
   }
   private actor(task: Task, eventId: string): ActorContext {
     return {
@@ -189,6 +208,9 @@ export class WorkflowOrchestrator {
   async process(task: Task): Promise<void> {
     const { ports } = this;
     if (!ports.config) fail("workflow_config", "工作流缺少本地配置。");
+    const current = ports.current(task.id);
+    if (!current || !workspaceReady(current)) return;
+    task = current;
     const participants = ports
       .tasks()
       .records.participants(task)
@@ -520,6 +542,8 @@ export class WorkflowOrchestrator {
   }
 
   private async plan(task: Task, state: WorkflowState): Promise<void> {
+    const current = this.ports.current(task.id);
+    if (!current || !workspaceReady(current) || !sameWorkspace(task, current)) return;
     const event = this.event(task, [], `plan:${state.plan.version}`);
     if (event.state === "attention") {
       await this.ports.attention(task, event);
@@ -532,12 +556,18 @@ export class WorkflowOrchestrator {
     event.attempts++;
     this.ports.save(event);
     try {
-      const plan = await choosePlan(this.ports, task, state, event);
+      const plan = await choosePlan(
+        { ...this.ports, assertCurrent: (selected) => this.assertWorkspace(task, selected) },
+        task,
+        state,
+        event,
+      );
+      task = this.assertWorkspace(task, event);
       const next: WorkflowState = { ...state, plan };
       if (task.promptVersion === 3 && task.kind === "discussion")
         next.documentSource = await prepareDocumentSource(this.ports.store, task, next);
       else if (next.documentSource) await assertDocumentSource(this.ports.store, task, next);
-      this.ports.assertCurrent(event);
+      this.assertWorkspace(task, event);
       next.phase = plan.nodes[0]?.phase ?? "planning";
       next.nodes = Object.fromEntries(
         plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
@@ -588,7 +618,7 @@ export class WorkflowOrchestrator {
     event: OrchestrationEvent,
   ): Promise<void> {
     const { ports } = this;
-    ports.assertCurrent(event);
+    this.assertWorkspace(task, event);
     const candidate = event.workflow?.candidate;
     if (!candidate || !event.workflow || event.workflow.applied) return;
     if (
@@ -618,7 +648,7 @@ export class WorkflowOrchestrator {
           ports.save(event);
           return;
         }
-        ports.assertCurrent(event);
+        this.assertWorkspace(task, event);
         if (!event.dispatches.length) {
           const artifactRevision = await workspaceRevision(task.directories);
           for (const assignment of candidate.assignments ?? []) {
@@ -745,7 +775,7 @@ export class WorkflowOrchestrator {
     if (dispatch.state === "sent") return;
     if (!dispatch.nodeId || !dispatch.text || !dispatch.inputRevision)
       fail("workflow_dispatch", "派发缺少已保存任务书。");
-    this.ports.assertCurrent(event);
+    this.assertWorkspace(task, event);
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
     if (
       state.documentSource ||
@@ -784,7 +814,7 @@ export class WorkflowOrchestrator {
         dispatch.participantId,
         dispatch.text,
         () => {
-          this.ports.assertCurrent(event);
+          this.assertWorkspace(task, event);
         },
         dispatch.operationId,
       );
