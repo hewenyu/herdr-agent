@@ -3,13 +3,17 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
+import { OperationError } from "../../src/core/errors.js";
 import type { Task } from "../../src/core/types.js";
+import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
+import { assertDocumentSource } from "../../src/orchestration/document-source.js";
 import { handoffDirectory } from "../../src/orchestration/handoff.js";
+import { templatePlan } from "../../src/orchestration/templates.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-async function harness(documents = false) {
+async function harness(documents = false, twoDocuments = false) {
   const h = setup();
   h.config.ai.enabled = true;
   assert.ok(h.config.jev);
@@ -19,7 +23,7 @@ async function harness(documents = false) {
   writeFileSync(join(repo, "app.ts"), "// unchanged\n");
   await h.catalog.save({ name: "natural", directories: [repo], agent: "codex" });
   const requirements = documents
-    ? "讨论设计并沉淀到 docs/DESIGN.md，不开发业务代码。"
+    ? `讨论设计并沉淀到 docs/DESIGN.md${twoDocuments ? " 和 docs/OTHER.md" : ""}，不开发业务代码。`
     : "讨论两种方案并给出共同结论。";
   const task = await h.service.create(actor, {
     ...discussion,
@@ -34,12 +38,33 @@ async function harness(documents = false) {
   engine.handler = async (input) => {
     plans++;
     assert.equal(input.tools[0]?.name, "orchestration_plan");
+    const documentDelivery = {
+      paths: ["docs/DESIGN.md", ...(twoDocuments ? ["docs/OTHER.md"] : [])],
+      userRequest: requirements,
+    };
+    const split = templatePlan(task);
+    if (twoDocuments) {
+      split.documentDelivery = documentDelivery;
+      addDocumentDelivery(split);
+      const document = split.nodes.find((node) => node.id === "document");
+      const review = split.nodes.find((node) => node.id === "cross-review");
+      assert.ok(document && review);
+      document.documentPaths = ["docs/DESIGN.md"];
+      split.nodes.splice(split.nodes.indexOf(document) + 1, 0, {
+        ...document,
+        id: "document-other",
+        documentPaths: ["docs/OTHER.md"],
+        dependsOn: ["document"],
+      });
+      review.dependsOn = ["document-other"];
+    }
     await input.tools[0]?.execute(
       {
         template: "discussion",
         instructions: {},
         deliveryRequirements: [],
-        documentDelivery: { paths: ["docs/DESIGN.md"], userRequest: requirements },
+        documentDelivery,
+        ...(twoDocuments ? { nodes: split.nodes } : {}),
       },
       input.actor,
     );
@@ -221,12 +246,14 @@ test("repeated document scope violations remain one recoverable issue across use
   try {
     const violationOutputs: string[] = [];
     for (let attempt = 1; attempt <= 2; attempt++) {
-      if (attempt > 1)
+      if (attempt > 1) {
+        writeFileSync(join(h.repo, "app.ts"), "// unchanged\n");
         await h.service.action(
           { ...actor, messageId: `resume-document-${attempt}` },
           h.task.id,
           "resume",
         );
+      }
       await startDocument();
       mkdirSync(join(h.repo, "docs"), { recursive: true });
       writeFileSync(join(h.repo, "docs/DESIGN.md"), `# Design ${attempt}\n`);
@@ -313,6 +340,196 @@ test("repeated document scope violations remain one recoverable issue across use
     assert.equal(h.state().issues[0]?.status, "resolved");
     assert.deepEqual(h.state().issues[0]?.responses.slice(0, 2), responses);
     assert.equal(h.replies.length, replies + 1, "the recovered task delivers one final report");
+  } finally {
+    h.close();
+  }
+});
+
+test("resume cannot wash a document scope violation into a new source baseline", async () => {
+  const h = await harness(true);
+  const begin = async () => {
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1");
+    await h.worker.tick();
+    await h.finish("opening-2");
+    await h.worker.tick();
+  };
+  try {
+    await begin();
+    const baseline = h.state().documentSource;
+    assert.ok(baseline);
+    mkdirSync(join(h.repo, "docs"));
+    writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Design\n");
+    writeFileSync(join(h.repo, "app.ts"), "// unauthorized change\n");
+    await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    const sends = h.herdr.sends.length;
+    await h.service.action(
+      { ...actor, messageId: "resume-without-restoring" },
+      h.task.id,
+      "resume",
+    );
+    await h.worker.tick();
+    await h.worker.tick();
+    assert.equal(
+      h.herdr.sends.length,
+      sends,
+      "dirty source prevents even the resumed opening from being sent",
+    );
+    assert.deepEqual(h.state().documentSource, baseline);
+    assert.ok(
+      h.store
+        .list<OrchestrationEvent>("task_orchestration_events")
+        .some(
+          (event) => event.state === "attention" && event.error?.code === "workflow_document_scope",
+        ),
+    );
+    const replies = h.replies.length;
+    await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.herdr.sends.length, sends);
+    assert.equal(h.replies.length, replies, "restart must not repeat the blocked notification");
+    const claimedResolved = h.state();
+    for (const issue of claimedResolved.issues) issue.status = "resolved";
+    await assert.rejects(assertDocumentSource(h.store, h.task, claimedResolved), {
+      code: "workflow_document_scope",
+    });
+    assert.ok(
+      h.store
+        .list<OrchestrationEvent>("task_orchestration_events")
+        .every((event) => event.decision?.action !== "deliver"),
+    );
+
+    writeFileSync(join(h.repo, "app.ts"), "// unchanged\n");
+    await h.service.action({ ...actor, messageId: "resume-after-restoring" }, h.task.id, "resume");
+    await begin();
+    assert.equal(h.state().nodes.document?.status, "dispatched");
+    assert.deepEqual(h.state().documentSource, baseline);
+    writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Reviewed design\n");
+    await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    await h.finish("cross-review", {
+      artifactRefs: ["docs/DESIGN.md"],
+      issues: [
+        {
+          id: "document-scope-violation",
+          description: "已复核源码恢复。",
+          status: "resolved",
+          blocking: true,
+          evidenceRefs: ["docs/DESIGN.md"],
+        },
+      ],
+    });
+    await h.worker.tick();
+    await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    assert.equal(h.state().phase, "awaiting_acceptance");
+    assert.deepEqual(h.state().documentSource, baseline);
+  } finally {
+    h.close();
+  }
+});
+
+test("frozen document dispatch retains its narrower scope across restart", async () => {
+  const h = await harness(true, true);
+  const controller = new AbortController();
+  const worker = new TaskOrchestrator({ ...h.options, signal: controller.signal });
+  const save = h.store.set.bind(h.store);
+  let frozen: OrchestrationEvent | undefined;
+  try {
+    await worker.tick();
+    await worker.tick();
+    await h.finish("opening-1");
+    await worker.tick();
+    await h.finish("opening-2");
+    const sends = h.herdr.sends.length;
+    h.store.set = (namespace, key, value) => {
+      save(namespace, key, value);
+      if (namespace !== "task_orchestration_events" || frozen) return;
+      const event = value as OrchestrationEvent;
+      if (!event.dispatches.some((dispatch) => dispatch.nodeId === "document")) return;
+      frozen = structuredClone(event);
+      controller.abort();
+    };
+    await worker.tick();
+    h.store.set = save;
+    assert.ok(frozen);
+    const sourceRevision = frozen.dispatches[0]?.sourceRevision;
+    assert.ok(sourceRevision);
+    assert.equal(h.herdr.sends.length, sends);
+    mkdirSync(join(h.repo, "docs"));
+    writeFileSync(
+      join(h.repo, "docs/OTHER.md"),
+      "# Another node's document changed while waiting\n",
+    );
+    await assertDocumentSource(h.store, h.task, h.state());
+    await new TaskOrchestrator(h.options).tick();
+    const refused = h.store.get<OrchestrationEvent>("task_orchestration_events", frozen.id);
+    assert.equal(refused?.state, "attention");
+    assert.equal(refused?.error?.code, "workflow_document_scope");
+    assert.equal(refused?.dispatches[0]?.sourceRevision, sourceRevision);
+    assert.equal(
+      h.herdr.sends.length,
+      sends,
+      "the broad document authorization cannot rewrite a frozen node's narrower baseline",
+    );
+  } finally {
+    h.store.set = save;
+    controller.abort();
+    h.close();
+  }
+});
+
+test("delivery replay refuses source contamination and retires the report to attention once", async () => {
+  const h = await harness(true);
+  const reply = h.options.onReply;
+  try {
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1");
+    await h.worker.tick();
+    await h.finish("opening-2");
+    await h.worker.tick();
+    mkdirSync(join(h.repo, "docs"));
+    writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Design\n");
+    await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    await h.finish("cross-review", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
+    h.options.onReply = async () => {
+      throw new OperationError("offline", "fixture transport unavailable");
+    };
+    await h.worker.tick();
+    const delivery = h.store
+      .list<OrchestrationEvent>("task_orchestration_events")
+      .find((event) => event.decision?.action === "deliver");
+    assert.ok(delivery);
+    assert.equal(delivery.state, "done");
+    assert.equal(delivery.notified, undefined);
+    assert.equal(h.replies.length, 0);
+
+    writeFileSync(join(h.repo, "app.ts"), "// changed before actual delivery\n");
+    const errors: string[] = [];
+    const restarted = new TaskOrchestrator({
+      ...h.options,
+      onReply: reply,
+      logger: {
+        ...logger,
+        error: (message: string) => {
+          errors.push(message);
+        },
+      },
+    });
+    await restarted.tick();
+    const retired = h.store.get<OrchestrationEvent>("task_orchestration_events", delivery.id);
+    assert.equal(retired?.state, "attention");
+    assert.equal(retired?.error?.code, "workflow_document_scope");
+    assert.equal(h.replies.length, 1);
+    assert.match(h.replies[0] ?? "", /授权文档之外/);
+    for (let tick = 0; tick < 3; tick++) await restarted.tick();
+    assert.equal(h.replies.length, 1);
+    assert.deepEqual(errors, []);
   } finally {
     h.close();
   }

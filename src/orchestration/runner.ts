@@ -20,6 +20,7 @@ import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
 import { validateDocumentPaths } from "./document-delivery.js";
+import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
 import { legacyAssignment, prepareHandoff } from "./handoff.js";
 import { choosePlan } from "./plan-selection.js";
 import { selectWorkflowCandidate } from "./policy.js";
@@ -169,6 +170,7 @@ export class WorkflowOrchestrator {
   }
 
   async assertDelivery(task: Task, state: WorkflowState): Promise<void> {
+    await assertDocumentSource(this.ports.store, task, state);
     restoreImplementationParticipants(this.ports.store, state);
     const artifactRevision = await workspaceRevision(task.directories);
     const missing = reportContract(
@@ -225,7 +227,10 @@ export class WorkflowOrchestrator {
           await ports.notify(task, event);
         } catch (error) {
           const safe = safeError(error);
-          if (!["workflow_report", "workflow_artifact"].includes(safe.code)) throw error;
+          if (
+            !["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code)
+          )
+            throw error;
           // An old frozen delivery may fail the repaired evidence contract on restart.
           // Make that visible instead of retrying the same invalid report every tick.
           event.state = "attention";
@@ -614,7 +619,10 @@ export class WorkflowOrchestrator {
           for (const assignment of candidate.assignments ?? []) {
             const node = state.plan.nodes.find((entry) => entry.id === assignment.nodeId);
             if (!node) fail("workflow_node", "派发节点不存在。");
-            if (node.documentPaths?.length) await validateDocumentPaths(task, node.documentPaths);
+            if (node.documentPaths?.length) {
+              await validateDocumentPaths(task, node.documentPaths);
+              await prepareDocumentSource(ports.store, task, state);
+            }
             if (candidate.kind === "rework") invalidateFrom(state, node.id);
             const operationId = `${task.id}:workflow:${stableId(event.id, node.id, assignment.participantId)}`;
             const identity = { nodeId: node.id, operationId, inputRevision: event.userRevision };
@@ -735,6 +743,16 @@ export class WorkflowOrchestrator {
       fail("workflow_dispatch", "派发缺少已保存任务书。");
     this.ports.assertCurrent(event);
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
+    if (state.documentSource || node?.documentPaths?.length)
+      await assertDocumentSource(this.ports.store, task, state);
+    if (
+      node?.documentPaths?.length &&
+      dispatch.sourceRevision !== (await workspaceRevision(task.directories, node.documentPaths))
+    )
+      fail(
+        "workflow_document_scope",
+        "文档委派等待期间授权范围之外的文件已变化，需核对后重新派发。",
+      );
     if (node?.role === "reviewer" && !independentReviewer(state, dispatch.participantId))
       fail("workflow_review_author", "该评审委派属于历史实现者，请重新安排独立评审。");
     if (node && implementationNode(node)) rememberImplementer(state, dispatch.participantId);
@@ -841,7 +859,7 @@ export class WorkflowOrchestrator {
     const safe = safeError(error);
     event.error = safe;
     if (
-      safe.code === "workflow_verify_unknown" ||
+      ["workflow_verify_unknown", "workflow_document_scope"].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
     )

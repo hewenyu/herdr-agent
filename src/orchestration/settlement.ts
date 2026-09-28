@@ -4,6 +4,7 @@ import type { InputDelivery } from "../tasks/input-delivery.js";
 import { rememberImplementer } from "./authorship.js";
 import { inspectArtifact, publishBoard, publishNotes, publishOutput } from "./board.js";
 import { validateDocumentPaths } from "./document-delivery.js";
+import { assertDocumentSource } from "./document-source.js";
 import { readHandoff } from "./handoff.js";
 import { selectWorkflowOutput } from "./output-selection.js";
 import { publishReport } from "./report.js";
@@ -89,6 +90,8 @@ export async function settleWorkflow(
         rememberImplementer(state, participant.id);
         save();
       }
+      if (state.documentSource || node.documentPaths?.length)
+        await assertDocumentSource(ports.store, task, state);
       const identity = {
         nodeId: node.id,
         operationId: progress.operationId,

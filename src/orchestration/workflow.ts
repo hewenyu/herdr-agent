@@ -85,6 +85,8 @@ export interface WorkflowState {
   phase: Phase;
   /** Existing user hash before adding the plan and phase. */
   userRevision: string;
+  /** Frozen before the first document write; resumes and plan changes do not reset source. */
+  documentSource?: { directories: string[]; paths: string[]; revision: string };
   nodes: Record<string, NodeProgress>;
   /** Cumulative implementation authors across retries, plan versions and source snapshots. */
   implementationParticipants?: string[];
