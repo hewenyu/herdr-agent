@@ -33,6 +33,7 @@ interface Decision {
   stateSeq: string;
   fingerprint: string;
   inputRevision: string;
+  userRevision: string;
   directoryIdentity: string;
   approvalNonce: string;
   retryIdentity: string;
@@ -88,9 +89,14 @@ export class AutomaticApprovals {
       authorizedDirectories: task.directories,
       boardDirectory: task.boardDirectory,
       pauseRevision: this.ports.store.get<number>("task_pause_revision", task.id) ?? 0,
-      ingressRevision: approvalIngress(this.ports.store, task).revision,
       revisions: [...revisions, ...messages].sort((a, b) => a.at.localeCompare(b.at)),
     };
+  }
+
+  private inputRevision(task: Task, userInput = this.userInput(task)) {
+    // Every accepted event invalidates a pending choice, even if processing
+    // proves it harmless. It is execution freshness, not renewed retry credit.
+    return stableId(canonical(userInput), approvalIngress(this.ports.store, task).revision);
   }
 
   private scope(
@@ -198,7 +204,8 @@ export class AutomaticApprovals {
     if (!current || !config) return "manual";
     const ref = participant.execution as NonNullable<Participant["execution"]>;
     const userInput = this.userInput(current);
-    const inputRevision = stableId(canonical(userInput));
+    const userRevision = stableId(canonical(userInput));
+    const inputRevision = this.inputRevision(current, userInput);
     const fingerprint = screenFingerprint(screen.text);
     const directoryIdentity = await realpath(ref.cwd).catch(() => undefined);
     if (!directoryIdentity) return "manual";
@@ -231,7 +238,7 @@ export class AutomaticApprovals {
       }),
       screen.agent.terminalId as string,
       directoryIdentity,
-      inputRevision,
+      userRevision,
       this.ports.approvals.progressRevision(ref, screen.agent.terminalId as string),
     );
     const retry = history
@@ -251,7 +258,7 @@ export class AutomaticApprovals {
       history.filter(
         (d) =>
           d.fingerprint === fingerprint &&
-          d.inputRevision === inputRevision &&
+          d.userRevision === userRevision &&
           d.stateSeq === screen.agent.stateSeq &&
           d.state === "executed",
       ).length >= 2
@@ -269,6 +276,7 @@ export class AutomaticApprovals {
       stateSeq: screen.agent.stateSeq,
       fingerprint,
       inputRevision,
+      userRevision,
       directoryIdentity,
       approvalNonce: approval.nonce,
       retryIdentity,
@@ -334,7 +342,7 @@ export class AutomaticApprovals {
       const latest = await this.current(task, participant, screen, actor, context);
       if (
         !latest ||
-        stableId(canonical(this.userInput(latest))) !== inputRevision ||
+        this.inputRevision(latest) !== inputRevision ||
         (await realpath(ref.cwd).catch(() => undefined)) !== directoryIdentity
       )
         fail("approval_scope_changed", "任务或用户要求已变化，未发送按键。");
@@ -342,7 +350,7 @@ export class AutomaticApprovals {
     // No I/O here: this runs after the final native read, immediately before keys.
     const assertCurrent = () => {
       const latest = this.scope(task, participant, screen, actor, context)?.task;
-      if (!latest || stableId(canonical(this.userInput(latest))) !== inputRevision)
+      if (!latest || this.inputRevision(latest) !== inputRevision)
         fail("approval_scope_changed", "任务或用户要求已变化，未发送按键。");
     };
     const key = selection.candidateId.slice(4);

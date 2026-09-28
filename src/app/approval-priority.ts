@@ -18,8 +18,8 @@ export function approvalIngress(store: Store, task: Task): { pending: boolean; r
   });
   return {
     pending: records.some((record) => ["queued", "processing"].includes(record.state)),
-    // Keep the accepted event identity after processing: a harmless remote update
-    // or an explicit user instruction can reopen a proven no-effect selection.
+    // Keep event identity after processing so a choice made before ingress is
+    // still stale. This freshness revision must never replenish retry credit.
     revision: stableId(...records.map((record) => `${record.sequence}:${record.id}`).sort()),
   };
 }

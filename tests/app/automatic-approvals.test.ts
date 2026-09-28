@@ -665,6 +665,7 @@ for (const event of ["task-complete", "group-dissolved", "normal-update", "unrel
       const h = await fixture();
       const entered = deferred();
       const release = deferred();
+      t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
       let reconcile: Promise<void> | undefined;
       let drain: Promise<void> | undefined;
       let dissolved = false;
@@ -707,6 +708,9 @@ for (const event of ["task-complete", "group-dissolved", "normal-update", "unrel
         }
         if (event === "normal-update") {
           await h.app.tasks.reconcile(h.task.id);
+          assert.deepEqual(h.writes, [], "harmless ingress cannot skip the existing cooldown");
+          t.mock.timers.tick(30_001);
+          await h.app.tasks.reconcile(h.task.id);
           assert.deepEqual(
             h.writes,
             ["enter"],
@@ -721,6 +725,115 @@ for (const event of ["task-complete", "group-dissolved", "normal-update", "unrel
     });
   }
 }
+
+for (const type of ["task", "group"] as const) {
+  for (const failure of ["no_selection", "stale_guard"] as const) {
+    test(`processed harmless ${type} events preserve ${failure} cooldown and budget`, async (t) => {
+      const h = await fixture();
+      t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      try {
+        const id = type === "task" ? h.task.remoteTaskId : h.task.chatId;
+        assert.ok(id && h.config.jev);
+        h.config.jev.apiKey = "fixture-secret";
+        t.mock.method(globalThis, "fetch", h.fetchImpl);
+        if (failure === "no_selection") {
+          h.choose("key:enter", 0.3);
+          h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
+        } else {
+          let calls = 0;
+          (h.herdr as HerdrPort).answer = async () => {
+            if (++calls <= 3) throw new OperationError("stale_guard", "screen changed");
+            h.writes.push("enter");
+            h.screen.agent.status = "working";
+          };
+        }
+        let events = 0;
+        const notification = async () => {
+          // Distinct durable envelopes use the same real lifecycle worker.
+          assert.equal(h.app.inbox.enqueue(type, `${id}:notice:${++events}`, { id }), true);
+          assert.equal(await h.handle(), "manual", "pending ingress remains a write veto");
+          await h.app.inbox.drain();
+        };
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          await h.handle();
+          assert.equal(h.requests.length, attempt);
+          await notification();
+          assert.equal(await h.handle(), attempt < 3 ? "pending" : "manual");
+          assert.equal(h.requests.length, attempt, "processed ingress cannot skip cooldown");
+          t.mock.timers.tick(30_001);
+        }
+        for (let event = 0; event < 3; event++) {
+          await notification();
+          assert.equal(await h.handle(), "manual");
+        }
+        assert.equal(h.requests.length, 3, "processed ingress cannot replenish attempts");
+        assert.deepEqual(h.writes, []);
+        const decisions = h.store.list<{ attempts: number; retryIdentity: string }>(
+          "automatic_approval_decisions",
+        );
+        assert.deepEqual(decisions.map((d) => d.attempts).sort(), [1, 2, 3]);
+        assert.equal(new Set(decisions.map((d) => d.retryIdentity)).size, 1);
+        // An explicit user resume is semantic input and may start another epoch.
+        await h.app.tasks.action({ ...h.actor, messageId: "pause-budget" }, h.task.id, "pause");
+        await h.app.tasks.action({ ...h.actor, messageId: "resume-budget" }, h.task.id, "resume");
+        h.choose("key:enter");
+        assert.equal(await h.handle(), "handled");
+        assert.equal(h.requests.length, 4);
+        assert.deepEqual(h.writes, ["enter"]);
+      } finally {
+        await h.close();
+      }
+    });
+  }
+}
+
+test("harmless lifecycle ingress cannot clear successful navigation-loop history", async () => {
+  const h = await fixture();
+  try {
+    assert.ok(h.task.remoteTaskId);
+    const first = h.screen.text;
+    h.choose("key:down");
+    (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
+      await guard.beforeWrite?.();
+      h.writes.push(key);
+      h.screen.text = h.screen.text === first ? "❯ Cancel\n  Allow once" : first;
+    };
+    for (let step = 0; step < 4; step++) {
+      h.app.inbox.enqueue("task", `loop-notice:${step}`, { id: h.task.remoteTaskId });
+      await h.app.inbox.drain();
+      assert.equal(await h.handle(), "handled");
+    }
+    h.app.inbox.enqueue("task", "loop-notice:last", { id: h.task.remoteTaskId });
+    await h.app.inbox.drain();
+    assert.equal(await h.handle(), "manual");
+    assert.equal(h.requests.length, 4);
+    assert.equal(h.writes.length, 4);
+  } finally {
+    await h.close();
+  }
+});
+
+test("lifecycle ingress processed during selection still invalidates that pending choice", async () => {
+  const h = await fixture();
+  try {
+    assert.ok(h.task.remoteTaskId);
+    h.engine.handler = async () => ({ text: "Observed", messages: [] });
+    h.before(async () => {
+      await h.app.handlers().taskChanged(h.task.remoteTaskId as string);
+      await h.app.inbox.drain();
+    });
+    assert.equal(await h.handle(), "manual");
+    assert.deepEqual(h.writes, []);
+    assert.equal(h.requests.length, 1);
+    assert.equal(
+      h.store.list<{ error: string }>("automatic_approval_decisions")[0]?.error,
+      "approval_scope_changed",
+    );
+    assert.ok(h.store.list<{ state: string }>("inbox").every((r) => r.state === "done"));
+  } finally {
+    await h.close();
+  }
+});
 
 test("accepted owner message vetoes a choice even before the inbox model interprets it", async () => {
   const h = await fixture();
