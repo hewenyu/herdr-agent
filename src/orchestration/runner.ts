@@ -431,7 +431,7 @@ export class WorkflowOrchestrator {
     const event = this.event(
       task,
       state.consumedOutputs,
-      `decision:${stableId(JSON.stringify(state.nodes), JSON.stringify(state.evidence), artifactRevision, this.configRevision(task) ?? "")}`,
+      `decision:${stableId(JSON.stringify(state.nodes), JSON.stringify(state.evidence), artifactRevision, this.configRevision(task) ?? "", ...verify.flatMap((candidate) => (candidate.retryOf ? [candidate.retryOf] : [])))}`,
     );
     if (event.state === "done" || event.state === "superseded" || event.state === "attention")
       return;
@@ -705,7 +705,7 @@ export class WorkflowOrchestrator {
       if (!this.verification || !candidate.verification)
         fail("workflow_verify", "验证执行器不可用。");
       const admitted = await this.admission.run("directories", async () => {
-        ports.assertCurrent(event);
+        this.assertWorkspace(task, event);
         if (
           !(await workspaceAvailable(
             ports.store,
@@ -715,6 +715,7 @@ export class WorkflowOrchestrator {
           ))
         )
           return;
+        this.assertWorkspace(task, event);
         // run() synchronously reserves its durable record before spawning the configured command.
         return { running: this.runVerification(task, state, event) };
       });
@@ -834,18 +835,34 @@ export class WorkflowOrchestrator {
     const candidate = event.workflow?.candidate.verification;
     if (!candidate || !this.verification) fail("workflow_verify", "缺少验证候选。");
     const cancellation = new AbortController();
-    const timer = setInterval(() => {
-      if (!this.ports.current(task.id) || this.ports.baseRevision(task) !== state.userRevision)
+    let interrupted: unknown;
+    const monitor = () => {
+      try {
+        this.assertWorkspace(task, event);
+      } catch (error) {
+        interrupted ??= error;
         cancellation.abort();
-    }, 100);
+      }
+    };
+    const timer = setInterval(monitor, 100);
     timer.unref();
     try {
       const run = await this.verification.run(
         task,
         candidate,
         AbortSignal.any([this.ports.signal, cancellation.signal]),
+        monitor,
       );
+      if (run.status === "unknown")
+        fail("workflow_verify_unknown", "验证执行状态尚未确认；保留目录阻塞，不能自动重跑。");
+      // A cancelled attempt is audit history, never evidence against the current workspace.
+      // Its retryOf candidate receives a new decision identity and must be selected again.
+      if (run.status === "cancelled" && run.exitConfirmed) return;
+      if (interrupted) throw interrupted;
+      this.assertWorkspace(task, event);
       const after = await workspaceRevision(task.directories);
+      if (interrupted) throw interrupted;
+      this.assertWorkspace(task, event);
       const result =
         run.status === "passed" && after === candidate.artifactRevision ? "passed" : "failed";
       if (!state.evidence.some((entry) => entry.verificationId === run.id))
@@ -886,8 +903,6 @@ export class WorkflowOrchestrator {
         else state.issues.push(issue);
       }
       this.save(state);
-      if (run.status === "unknown")
-        fail("workflow_verify_unknown", "验证执行状态尚未确认；保留目录阻塞，不能自动重跑。");
     } finally {
       clearInterval(timer);
     }

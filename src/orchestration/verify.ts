@@ -149,6 +149,7 @@ export class VerificationRunner {
     task: Task,
     candidate: VerificationCandidate,
     signal?: AbortSignal,
+    beforeStart?: () => void,
   ): Promise<VerificationRun> {
     if (!candidate.artifactRevision || !candidate.configRevision)
       fail("verify_revision", "验证运行必须绑定配置与产物版本。");
@@ -172,7 +173,7 @@ export class VerificationRunner {
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) controller.abort();
-    const result = this.start(task, record, controller.signal).finally(() => {
+    const result = this.start(task, record, controller.signal, beforeStart).finally(() => {
       signal?.removeEventListener("abort", abort);
       this.active.delete(id);
     });
@@ -261,6 +262,7 @@ export class VerificationRunner {
     task: Task,
     record: VerificationRun,
     signal: AbortSignal,
+    beforeStart?: () => void,
   ): Promise<VerificationRun> {
     let stdout: Awaited<ReturnType<typeof open>> | undefined;
     let stderr: Awaited<ReturnType<typeof open>> | undefined;
@@ -272,6 +274,7 @@ export class VerificationRunner {
       });
       stdout = await open(record.stdoutPath, "w", 0o600);
       stderr = await open(record.stderrPath, "w", 0o600);
+      beforeStart?.();
       if (signal.aborted)
         return this.save({
           ...record,
