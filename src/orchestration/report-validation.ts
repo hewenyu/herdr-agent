@@ -20,8 +20,8 @@ export async function validatedReport(
   const state = ports.store.get<WorkflowState>(WORKFLOWS, task.id);
   if (!state || !event.decision?.reportId || state.report?.id !== event.decision.reportId)
     fail("workflow_report", "交付报告引用已失效。");
-  await ports.assertDelivery(task, state);
   const text = await reportText(state);
+  await ports.assertDelivery(task, state);
   const current = ports.current();
   if (
     task.directoryMode !== current.directoryMode ||

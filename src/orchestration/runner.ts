@@ -18,6 +18,7 @@ import {
 } from "./authorship.js";
 import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
+import { assertCodeDelivery } from "./code-delivery.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
@@ -203,6 +204,7 @@ export class WorkflowOrchestrator {
       const current = await inspectArtifact(task, artifact.path);
       if (current.hash !== artifact.hash) fail("workflow_artifact", "交付产物已变化或失效。");
     }
+    await assertCodeDelivery(task, state);
   }
 
   async process(task: Task): Promise<void> {

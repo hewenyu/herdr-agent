@@ -12,11 +12,13 @@ import type {
   TranscriptEntry,
 } from "../core/types.js";
 import { isLegacyReplay } from "../migration/index.js";
+import { assertCodeDelivery } from "../orchestration/code-delivery.js";
 import { ingressRouteFor } from "../orchestration/ingress.js";
 import { reportCard } from "../orchestration/report.js";
 import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
 import { visibleOutput } from "../orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
+import { workspaceRevision } from "../orchestration/workspace.js";
 import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
@@ -597,8 +599,61 @@ export class Application implements ApplicationContext {
         ...(quietWorkflow(task) ? { presentation: "attachment" as const } : {}),
         channel: delivered ? ("platform" as const) : ("web" as const),
       };
+      const report = state.report;
+      const beforeSend =
+        task.promptVersion === 3 && task.kind === "development"
+          ? async () => {
+              const current = () => {
+                const selected = this.store.get<OrchestrationEvent>(
+                  "task_orchestration_events",
+                  eventId,
+                );
+                const currentState = this.store.get<WorkflowState>(WORKFLOWS, task.id);
+                if (
+                  !selected ||
+                  selected.state === "superseded" ||
+                  selected.taskId !== task.id ||
+                  selected.userRevision !== event?.userRevision ||
+                  selected.decision?.action !== "deliver" ||
+                  selected.decision.reportId !== report.id ||
+                  currentState?.report?.id !== report.id ||
+                  currentState.report.hash !== report.hash ||
+                  currentState.report.deliveryRevision !== report.deliveryRevision
+                )
+                  throw new OperationError("workflow_report", "发送前报告引用已失效。");
+                const currentTask = this.taskOrchestrator.assertNotificationCurrent(selected);
+                if (
+                  currentTask.ownerId !== task.ownerId ||
+                  currentTask.kind !== task.kind ||
+                  currentTask.promptVersion !== task.promptVersion ||
+                  currentTask.orchestration?.mode !== "workflow" ||
+                  currentTask.pending ||
+                  currentTask.directoryMode !== task.directoryMode ||
+                  currentTask.worktreeReady !== task.worktreeReady ||
+                  JSON.stringify(currentTask.directories) !== JSON.stringify(task.directories) ||
+                  (currentTask.directoryMode === "worktree" && !currentTask.worktreeReady) ||
+                  (this.outputChat(currentTask) ?? `web:${currentTask.ownerId}`) !== envelope.chatId
+                )
+                  throw new OperationError("workflow_report", "发送前任务或工作目录已变化。");
+                return { task: currentTask, state: currentState };
+              };
+              const snapshot = current();
+              const assertArtifact = async () => {
+                if (
+                  (await workspaceRevision(snapshot.task.directories)) !== report.artifactRevision
+                )
+                  throw new OperationError("workflow_report", "发送前报告对应的文件版本已变化。");
+              };
+              await assertArtifact();
+              current();
+              await assertCodeDelivery(snapshot.task, snapshot.state);
+              await assertArtifact();
+              current();
+            }
+          : undefined;
+      if (!delivered) await beforeSend?.();
       const receipt = delivered
-        ? await this.reportDeliveries.send(envelope)
+        ? await this.reportDeliveries.send(envelope, beforeSend)
         : this.reportDeliveries.prepare(envelope);
       const actor = this.actor(task, receipt.bodyId);
       const body =

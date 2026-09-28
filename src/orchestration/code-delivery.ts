@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { fail } from "../core/errors.js";
 import type { Task } from "../core/types.js";
+import type { WorkflowState } from "./workflow.js";
 
 const execute = promisify(execFile);
 export interface CodeDeliveryEvidence {
@@ -10,10 +13,48 @@ export interface CodeDeliveryEvidence {
     branch?: string;
     commit?: string;
     dirty?: boolean;
+    statusRevision?: string;
+    indexRevision?: string;
     upstream?: string;
     pr?: { url: string; headCommit: string };
     error?: string;
   }>;
+}
+
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** Stable across timestamps and JSON persistence; includes facts not visible in report prose. */
+export function codeDeliveryRevision(evidence: CodeDeliveryEvidence): string {
+  return hash(
+    JSON.stringify(
+      evidence.repositories.map((entry) => [
+        entry.directory,
+        entry.branch ?? null,
+        entry.commit ?? null,
+        entry.dirty ?? null,
+        entry.statusRevision ?? null,
+        entry.indexRevision ?? null,
+        entry.upstream ?? null,
+        entry.pr?.url ?? null,
+        entry.pr?.headCommit ?? null,
+        entry.error ?? null,
+      ]),
+    ),
+  );
+}
+
+/** Never attach today's coordinates to an already frozen report. */
+export async function assertCodeDelivery(task: Task, state: WorkflowState): Promise<void> {
+  if (task.promptVersion !== 3 || task.kind !== "development") return;
+  const revision = state.report?.deliveryRevision;
+  if (
+    !revision ||
+    !state.deliveryEvidence ||
+    codeDeliveryRevision(state.deliveryEvidence) !== revision
+  )
+    fail("workflow_report", "报告缺少匹配的冻结 Git 交付证据，请重新生成报告。");
+  if (codeDeliveryRevision(await codeDeliveryEvidence(task)) !== revision)
+    fail("workflow_report", "Git 分支、提交、索引或交付位置已变化，请重新生成报告。");
 }
 
 /** Read actual Git facts. A model-reported branch or URL is not a delivery receipt. */
@@ -26,21 +67,31 @@ export async function codeDeliveryEvidence(task: Task): Promise<CodeDeliveryEvid
           timeout: 10_000,
           maxBuffer: 1024 * 1024,
         })
-      ).stdout.trim();
+      ).stdout;
+    const snapshot = async () => {
+      const commit = (await git("rev-parse", "HEAD")).trim();
+      const branch = await git("symbolic-ref", "--quiet", "--short", "HEAD")
+        .then((value) => value.trim())
+        .catch(() => "detached HEAD");
+      // Do not trim porcelain: leading spaces distinguish unstaged and staged changes.
+      const status = await git("status", "--porcelain=v1", "-z", "--untracked-files=normal");
+      const index = await git("ls-files", "--stage", "-z");
+      const upstream = await git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        .then((value) => value.trim())
+        .catch(() => undefined);
+      return {
+        commit,
+        branch,
+        dirty: !!status,
+        statusRevision: hash(status),
+        indexRevision: hash(index),
+        upstream,
+      };
+    };
     const entry: CodeDeliveryEvidence["repositories"][number] = { directory };
     try {
-      const before = await git("rev-parse", "HEAD");
-      entry.commit = before;
-      entry.branch = await git("symbolic-ref", "--quiet", "--short", "HEAD").catch(
-        () => "detached HEAD",
-      );
-      entry.dirty = !!(await git("status", "--porcelain", "--untracked-files=normal"));
-      entry.upstream = await git(
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        "@{upstream}",
-      ).catch(() => undefined);
+      const before = await snapshot();
+      Object.assign(entry, before);
       try {
         const { stdout } = await execute(
           "gh",
@@ -53,17 +104,21 @@ export async function codeDeliveryEvidence(task: Task): Promise<CodeDeliveryEvid
         );
         const pr = JSON.parse(stdout);
         if (
-          pr.headRefOid === before &&
+          pr.headRefOid === before.commit &&
           pr.headRefName === entry.branch &&
           typeof pr.url === "string" &&
           /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(pr.url)
         )
-          entry.pr = { url: pr.url, headCommit: before };
+          entry.pr = { url: pr.url, headCommit: before.commit };
       } catch {
         /* A missing/unavailable PR is explicitly not certified. */
       }
-      if ((await git("rev-parse", "HEAD")) !== before) {
-        entry.error = "采集期间提交发生变化，交付位置未确认";
+      const after = await snapshot();
+      if (JSON.stringify(after) !== JSON.stringify(before)) {
+        entry.error =
+          before.commit !== after.commit
+            ? "采集期间提交发生变化，交付位置未确认"
+            : "采集期间 Git 分支、索引或工作区状态发生变化，交付位置未确认";
         entry.pr = undefined;
       }
     } catch {

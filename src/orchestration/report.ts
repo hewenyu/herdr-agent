@@ -8,7 +8,7 @@ import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
 import { boardDirectory, inspectArtifact } from "./board.js";
-import { codeDeliveryEvidence, codeDeliveryText } from "./code-delivery.js";
+import { codeDeliveryEvidence, codeDeliveryRevision, codeDeliveryText } from "./code-delivery.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -110,8 +110,11 @@ export async function publishReport(
   const sections = block.reportSections;
   if (!sections || state.plan.deliveryRequirements.some((name) => !sections[name]?.trim()))
     fail("workflow_report", "报告没有覆盖全部必需章节与验收项。");
-  if (task.promptVersion === 3 && task.kind === "development")
-    state.deliveryEvidence = await codeDeliveryEvidence(task);
+  const deliveryEvidence =
+    task.promptVersion === 3 && task.kind === "development"
+      ? await codeDeliveryEvidence(task)
+      : undefined;
+  const deliveryRevision = deliveryEvidence && codeDeliveryRevision(deliveryEvidence);
   const documents: string[] = [];
   for (const path of state.plan.documentDelivery?.paths ?? []) {
     const artifact = await inspectArtifact(task, path);
@@ -145,9 +148,7 @@ export async function publishReport(
       sections[name] ?? "",
       "",
     ]),
-    ...(state.deliveryEvidence
-      ? ["## 代码交付位置", "", ...codeDeliveryText(state.deliveryEvidence), ""]
-      : []),
+    ...(deliveryEvidence ? ["## 代码交付位置", "", ...codeDeliveryText(deliveryEvidence), ""] : []),
     "## 验证来源与记录",
     "",
     ...(state.plan.validation?.mode === "not_run"
@@ -172,12 +173,20 @@ export async function publishReport(
       "完整报告（含章节、文档正文和附录）的 UTF-8 总大小超过 10 MiB 附件上限，尚未冻结；请精简报告内容，若交付文档需要修改则交回获授权的文档节点处理，再重新提交。",
     );
   const hash = createHash("sha256").update(text).digest("hex");
-  const id = stableId(task.id, String(state.plan.version), artifactRevision, outputId, hash);
+  const id = stableId(
+    task.id,
+    String(state.plan.version),
+    artifactRevision,
+    outputId,
+    hash,
+    ...(deliveryRevision ? [deliveryRevision] : []),
+  );
   const directory = boardDirectory(stateDir, task.id);
   const path = join(directory, "reports", id, "report.md");
   await atomicWrite(path, text);
   await atomicWrite(join(directory, "report.md"), text);
-  state.report = { id, path, hash, outputId, artifactRevision };
+  state.deliveryEvidence = deliveryEvidence;
+  state.report = { id, path, hash, outputId, artifactRevision, deliveryRevision };
 }
 
 export async function reportText(state: WorkflowState): Promise<string> {

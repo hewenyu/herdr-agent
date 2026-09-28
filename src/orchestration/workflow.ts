@@ -106,7 +106,14 @@ export interface WorkflowState {
   planningReason?: string;
   assistanceWait?: { eventId: string; fingerprint: string; reason: string };
   deliveryEvidence?: CodeDeliveryEvidence;
-  report?: { id: string; path: string; hash: string; outputId: string; artifactRevision: string };
+  report?: {
+    id: string;
+    path: string;
+    hash: string;
+    outputId: string;
+    artifactRevision: string;
+    deliveryRevision?: string;
+  };
   error?: string;
 }
 

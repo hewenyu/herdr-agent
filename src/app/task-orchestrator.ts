@@ -466,6 +466,10 @@ export class TaskOrchestrator {
     });
   }
 
+  assertNotificationCurrent(event: OrchestrationEvent): Task {
+    return this.assertCurrent(event);
+  }
+
   private assertCurrent(event: OrchestrationEvent): Task {
     if (this.options.signal.aborted) fail("stopping", "服务正在停止。");
     const task = this.current(event.taskId);
@@ -810,6 +814,14 @@ export class TaskOrchestrator {
     )
       return;
     if (
+      event.decision.reportId &&
+      (event.state === "superseded" ||
+        (event.state === "attention" &&
+          event.error &&
+          !event.error.code.startsWith("orchestration_notification_")))
+    )
+      return;
+    if (
       event.notificationState === "retryable" &&
       (event.state === "superseded" ||
         event.userRevision !== this.revision(task) ||
@@ -846,7 +858,7 @@ export class TaskOrchestrator {
       return;
     }
     if (!confirmed && !retryable) return;
-    if (confirmed && event.notificationState === "retryable" && event.decision.reportId) {
+    if (confirmed && event.decision.reportId) {
       try {
         await validatedReport(event, {
           store: this.options.store,
@@ -942,6 +954,11 @@ export class TaskOrchestrator {
       this.save(event);
     } catch (error) {
       const safe = safeError(error);
+      if (
+        event.decision.reportId &&
+        ["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code)
+      )
+        throw error;
       event.notificationCause = safe.code;
       event.error = {
         ...safe,

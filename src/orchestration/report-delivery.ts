@@ -86,14 +86,18 @@ export class ReportDeliveries {
     return record;
   }
 
-  async send(input: ReportEnvelope): Promise<ReportDelivery> {
+  async send(input: ReportEnvelope, beforeSend?: () => Promise<void>): Promise<ReportDelivery> {
     return this.mutex.run(input.eventId, async () => {
       const record = this.prepare(input);
       if (record.channel !== "platform")
         throw new OperationError("report_channel", "网页报告需页面确认展示。");
       // Outbox freezes text and resumes only confirmed-unsent parts.
-      if (record.presentation === "attachment") await this.sendAttachment(record);
-      else await this.outbox.send(record.chatId, record.text, record.bodyId);
+      if (record.presentation === "attachment") await this.sendAttachment(record, beforeSend);
+      else {
+        const bodyState = this.outbox.receipt(record.bodyId)?.state;
+        if (!["delivered", "sending", "uncertain"].includes(bodyState ?? "")) await beforeSend?.();
+        await this.outbox.send(record.chatId, record.text, record.bodyId);
+      }
       if (record.cardState === "delivered") return record;
       if (["sending", "uncertain"].includes(record.cardState))
         throw new OperationError(
@@ -103,6 +107,7 @@ export class ReportDeliveries {
         );
       const platform = this.platform();
       if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
+      await beforeSend?.();
       record.cardState = "sending";
       this.save(record);
       try {
@@ -219,7 +224,10 @@ export class ReportDeliveries {
       : this.outbox.receipt(record.bodyId)?.state === "delivered";
   }
 
-  private async sendAttachment(record: ReportDelivery): Promise<void> {
+  private async sendAttachment(
+    record: ReportDelivery,
+    beforeSend?: () => Promise<void>,
+  ): Promise<void> {
     if (record.fileState === "delivered") return;
     if (["uploading", "sending", "uncertain"].includes(record.fileState ?? ""))
       throw new OperationError(
@@ -232,6 +240,7 @@ export class ReportDeliveries {
       throw new OperationError("platform_unavailable", "当前平台未提供报告附件能力。");
     try {
       if (!record.fileKey) {
+        await beforeSend?.();
         record.fileState = "uploading";
         this.save(record);
         const fileKey = await platform.uploadFile("report.md", record.text);
@@ -241,6 +250,7 @@ export class ReportDeliveries {
         record.fileState = "uploaded";
         this.save(record);
       }
+      await beforeSend?.();
       record.fileState = "sending";
       this.save(record);
       const messageId = await platform.sendFile(

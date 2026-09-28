@@ -75,7 +75,12 @@ test("unknown card delivery is never replayed and one successful output is insuf
   };
   try {
     await assert.rejects(h.deliveries.send(h.input));
-    await assert.rejects(h.deliveries.send(h.input), { code: "delivery_uncertain" });
+    await assert.rejects(
+      h.deliveries.send(h.input, async () => {
+        assert.fail("an unknown card receipt must not be replaced by a freshness failure");
+      }),
+      { code: "delivery_uncertain" },
+    );
     assert.equal(cards, 1);
     assert.equal(h.deliveries.retryable("task", "event", "report"), false);
     assert.equal(await h.deliveries.confirmed("task", "event", "report"), false);
@@ -223,11 +228,72 @@ for (const stage of ["upload", "send"] as const)
     const input = { ...h.input, presentation: "attachment" as const };
     try {
       await assert.rejects(h.deliveries.send(input));
-      await assert.rejects(new ReportDeliveries(h.store, h.outbox, () => platform).send(input));
+      let guards = 0;
+      await assert.rejects(
+        new ReportDeliveries(h.store, h.outbox, () => platform).send(input, async () => {
+          guards++;
+          throw new OperationError("workflow_report", "stale Git facts");
+        }),
+        { code: "delivery_uncertain" },
+      );
+      assert.equal(guards, 0, "unknown effects retain priority over freshness checks");
       assert.equal(uploads, 1);
       assert.equal(files, stage === "send" ? 1 : 0);
       assert.equal(h.deliveries.retryable("task", "event", "report"), false);
       assert.equal(await h.deliveries.confirmed("task", "event", "report"), false);
+    } finally {
+      h.store.close();
+    }
+  });
+
+for (const boundary of ["upload", "file", "card"] as const)
+  test(`attachment freshness is checked before ${boundary}, including retries without replaying completed stages`, async () => {
+    const h = fixture();
+    const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+    const input = { ...h.input, presentation: "attachment" as const };
+    const calls = { uploads: 0, files: 0, cards: 0 };
+    let fresh = boundary !== "upload";
+    const guard = async () => {
+      if (!fresh) throw new OperationError("workflow_report", "Git facts changed");
+    };
+    platform.uploadFile = async () => {
+      calls.uploads++;
+      if (boundary === "file") fresh = false;
+      return "file-key";
+    };
+    platform.sendFile = async () => {
+      calls.files++;
+      if (boundary === "card") fresh = false;
+      return "file-message";
+    };
+    platform.sendCard = async () => {
+      calls.cards++;
+      return "card-message";
+    };
+    try {
+      await assert.rejects(h.deliveries.send(input, guard), { code: "workflow_report" });
+      const expected = {
+        uploads: boundary === "upload" ? 0 : 1,
+        files: boundary === "card" ? 1 : 0,
+        cards: 0,
+      };
+      assert.deepEqual(calls, expected);
+      assert.equal(await h.deliveries.confirmed("task", "event", "report"), false);
+      assert.equal(h.deliveries.retryable("task", "event", "report"), true);
+      const restarted = new ReportDeliveries(h.store, h.outbox, () => platform);
+      await assert.rejects(restarted.send(input, guard), { code: "workflow_report" });
+      assert.deepEqual(calls, expected, "retry checks freshness before its next unsent stage");
+      fresh = true;
+      await restarted.send(input, guard);
+      assert.deepEqual(calls, { uploads: 1, files: 1, cards: 1 });
+      await restarted.send(input, async () => {
+        assert.fail("a fully delivered receipt must not re-enter effect guards");
+      });
+      assert.deepEqual(calls, { uploads: 1, files: 1, cards: 1 });
+      assert.equal(await restarted.confirmed("task", "event", "report"), true);
+      const record = h.store.get<Record<string, unknown>>("workflow_report_deliveries", "event");
+      assert.equal(record?.text, input.text);
+      assert.equal(record?.beforeSend, undefined, "callbacks are never persisted in the envelope");
     } finally {
       h.store.close();
     }
