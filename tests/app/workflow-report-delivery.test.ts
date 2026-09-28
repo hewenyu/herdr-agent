@@ -29,6 +29,8 @@ test("application sends complete workflow report and summary under event receipt
         orchestration: { mode: "workflow" },
       },
     );
+    task.promptVersion = 2; // This fixture exercises legacy report recovery.
+    h.app.tasks.records.save(task);
     const participant = h.app.tasks.records.participants(task)[0];
     assert.ok(participant);
     const callbacks = h.app as unknown as DeliveryCallbacks;
@@ -98,6 +100,71 @@ test("application sends complete workflow report and summary under event receipt
       h.app.outbox.receipt(`workflow-report:${task.id}:${event.id}:${state.report.id}:body`)?.state,
       "delivered",
     );
+  } finally {
+    await h.close();
+  }
+});
+
+test("v3 delivers a report attachment and one compact summary with an owner-bound frozen download", async () => {
+  const h = setup();
+  try {
+    const task = await h.app.tasks.create(
+      { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "report-v3" },
+      {
+        kind: "discussion",
+        title: "报告",
+        requirements: "讨论",
+        project: "project",
+        participants: [{ kind: "codex" }, { kind: "claude" }],
+        orchestration: { mode: "workflow" },
+      },
+    );
+    task.promptVersion = 3;
+    h.app.tasks.records.save(task);
+    const text = `# 完整报告\n\n${"最终正文。".repeat(3000)}`;
+    const state = workflowState(h.store, task, "revision");
+    state.report = {
+      id: "report",
+      path: "/never-read",
+      hash: createHash("sha256").update(text).digest("hex"),
+      outputId: "output",
+      artifactRevision: "artifact",
+    };
+    h.store.set(WORKFLOWS, task.id, state);
+    h.store.set("task_orchestration_events", "event", {
+      id: "event",
+      taskId: task.id,
+      decision: { action: "deliver", reportId: "report" },
+    });
+    let uploaded = "";
+    let sent = 0;
+    const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+    platform.uploadFile = async (_name, content) => {
+      uploaded = content;
+      return "key";
+    };
+    platform.sendFile = async () => {
+      sent++;
+      return "file-message";
+    };
+    await (h.app as unknown as DeliveryCallbacks).orchestrationReply(task, text, "event");
+    assert.equal(uploaded, text);
+    assert.equal(sent, 1);
+    assert.equal(h.platform.texts.length, 0);
+    assert.equal(h.platform.cards.length, 1);
+    const messages = h.store.list<StoredMessage>("messages");
+    assert.equal(messages.length, 1);
+    const summary = messages[0];
+    assert.ok(summary);
+    assert.equal(summary.source, "workflow_report_summary");
+    assert.ok(summary.text.length < 2000);
+    assert.equal(h.app.reportDownload("owner", summary.id).content, text);
+    h.config.feishu.allowedOpenIds.push("other-owner");
+    assert.throws(() => h.app.reportDownload("other-owner", summary.id));
+    assert.throws(() => h.app.reportDownload("owner", "/etc/passwd"));
+    const record = h.store.get<Record<string, unknown>>("workflow_report_deliveries", "event");
+    h.store.set("workflow_report_deliveries", "event", { ...record, text: "modified" });
+    assert.throws(() => h.app.reportDownload("owner", summary.id));
   } finally {
     await h.close();
   }

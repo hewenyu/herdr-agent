@@ -39,7 +39,10 @@ export async function publishBoard(
     ...state.evidence.map((item) => `- ${item.source} · ${item.result}: ${item.description}`),
     "",
     "## 已采集的完整参与者输出",
-    ...state.consumedOutputs.map((id) => `- [${id}](outputs/${id}.md)`),
+    ...state.consumedOutputs.map(
+      (id) =>
+        `- [${id}](outputs/${id}.md)${task.promptVersion === 3 ? ` · [详细材料](outputs/${id}.notes.md)` : ""}`,
+    ),
     "",
   ].join("\n");
   await atomicWrite(join(directory, "board.md"), text);
@@ -56,6 +59,19 @@ export async function publishOutput(
   await atomicWrite(
     join(boardDirectory(stateDir, taskId), "outputs", `${outputId}.md`),
     visibleOutput(text),
+  );
+}
+
+export async function publishNotes(
+  stateDir: string,
+  taskId: string,
+  outputId: string,
+  text: string,
+): Promise<void> {
+  if (!/^[\w-]+$/.test(outputId)) fail("workflow_output", "输出标识不能用作材料路径。");
+  await atomicWrite(
+    join(boardDirectory(stateDir, taskId), "outputs", `${outputId}.notes.md`),
+    text,
   );
 }
 

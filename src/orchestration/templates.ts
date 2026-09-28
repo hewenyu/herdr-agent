@@ -28,8 +28,12 @@ export function templatePlan(task: Task, template?: WorkflowTemplate): WorkflowP
         `opening-${index + 1}`,
         "discussing",
         "analyst",
-        "独立分析用户问题，提出依据、方案及未决问题；不预设其他参与者结论。",
-        [],
+        task.promptVersion === 3
+          ? index === 0
+            ? "提出具体初稿，将详细依据保存为材料；简短说明重点，请下一位参与者评审。"
+            : "读取前一位参与者的实际材料，逐项回应，说明同意、修改及未决分歧；详细意见保存为材料，简短交接。"
+          : "独立分析用户问题，提出依据、方案及未决问题；不预设其他参与者结论。",
+        task.promptVersion === 3 && index > 0 ? [`opening-${index}`] : [],
         "read",
         participantId,
       ),

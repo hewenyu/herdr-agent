@@ -35,6 +35,8 @@ export function forbiddenPlatform(attempts: string[]): PlatformPort {
     stop: denied,
     sendText: denied,
     sendCard: denied,
+    uploadFile: denied,
+    sendFile: denied,
     updateCard: denied,
     createTask: denied,
     getTask: denied,
@@ -144,6 +146,10 @@ export function ownedRuntime(config: AppConfig, root: string, signal: AbortSigna
     transcript: async (ref, cursor) => {
       check(ref);
       return native.transcript(ref, cursor);
+    },
+    conversation: async (ref, receipt, cursor) => {
+      check(ref);
+      return native.conversation(ref, receipt, cursor);
     },
     sampleLastReply: async (ref) => {
       check(ref);

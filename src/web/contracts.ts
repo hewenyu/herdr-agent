@@ -2,6 +2,7 @@ import type { Catalog, Participant, Session, StoredMessage, Task } from "../core
 
 export interface WebBackend {
   history(ownerId?: string): WebState;
+  reportDownload?(ownerId: string, messageId: string): { name: string; content: string };
   dispatch?(action: string, input: Record<string, unknown>): Promise<unknown>;
   subscribe(listener: () => void): () => void;
 }

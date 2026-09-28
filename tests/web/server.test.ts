@@ -212,3 +212,30 @@ test("SSE broadcasts changes and shuts down without holding the listener", async
   }
   assert.equal(mock.released(), true);
 });
+
+test("report download requires explicit owner and message identity and serves only backend frozen content", async () => {
+  const mock = backend();
+  mock.port.reportDownload = (owner, message) => {
+    assert.equal(owner, "owner");
+    assert.equal(message, "summary");
+    return { name: "report.md", content: "# 完整报告" };
+  };
+  const web = await startWeb({ listen: "127.0.0.1:0", backend: mock.port, assets });
+  try {
+    assert.equal((await fetch(`${web.url}/api/reports?messageId=summary`)).status, 400);
+    const response = await fetch(`${web.url}/api/reports?ownerId=owner&messageId=summary`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-disposition"), 'attachment; filename="report.md"');
+    assert.equal(await response.text(), "# 完整报告");
+    assert.equal(
+      (
+        await fetch(`${web.url}/api/reports?ownerId=owner&messageId=summary`, {
+          headers: { Origin: "https://evil.example" },
+        })
+      ).status,
+      403,
+    );
+  } finally {
+    await web.close();
+  }
+});

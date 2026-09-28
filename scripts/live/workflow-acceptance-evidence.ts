@@ -1,6 +1,6 @@
 import type { OrchestrationEvent, SettledTaskOutput } from "../../src/app/task-orchestrator.js";
 import type { Delivery, ExecutionRef, Participant, Task } from "../../src/core/types.js";
-import { statusOperationId } from "../../src/orchestration/status-block.js";
+import { type StatusBlock, statusOperationId } from "../../src/orchestration/status-block.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { Store } from "../../src/storage/store.js";
 import type { InputDelivery } from "../../src/tasks/input-delivery.js";
@@ -48,15 +48,43 @@ export function participantEvidence(
           !store.get("task_input_applied", dispatch.operationId)
         )
           return [];
-        return [{ operationId: dispatch.operationId, outputSequence: input.outputSequence }];
+        return [
+          {
+            operationId: dispatch.operationId,
+            outputSequence: input.outputSequence,
+            nodeId: dispatch.nodeId,
+            inputRevision: dispatch.inputRevision,
+          },
+        ];
       });
       const nativeOutputs = outputs.flatMap((output) => {
-        const operationId = statusOperationId(output.entry.text);
+        const status = store.get<{ taskId: string; block: StatusBlock }>(
+          "workflow_status_blocks",
+          output.entry.id,
+        );
+        const conversation = store.get<{ taskId: string; participantId: string; outputId: string }>(
+          "workflow_conversation_evidence",
+          output.entry.id,
+        );
+        const block =
+          task.promptVersion === 3 && status?.taskId === task.id ? status.block : undefined;
+        if (
+          task.promptVersion === 3 &&
+          (!block ||
+            conversation?.taskId !== task.id ||
+            conversation.participantId !== participant.id ||
+            conversation.outputId !== output.entry.id)
+        )
+          return [];
+        const operationId = block?.operationId ?? statusOperationId(output.entry.text);
         if (
           output.participantId !== participant.id ||
           !confirmedInputs.some(
             (input) =>
-              input.operationId === operationId && (output.sequence ?? 0) > input.outputSequence,
+              input.operationId === operationId &&
+              (output.sequence ?? 0) > input.outputSequence &&
+              (!block ||
+                (input.nodeId === block.nodeId && input.inputRevision === block.inputRevision)),
           )
         )
           return [];

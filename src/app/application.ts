@@ -41,6 +41,8 @@ import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
 import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
+import { quietWorkflow, workflowNotice } from "./workflow-notifications.js";
+import { compactReportCard } from "./workflow-report.js";
 
 interface ApplicationOptions {
   config: AppConfig;
@@ -247,6 +249,18 @@ export class Application implements ApplicationContext {
   }
   changed(): void {
     for (const listener of this.listeners) listener();
+  }
+
+  reportDownload(ownerId: string, messageId: string): { name: string; content: string } {
+    const message = this.store.get<import("../core/types.js").StoredMessage>("messages", messageId);
+    if (!message?.taskId || message.source !== "workflow_report_summary")
+      throw new OperationError("report_missing", "报告消息不存在。");
+    this.tasks.get(
+      { source: "web", ownerId, chatId: `web:${ownerId}`, sessionId: message.sessionId, messageId },
+      message.taskId,
+    );
+    this.sessions.get(ownerId, message.sessionId);
+    return this.reportDeliveries.download(message.taskId, message.deliveryIds[0] ?? messageId);
   }
 
   async tick(): Promise<void> {
@@ -544,32 +558,35 @@ export class Application implements ApplicationContext {
         reportHash: state.report.hash,
         chatId: chatId ?? `web:${task.ownerId}`,
         text,
-        card: reportCard(task, state),
+        card: quietWorkflow(task)
+          ? compactReportCard(task, state, delivered)
+          : reportCard(task, state),
+        ...(quietWorkflow(task) ? { presentation: "attachment" as const } : {}),
         channel: delivered ? ("platform" as const) : ("web" as const),
       };
       const receipt = delivered
         ? await this.reportDeliveries.send(envelope)
         : this.reportDeliveries.prepare(envelope);
       const actor = this.actor(task, receipt.bodyId);
-      const body = this.sessions.recordExternal(actor, {
-        id: receipt.bodyId,
-        text: receipt.text,
-        source: "workflow_report",
-        pendingDelivery: !delivered,
-      });
+      const body =
+        receipt.presentation === "attachment"
+          ? undefined
+          : this.sessions.recordExternal(actor, {
+              id: receipt.bodyId,
+              text: receipt.text,
+              source: "workflow_report",
+              pendingDelivery: !delivered,
+            });
       const summary = this.sessions.recordExternal(actor, {
         id: receipt.cardId,
         text: reportSummaryText(receipt.card),
         source: "workflow_report_summary",
         pendingDelivery: !delivered,
       });
-      if (!delivered) this.reportDeliveries.bindWeb(receipt, body.id, summary.id);
+      if (!delivered) this.reportDeliveries.bindWeb(receipt, body?.id, summary.id);
       this.changed();
       if (!(await this.reportDeliveries.confirmed(task.id, eventId, final.reportId)))
-        throw new OperationError(
-          "report_delivery_pending",
-          "报告正文和摘要已准备，等待页面确认展示。",
-        );
+        throw new OperationError("report_delivery_pending", "报告及摘要已准备，等待页面确认展示。");
       return;
     }
     if (delivered) await this.outbox.send(chatId, text, outputId);
@@ -592,6 +609,17 @@ export class Application implements ApplicationContext {
     participant: Participant,
     entry: TranscriptEntry,
   ): Promise<void> {
+    if (quietWorkflow(task)) {
+      this.store.set("workflow_outputs", `${task.id}:${participant.id}:${entry.id}`, {
+        taskId: task.id,
+        participantId: participant.id,
+        sessionId: participant.execution?.sessionId,
+        entry,
+        recordedAt: new Date().toISOString(),
+      });
+      this.changed();
+      return;
+    }
     const content =
       task.orchestration?.mode === "workflow" ? visibleOutput(entry.text) : entry.text;
     const text = `${participant.name} (${participant.kind})：\n${content}`;
@@ -635,7 +663,9 @@ export class Application implements ApplicationContext {
     const actor = this.actor(task, `notice:${signature}`);
     let decision = this.store.get<{ notify: boolean; text: string }>("notice_decisions", signature);
     if (!decision) {
-      if (this.config.ai.enabled) {
+      if (quietWorkflow(task)) {
+        decision = workflowNotice(task, kind, this.tasks.records.participants(task), this.store);
+      } else if (this.config.ai.enabled) {
         try {
           const participants = this.tasks.records.participants(task);
           const runId = newId("notice_run");

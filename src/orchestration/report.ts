@@ -6,7 +6,8 @@ import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
-import { boardDirectory } from "./board.js";
+import { boardDirectory, inspectArtifact } from "./board.js";
+import { codeDeliveryEvidence, codeDeliveryText } from "./code-delivery.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -108,6 +109,28 @@ export async function publishReport(
   const sections = block.reportSections;
   if (!sections || state.plan.deliveryRequirements.some((name) => !sections[name]?.trim()))
     fail("workflow_report", "报告没有覆盖全部必需章节与验收项。");
+  if (task.promptVersion === 3 && task.kind === "development")
+    state.deliveryEvidence = await codeDeliveryEvidence(task);
+  const documents: string[] = [];
+  for (const path of state.plan.documentDelivery?.paths ?? []) {
+    const artifact = await inspectArtifact(task, path);
+    const text = await readFile(artifact.path, "utf8");
+    if (
+      Buffer.byteLength(text) > 1024 * 1024 ||
+      createHash("sha256").update(text).digest("hex") !== artifact.hash
+    )
+      fail("workflow_report", "交付文档过大或读取期间变化，不能冻结报告。");
+    const fence = "`".repeat(
+      Math.max(3, ...[...text.matchAll(/`+/g)].map((match) => match[0].length + 1)),
+    );
+    documents.push(
+      `## 交付文档：${path}`,
+      `SHA-256：${artifact.hash}`,
+      "",
+      `${fence}markdown\n${text}\n${fence}`,
+      "",
+    );
+  }
   const evidence = state.evidence.map(
     (entry) =>
       `- ${evidenceLabels[entry.source]} · ${entry.result}${entry.artifactRevision !== artifactRevision ? "（对应旧版本，当前无效）" : ""}：${entry.description}${entry.command ? `；命令：${entry.command}` : ""}`,
@@ -121,6 +144,9 @@ export async function publishReport(
       sections[name] ?? "",
       "",
     ]),
+    ...(state.deliveryEvidence
+      ? ["## 代码交付位置", "", ...codeDeliveryText(state.deliveryEvidence), ""]
+      : []),
     "## 验证来源与记录",
     "",
     ...(state.plan.validation?.mode === "not_run"
@@ -135,6 +161,7 @@ export async function publishReport(
     "",
     ...state.issues.map((issue) => `- ${issue.id} · ${issue.status}：${issue.description}`),
     "",
+    ...documents,
     "报告交付不等于用户验收。",
     "",
   ].join("\n");

@@ -1,12 +1,18 @@
 import { canonical, stableId } from "../core/ids.js";
 import type { Store } from "../storage/store.js";
+import {
+  ASSISTANCE_CANDIDATES,
+  type AssistanceEvidence,
+  REQUEST_PI_CANDIDATE,
+} from "./assistance.js";
 import type { ChoiceCandidate, JevResult } from "./jev.js";
 
 export const SELECTION_POLICY_VERSION = "workflow-selection-v1";
+export const REQUESTED_ASSISTANCE_POLICY_VERSION = "workflow-selection-v2";
 
 export interface DecisionLog {
   version: 1;
-  policyVersion: typeof SELECTION_POLICY_VERSION;
+  policyVersion: typeof SELECTION_POLICY_VERSION | typeof REQUESTED_ASSISTANCE_POLICY_VERSION;
   eventId: string;
   revision: string;
   planVersion: string | number;
@@ -14,6 +20,9 @@ export interface DecisionLog {
   snapshotRef: string;
   snapshot: unknown;
   candidates: ChoiceCandidate[];
+  /** Includes selector controls; only candidates above can authorize a business choice. */
+  selectorCandidates?: ChoiceCandidate[];
+  assistance?: AssistanceEvidence;
   rule: { status: "selected" | "not-applicable"; reason: string; candidateId?: string };
   jev: JevResult;
   pi: {
@@ -25,7 +34,7 @@ export interface DecisionLog {
     fallbackReason?: string;
     model?: string;
   };
-  state: "pending" | "selected" | "failed" | "cancelled";
+  state: "pending" | "selected" | "deferred" | "failed" | "cancelled";
   final?: { source: "rule" | "jev" | "pi"; candidateId: string; reason: string };
   dispatches: Array<{ operationId: string; state: string; receiptId?: string }>;
   createdAt: string;
@@ -47,6 +56,8 @@ export function saveDecisionLog(store: Store, log: DecisionLog): void {
     (previous.revision !== log.revision ||
       previous.snapshotRef !== log.snapshotRef ||
       canonical(previous.candidates) !== canonical(log.candidates) ||
+      canonical(previous.selectorCandidates) !== canonical(log.selectorCandidates) ||
+      previous.policyVersion !== log.policyVersion ||
       (previous.state !== "pending" &&
         canonical({ ...previous, dispatches: [], updatedAt: "" }) !==
           canonical({ ...log, dispatches: [], updatedAt: "" })))
@@ -75,10 +86,14 @@ export function replayDecision(log: DecisionLog): {
   rule: DecisionLog["rule"];
   jev: DecisionLog["jev"];
   pi: DecisionLog["pi"];
+  assistance?: DecisionLog["assistance"];
   dispatches: DecisionLog["dispatches"];
 } {
   const errors: string[] = [];
-  if (log.version !== 1 || log.policyVersion !== SELECTION_POLICY_VERSION)
+  if (
+    log.version !== 1 ||
+    ![SELECTION_POLICY_VERSION, REQUESTED_ASSISTANCE_POLICY_VERSION].includes(log.policyVersion)
+  )
     errors.push("unsupported_version");
   if (log.snapshotRef !== decisionSnapshotRef(log.snapshot)) errors.push("snapshot_mismatch");
   const ids = log.candidates.map((candidate) => candidate.id);
@@ -99,10 +114,64 @@ export function replayDecision(log: DecisionLog): {
     (log.pi.status !== "success" || log.pi.candidateId !== log.final.candidateId)
   )
     errors.push("pi_mismatch");
+  const requestedAssistance = log.policyVersion === REQUESTED_ASSISTANCE_POLICY_VERSION;
+  const selectorIds = requestedAssistance
+    ? (log.selectorCandidates?.map((entry) => entry.id) ?? [])
+    : ids;
+  if (
+    requestedAssistance &&
+    (ids.includes(REQUEST_PI_CANDIDATE.id) ||
+      canonical(log.selectorCandidates) !== canonical([...log.candidates, REQUEST_PI_CANDIDATE]))
+  )
+    errors.push("selector_candidates_mismatch");
   if (log.jev.probabilities) {
     const keys = Object.keys(log.jev.probabilities);
-    if (keys.length !== ids.length || keys.some((id) => !ids.includes(id)))
+    if (keys.length !== selectorIds.length || keys.some((id) => !selectorIds.includes(id)))
       errors.push("distribution_candidates_mismatch");
+  }
+  if (requestedAssistance) {
+    const assistance = log.assistance;
+    if (!assistance) errors.push("missing_assistance_evidence");
+    if (log.pi.status !== "skipped" && assistance?.status !== "requested")
+      errors.push("pi_without_assistance_request");
+    if (log.state === "deferred" && assistance?.status !== "deferred")
+      errors.push("deferred_without_assistance_evidence");
+    if (assistance?.jev) {
+      if (log.jev.status !== "low-confidence") errors.push("unexpected_assistance_check");
+      if (canonical(assistance.candidates) !== canonical(ASSISTANCE_CANDIDATES))
+        errors.push("assistance_candidates_mismatch");
+      if (assistance.jev.probabilities) {
+        const keys = Object.keys(assistance.jev.probabilities);
+        const allowed = ASSISTANCE_CANDIDATES.map((entry) => entry.id);
+        if (keys.length !== allowed.length || keys.some((key) => !allowed.includes(key)))
+          errors.push("assistance_distribution_mismatch");
+      }
+    }
+    if (
+      assistance?.status === "deferred" &&
+      (log.jev.status !== "low-confidence" ||
+        !assistance.jev ||
+        !(
+          assistance.jev.status === "low-confidence" ||
+          (assistance.jev.status === "success" &&
+            assistance.jev.candidateId === "wait_for_evidence")
+        ))
+    )
+      errors.push("invalid_assistance_deferral");
+    if (assistance?.status === "requested") {
+      const valid =
+        assistance.requestedBy === "jev-control"
+          ? log.jev.status === "success" && log.jev.candidateId === REQUEST_PI_CANDIDATE.id
+          : assistance.requestedBy === "jev-assistance"
+            ? log.jev.status === "low-confidence" &&
+              assistance.jev?.status === "success" &&
+              assistance.jev.candidateId === "request_pi"
+            : assistance.requestedBy === "recovery" &&
+              ["error", "timeout", "invalid", "skipped"].includes(
+                assistance.jev?.status ?? log.jev.status,
+              );
+      if (!valid) errors.push("invalid_assistance_request");
+    }
   }
   return structuredClone({
     valid: errors.length === 0,
@@ -113,6 +182,7 @@ export function replayDecision(log: DecisionLog): {
     rule: log.rule,
     jev: log.jev,
     pi: log.pi,
+    assistance: log.assistance,
     dispatches: log.dispatches,
   });
 }

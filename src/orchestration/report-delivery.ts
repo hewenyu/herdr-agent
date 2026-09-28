@@ -16,10 +16,21 @@ export interface ReportEnvelope {
   text: string;
   card: Record<string, unknown>;
   channel: "platform" | "web";
+  presentation?: "attachment";
 }
 
 export interface ReportDelivery extends ReportEnvelope {
-  version: 1;
+  version: 1 | 2;
+  fileState?:
+    | "prepared"
+    | "uploading"
+    | "uploaded"
+    | "sending"
+    | "delivered"
+    | "uncertain"
+    | "retryable";
+  fileKey?: string;
+  fileMessageId?: string;
   fingerprint: string;
   bodyId: string;
   cardId: string;
@@ -54,7 +65,8 @@ export class ReportDeliveries {
         previous.reportHash !== input.reportHash ||
         previous.text !== input.text ||
         previous.chatId !== input.chatId ||
-        previous.channel !== input.channel
+        previous.channel !== input.channel ||
+        previous.presentation !== input.presentation
       )
         throw new OperationError("report_delivery_conflict", "报告送达回执与原报告不匹配。");
       return previous;
@@ -62,7 +74,8 @@ export class ReportDeliveries {
     const prefix = `workflow-report:${input.taskId}:${input.eventId}:${input.reportId}`;
     const record: ReportDelivery = {
       ...structuredClone(input),
-      version: 1,
+      version: input.presentation === "attachment" ? 2 : 1,
+      ...(input.presentation === "attachment" ? { fileState: "prepared" as const } : {}),
       fingerprint: fingerprint(input),
       bodyId: `${prefix}:body`,
       cardId: `${prefix}:card`,
@@ -79,7 +92,8 @@ export class ReportDeliveries {
       if (record.channel !== "platform")
         throw new OperationError("report_channel", "网页报告需页面确认展示。");
       // Outbox freezes text and resumes only confirmed-unsent parts.
-      await this.outbox.send(record.chatId, record.text, record.bodyId);
+      if (record.presentation === "attachment") await this.sendAttachment(record);
+      else await this.outbox.send(record.chatId, record.text, record.bodyId);
       if (record.cardState === "delivered") return record;
       if (["sending", "uncertain"].includes(record.cardState))
         throw new OperationError(
@@ -109,7 +123,7 @@ export class ReportDeliveries {
     });
   }
 
-  bindWeb(record: ReportDelivery, bodyId: string, cardId: string): void {
+  bindWeb(record: ReportDelivery, bodyId: string | undefined, cardId: string): void {
     if (
       record.channel !== "web" ||
       !valid(record) ||
@@ -131,23 +145,21 @@ export class ReportDeliveries {
         ? this.store.get<StoredMessage>("messages", record.webCardId)
         : undefined;
       return (
-        body?.taskId === taskId &&
+        (record.presentation === "attachment" ||
+          (body?.taskId === taskId &&
+            body.delivery === "delivered" &&
+            body.text === record.text)) &&
         card?.taskId === taskId &&
-        body.delivery === "delivered" &&
         card.delivery === "delivered" &&
-        body.text === record.text &&
         card.text === reportSummaryText(record.card)
       );
     }
-    if (
-      this.outbox.receipt(record.bodyId)?.state !== "delivered" ||
-      record.cardState !== "delivered" ||
-      !record.cardMessageId
-    )
+    if (!this.bodyConfirmed(record) || record.cardState !== "delivered" || !record.cardMessageId)
       return false;
     try {
       // This delivered-only call validates the complete existing envelope without sending.
-      await this.outbox.send(record.chatId, record.text, record.bodyId);
+      if (record.presentation !== "attachment")
+        await this.outbox.send(record.chatId, record.text, record.bodyId);
       return true;
     } catch {
       return false;
@@ -161,9 +173,73 @@ export class ReportDeliveries {
     if (record.channel === "web") return true;
     const body = this.outbox.receipt(record.bodyId);
     return (
-      (!body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
+      (record.presentation === "attachment"
+        ? ["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? "")
+        : !body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
       ["prepared", "retryable", "delivered"].includes(record.cardState)
     );
+  }
+
+  /** Frozen content only: no caller-supplied filesystem path is ever opened. */
+  download(taskId: string, messageId: string): { name: string; content: string } {
+    const record = this.store
+      .list<ReportDelivery>(namespace)
+      .find(
+        (entry) =>
+          entry.taskId === taskId && (entry.cardId === messageId || entry.webCardId === messageId),
+      );
+    if (!record || !valid(record))
+      throw new OperationError("report_missing", "报告不存在或版本校验失败。");
+    return { name: "report.md", content: record.text };
+  }
+
+  private bodyConfirmed(record: ReportDelivery): boolean {
+    return record.presentation === "attachment"
+      ? record.fileState === "delivered" && !!record.fileKey && !!record.fileMessageId
+      : this.outbox.receipt(record.bodyId)?.state === "delivered";
+  }
+
+  private async sendAttachment(record: ReportDelivery): Promise<void> {
+    if (record.fileState === "delivered") return;
+    if (["uploading", "sending", "uncertain"].includes(record.fileState ?? ""))
+      throw new OperationError(
+        "delivery_uncertain",
+        "报告附件传输结果未知，不能自动重复上传或发送。",
+        "unknown",
+      );
+    const platform = this.platform();
+    if (!platform?.uploadFile || !platform.sendFile)
+      throw new OperationError("platform_unavailable", "当前平台未提供报告附件能力。");
+    try {
+      if (!record.fileKey) {
+        record.fileState = "uploading";
+        this.save(record);
+        const fileKey = await platform.uploadFile("report.md", record.text);
+        if (!fileKey)
+          throw new OperationError("delivery_uncertain", "报告上传缺少文件编号。", "unknown");
+        record.fileKey = fileKey;
+        record.fileState = "uploaded";
+        this.save(record);
+      }
+      record.fileState = "sending";
+      this.save(record);
+      const messageId = await platform.sendFile(
+        record.chatId,
+        record.fileKey,
+        stableId(record.bodyId),
+      );
+      if (!messageId)
+        throw new OperationError("delivery_uncertain", "附件发送缺少消息编号。", "unknown");
+      record.fileMessageId = messageId;
+      record.fileState = "delivered";
+      record.error = undefined;
+      this.save(record);
+    } catch (error) {
+      record.error = safeError(error);
+      record.fileState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      this.save(record);
+      throw error;
+    }
   }
 
   private save(record: ReportDelivery): void {
@@ -177,9 +253,7 @@ export class ReportDeliveries {
         (record) =>
           record.chatId === chatId &&
           record.channel === "platform" &&
-          (!valid(record) ||
-            record.cardState !== "delivered" ||
-            this.outbox.receipt(record.bodyId)?.state !== "delivered"),
+          (!valid(record) || record.cardState !== "delivered" || !this.bodyConfirmed(record)),
       );
   }
 }
@@ -206,13 +280,15 @@ function fingerprint(input: ReportEnvelope): string {
       text: input.text,
       card: input.card,
       channel: input.channel,
+      ...(input.presentation ? { presentation: input.presentation } : {}),
     }),
   );
 }
 function valid(record: ReportDelivery): boolean {
   const prefix = `workflow-report:${record.taskId}:${record.eventId}:${record.reportId}`;
   return (
-    record.version === 1 &&
+    ((record.version === 1 && !record.presentation) ||
+      (record.version === 2 && record.presentation === "attachment")) &&
     record.bodyId === `${prefix}:body` &&
     record.cardId === `${prefix}:card` &&
     record.fingerprint === fingerprint(record) &&

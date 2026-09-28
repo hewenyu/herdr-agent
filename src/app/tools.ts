@@ -8,6 +8,7 @@ import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { TaskService } from "../tasks/service.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
+import { taskProgress } from "./workflow-progress.js";
 
 interface Services {
   config?: AppConfig;
@@ -94,6 +95,21 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
           ...(workflow ? { workflow, workflowDecisions } : {}),
         };
       },
+    ),
+    tool(
+      "task_progress",
+      "用户询问进度时读取当前任务参与者绑定的 Claude/Codex 实际会话、工作流状态及产物。只读，不影响调度读取位置。返回 recent conversation 是参与者自述；不得把原生空闲或一轮回复说成已完成。分页 cursor 只能配合原参与者使用。",
+      true,
+      { taskId, participantId, cursor: text("上次本工具返回的参与者分页游标；省略读取最近对话") },
+      [],
+      async (args, ctx) =>
+        taskProgress(
+          services,
+          ctx,
+          id(args, ctx),
+          optionalString(args, "participantId"),
+          optionalString(args, "cursor"),
+        ),
     ),
     tool(
       "participant_screen",

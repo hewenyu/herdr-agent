@@ -47,6 +47,7 @@ export function workflowCandidates(
   };
   if (
     task.kind === "discussion" &&
+    task.promptVersion !== 3 &&
     ready.length > 1 &&
     ready.every((node) => node.role === "analyst" && !node.dependsOn.length && node.participantId)
   ) {
@@ -105,7 +106,9 @@ export function workflowCandidates(
   }
   if (state.issues.some((issue) => issue.status === "open")) {
     const target =
-      [...state.plan.nodes].reverse().find((node) => node.role === "implementer") ??
+      [...state.plan.nodes]
+        .reverse()
+        .find((node) => node.role === "implementer" || node.documentPaths?.length) ??
       state.plan.nodes.find((node) => node.phase === "reviewing");
     if (target)
       for (const participant of eligible(target.id))

@@ -69,10 +69,22 @@ export class FetchHttpClient implements HttpInstance {
     for (const [key, value] of Object.entries(options.headers ?? {})) {
       if (value !== undefined) headers.set(key, String(value));
     }
-    let body: string | undefined;
+    let body: string | FormData | undefined;
     if (options.data !== undefined && method !== "GET" && method !== "HEAD") {
-      body = typeof options.data === "string" ? options.data : JSON.stringify(options.data);
-      if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+      if (headers.get("Content-Type") === "multipart/form-data") {
+        const data = options.data as Record<string, unknown>;
+        const form = new FormData();
+        for (const [key, value] of Object.entries(data)) {
+          if (value instanceof Blob) form.set(key, value, String(data.file_name ?? "report.md"));
+          else if (typeof value === "string") form.set(key, value);
+          else throw new OperationError("file_upload_invalid", "上传字段格式无效。");
+        }
+        body = form;
+        headers.delete("Content-Type"); // fetch supplies the actual multipart boundary.
+      } else {
+        body = typeof options.data === "string" ? options.data : JSON.stringify(options.data);
+        if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+      }
     }
     try {
       return await withRequestDeadline(

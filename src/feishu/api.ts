@@ -8,6 +8,7 @@ export interface APIRequest {
   url: string;
   data?: Record<string, unknown>;
   params?: Record<string, string>;
+  headers?: Record<string, string>;
 }
 export type Requester = (input: APIRequest, signal?: AbortSignal) => Promise<unknown>;
 export function object(value: unknown): Record<string, unknown> {

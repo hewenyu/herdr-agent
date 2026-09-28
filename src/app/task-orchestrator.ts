@@ -45,6 +45,7 @@ export interface Dispatch {
   text?: string;
   inputRevision?: string;
   artifactRevision?: string;
+  sourceRevision?: string;
   operationId: string;
   participantId: string;
   state: "pending" | "sent" | "failed" | "uncertain";

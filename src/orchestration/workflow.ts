@@ -1,5 +1,7 @@
 import { fail } from "../core/errors.js";
 import type { Task } from "../core/types.js";
+import type { CodeDeliveryEvidence } from "./code-delivery.js";
+import { validateDocumentDelivery } from "./document-delivery.js";
 
 export type WorkflowTemplate = "discussion" | "development" | "bugfix";
 export type Phase =
@@ -22,6 +24,8 @@ export interface WorkflowNode {
   dependsOn: string[];
   access: "read" | "write";
   participantId?: string;
+  /** Exact document-only paths, authorized in documentDelivery. */
+  documentPaths?: string[];
 }
 
 export interface WorkflowPlan {
@@ -33,6 +37,7 @@ export interface WorkflowPlan {
   nodes: WorkflowNode[];
   deliveryRequirements: string[];
   requiredArtifacts?: string[];
+  documentDelivery?: { paths: string[]; userRequest: string };
   validation?: { mode: "execute" | "not_run"; reason: string; userConstraint?: string };
 }
 
@@ -68,6 +73,7 @@ export interface NodeProgress {
   participantId?: string;
   inputRevision?: string;
   artifactRevision?: string;
+  sourceRevision?: string;
   outputId?: string;
   summary?: string;
   error?: string;
@@ -96,6 +102,7 @@ export interface WorkflowState {
   stall: { open: string[]; unchanged: number; awaitingUser: boolean };
   planning?: "needed" | "ready";
   planningReason?: string;
+  deliveryEvidence?: CodeDeliveryEvidence;
   report?: { id: string; path: string; hash: string; outputId: string; artifactRevision: string };
   error?: string;
 }
@@ -113,7 +120,7 @@ export const phases: Phase[] = [
 ];
 
 /** Plans describe work, never executable code or additional permissions. */
-export function validatePlan(plan: WorkflowPlan, task: Task): void {
+export function validatePlan(plan: WorkflowPlan, task: Task, userMessages: string[] = []): void {
   if (
     !plan ||
     !plan.id ||
@@ -147,6 +154,7 @@ export function validatePlan(plan: WorkflowPlan, task: Task): void {
     fail("workflow_plan", "不运行验证必须记录用户约束和原因。");
   if ((task.kind === "discussion") !== (plan.template === "discussion"))
     fail("workflow_scope", "讨论计划不能自行切换到开发，执行任务不能套用讨论授权。");
+  validateDocumentDelivery(plan, task, userMessages);
   if (task.orchestration?.template && plan.template !== task.orchestration.template)
     fail("workflow_scope", "工作流计划必须保留任务显式指定的模板。");
   const ids = new Set<string>();
@@ -168,7 +176,21 @@ export function validatePlan(plan: WorkflowPlan, task: Task): void {
       (node.participantId !== undefined && !task.participantIds.includes(node.participantId))
     )
       fail("workflow_plan", "节点标识、角色、依赖或参与者无效。");
-    if ((task.kind === "discussion" || task.kind === "review") && node.access !== "read")
+    if (
+      node.documentPaths !== undefined &&
+      (!Array.isArray(node.documentPaths) ||
+        !node.documentPaths.length ||
+        node.access !== "write" ||
+        node.role !== "analyst" ||
+        node.phase !== "discussing" ||
+        !plan.documentDelivery ||
+        node.documentPaths.some((path) => !plan.documentDelivery?.paths.includes(path)))
+    )
+      fail("workflow_scope", "文档节点超出用户已授权的文件范围。");
+    if (
+      (task.kind === "review" || (task.kind === "discussion" && !node.documentPaths?.length)) &&
+      node.access !== "read"
+    )
       fail("workflow_scope", "此任务未授权修改项目。");
     if (
       (["validating", "reviewing"].includes(node.phase) && node.role !== "reviewer") ||
@@ -202,7 +224,9 @@ export function validatePlan(plan: WorkflowPlan, task: Task): void {
     collect(id);
     return result;
   };
-  const implementations = plan.nodes.filter((node) => node.role === "implementer");
+  const implementations = plan.nodes.filter(
+    (node) => node.role === "implementer" || node.documentPaths?.length,
+  );
   const validations = plan.nodes.filter((node) => node.phase === "validating");
   for (const node of plan.nodes.filter((entry) => entry.role === "reviewer")) {
     const before = ancestors(node.id);
@@ -217,7 +241,10 @@ export function validatePlan(plan: WorkflowPlan, task: Task): void {
     task.participantIds.some(
       (id) =>
         !plan.nodes.some(
-          (node) => node.participantId === id && node.role === "analyst" && !node.dependsOn.length,
+          (node) =>
+            node.participantId === id &&
+            node.role === "analyst" &&
+            (task.promptVersion === 3 || !node.dependsOn.length),
         ),
     )
   )

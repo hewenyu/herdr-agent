@@ -163,7 +163,7 @@ export async function createTask(
     updatedAt: timestamp,
   };
   if (task.orchestration?.mode === "workflow") {
-    task.promptVersion = 2;
+    task.promptVersion = 3;
     task.boardDirectory = join(config.stateDir, "tasks", task.id, "board");
     await mkdir(task.boardDirectory, { recursive: true, mode: 0o700 });
   }

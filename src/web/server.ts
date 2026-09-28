@@ -87,6 +87,19 @@ export async function startWeb(
         );
         return;
       }
+      if (request.method === "GET" && target.pathname === "/api/reports") {
+        const ownerId = target.searchParams.get("ownerId");
+        const messageId = target.searchParams.get("messageId");
+        if (!ownerId || !messageId || !options.backend.reportDownload)
+          throw new OperationError("report_missing", "缺少报告身份或消息编号。");
+        const report = options.backend.reportDownload(ownerId, messageId);
+        response.writeHead(200, {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "Content-Disposition": 'attachment; filename="report.md"',
+        });
+        response.end(report.content);
+        return;
+      }
       if (request.method === "GET" && target.pathname === "/api/events") {
         if (subscribers.size >= 32) {
           json(response, 503, { error: "too_many_clients" });

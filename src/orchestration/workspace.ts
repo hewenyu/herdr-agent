@@ -99,10 +99,17 @@ async function fileFacts(path: string): Promise<string> {
 }
 
 /** Hashes actual tracked + untracked source bytes; never uses HEAD as verification evidence. */
-export async function workspaceRevision(directories: string[]): Promise<string> {
+export async function workspaceRevision(
+  directories: string[],
+  documentPaths: string[] = [],
+): Promise<string> {
   const hash = createHash("sha256");
+  const main = directories[0] ? await canonicalDirectory(directories[0]) : "";
+  const documents = new Set(documentPaths.map((path) => resolve(main, path)));
   for (const root of await normalizedDirectories(directories)) {
-    const files = await listFiles(root);
+    const sourceFiles = async () =>
+      (await listFiles(root)).filter((path) => !documents.has(resolve(root, path)));
+    const files = await sourceFiles();
     const facts = new Map<string, string>();
     hash.update(JSON.stringify(["directory", root]));
     for (const path of files) {
@@ -127,7 +134,7 @@ export async function workspaceRevision(directories: string[]): Promise<string> 
         hash.update(content.digest());
       } else throw new OperationError("workspace_file", "工作目录包含不可安全读取的特殊文件。");
     }
-    if (JSON.stringify(files) !== JSON.stringify(await listFiles(root)))
+    if (JSON.stringify(files) !== JSON.stringify(await sourceFiles()))
       throw new OperationError(
         "workspace_changed",
         "读取期间工作目录文件清单改变，请重新核对产物版本。",

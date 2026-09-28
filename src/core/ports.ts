@@ -69,6 +69,16 @@ export interface HerdrPort {
   ): Promise<void>;
   close(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
   transcript(ref: ExecutionRef, cursor?: string): Promise<TranscriptPage>;
+  /** Scoped recent conversation with independent pagination; never changes observation cursors. */
+  conversation?(
+    ref: ExecutionRef,
+    receipt: string,
+    cursor?: string,
+  ): Promise<{
+    entries: TranscriptEntry[];
+    cursor?: string;
+    truncated: boolean;
+  }>;
   sampleLastReply(ref: ExecutionRef): Promise<TranscriptEntry | undefined>;
   /** Exact native user input, with receipt and session/cwd identity verified read-only. */
   initialInput?(ref: ExecutionRef, receipt: string): Promise<string | undefined>;
@@ -99,6 +109,9 @@ export interface PlatformPort {
   stop(): Promise<void>;
   sendText(chatId: string, text: string, key: string, replyTo?: string): Promise<string>;
   sendCard(chatId: string, card: Record<string, unknown>, key: string): Promise<string>;
+  /** Upload frozen report content only; callers persist upload and message receipts separately. */
+  uploadFile?(name: string, content: string): Promise<string>;
+  sendFile?(chatId: string, fileKey: string, key: string): Promise<string>;
   updateCard(messageId: string, card: Record<string, unknown>): Promise<void>;
   createTask(input: {
     title: string;
