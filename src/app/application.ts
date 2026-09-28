@@ -646,16 +646,23 @@ export class Application implements ApplicationContext {
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
   ): Promise<NoticeUnavailable | undefined> {
-    const signature = stableId(
-      task.id,
-      kind,
-      task.status,
-      task.error ?? "",
-      task.closeRequested ? "close" : "",
-    );
+    const workflow = quietWorkflow(task)
+      ? workflowNotice(task, kind, this.tasks.records.participants(task), this.store)
+      : undefined;
+    const signature =
+      workflow?.evidenceFingerprint !== undefined
+        ? stableId(task.id, kind, "evidence-wait", workflow.evidenceFingerprint)
+        : stableId(
+            task.id,
+            kind,
+            task.status,
+            task.error ?? "",
+            task.closeRequested ? "close" : "",
+          );
     if (this.store.get("notices_done", signature)) return;
     if (
       kind === "progress" &&
+      workflow?.evidenceFingerprint === undefined &&
       progressCooling(this.store, task.id, this.config.ui.notifyCooldownMs)
     )
       return;
@@ -663,8 +670,8 @@ export class Application implements ApplicationContext {
     const actor = this.actor(task, `notice:${signature}`);
     let decision = this.store.get<{ notify: boolean; text: string }>("notice_decisions", signature);
     if (!decision) {
-      if (quietWorkflow(task)) {
-        decision = workflowNotice(task, kind, this.tasks.records.participants(task), this.store);
+      if (workflow) {
+        decision = workflow;
       } else if (this.config.ai.enabled) {
         try {
           const participants = this.tasks.records.participants(task);

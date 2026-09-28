@@ -24,7 +24,10 @@ async function harness() {
   });
   const state = workflowState(h.store, task, "user-revision");
   state.plan.documentDelivery = { paths: ["A.md", "B.md"], userRequest: task.requirements };
-  const prepare = () => prepareDocumentSource(h.store, task, state);
+  const prepare = async () => {
+    state.documentSource = await prepareDocumentSource(h.store, task, state);
+    h.store.set(WORKFLOWS, state.taskId, state);
+  };
   const check = () => assertDocumentSource(h.store, task, state);
   return { ...h, task, state, root, prepare, check };
 }
@@ -153,7 +156,32 @@ test("tasks without document capability do not require missing historical docume
   }
 });
 
-for (const legacy of ["issue", "dispatch"] as const)
+test("read-only plan preparation returns a baseline without persisting and additions preserve its source", async () => {
+  const h = await harness();
+  try {
+    h.state.plan.documentDelivery = undefined;
+    const prepared = await prepareDocumentSource(h.store, h.task, h.state);
+    assert.deepEqual(prepared.paths, []);
+    assert.equal(h.state.documentSource, undefined);
+    assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.documentSource, undefined);
+    await h.prepare();
+    const original = structuredClone(h.state.documentSource);
+    h.state.plan.documentDelivery = { paths: ["A.md"], userRequest: h.task.requirements };
+    writeFileSync(join(h.root, "app.ts"), "earlier read-only node changed source\n");
+    await assert.rejects(h.prepare(), { code: "workflow_document_scope" });
+    assert.deepEqual(h.state.documentSource, original);
+    writeFileSync(join(h.root, "app.ts"), "original source\n");
+    await h.prepare();
+    assert.deepEqual(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.documentSource?.paths, [
+      "A.md",
+    ]);
+    await h.check();
+  } finally {
+    h.close();
+  }
+});
+
+for (const legacy of ["issue", "dispatch", "readonly-dispatch"] as const)
   test(`legacy ${legacy} cannot initialize a baseline from a potentially contaminated tree`, async () => {
     const h = await harness();
     try {
@@ -170,7 +198,11 @@ for (const legacy of ["issue", "dispatch"] as const)
       else
         h.store.set("task_orchestration_events", "old-event", {
           taskId: h.task.id,
-          dispatches: [{ sourceRevision: "old-source-revision" }],
+          dispatches: [
+            legacy === "dispatch"
+              ? { sourceRevision: "old-source-revision" }
+              : { nodeId: "opening-1" },
+          ],
         });
       h.state.nodes = {};
       await assert.rejects(h.prepare(), { code: "workflow_document_scope" });

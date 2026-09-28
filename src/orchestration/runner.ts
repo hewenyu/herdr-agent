@@ -533,15 +533,18 @@ export class WorkflowOrchestrator {
     this.ports.save(event);
     try {
       const plan = await choosePlan(this.ports, task, state, event);
-      state.plan = plan;
-      state.phase = plan.nodes[0]?.phase ?? "planning";
-      state.nodes = Object.fromEntries(
+      const next: WorkflowState = { ...state, plan };
+      if (task.promptVersion === 3 && task.kind === "discussion")
+        next.documentSource = await prepareDocumentSource(this.ports.store, task, next);
+      else if (next.documentSource) await assertDocumentSource(this.ports.store, task, next);
+      this.ports.assertCurrent(event);
+      next.phase = plan.nodes[0]?.phase ?? "planning";
+      next.nodes = Object.fromEntries(
         plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
       );
-      state.planning = "ready";
-      state.error = undefined;
-      event.state = "done";
-      event.notified = true;
+      next.planning = "ready";
+      next.error = undefined;
+      const acceptedEvent = { ...event, state: "done" as const, notified: true };
       this.ports.store.transaction(() => {
         const key = `${task.id}:${plan.version}`;
         if (this.ports.store.get("workflow_plans", key))
@@ -553,9 +556,11 @@ export class WorkflowOrchestrator {
           reason: state.planningReason ?? "首次根据用户要求实例化计划。",
           at: now(),
         });
-        this.save(state);
-        this.ports.save(event);
+        this.save(next);
+        this.ports.save(acceptedEvent);
       });
+      Object.assign(state, next);
+      Object.assign(event, acceptedEvent);
       await publishBoard(this.ports.config?.stateDir ?? "", task, state);
     } catch (error) {
       const safe = safeError(error);
@@ -621,7 +626,6 @@ export class WorkflowOrchestrator {
             if (!node) fail("workflow_node", "派发节点不存在。");
             if (node.documentPaths?.length) {
               await validateDocumentPaths(task, node.documentPaths);
-              await prepareDocumentSource(ports.store, task, state);
             }
             if (candidate.kind === "rework") invalidateFrom(state, node.id);
             const operationId = `${task.id}:workflow:${stableId(event.id, node.id, assignment.participantId)}`;
@@ -743,7 +747,11 @@ export class WorkflowOrchestrator {
       fail("workflow_dispatch", "派发缺少已保存任务书。");
     this.ports.assertCurrent(event);
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
-    if (state.documentSource || node?.documentPaths?.length)
+    if (
+      state.documentSource ||
+      state.plan.documentDelivery ||
+      (task.promptVersion === 3 && task.kind === "discussion")
+    )
       await assertDocumentSource(this.ports.store, task, state);
     if (
       node?.documentPaths?.length &&

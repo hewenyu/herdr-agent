@@ -11,7 +11,7 @@ export function workflowNotice(
   kind: string,
   participants: Participant[],
   store: Store,
-): { notify: boolean; text: string } {
+): { notify: boolean; text: string; evidenceFingerprint?: string } {
   const silent = { notify: false, text: "" };
   if (kind === "welcome")
     return {
@@ -44,6 +44,12 @@ export function workflowNotice(
         .map((participant) => `${participant.name}：${participant.error}`)
         .join("；")
         .slice(0, 1200)}`,
+    };
+  if (state?.assistanceWait)
+    return {
+      notify: true,
+      evidenceFingerprint: state.assistanceWait.fingerprint,
+      text: `「${task.title}」正在等待新的判断依据：${state.assistanceWait.reason.slice(0, 1200)}\n请在本任务会话补充相关要求、材料或检查结果；收到新的依据后会重新判断下一步。`,
     };
   // Native blocked menus are handled by automatic approval or its own actionable card.
   return silent;

@@ -3,7 +3,7 @@ import { fail, safeError } from "../core/errors.js";
 import type { Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 import { validateDocumentPaths } from "./document-delivery.js";
-import { WORKFLOWS, type WorkflowPlan, type WorkflowState } from "./workflow.js";
+import type { WorkflowState } from "./workflow.js";
 import { normalizedDirectories, workspaceRevision } from "./workspace.js";
 
 async function directories(task: Task): Promise<string[]> {
@@ -14,28 +14,16 @@ async function directories(task: Task): Promise<string[]> {
 function previouslyDispatched(store: Store, task: Task, state: WorkflowState): boolean {
   return (
     state.issues.some((issue) => issue.id === "document-scope-violation") ||
-    Object.values(state.nodes).some((node) => node.sourceRevision) ||
-    store.list<OrchestrationEvent>("task_orchestration_events").some((event) => {
-      if (event.taskId !== task.id || !event.dispatches.length) return false;
-      if (event.dispatches.some((item) => item.sourceRevision)) return true;
-      if (!event.workflow) return false;
-      const frozen = store.get<{ plan: WorkflowPlan }>(
-        "workflow_plans",
-        `${task.id}:${event.workflow.planVersion}`,
-      );
-      return (
-        !frozen ||
-        event.dispatches.some((item) =>
-          frozen.plan.nodes.some((node) => node.id === item.nodeId && node.documentPaths?.length),
-        )
-      );
-    })
+    Object.values(state.nodes).some((node) => node.operationId || node.sourceRevision) ||
+    store
+      .list<OrchestrationEvent>("task_orchestration_events")
+      .some((event) => event.taskId === task.id && event.dispatches.length > 0)
   );
 }
 
 /** A user resume or a participant's resolution cannot authorize a changed source tree. */
 export async function assertDocumentSource(
-  store: Store,
+  _store: Store,
   task: Task,
   state: WorkflowState,
 ): Promise<void> {
@@ -43,9 +31,7 @@ export async function assertDocumentSource(
   if (!baseline) {
     if (!state.plan.documentDelivery && (task.promptVersion !== 3 || task.kind !== "discussion"))
       return;
-    if (state.plan.documentDelivery || previouslyDispatched(store, task, state))
-      fail("workflow_document_scope", "缺少首次文档写入前的源码基线，不能确认文档交付范围。");
-    return;
+    fail("workflow_document_scope", "缺少首次讨论节点派发前的源码基线，不能确认任务交付范围。");
   }
   const authorized = new Set(state.plan.documentDelivery?.paths ?? []);
   if (baseline.paths.some((path) => !authorized.has(path)))
@@ -67,21 +53,21 @@ export async function assertDocumentSource(
   if (baseline.revision !== (await workspaceRevision(task.directories, baseline.paths)))
     fail(
       "workflow_document_scope",
-      "授权文档之外的项目变化尚未恢复；请先恢复首次文档写入前的源码，恢复任务不会重置该基线。",
+      "授权文档之外的项目变化尚未恢复；请先恢复首次讨论节点派发前的源码，恢复任务不会重置该基线。",
     );
 }
 
-/** Freeze before the first write; authorization changes may only extend a verified clean tree. */
+/** Prepare without mutation; the accepted plan and baseline must be committed atomically. */
 export async function prepareDocumentSource(
   store: Store,
   task: Task,
   state: WorkflowState,
-): Promise<void> {
+): Promise<NonNullable<WorkflowState["documentSource"]>> {
   const paths = [...(state.plan.documentDelivery?.paths ?? [])].sort();
   const previous = state.documentSource;
   if (previous) {
     await assertDocumentSource(store, task, state);
-    if (JSON.stringify(previous.paths) === JSON.stringify(paths)) return;
+    if (JSON.stringify(previous.paths) === JSON.stringify(paths)) return previous;
   } else if (previouslyDispatched(store, task, state)) {
     // Legacy receipts did not freeze the original directory list. The current tree is not
     // evidence of the old authorized tree, even when a later plan no longer contains it.
@@ -90,7 +76,6 @@ export async function prepareDocumentSource(
       "旧文档任务缺少可信源码基线，不能从当前现场初始化；请核对恢复后新建任务。",
     );
   }
-  if (!paths.length) fail("workflow_document_scope", "文档派发缺少已授权的完整文档范围。");
   await validateDocumentPaths(task, paths);
   const next = {
     directories: await directories(task),
@@ -99,6 +84,5 @@ export async function prepareDocumentSource(
   };
   // A newly authorized exclusion must not hide changes that raced the first old-scope check.
   if (previous) await assertDocumentSource(store, task, state);
-  state.documentSource = next;
-  store.set(WORKFLOWS, state.taskId, state);
+  return next;
 }

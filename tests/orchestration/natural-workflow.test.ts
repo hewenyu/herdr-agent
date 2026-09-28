@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
@@ -158,6 +158,11 @@ for (const documents of [false, true])
     try {
       await h.worker.tick();
       assert.equal(h.plans(), documents ? 1 : 0, "pi only plans when Jev requests help");
+      assert.deepEqual(
+        h.state().documentSource?.paths,
+        documents ? ["docs/DESIGN.md"] : [],
+        "the accepted plan freezes source before any opening is sent",
+      );
       await h.worker.tick();
       assert.equal(h.herdr.sends.length, 1, "first speaker only");
       assert.doesNotMatch(h.herdr.sends[0]?.text ?? "", /myrix-status|protocolVersion|operationId/);
@@ -198,6 +203,143 @@ for (const documents of [false, true])
       assert.equal(h.herdr.sends.length, sends);
       assert.equal(h.replies.length, 1);
       assert.ok(h.store.list("workflow_conversation_evidence").length >= 4);
+    } finally {
+      h.close();
+    }
+  });
+
+test("a discussion plan and its source baseline are committed together before dispatch", async () => {
+  const h = await harness(true);
+  const save = h.store.set.bind(h.store);
+  let failed = false;
+  try {
+    h.store.set = (namespace, key, value) => {
+      if (
+        namespace === "task_orchestration_events" &&
+        (value as OrchestrationEvent).state === "done" &&
+        (value as OrchestrationEvent).notified &&
+        !failed
+      ) {
+        failed = true;
+        throw new OperationError("fixture_commit", "transaction interrupted");
+      }
+      save(namespace, key, value);
+    };
+    await h.worker.tick();
+    h.store.set = save;
+    assert.equal(failed, true);
+    assert.equal(h.state().documentSource, undefined);
+    assert.equal(h.state().plan.documentDelivery, undefined);
+    assert.equal(h.state().planning, "needed");
+    assert.equal(h.store.get("workflow_plans", `${h.task.id}:1`), undefined);
+    assert.ok(
+      h.store
+        .list<OrchestrationEvent>("task_orchestration_events")
+        .every((event) => !event.notified),
+    );
+    assert.equal(h.herdr.sends.length, 0);
+    await h.worker.tick();
+    assert.ok(h.state().documentSource);
+    assert.equal(h.state().planning, "ready");
+    assert.ok(h.store.get("workflow_plans", `${h.task.id}:1`));
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    h.store.set = save;
+    h.close();
+  }
+});
+
+for (const documents of [false, true])
+  test(`early read-only source changes cannot be absorbed by rework or resumed document planning (documents=${documents})`, async () => {
+    const h = await harness(documents);
+    try {
+      await h.worker.tick();
+      const original = h.state().documentSource;
+      assert.ok(original);
+      assert.deepEqual(original.paths, documents ? ["docs/DESIGN.md"] : []);
+      assert.equal(h.herdr.sends.length, 0);
+      await h.worker.tick();
+      writeFileSync(join(h.repo, "app.ts"), "// early read-only node changed source\n");
+      await h.finish("opening-1");
+      await h.worker.tick();
+      assert.equal(h.state().nodes["opening-1"]?.status, "blocked");
+      assert.equal(h.state().stall.awaitingUser, true);
+      const sends = h.herdr.sends.length;
+      for (let tick = 0; tick < 2; tick++) await h.worker.tick();
+      assert.equal(
+        h.herdr.sends.length,
+        sends,
+        "automatic rework cannot adopt the contaminated source",
+      );
+
+      const requirements = "讨论并写入 docs/DESIGN.md，不修改业务源码。";
+      const current = h.service.get(actor, h.task.id);
+      h.service.records.save({ ...current, requirements });
+      h.options.engine.handler = async (input) => {
+        await input.tools[0]?.execute(
+          {
+            template: "discussion",
+            instructions: {},
+            deliveryRequirements: [],
+            documentDelivery: { paths: ["docs/DESIGN.md"], userRequest: requirements },
+          },
+          input.actor,
+        );
+        return { text: "", messages: [] };
+      };
+      const resumed = new TaskOrchestrator({
+        ...h.options,
+        fetch: async (url, init) => {
+          const response = await h.options.fetch(url, init);
+          const body = JSON.parse(String(init?.body));
+          if (!Object.hasOwn(body.questions.action.criteria, "use_template")) return response;
+          const selected = await response.json();
+          selected.answers.action.choice = "request_pi";
+          selected.answers.action.probabilities = { use_template: 0, request_pi: 1 };
+          return Response.json(selected);
+        },
+      });
+      await h.service.action(
+        { ...actor, messageId: "resume-early-contamination" },
+        h.task.id,
+        "resume",
+      );
+      await resumed.tick();
+      assert.deepEqual(h.state().documentSource, original);
+      assert.equal(h.state().planning, "needed");
+      assert.equal(h.store.get("workflow_plans", `${h.task.id}:2`), undefined);
+      assert.equal(h.herdr.sends.length, sends);
+
+      writeFileSync(join(h.repo, "app.ts"), "// unchanged\n");
+      await h.service.action({ ...actor, messageId: "resume-early-restored" }, h.task.id, "resume");
+      await resumed.tick();
+      assert.deepEqual(h.state().documentSource?.paths, ["docs/DESIGN.md"]);
+      await resumed.tick();
+      await h.finish("opening-1");
+      await resumed.tick();
+      await h.finish("opening-2");
+      await resumed.tick();
+      mkdirSync(join(h.repo, "docs"));
+      writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Recovered design\n");
+      await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+      await resumed.tick();
+      await h.finish("cross-review", {
+        artifactRefs: ["docs/DESIGN.md"],
+        issues: [
+          {
+            id: "document-scope-violation",
+            description: "源码已恢复，仅交付约定文档。",
+            status: "resolved",
+            blocking: true,
+            evidenceRefs: ["docs/DESIGN.md"],
+          },
+        ],
+      });
+      await resumed.tick();
+      await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
+      await resumed.tick();
+      assert.equal(h.state().phase, "awaiting_acceptance");
+      assert.equal(h.state().documentSource?.revision, original.revision);
     } finally {
       h.close();
     }
@@ -616,6 +758,7 @@ for (const stage of ["planning", "selection"] as const)
       assert.equal(calls, firstCalls + 2);
 
       release = true;
+      if (stage === "selection") unlinkSync(join(h.repo, "new-evidence.md"));
       const current = h.store.get<Task>("tasks", h.task.id);
       assert.ok(current);
       h.service.records.save({
