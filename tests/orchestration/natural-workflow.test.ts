@@ -206,6 +206,118 @@ test("v3 document writer cannot certify unrelated source modifications", async (
   }
 });
 
+test("repeated document scope violations remain one recoverable issue across user resumes", async () => {
+  const h = await harness(true);
+  const issueId = "document-scope-violation";
+  const startDocument = async () => {
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1");
+    await h.worker.tick();
+    await h.finish("opening-2");
+    await h.worker.tick();
+    assert.equal(h.state().nodes.document?.status, "dispatched");
+  };
+  try {
+    const violationOutputs: string[] = [];
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (attempt > 1)
+        await h.service.action(
+          { ...actor, messageId: `resume-document-${attempt}` },
+          h.task.id,
+          "resume",
+        );
+      await startDocument();
+      mkdirSync(join(h.repo, "docs"), { recursive: true });
+      writeFileSync(join(h.repo, "docs/DESIGN.md"), `# Design ${attempt}\n`);
+      writeFileSync(join(h.repo, "app.ts"), `// unauthorized change ${attempt}\n`);
+      await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+      await h.worker.tick();
+      const state = h.state();
+      assert.equal(state.stall.awaitingUser, true);
+      assert.equal(state.issues.filter((issue) => issue.id === issueId).length, 1);
+      const outputId = state.nodes.document?.outputId;
+      assert.ok(outputId);
+      violationOutputs.push(outputId);
+      assert.deepEqual(state.issues[0]?.evidenceRefs, violationOutputs);
+      assert.deepEqual(
+        state.issues[0]?.responses.map((response) => response.outputId),
+        violationOutputs,
+      );
+    }
+
+    // Old releases could persist a resolved first entry followed by another open entry.
+    const historical = h.state();
+    const original = historical.issues[0];
+    assert.ok(original);
+    const responses = original.responses;
+    historical.issues = [
+      {
+        ...original,
+        status: "resolved",
+        evidenceRefs: violationOutputs.slice(0, 1),
+        responses: responses.slice(0, 1),
+      },
+      {
+        ...original,
+        status: "open",
+        evidenceRefs: violationOutputs.slice(1),
+        responses: responses.slice(1),
+      },
+    ];
+    h.store.set(WORKFLOWS, h.task.id, historical);
+    const sends = h.herdr.sends.length;
+    const replies = h.replies.length;
+    await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.state().issues.length, 1, "merge must persist without a new output");
+    assert.equal(h.state().issues[0]?.status, "open");
+    assert.deepEqual(h.state().issues[0]?.evidenceRefs, violationOutputs);
+    assert.deepEqual(h.state().issues[0]?.responses, responses);
+    assert.equal(h.state().stall.awaitingUser, true, "deduplication cannot authorize resuming");
+    assert.equal(h.herdr.sends.length, sends);
+    assert.equal(h.replies.length, replies);
+
+    // The user repairs the unauthorized change before authorizing another plan.
+    writeFileSync(join(h.repo, "app.ts"), "// unchanged\n");
+    await h.service.action(
+      { ...actor, messageId: "resume-document-compliant" },
+      h.task.id,
+      "resume",
+    );
+    await startDocument();
+    writeFileSync(join(h.repo, "docs/DESIGN.md"), "# Reviewed design\n");
+    await h.finish("document", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    assert.notEqual(
+      h.state().nodes.document?.participantId,
+      h.state().nodes["cross-review"]?.participantId,
+    );
+    await h.finish("cross-review", {
+      artifactRefs: ["docs/DESIGN.md"],
+      issues: [
+        {
+          id: issueId,
+          description: "已独立核对源码恢复且当前仅修改授权设计文档。",
+          status: "resolved",
+          blocking: true,
+          evidenceRefs: [...violationOutputs, "docs/DESIGN.md"],
+        },
+      ],
+    });
+    await h.worker.tick();
+    await h.finish("report", { artifactRefs: ["docs/DESIGN.md"] });
+    await h.worker.tick();
+    assert.equal(h.state().phase, "awaiting_acceptance");
+    assert.equal(h.state().stall.awaitingUser, false);
+    assert.equal(h.state().issues.length, 1);
+    assert.equal(h.state().issues[0]?.status, "resolved");
+    assert.deepEqual(h.state().issues[0]?.responses.slice(0, 2), responses);
+    assert.equal(h.replies.length, replies + 1, "the recovered task delivers one final report");
+  } finally {
+    h.close();
+  }
+});
+
 for (const stage of ["planning", "selection"] as const)
   test(`v3 ${stage} evidence waits survive ticks/restarts without consuming retries and resume on new evidence`, async () => {
     const h = await harness();

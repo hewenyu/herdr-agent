@@ -13,6 +13,33 @@ import { parseStatusBlock } from "./status-block.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
 
+const documentScopeIssueId = "document-scope-violation";
+
+/** Older settlements could append the same issue repeatedly; preserve all observed evidence. */
+function consolidateDocumentScopeIssue(state: WorkflowState): boolean {
+  const entries = state.issues.filter((issue) => issue.id === documentScopeIssueId);
+  const first = entries[0];
+  if (!first || entries.length < 2) return false;
+  first.status = entries.some((issue) => issue.status === "open")
+    ? "open"
+    : entries.some((issue) => issue.status === "deferred")
+      ? "deferred"
+      : "resolved";
+  first.blocking = entries.some((issue) => issue.blocking);
+  first.evidenceRefs = [...new Set(entries.flatMap((issue) => issue.evidenceRefs))];
+  first.responses = [
+    ...new Map(
+      entries
+        .flatMap((issue) => issue.responses)
+        .map((response) => [JSON.stringify(response), response]),
+    ).values(),
+  ];
+  state.issues = state.issues.filter(
+    (issue) => issue.id !== documentScopeIssueId || issue === first,
+  );
+  return true;
+}
+
 export async function settleWorkflow(
   ports: WorkflowPorts,
   task: Task,
@@ -21,7 +48,7 @@ export async function settleWorkflow(
   commands: string[],
 ): Promise<void> {
   const save = () => ports.store.set(WORKFLOWS, state.taskId, state);
-  let changed = false;
+  let changed = consolidateDocumentScopeIssue(state);
   for (const node of state.plan.nodes) {
     const progress = state.nodes[node.id];
     if (progress?.status !== "dispatched" || !progress.operationId || !progress.inputRevision)
@@ -159,15 +186,24 @@ export async function settleWorkflow(
       progress.error = safeError(error).message;
       if (safeError(error).code === "workflow_document_scope") {
         state.stall.awaitingUser = true;
-        state.issues.push({
-          id: "document-scope-violation",
-          description: progress.error,
-          status: "open",
-          blocking: true,
-          evidenceRefs: [],
-          raisedBy: participant.id,
-          responses: [],
-        });
+        let issue = state.issues.find((entry) => entry.id === documentScopeIssueId);
+        if (!issue) {
+          issue = {
+            id: documentScopeIssueId,
+            description: progress.error,
+            status: "open",
+            blocking: true,
+            evidenceRefs: [],
+            raisedBy: participant.id,
+            responses: [],
+          };
+          state.issues.push(issue);
+        }
+        issue.description = progress.error;
+        issue.status = "open";
+        issue.blocking = true;
+        issue.evidenceRefs = [...new Set([...issue.evidenceRefs, output.entry.id])];
+        issue.responses.push({ outputId: output.entry.id, summary: progress.error });
       }
       if (!state.consumedOutputs.includes(output.entry.id))
         state.consumedOutputs.push(output.entry.id);
