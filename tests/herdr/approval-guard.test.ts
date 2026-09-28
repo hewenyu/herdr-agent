@@ -100,10 +100,18 @@ test("newly assigned session before a startup choice invalidates an absent-sessi
   assert.deepEqual(client.strokes, []);
 });
 
-for (const result of ["same-screen", "truncated", "terminal", "gone"] as const) {
+for (const result of [
+  "same-screen",
+  "unrelated-output",
+  "truncated",
+  "terminal",
+  "gone",
+] as const) {
   test(`ACK with ${result} readback is unknown, never a successful approval`, async () => {
     const client = new Client();
     client.onKeys = () => {
+      if (result === "unrelated-output")
+        client.text = `Updated log at 10:23:45\n${initial}\nSpinner: running`;
       if (result === "truncated") client.truncated = true;
       if (result === "terminal") client.agent.terminalId = "replacement";
       if (result === "gone") client.agent.status = "gone";

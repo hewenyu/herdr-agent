@@ -24,6 +24,7 @@ import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
+import { approvalIngress } from "./approval-priority.js";
 import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
 import { AutomaticApprovals } from "./automatic-approvals.js";
 import type { ApplicationContext } from "./context.js";
@@ -483,7 +484,8 @@ export class Application implements ApplicationContext {
             if (attempt === 1) return;
           }
           // Re-read after model evaluation: a user may have answered meanwhile.
-          if (service.approvalsBlocked(task.id)) return;
+          if (service.approvalsBlocked(task.id) || approvalIngress(this.store, task).pending)
+            return;
           screen = await this.herdr.screen(participant.execution);
           if (screen.agent.status !== "blocked") return;
           if (task.chatId && !task.groupDeleted && participant.execution && this.platform) {

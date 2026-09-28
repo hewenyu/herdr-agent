@@ -4,6 +4,7 @@ import type { AgentSnapshot, Delivery, ExecutionRef } from "../core/types.js";
 import { taskWorktreeRoot } from "../projects/worktree-trust.js";
 import type { HerdrClient } from "./client.js";
 import { composerOccupied, verifyEcho, verifyReceipt } from "./echo.js";
+import { menuState } from "./menu-state.js";
 import {
   cleanScreen,
   directoryTrustKeys,
@@ -202,11 +203,13 @@ export class AgentControl {
     };
     return this.serial(ref.paneId, async () => {
       await validate();
+      let beforeMenu: string | undefined;
       const checkScreen = async () => {
         if (!guard.screenFingerprint) return;
         const read = await this.client.read(ref.paneId, "visible", guard.signal);
         if (read.truncated || screenFingerprint(read.text) !== guard.screenFingerprint)
           throw new OperationError("stale_guard", "审批屏幕已变化或不完整，未发送按键。");
+        beforeMenu = menuState(read.text);
       };
       await checkScreen();
       let input = [key];
@@ -236,7 +239,7 @@ export class AgentControl {
             readback.truncated ||
             !cleanScreen(readback.text).trim() ||
             (after.status === "blocked" &&
-              screenFingerprint(readback.text) === guard.screenFingerprint)
+              (!beforeMenu || !menuState(readback.text) || menuState(readback.text) === beforeMenu))
           )
             throw new Error("approval readback unconfirmed");
         } catch (cause) {

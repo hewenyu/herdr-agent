@@ -3,6 +3,7 @@ import { canonical, newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { HerdrPort, PlatformPort } from "../core/ports.js";
 import type { AgentScreen, ExecutionRef } from "../core/types.js";
+import { menuState } from "../herdr/menu-state.js";
 import { screenFingerprint } from "../herdr/screen.js";
 import type { Store } from "../storage/store.js";
 import { defaultPresentation, presentScreen, type ScreenPresentation } from "./presentation.js";
@@ -33,6 +34,7 @@ interface Approval {
   menuFingerprint?: string;
   replacesNonce?: string;
   screenFingerprint?: string;
+  menuState?: string;
   terminalId?: string;
   cwd?: string;
 }
@@ -115,6 +117,7 @@ export class Approvals {
       ...(boundScreen
         ? {
             screenFingerprint: boundScreen,
+            menuState: menuState(screen.text),
             terminalId: screen.agent.terminalId,
             cwd: screen.agent.cwd,
           }
@@ -287,7 +290,9 @@ export class Approvals {
         screen.agent.cwd !== approval.cwd ||
         (approval.sessionId && approval.sessionId !== screen.agent.sessionId) ||
         (screen.agent.status === "blocked" &&
-          screenFingerprint(screen.text) === approval.screenFingerprint))
+          (!approval.menuState ||
+            !menuState(screen.text) ||
+            menuState(screen.text) === approval.menuState)))
     )
       throw new OperationError(
         "approval_refresh_required",

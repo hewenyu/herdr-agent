@@ -16,6 +16,7 @@ import type { ChoiceCandidate, JevOptions } from "../orchestration/jev.js";
 import type { ConversationEngine } from "../runtime/types.js";
 import type { Store } from "../storage/store.js";
 import { type ApprovalChoice, approvalCandidates, chooseApproval } from "./approval-choice.js";
+import { approvalIngress } from "./approval-priority.js";
 import type { Approvals } from "./approvals.js";
 
 const namespace = "automatic_approval_decisions";
@@ -82,9 +83,11 @@ export class AutomaticApprovals {
       request: task.userRequest?.text ?? task.requirements,
       requirements: task.requirements,
       kind: task.kind,
+      participantIds: task.participantIds,
       authorizedDirectories: task.directories,
       boardDirectory: task.boardDirectory,
       pauseRevision: this.ports.store.get<number>("task_pause_revision", task.id) ?? 0,
+      ingressRevision: approvalIngress(this.ports.store, task).revision,
       revisions: [...revisions, ...messages].sort((a, b) => a.at.localeCompare(b.at)),
     };
   }
@@ -115,6 +118,10 @@ export class AutomaticApprovals {
       ["paused", "completed", "destroying", "destroyed"].includes(t.status) ||
       t.discussion.paused ||
       t.closeRequested ||
+      t.completionRequest ||
+      t.groupDeleted ||
+      t.syncError ||
+      approvalIngress(this.ports.store, t).pending ||
       ["removed", "gone"].includes(p.status) ||
       p.execution?.paneId !== ref.paneId ||
       p.execution.workspaceId !== ref.workspaceId ||

@@ -280,7 +280,7 @@ export class TaskService {
     input: { kind: AgentKind; name?: string; role?: string },
     beforeMutation?: () => void,
   ): Promise<Participant> {
-    return this.locks.run(id, async () => {
+    return this.controlLock(actor, id, async () => {
       beforeMutation?.();
       assertActive(this.context);
       const task = this.records.get(actor, id);

@@ -5,7 +5,7 @@ import { OperationError } from "../../src/core/errors.js";
 import type { HerdrPort } from "../../src/core/ports.js";
 import type { ActorContext, AgentScreen, Participant, Task } from "../../src/core/types.js";
 import { screenFingerprint } from "../../src/herdr/screen.js";
-import { deferred, logger, setup } from "./helpers.js";
+import { deferred, logger, message, setup } from "./helpers.js";
 
 async function fixture() {
   const h = setup();
@@ -164,7 +164,7 @@ test("successful confirmation observes another menu at the same stateSeq", async
     (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
       await guard.beforeWrite?.();
       h.writes.push(key);
-      h.screen.text = `Different permission step ${h.writes.length}\n❯ Allow once\n  Cancel`;
+      h.screen.text = `Different permission step ${h.writes.length}\n❯ Allow step ${h.writes.length}\n  Cancel`;
     };
     assert.equal(await h.handle(), "handled");
     assert.equal(await h.handle(), "handled");
@@ -453,6 +453,7 @@ for (const control of [
   "close",
   "interrupt",
   "remove",
+  "add",
   "new-arrangement",
   "stop-service",
   "foreign-pause",
@@ -480,6 +481,11 @@ for (const control of [
         pending = h.app.tasks.interrupt(actor, h.task.id, h.participant.id);
       if (control === "remove")
         pending = h.app.tasks.removeParticipant(actor, h.task.id, h.participant.id);
+      if (control === "add")
+        pending = h.app.tasks.addParticipant(actor, h.task.id, {
+          kind: "codex",
+          role: "先独立复核权限范围",
+        });
       if (control === "new-arrangement") {
         // AgentControl refuses prompt pasting while a native menu is blocked.
         h.herdr.sendError = new OperationError("approval_required", "native menu still blocked");
@@ -526,3 +532,101 @@ for (const control of [
     }
   });
 }
+
+for (const event of ["task-complete", "group-dissolved", "normal-update", "unrelated"] as const) {
+  for (const admitted of [false, true]) {
+    test(`durable remote lifecycle ${event} vetoes automatic input before task-lock admission=${admitted}`, async (t) => {
+      const h = await fixture();
+      const entered = deferred();
+      const release = deferred();
+      let reconcile: Promise<void> | undefined;
+      let drain: Promise<void> | undefined;
+      let dissolved = false;
+      Object.assign(h.platform, {
+        getGroupStatus: async () => (dissolved ? "dissolved" : "normal"),
+      });
+      try {
+        assert.ok(h.config.jev && h.task.chatId && h.task.remoteTaskId);
+        h.config.jev.apiKey = "fixture-secret";
+        t.mock.method(globalThis, "fetch", h.fetchImpl);
+        h.before(async () => {
+          entered.resolve();
+          await release.promise;
+        });
+        reconcile = h.app.tasks.reconcile(h.task.id);
+        await entered.promise;
+        if (event === "group-dissolved") {
+          dissolved = true;
+          await h.app.handlers().groupChanged?.(h.task.chatId);
+        } else {
+          if (event === "task-complete") {
+            const remote = h.platform.tasks.get(h.task.remoteTaskId);
+            assert.ok(remote);
+            remote.completedAt = String(Date.now());
+          }
+          await h.app
+            .handlers()
+            .taskChanged(event === "unrelated" ? "another-task" : h.task.remoteTaskId);
+        }
+        if (admitted) drain = h.app.inbox.drain();
+        release.resolve();
+        await reconcile;
+        await drain;
+        assert.deepEqual(h.writes, event === "unrelated" ? ["enter"] : []);
+        if (!admitted) await h.app.inbox.drain();
+        if (event === "task-complete" || event === "group-dissolved") {
+          const current = h.store.get<Task>("tasks", h.task.id);
+          assert.ok(current && ["completed", "destroyed"].includes(current.status));
+          assert.equal(h.herdr.closes, 1);
+        }
+        if (event === "normal-update") {
+          await h.app.tasks.reconcile(h.task.id);
+          assert.deepEqual(
+            h.writes,
+            ["enter"],
+            "a processed harmless update cannot freeze a no-effect choice",
+          );
+        }
+      } finally {
+        release.resolve();
+        await Promise.allSettled([reconcile, drain]);
+        await h.close();
+      }
+    });
+  }
+}
+
+test("accepted owner message vetoes a choice even before the inbox model interprets it", async () => {
+  const h = await fixture();
+  try {
+    h.before(() =>
+      h.app.handlers().message(message("urgent-pause", "先暂停，不要确认权限", h.task.chatId)),
+    );
+    assert.equal(await h.handle(), "manual");
+    assert.deepEqual(h.writes, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("an acknowledged key with only background output cannot reopen an automatic nonce", async () => {
+  const h = await fixture();
+  try {
+    (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
+      await guard.beforeWrite?.();
+      guard.assertCurrent?.();
+      h.writes.push(key);
+      h.screen.text = `Log tick ${h.writes.length}\n${h.screen.text}\nElapsed 00:01`;
+    };
+    assert.equal(await h.handle(), "manual");
+    h.screen.agent.stateSeq = "200";
+    assert.equal(await h.handle(), "manual");
+    assert.deepEqual(h.writes, ["enter"]);
+    assert.equal(
+      h.store.list<{ state: string }>("automatic_approval_decisions")[0]?.state,
+      "uncertain",
+    );
+  } finally {
+    await h.close();
+  }
+});
