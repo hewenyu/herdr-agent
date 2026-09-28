@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applicationTools } from "../../src/app/tools.js";
+import { taskProgress } from "../../src/app/workflow-progress.js";
 import type { HerdrPort } from "../../src/core/ports.js";
-import type { Participant, Task, TranscriptEntry } from "../../src/core/types.js";
+import type {
+  AgentKind,
+  AgentSnapshot,
+  Participant,
+  Task,
+  TranscriptEntry,
+} from "../../src/core/types.js";
+import { HerdrRuntime } from "../../src/herdr/runtime.js";
 import { setup } from "./helpers.js";
 
 const actor = { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "progress" };
@@ -100,6 +108,167 @@ test("task_progress reads only bound participant conversation and never advances
       tool.execute({ taskId: task.id }, { ...actor, taskId: "other", chatId: "other-chat" }),
     );
     assert.equal(reads, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+async function boundProgress(kind: AgentKind = "codex", sessionId?: string) {
+  const h = setup();
+  const task = await create(h);
+  const participant = h.app.tasks.records.participants(task).find((entry) => entry.kind === kind);
+  assert.ok(participant);
+  participant.initialSent = true;
+  participant.cursor = "scheduler-cursor";
+  participant.execution = {
+    workspaceId: "workspace",
+    paneId: "pane",
+    kind,
+    cwd: h.directory,
+    ...(sessionId ? { sessionId } : {}),
+    transcriptReceipt: participant.initialReceipt,
+  };
+  h.app.tasks.records.saveParticipant(participant);
+  const live: AgentSnapshot = {
+    ...participant.execution,
+    sessionId: "live-session",
+    status: "working",
+    stateSeq: "1",
+    interactiveReady: true,
+    launchPending: false,
+  };
+  h.herdr.agents.set(live.paneId, live);
+  const tool = applicationTools(h.app, actor).find((entry) => entry.name === "task_progress");
+  assert.ok(tool);
+  const read = async () => {
+    const result = (await tool.execute(
+      { taskId: task.id, participantId: participant.id, cursor: "progress-cursor" },
+      actor,
+    )) as {
+      participants: Array<{
+        id: string;
+        conversation?: TranscriptEntry[];
+        runtime?: { sessionId?: string };
+        readError?: string;
+      }>;
+    };
+    const observed = result.participants.find((entry) => entry.id === participant.id);
+    assert.ok(observed);
+    return observed;
+  };
+  return { ...h, task, participant, live, read };
+}
+
+for (const kind of ["codex", "claude"] as const)
+  test(`task_progress pins a sessionless ${kind} read to the observed session without changing its saved binding`, async () => {
+    const h = await boundProgress(kind);
+    try {
+      const before = structuredClone(h.participant);
+      let reads = 0;
+      (h.herdr as HerdrPort).conversation = async (target, receipt, cursor) => {
+        reads++;
+        assert.deepEqual(target, { ...before.execution, sessionId: h.live.sessionId });
+        assert.equal(receipt, before.initialReceipt);
+        assert.equal(cursor, "progress-cursor");
+        return {
+          entries: [
+            { id: "native-entry", role: "assistant", text: "已完成方案比较", final: false },
+          ],
+          truncated: false,
+        };
+      };
+      const result = await h.read();
+      assert.equal(result.readError, undefined);
+      assert.equal(result.runtime?.sessionId, "live-session");
+      assert.equal(result.conversation?.[0]?.text, "已完成方案比较");
+      assert.equal(reads, 1);
+      assert.deepEqual(h.store.get<Participant>("participants", before.id), before);
+      assert.equal(h.herdr.sends.length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+for (const field of [
+  "paneId",
+  "workspaceId",
+  "kind",
+  "cwd",
+  "sessionId",
+  "missingSession",
+] as const)
+  test(`task_progress still rejects a changed ${field} before reading native content`, async () => {
+    const h = await boundProgress(
+      "codex",
+      field.includes("Session") || field === "sessionId" ? "live-session" : undefined,
+    );
+    try {
+      const changed = { ...h.live };
+      if (field === "missingSession") delete changed.sessionId;
+      else if (field === "kind") changed.kind = "claude";
+      else changed[field] = "different";
+      h.herdr.agents.set(h.live.paneId, changed);
+      (h.herdr as HerdrPort).conversation = async () => {
+        assert.fail("mismatched participant identity must not reach the transcript reader");
+      };
+      const result = await h.read();
+      assert.match(result.readError ?? "", /现场已不属于原参与者会话/);
+      assert.deepEqual(result.conversation, []);
+      assert.equal(h.herdr.sends.length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+test("a sessionless progress read still rejects changes to the saved participant binding during observation", async () => {
+  const h = await boundProgress();
+  try {
+    (h.herdr as HerdrPort).conversation = async (target) => {
+      h.app.tasks.records.saveParticipant({ ...h.participant, execution: target });
+      return {
+        entries: [{ id: "native-entry", role: "assistant", text: "不可返回", final: false }],
+        truncated: false,
+      };
+    };
+    const result = await h.read();
+    assert.match(result.readError ?? "", /读取期间参与者绑定已变化/);
+    assert.deepEqual(result.conversation, []);
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("progress fixes the observed live session before the runtime rechecks a reused pane", async () => {
+  const h = await boundProgress();
+  try {
+    const runtime = new HerdrRuntime({ homeDir: h.directory });
+    let observations = 0;
+    runtime.client.get = async () => ({
+      ...h.live,
+      sessionId: ++observations === 1 ? "observed-session" : "replacement-session",
+    });
+    let nativeReads = 0;
+    (
+      runtime as unknown as {
+        transcripts: { conversation: NonNullable<HerdrPort["conversation"]> };
+      }
+    ).transcripts.conversation = async () => {
+      nativeReads++;
+      return { entries: [], truncated: false };
+    };
+    const result = await taskProgress(
+      { tasks: h.app.tasks, herdr: runtime, store: h.store },
+      actor,
+      h.task.id,
+      h.participant.id,
+    );
+    const observed = result.participants.find((entry) => entry.id === h.participant.id);
+    assert.ok(observed && "readError" in observed);
+    assert.match(observed.readError ?? "", /参与者会话已变化/);
+    assert.equal(observations, 2);
+    assert.equal(nativeReads, 0);
+    assert.deepEqual(h.store.get<Participant>("participants", h.participant.id), h.participant);
   } finally {
     await h.close();
   }

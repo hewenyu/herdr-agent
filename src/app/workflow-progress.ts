@@ -52,11 +52,13 @@ export async function taskProgress(
             runtime.workspaceId !== ref.workspaceId ||
             runtime.kind !== ref.kind ||
             runtime.cwd !== ref.cwd ||
-            runtime.sessionId !== ref.sessionId)
+            (ref.sessionId && runtime.sessionId !== ref.sessionId))
         )
           fail("target_changed", "现场已不属于原参与者会话。");
+        // Pin only this read to the observed live session; keep the durable binding unchanged.
+        const target = { ...ref, sessionId: ref.sessionId ?? runtime?.sessionId };
         const conversation = await services.herdr.conversation(
-          ref,
+          target,
           participant.initialReceipt,
           cursor,
         );
