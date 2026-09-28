@@ -1,6 +1,7 @@
 import { EventDispatcher, LoggerLevel, WSClient } from "@larksuiteoapi/node-sdk";
 import { OperationError } from "../core/errors.js";
 import type { Logger, PlatformHandlers, PlatformPort, RemoteTask } from "../core/ports.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../core/report-limits.js";
 import { FeishuAPI, object, type Requester, sdkLogger, string } from "./api.js";
 import { FetchHttpClient } from "./http.js";
 import { normalizeAction, normalizeMessage } from "./normalize.js";
@@ -226,7 +227,11 @@ export class FeishuPlatform implements PlatformPort {
     return this.send(chatId, "interactive", JSON.stringify(card), key);
   }
   async uploadFile(name: string, content: string): Promise<string> {
-    if (name !== "report.md" || !content || Buffer.byteLength(content) > 10 * 1_048_576)
+    if (
+      name !== "report.md" ||
+      !content ||
+      Buffer.byteLength(content) > REPORT_ATTACHMENT_MAX_BYTES
+    )
       throw new OperationError("report_file", "报告附件名称或大小无效。");
     const body = await this.api.call({
       method: "POST",

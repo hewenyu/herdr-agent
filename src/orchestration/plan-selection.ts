@@ -1,5 +1,6 @@
 import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail } from "../core/errors.js";
+import { newId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { assessPlanningAssistance } from "./assistance.js";
 import { authorizeDocumentDelivery } from "./document-delivery.js";
@@ -14,6 +15,9 @@ export async function choosePlan(
   state: WorkflowState,
   event: OrchestrationEvent,
 ): Promise<WorkflowPlan> {
+  // Deferrals refund retry attempts; each later evidence-based evaluation still
+  // needs its own audit identity so an earlier wait is never overwritten.
+  const logId = `${event.id}:planning:${newId("attempt")}`;
   task = {
     ...task,
     participantIds: ports
@@ -45,7 +49,7 @@ export async function choosePlan(
         ports.assertCurrent(event);
       },
       onLog: (log) => {
-        ports.store.set("workflow_planning_decisions", `${event.id}:${event.attempts}`, log);
+        ports.store.set("workflow_planning_decisions", logId, log);
       },
     });
     if (assessment.decision === "cancelled") fail("cancelled", "规划判断已取消。");
@@ -91,7 +95,7 @@ export async function choosePlan(
       ports.assertCurrent(event);
     },
     onDecision: (decision) => {
-      ports.store.set("workflow_document_decisions", `${event.id}:${event.attempts}`, decision);
+      ports.store.set("workflow_document_decisions", logId, decision);
     },
   });
 

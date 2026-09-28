@@ -106,6 +106,53 @@ export class WorkflowOrchestrator {
       : undefined;
   }
 
+  private async assistanceFingerprint(
+    task: Task,
+    state: WorkflowState,
+    event: OrchestrationEvent,
+    candidates?: WorkflowCandidate[],
+  ): Promise<string> {
+    return stableId(
+      event.id,
+      await workspaceRevision(task.directories),
+      this.configRevision(task) ?? "",
+      JSON.stringify(state.issues),
+      JSON.stringify(candidates ?? state.plan),
+      JSON.stringify(this.ports.outputs(task.id).map((output) => output.entry.id)),
+    );
+  }
+
+  private deferAssistance(
+    state: WorkflowState,
+    event: OrchestrationEvent,
+    fingerprint: string,
+    reason: string,
+  ): void {
+    // An evidence wait is not a failed model attempt and survives worker restarts.
+    event.state = "pending";
+    event.attempts = Math.max(0, event.attempts - 1);
+    event.nextAttemptAt = undefined;
+    event.error = {
+      code: "workflow_assistance_deferred",
+      message: reason,
+      outcome: "not_executed",
+    };
+    state.assistanceWait = { eventId: event.id, fingerprint, reason };
+    this.ports.store.transaction(() => {
+      this.save(state);
+      this.ports.save(event);
+    });
+  }
+
+  private awaitingEvidence(state: WorkflowState, fingerprint: string): boolean {
+    if (state.assistanceWait?.fingerprint === fingerprint) return true;
+    if (state.assistanceWait) {
+      state.assistanceWait = undefined;
+      this.save(state);
+    }
+    return false;
+  }
+
   async admit<T>(task: Task, access: "read" | "write", run: () => Promise<T>): Promise<T> {
     return this.admission.run("directories", async () => {
       if (
@@ -214,6 +261,7 @@ export class WorkflowOrchestrator {
       state.planningReason = "用户要求或任务配置修订，旧计划输入已失效。";
       state.phase = "planning";
       state.report = undefined;
+      state.assistanceWait = undefined;
       state.stall = { open: [], unchanged: 0, awaitingUser: false };
       state.nodes = Object.fromEntries(
         state.plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
@@ -361,6 +409,11 @@ export class WorkflowOrchestrator {
     if (event.state === "done" || event.state === "superseded" || event.state === "attention")
       return;
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
+    const assistanceFingerprint =
+      task.promptVersion === 3
+        ? await this.assistanceFingerprint(task, state, event, candidates)
+        : "";
+    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
     event.attempts++;
     event.state = "processing";
     ports.save(event);
@@ -428,11 +481,15 @@ export class WorkflowOrchestrator {
               onLog: (log) => saveDecisionLog(ports.store, log),
             });
       ports.assertCurrent(event);
-      if ("deferred" in selection && selection.deferred)
-        fail(
-          "workflow_assistance_deferred",
-          "Jev 暂未取得足够依据选择下一步，也未请求 pi 协助。请补充当前阻塞或判断依据。",
+      if ("deferred" in selection && selection.deferred) {
+        this.deferAssistance(
+          state,
+          event,
+          assistanceFingerprint,
+          "Jev 正在等待新的判断依据，尚未请求 pi 协助。",
         );
+        return;
+      }
       const candidate = candidates.find((entry) => entry.id === selection.candidateId);
       if (!candidate) fail("workflow_selection", "本步没有得到合法选择，保留原候选等待恢复。");
       event.workflow = { candidate, planVersion: state.plan.version, artifactRevision };
@@ -464,6 +521,9 @@ export class WorkflowOrchestrator {
       return;
     }
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
+    const assistanceFingerprint =
+      task.promptVersion === 3 ? await this.assistanceFingerprint(task, state, event) : "";
+    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
     event.attempts++;
     this.ports.save(event);
     try {
@@ -493,7 +553,10 @@ export class WorkflowOrchestrator {
       });
       await publishBoard(this.ports.config?.stateDir ?? "", task, state);
     } catch (error) {
-      await this.failed(task, event, error);
+      const safe = safeError(error);
+      if (safe.code === "workflow_assistance_deferred")
+        this.deferAssistance(state, event, assistanceFingerprint, safe.message);
+      else await this.failed(task, event, error);
     }
   }
 

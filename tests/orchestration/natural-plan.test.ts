@@ -4,10 +4,15 @@ import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { workflowCandidates } from "../../src/orchestration/candidates.js";
 import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
 import { choosePlan } from "../../src/orchestration/plan-selection.js";
+import { planWorkflow } from "../../src/orchestration/planner.js";
 import type { WorkflowPorts } from "../../src/orchestration/runner.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { templatePlan } from "../../src/orchestration/templates.js";
-import { validatePlan } from "../../src/orchestration/workflow.js";
+import {
+  validatePlan,
+  type WorkflowNode,
+  type WorkflowPlan,
+} from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
@@ -260,6 +265,137 @@ test("document insertion follows the pre-review boundary through analyst revisio
         .filter((node) => node.role === "reviewer")
         .every((node) => node.dependsOn.includes("document")),
     );
+  } finally {
+    h.close();
+  }
+});
+
+function customDocumentNodes(plan: WorkflowPlan): WorkflowNode[] {
+  const review = plan.nodes.find((node) => node.role === "reviewer");
+  assert.ok(review);
+  const writer: WorkflowNode = {
+    id: "write-a",
+    phase: "discussing",
+    role: "analyst",
+    access: "write",
+    purpose: "保存第一份讨论文档",
+    instruction: "保存 docs/A.md。",
+    dependsOn: [...review.dependsOn],
+    documentPaths: ["docs/A.md"],
+  };
+  const nodes = structuredClone(plan.nodes);
+  const index = nodes.findIndex((node) => node.id === review.id);
+  const copiedReview = nodes[index];
+  assert.ok(copiedReview);
+  copiedReview.dependsOn = [writer.id];
+  nodes.splice(index, 0, writer);
+  return nodes;
+}
+
+test("custom document writers must cover every required delivery path before a plan is accepted", async () => {
+  const h = setup();
+  try {
+    const task = {
+      ...(await h.service.create(actor, {
+        ...discussion,
+        requirements: "讨论并保存 docs/A.md 和 docs/B.md。",
+      })),
+      promptVersion: 3 as const,
+    };
+    const plan = templatePlan(task);
+    plan.documentDelivery = { paths: ["docs/A.md", "docs/B.md"], userRequest: task.requirements };
+    plan.nodes = customDocumentNodes(plan);
+    const before = structuredClone(plan);
+    assert.throws(
+      () => addDocumentDelivery(plan),
+      (error: unknown) => {
+        assert.equal((error as { code: string }).code, "workflow_plan");
+        assert.match((error as Error).message, /docs\/B\.md/);
+        return true;
+      },
+    );
+    assert.deepEqual(
+      plan,
+      before,
+      "rejecting incomplete assignments must not broaden existing node scope",
+    );
+    const writer = plan.nodes.find((node) => node.id === "write-a");
+    const review = plan.nodes.find((node) => node.role === "reviewer");
+    assert.ok(writer && review);
+    plan.nodes.splice(plan.nodes.indexOf(review), 0, {
+      ...writer,
+      id: "write-b",
+      purpose: "保存第二份讨论文档",
+      instruction: "保存 docs/B.md。",
+      documentPaths: ["docs/B.md"],
+      dependsOn: [writer.id],
+    });
+    review.dependsOn = ["write-b"];
+    addDocumentDelivery(plan);
+    validatePlan(plan, task);
+    assert.deepEqual(plan.requiredArtifacts, ["docs/A.md", "docs/B.md"]);
+    assert.deepEqual(
+      plan.nodes.filter((node) => node.documentPaths).map((node) => node.documentPaths),
+      [["docs/A.md"], ["docs/B.md"]],
+    );
+    assert.equal(
+      plan.nodes.some((node) => node.id === "document"),
+      false,
+      "complete custom assignments need no extra writer",
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("the planner can correct an unassigned document in the same turn without freezing a broken plan", async () => {
+  const h = setup();
+  try {
+    const task = {
+      ...(await h.service.create(actor, {
+        ...discussion,
+        requirements: "讨论并保存 docs/A.md 和 docs/B.md。",
+      })),
+      promptVersion: 3 as const,
+    };
+    const state = workflowState(h.store, task, "revision");
+    const nodes = customDocumentNodes(state.plan);
+    const engine = new Engine();
+    engine.handler = async (request) => {
+      const tool = request.tools[0];
+      assert.equal(tool?.name, "orchestration_plan");
+      assert.ok(tool);
+      const args = {
+        template: "discussion",
+        instructions: {},
+        deliveryRequirements: [],
+        nodes,
+        documentDelivery: { paths: ["docs/A.md", "docs/B.md"], userRequest: task.requirements },
+      };
+      await assert.rejects(tool.execute(args, request.actor), { code: "workflow_plan" });
+      const writer = nodes.find((node) => node.id === "write-a");
+      assert.ok(writer);
+      writer.documentPaths = ["docs/A.md", "docs/B.md"];
+      writer.instruction = "分别保存 docs/A.md 和 docs/B.md。";
+      await tool.execute(args, request.actor);
+      return { text: "", messages: [] };
+    };
+    const plan = await planWorkflow({
+      task,
+      state,
+      engine,
+      actor,
+      userMessages: [],
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    assert.deepEqual(plan.nodes.find((node) => node.id === "write-a")?.documentPaths, [
+      "docs/A.md",
+      "docs/B.md",
+    ]);
+    assert.deepEqual(plan.requiredArtifacts, ["docs/A.md", "docs/B.md"]);
+    validatePlan(plan, task);
+    assert.equal(h.herdr.sends.length, 0);
   } finally {
     h.close();
   }

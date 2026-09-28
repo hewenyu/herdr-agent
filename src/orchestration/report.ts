@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../core/report-limits.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
@@ -165,6 +166,11 @@ export async function publishReport(
     "报告交付不等于用户验收。",
     "",
   ].join("\n");
+  if (task.promptVersion === 3 && Buffer.byteLength(text) > REPORT_ATTACHMENT_MAX_BYTES)
+    fail(
+      "workflow_report",
+      "完整报告（含章节、文档正文和附录）的 UTF-8 总大小超过 10 MiB 附件上限，尚未冻结；请精简报告内容，若交付文档需要修改则交回获授权的文档节点处理，再重新提交。",
+    );
   const hash = createHash("sha256").update(text).digest("hex");
   const id = stableId(task.id, String(state.plan.version), artifactRevision, outputId, hash);
   const directory = boardDirectory(stateDir, task.id);

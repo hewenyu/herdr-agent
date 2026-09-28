@@ -102,6 +102,7 @@ export interface WorkflowState {
   stall: { open: string[]; unchanged: number; awaitingUser: boolean };
   planning?: "needed" | "ready";
   planningReason?: string;
+  assistanceWait?: { eventId: string; fingerprint: string; reason: string };
   deliveryEvidence?: CodeDeliveryEvidence;
   report?: { id: string; path: string; hash: string; outputId: string; artifactRevision: string };
   error?: string;

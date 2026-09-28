@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
+import type { Task } from "../../src/core/types.js";
 import { handoffDirectory } from "../../src/orchestration/handoff.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
@@ -204,3 +205,95 @@ test("v3 document writer cannot certify unrelated source modifications", async (
     h.close();
   }
 });
+
+for (const stage of ["planning", "selection"] as const)
+  test(`v3 ${stage} evidence waits survive ticks/restarts without consuming retries and resume on new evidence`, async () => {
+    const h = await harness();
+    let calls = 0;
+    let release = false;
+    const options = {
+      ...h.options,
+      fetch: (async (url, init) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        const ids = Object.keys(body.questions.action.criteria);
+        const planning = ids.includes("use_template");
+        if (release || (stage === "selection" && planning)) return h.options.fetch(url, init);
+        const assistance = ids.includes("wait_for_evidence");
+        const choice = assistance ? "wait_for_evidence" : ids[0];
+        return new Response(
+          JSON.stringify({
+            model: "jev-fixture",
+            answers: {
+              action: {
+                type: "choice",
+                choice,
+                confidence: assistance ? 0.99 : 0.5,
+                probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
+              },
+            },
+            usage: { input_tokens: 10, output_tokens: 1 },
+          }),
+        );
+      }) as typeof globalThis.fetch,
+    };
+    const worker = new TaskOrchestrator(options);
+    try {
+      await worker.tick();
+      if (stage === "selection") {
+        const state = h.state();
+        const second = state.plan.nodes.find((node) => node.id === "opening-2");
+        assert.ok(second);
+        second.dependsOn = [];
+        h.store.set(WORKFLOWS, h.task.id, state);
+        await worker.tick();
+      }
+      const waiting = h.state().assistanceWait;
+      assert.ok(waiting);
+      const firstCalls = calls;
+      const event = () =>
+        h.store.get<OrchestrationEvent>("task_orchestration_events", waiting.eventId);
+      assert.equal(event()?.attempts, 0);
+      assert.equal(event()?.state, "pending");
+      for (let tick = 0; tick < 5; tick++) await worker.tick();
+      await new TaskOrchestrator(options).tick();
+      assert.equal(calls, firstCalls, "unchanged evidence must never repeat Jev calls");
+      assert.equal(event()?.attempts, 0);
+      assert.equal(h.herdr.sends.length, 0);
+      assert.equal(h.replies.length, 0);
+      assert.deepEqual(h.state().assistanceWait, waiting);
+
+      writeFileSync(join(h.repo, "new-evidence.md"), "New external evidence\n");
+      await worker.tick();
+      assert.equal(calls, firstCalls + 2, "changed evidence permits one fresh assessment");
+      assert.notEqual(h.state().assistanceWait?.fingerprint, waiting.fingerprint);
+      if (stage === "planning")
+        assert.equal(
+          h.store.list("workflow_planning_decisions").length,
+          2,
+          "wait audits are retained",
+        );
+      await worker.tick();
+      assert.equal(calls, firstCalls + 2);
+
+      release = true;
+      const current = h.store.get<Task>("tasks", h.task.id);
+      assert.ok(current);
+      h.service.records.save({
+        ...current,
+        requirements: `${current.requirements}\n用户补充了判断依据。`,
+      });
+      await worker.tick();
+      assert.equal(h.state().assistanceWait, undefined);
+      assert.equal(h.state().planning, "ready");
+      await worker.tick();
+      assert.equal(h.herdr.sends.length, 1);
+      assert.ok(
+        h.store
+          .list<OrchestrationEvent>("task_orchestration_events")
+          .every((entry) => entry.state !== "attention"),
+      );
+    } finally {
+      h.close();
+    }
+  });

@@ -92,8 +92,18 @@ export async function authorizeDocumentDelivery(input: {
 export function addDocumentDelivery(plan: WorkflowPlan): void {
   const delivery = plan.documentDelivery;
   if (!delivery) return;
+  const documentNodes = plan.nodes.filter((node) => node.documentPaths?.length);
+  if (documentNodes.length) {
+    const assigned = new Set(documentNodes.flatMap((node) => node.documentPaths ?? []));
+    const missing = delivery.paths.filter((path) => !assigned.has(path));
+    if (missing.length)
+      fail(
+        "workflow_plan",
+        `文档交付路径缺少负责写入的节点：${missing.join("、")}。请补齐文档分工。`,
+      );
+  }
   plan.requiredArtifacts = [...new Set([...(plan.requiredArtifacts ?? []), ...delivery.paths])];
-  if (plan.nodes.some((node) => node.documentPaths?.length)) return;
+  if (documentNodes.length) return;
   if (plan.nodes.some((node) => node.id === "document"))
     fail("workflow_plan", "document 节点已存在，须明确其文档写入范围。");
   const reviews = plan.nodes.filter((node) => node.role === "reviewer");

@@ -3,6 +3,7 @@ import test from "node:test";
 import type { EventDispatcher } from "@larksuiteoapi/node-sdk";
 import { OperationError } from "../../src/core/errors.js";
 import type { PlatformHandlers } from "../../src/core/ports.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
 import type { APIRequest } from "../../src/feishu/api.js";
 import { FetchHttpClient } from "../../src/feishu/http.js";
 import { FeishuPlatform, type PlatformDependencies } from "../../src/feishu/platform.js";
@@ -369,6 +370,24 @@ test("report attachments upload frozen content and send a file message with an i
   assert.equal(calls[1]?.data?.msg_type, "file");
   assert.equal(calls[1]?.data?.uuid, "stable-key");
   await assert.rejects(platform.uploadFile("/etc/passwd", "content"));
+});
+
+test("report upload shares the frozen report's UTF-8 byte boundary before making a request", async () => {
+  let requests = 0;
+  const platform = new FeishuPlatform(credentials, {
+    request: async (input) => {
+      requests++;
+      assert.ok(input.data?.file instanceof Blob);
+      assert.equal(input.data.file.size, REPORT_ATTACHMENT_MAX_BYTES);
+      return { code: 0, data: { file_key: "exact-boundary-file" } };
+    },
+  });
+  const content =
+    "界".repeat(Math.floor(REPORT_ATTACHMENT_MAX_BYTES / 3)) +
+    "x".repeat(REPORT_ATTACHMENT_MAX_BYTES % 3);
+  assert.equal(await platform.uploadFile("report.md", content), "exact-boundary-file");
+  await assert.rejects(platform.uploadFile("report.md", `${content}x`), { code: "report_file" });
+  assert.equal(requests, 1);
 });
 
 test("multipart report bytes reach fetch intact with its generated boundary", async () => {

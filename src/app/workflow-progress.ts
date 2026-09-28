@@ -108,6 +108,7 @@ export async function taskProgress(
           evidence: state.evidence,
           report: state.report,
           awaitingUser: state.stall.awaitingUser,
+          waitingForEvidence: state.assistanceWait?.reason,
         }
       : undefined,
     interpretation:
