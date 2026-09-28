@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Application } from "../../src/app/application.js";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
+import { OperationError } from "../../src/core/errors.js";
 import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
 import type { StoredMessage, Task } from "../../src/core/types.js";
 import { assertCodeDelivery, codeDeliveryEvidence } from "../../src/orchestration/code-delivery.js";
@@ -17,11 +18,39 @@ import { logger, setup } from "../app/helpers.js";
 import { branch, fixture, prUrl } from "./code-delivery-fixture.js";
 
 interface Internals {
+  reportDeliveries: ReportDeliveries;
   taskOrchestrator: {
     tick(): Promise<void>;
     revision(task: Task, includeWorkflow?: boolean): string;
     workflow: { assertDelivery(task: Task, state: WorkflowState): Promise<void> };
   };
+}
+
+async function failedCardReport() {
+  const h = await harness();
+  const calls = { uploads: 0, files: 0, cards: 0 };
+  const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+  platform.uploadFile = async () => `file-key-${++calls.uploads}`;
+  platform.sendFile = async () => `file-message-${++calls.files}`;
+  h.platform.cardHook = async () => {
+    if (++calls.cards === 1) throw new OperationError("platform_unavailable", "known not sent");
+  };
+  h.app.attachPlatform(platform);
+  const chatId = await platform.createGroup("报告群", h.actor.ownerId, "transport-report-group");
+  h.app.tasks.records.save({ ...h.app.tasks.get(h.actor, h.task.id), chatId, keepGroup: false });
+  await h.scheduler.tick();
+  const event = h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id);
+  assert.equal(event?.state, "done");
+  assert.equal(event.notificationState, "retryable");
+  assert.equal(event.error?.code, "orchestration_notification_failed");
+  const record = h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id);
+  assert.ok(record);
+  assert.equal(record.fileState, "delivered");
+  assert.equal(record.cardState, "retryable");
+  const receipts = (h.app as unknown as Internals).reportDeliveries;
+  assert.equal(receipts.pendingInChat(chatId), true);
+  assert.equal(receipts.retryable(h.task.id, event.id, record.reportId), true);
+  return { ...h, calls, chatId, failedEvent: event, record, receipts };
 }
 
 async function harness() {
@@ -511,6 +540,141 @@ test("resume and replacement delivery allow group cleanup after a superseded par
     await h.close();
   }
 });
+
+for (const checkpoint of ["retryable", "sending", "uncertain"] as const)
+  test(`a replaced done report with ${checkpoint} notification checkpoint cannot trap cleanup after restart`, async () => {
+    const h = await failedCardReport();
+    let restarted: Application | undefined;
+    try {
+      const resumed = await h.app.tasks.action(
+        { ...h.actor, messageId: `transport-resume-${checkpoint}` },
+        h.task.id,
+        "resume",
+      );
+      h.state.userRevision = h.scheduler.revision(resumed, false);
+      h.state.plan.version++;
+      h.state.phase = "reporting";
+      await h.publish();
+      assert.notEqual(h.state.report?.id, h.record.reportId);
+      await h.scheduler.tick();
+      assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "awaiting_acceptance");
+      assert.equal(
+        h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id)?.state,
+        "done",
+        "the old executed business event is not rewritten as failed or superseded",
+      );
+      assert.deepEqual(h.calls, { uploads: 2, files: 2, cards: 2 });
+      assert.equal(
+        h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+        undefined,
+      );
+      // Recreate durable upper-layer crash checkpoints: the definitive transport
+      // receipt is already saved, while notification recovery has not settled it.
+      h.store.set("task_orchestration_events", h.event.id, {
+        ...h.failedEvent,
+        notificationState: checkpoint,
+      });
+      await h.app.tasks.action(
+        { ...h.actor, messageId: "accept-replacement" },
+        h.task.id,
+        "complete",
+      );
+      await h.app.shutdown();
+      restarted = new Application({
+        config: h.config,
+        store: h.store,
+        engine: h.engine,
+        herdr: h.herdr,
+        platform: h.platform,
+        logger,
+      });
+      await restarted.tasks.reconcile(h.task.id);
+      await restarted.tasks.reconcile(h.task.id);
+      assert.equal(restarted.tasks.get(h.actor, h.task.id).status, "destroyed");
+      assert.equal(h.platform.deletions, 1);
+      assert.equal(h.herdr.closes, 2);
+      const retired = h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id);
+      assert.equal(retired?.retired?.reason, "stale_report");
+      const { retired: _retired, updatedAt: _updated, ...facts } = retired as ReportDelivery;
+      const { updatedAt: _oldUpdated, ...originalFacts } = h.record;
+      assert.deepEqual(facts, originalFacts);
+      const receipts = (restarted as unknown as Internals).reportDeliveries;
+      assert.equal(receipts.retryable(h.task.id, h.event.id, h.record.reportId), false);
+      assert.equal(await receipts.confirmed(h.task.id, h.event.id, h.record.reportId), false);
+      await assert.rejects(receipts.send(h.record), { code: "report_delivery_retired" });
+      assert.equal(receipts.download(h.task.id, h.record.cardId).content, h.record.text);
+      assert.deepEqual(h.calls, { uploads: 2, files: 2, cards: 2 });
+    } finally {
+      await restarted?.shutdown();
+      await h.close();
+    }
+  });
+
+for (const change of ["user_revision", "report"] as const)
+  test(`cleanup retires a done report after ${change} changes, but pause or completion alone never retires a valid retry`, async () => {
+    const h = await failedCardReport();
+    let restarted: Application | undefined;
+    try {
+      await h.app.tasks.action({ ...h.actor, messageId: "pause" }, h.task.id, "pause");
+      assert.equal(h.receipts.pendingInChat(h.chatId), true);
+      assert.equal(h.receipts.retryable(h.task.id, h.event.id, h.record.reportId), true);
+      await h.app.tasks.action(
+        { ...h.actor, messageId: "complete-current" },
+        h.task.id,
+        "complete",
+      );
+      await h.app.tasks.reconcile(h.task.id);
+      assert.equal(h.app.tasks.get(h.actor, h.task.id).status, "destroying");
+      assert.equal(h.platform.deletions, 0);
+      assert.equal(h.receipts.pendingInChat(h.chatId), true);
+      assert.equal(h.receipts.retryable(h.task.id, h.event.id, h.record.reportId), true);
+      assert.equal(
+        h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+        undefined,
+      );
+      // Upgrade recovery must use actual persisted revision/report invalidation,
+      // even when the scheduler no longer admits this destroying task.
+      const current = h.app.tasks.get(h.actor, h.task.id);
+      if (change === "user_revision") {
+        h.app.tasks.records.save({
+          ...current,
+          requirements: `${current.requirements}；已修订交付要求`,
+        });
+        assert.equal(
+          h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.report?.id,
+          h.record.reportId,
+        );
+      } else {
+        h.block.reportSections = Object.fromEntries(
+          h.state.plan.deliveryRequirements.map((name) => [name, "已修订报告结论"]),
+        );
+        await h.publish();
+        assert.notEqual(h.state.report?.id, h.record.reportId);
+        assert.equal(h.scheduler.revision(current), h.failedEvent.userRevision);
+      }
+      await h.app.shutdown();
+      restarted = new Application({
+        config: h.config,
+        store: h.store,
+        engine: h.engine,
+        herdr: h.herdr,
+        platform: h.platform,
+        logger,
+      });
+      await restarted.tasks.reconcile(h.task.id);
+      assert.equal(restarted.tasks.get(h.actor, h.task.id).status, "destroyed");
+      assert.equal(h.platform.deletions, 1);
+      assert.equal(h.herdr.closes, 2);
+      assert.equal(
+        h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired?.reason,
+        "stale_report",
+      );
+      assert.deepEqual(h.calls, { uploads: 1, files: 1, cards: 1 });
+    } finally {
+      await restarted?.shutdown();
+      await h.close();
+    }
+  });
 
 for (const notificationState of ["retryable", "sending", "uncertain"] as const)
   test(`confirmed ${notificationState} receipt revalidates Git after restart without resending or rewriting the envelope`, async () => {

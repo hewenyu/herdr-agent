@@ -40,7 +40,7 @@ export interface ReportDelivery extends ReportEnvelope {
   webBodyId?: string;
   webCardId?: string;
   error?: ReturnType<typeof safeError>;
-  retired?: { reason: "superseded"; at: string };
+  retired?: { reason: "superseded" | "stale_report"; at: string };
   updatedAt: string;
 }
 
@@ -54,6 +54,7 @@ export class ReportDeliveries {
     private readonly store: Store,
     private readonly outbox: Outbox,
     private readonly platform: () => PlatformPort | undefined,
+    private readonly staleReport?: (event: OrchestrationEvent) => boolean,
   ) {}
 
   prepare(input: ReportEnvelope): ReportDelivery {
@@ -72,7 +73,7 @@ export class ReportDeliveries {
         previous.presentation !== input.presentation
       )
         throw new OperationError("report_delivery_conflict", "报告送达回执与原报告不匹配。");
-      if (this.retireSuperseded(previous))
+      if (this.retireObsolete(previous))
         throw new OperationError("report_delivery_retired", "旧报告已终止发送，保留原传输记录。");
       return previous;
     }
@@ -177,7 +178,7 @@ export class ReportDeliveries {
 
   async confirmed(taskId: string, eventId: string, reportId: string): Promise<boolean> {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
-    if (!matches(record, taskId, eventId, reportId) || this.retireSuperseded(record)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireObsolete(record)) return false;
     if (record.channel === "web") {
       const body = record.webBodyId
         ? this.store.get<StoredMessage>("messages", record.webBodyId)
@@ -210,7 +211,7 @@ export class ReportDeliveries {
   retryable(taskId: string, eventId: string, reportId: string): boolean {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
     if (!record) return true;
-    if (!matches(record, taskId, eventId, reportId) || this.retireSuperseded(record)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireObsolete(record)) return false;
     if (record.channel === "web") return true;
     const body = this.outbox.receipt(record.bodyId);
     return (
@@ -293,7 +294,7 @@ export class ReportDeliveries {
   }
 
   /** End obsolete, known-settled sends without rewriting any transport receipt. */
-  private retireSuperseded(record: ReportDelivery): boolean {
+  private retireObsolete(record: ReportDelivery): boolean {
     if (record.retired) return true;
     if (
       this.sending.has(record.eventId) ||
@@ -320,12 +321,26 @@ export class ReportDeliveries {
     if (
       event?.id !== record.eventId ||
       event.taskId !== record.taskId ||
-      event.state !== "superseded" ||
       event.decision?.action !== "deliver" ||
       event.decision.reportId !== record.reportId
     )
       return false;
-    record.retired = { reason: "superseded", at: new Date().toISOString() };
+    const superseded = event.state === "superseded";
+    if (
+      !superseded &&
+      !(
+        event.state === "done" &&
+        !event.notified &&
+        ["retryable", "sending", "uncertain"].includes(event.notificationState ?? "") &&
+        !event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state)) &&
+        this.staleReport?.(event) === true
+      )
+    )
+      return false;
+    record.retired = {
+      reason: superseded ? "superseded" : "stale_report",
+      at: new Date().toISOString(),
+    };
     this.save(record);
     return true;
   }
@@ -339,7 +354,7 @@ export class ReportDeliveries {
           record.channel === "platform" &&
           (this.sending.has(record.eventId) ||
             !valid(record) ||
-            (!this.retireSuperseded(record) &&
+            (!this.retireObsolete(record) &&
               (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
       );
   }

@@ -470,6 +470,10 @@ export class TaskOrchestrator {
     return this.assertCurrent(event);
   }
 
+  notificationRevision(task: Task): string {
+    return this.revision(task);
+  }
+
   assertNotificationDelivery(task: Task, state: WorkflowState): Promise<void> {
     return this.workflow.assertDelivery(task, state);
   }

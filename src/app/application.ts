@@ -109,7 +109,22 @@ export class Application implements ApplicationContext {
       tools: (actor) => applicationTools(this, actor),
     });
     this.outbox = new Outbox(this.store, () => this.platform);
-    this.reportDeliveries = new ReportDeliveries(this.store, this.outbox, () => this.platform);
+    this.reportDeliveries = new ReportDeliveries(
+      this.store,
+      this.outbox,
+      () => this.platform,
+      (event) => {
+        const task = this.store.get<Task>("tasks", event.taskId);
+        const state = this.store.get<WorkflowState>(WORKFLOWS, event.taskId);
+        return (
+          task?.id === event.taskId &&
+          task.orchestration?.mode === "workflow" &&
+          state?.taskId === task.id &&
+          (event.userRevision !== this.taskOrchestrator.notificationRevision(task) ||
+            state.report?.id !== event.decision?.reportId)
+        );
+      },
+    );
     this.approvals = new Approvals(this.store, this.herdr, () => this.platform, this.config.ui);
     this.directoryTrust = new DirectoryTrust(
       this.store,
