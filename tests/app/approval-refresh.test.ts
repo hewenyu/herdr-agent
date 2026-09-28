@@ -258,3 +258,94 @@ test("application refreshes the old blocked state once after parser upgrade with
     await h.close();
   }
 });
+
+const strictRef: ExecutionRef = { ...ref, sessionId: "native-session" };
+function strictScreen(): AgentScreen {
+  return {
+    ...screen,
+    text: "Question\n❯ 1. Allow once\n  2. Cancel\nEnter to select",
+    source: "visible",
+    truncated: false,
+    agent: { ...screen.agent, ...strictRef, terminalId: "native-terminal" },
+  };
+}
+
+for (const result of ["navigation", "working"] as const) {
+  test(`manual ${result} confirmation advances durable progress without reopening its nonce`, async () => {
+    const h = setup();
+    try {
+      const before = strictScreen();
+      const initial = h.app.approvals.progressRevision(strictRef, "native-terminal");
+      const otherExecutions = [
+        { ...strictRef, workspaceId: "other-workspace" },
+        { ...strictRef, paneId: "other-pane" },
+        { ...strictRef, kind: "codex" as const },
+        { ...strictRef, cwd: "/other-directory" },
+        { ...strictRef, sessionId: "other-session" },
+      ];
+      const isolated = otherExecutions.map((execution) =>
+        h.app.approvals.progressRevision(execution, "native-terminal"),
+      );
+      const otherTerminal = h.app.approvals.progressRevision(strictRef, "other-terminal");
+      const approval = h.app.approvals.create("owner", "chat", strictRef, before);
+      assert.equal(h.app.approvals.progressRevision(strictRef, "native-terminal"), initial);
+      h.herdr.screen = async () =>
+        result === "navigation"
+          ? { ...before, text: before.text.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.") }
+          : { ...before, text: "Agent working", agent: { ...before.agent, status: "working" } };
+      await h.app.approvals.answer("owner", "chat", approval.nonce, "1");
+      const confirmed = h.app.approvals.progressRevision(strictRef, "native-terminal");
+      assert.notEqual(confirmed, initial);
+      assert.equal(h.store.get<typeof approval>("approvals", approval.nonce)?.confirmed, true);
+      await h.app.approvals.invalidate(strictRef, "later cleanup");
+      const recovered = new Approvals(h.store, h.herdr, () => h.platform);
+      assert.equal(recovered.progressRevision(strictRef, "native-terminal"), confirmed);
+      await assert.rejects(recovered.answer("owner", "chat", approval.nonce, "1"), /已处理/);
+      assert.equal(recovered.progressRevision(strictRef, "native-terminal"), confirmed);
+      assert.deepEqual(
+        otherExecutions.map((execution) =>
+          recovered.progressRevision(execution, "native-terminal"),
+        ),
+        isolated,
+      );
+      assert.equal(recovered.progressRevision(strictRef, "other-terminal"), otherTerminal);
+    } finally {
+      await h.close();
+    }
+  });
+}
+
+for (const result of ["unknown", "same-menu", "gone", "replaced", "invalidated"] as const) {
+  test(`${result} readback cannot replenish the approval retry budget`, async () => {
+    const h = setup();
+    try {
+      const before = strictScreen();
+      const initial = h.app.approvals.progressRevision(strictRef, "native-terminal");
+      const approval = h.app.approvals.create("owner", "chat", strictRef, before);
+      if (result === "unknown")
+        h.herdr.answer = async () => {
+          throw new OperationError("input_unconfirmed", "unknown", "unknown");
+        };
+      h.herdr.screen = async () => {
+        if (result === "invalidated") await h.app.approvals.invalidate(strictRef, "task closed");
+        return {
+          ...before,
+          ...(result === "same-menu" ? {} : { text: "Agent working" }),
+          agent: {
+            ...before.agent,
+            status: result === "same-menu" ? "blocked" : result === "gone" ? "gone" : "working",
+            ...(result === "replaced" ? { sessionId: "replacement-session" } : {}),
+          },
+        };
+      };
+      const answer = h.app.approvals.answer("owner", "chat", approval.nonce, "1");
+      if (result === "invalidated") await answer;
+      else await assert.rejects(answer, { outcome: "unknown" });
+      assert.equal(h.app.approvals.progressRevision(strictRef, "native-terminal"), initial);
+      assert.equal(h.store.get<typeof approval>("approvals", approval.nonce)?.confirmed, undefined);
+      assert.equal(h.store.get<typeof approval>("approvals", approval.nonce)?.consumed, true);
+    } finally {
+      await h.close();
+    }
+  });
+}

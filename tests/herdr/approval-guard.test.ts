@@ -134,6 +134,38 @@ test("navigation can succeed with unchanged stateSeq only after visible selectio
   assert.equal(client.agent.stateSeq, "3");
 });
 
+test("ASCII numbered-menu navigation confirms the changed selection at the same stateSeq", async () => {
+  const client = new Client();
+  client.text = "Question\n> 1. Allow once\n  2. Cancel\nEnter to select · Esc to cancel";
+  const before = client.text;
+  client.onKeys = () => {
+    client.text = before.replace("> 1. Allow once\n  2. Cancel", "  1. Allow once\n> 2. Cancel");
+  };
+  await new AgentControl(client).answer(ref, "down", {
+    ...guard(),
+    screenFingerprint: screenFingerprint(before),
+  });
+  assert.deepEqual(client.strokes, [["down"]]);
+  assert.equal(client.agent.stateSeq, "3");
+});
+
+test("ASCII composer readback cannot prove a blocked menu navigation succeeded", async () => {
+  const client = new Client();
+  client.text = "Question\n> 1. Allow once\n  2. Cancel\nEnter to select · Esc to cancel";
+  const before = client.text;
+  client.onKeys = () => {
+    client.text = `${before}\n> Ask Codex anything\n  More composer text`;
+  };
+  await assert.rejects(
+    new AgentControl(client).answer(ref, "down", {
+      ...guard(),
+      screenFingerprint: screenFingerprint(before),
+    }),
+    { code: "approval_unconfirmed", outcome: "unknown" },
+  );
+  assert.deepEqual(client.strokes, [["down"]]);
+});
+
 test("automatic numeric choice remains exactly one key even on a legacy Codex trust screen", async () => {
   const client = new Client();
   client.text =

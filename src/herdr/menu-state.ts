@@ -4,10 +4,10 @@ import { cleanScreen, parseOptions } from "./screen.js";
 /** Choice rows and their selection only; surrounding logs/spinners are not effect evidence. */
 export function menuState(raw: string): string | undefined {
   const lines = cleanScreen(raw).split("\n");
-  const selected = lines.findLastIndex((line) => /^\s*[❯›▶]\s+\S/.test(line));
+  const selected = lines.findLastIndex((line) => /^\s*[❯›▶>]\s+\S/.test(line));
   const row = lines[selected];
   if (!row) return;
-  const match = /^(\s*)[❯›▶]\s+(\S.*)$/.exec(row);
+  const match = /^(\s*)[❯›▶>]\s+(\S.*)$/.exec(row);
   if (!match) return;
   const numbered = parseOptions(raw);
   if (numbered.length) {
@@ -15,6 +15,9 @@ export function menuState(raw: string): string | undefined {
     if (!key || !numbered.some((option) => option.key === key)) return;
     return stableId("native-menu-v1", canonical({ options: numbered, selected: key }));
   }
+  // ASCII > is also used by composers and quoted prose. It is a choice cursor
+  // only when the complete numbered-menu parser establishes that boundary.
+  if (/^\s*>/.test(row)) return;
   // Unnumbered choice groups use a cursor and aligned adjacent rows. If the UI
   // has no recoverable choice boundary, a blocked readback stays uncertain.
   const column = row.indexOf(match[2] ?? "");

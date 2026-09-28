@@ -26,6 +26,7 @@ interface Approval {
   expiresAt: string;
   keys: string[];
   consumed: boolean;
+  confirmed?: boolean;
   navigationCompleted?: boolean;
   reobserveAllowed?: boolean;
   invalidatedReason?: string;
@@ -47,6 +48,33 @@ export class Approvals {
     private readonly platform: () => PlatformPort | undefined,
     private readonly presentation: ScreenPresentation = defaultPresentation,
   ) {}
+
+  /** Successful manual and automatic choices advance the same durable retry epoch. */
+  progressRevision(ref: ExecutionRef, terminalId: string): string {
+    const identity = (execution: ExecutionRef) =>
+      canonical({
+        workspaceId: execution.workspaceId,
+        paneId: execution.paneId,
+        kind: execution.kind,
+        cwd: execution.cwd,
+        sessionId: execution.sessionId,
+      });
+    const execution = identity(ref);
+    const nonces = this.store
+      .list<Approval>("approvals")
+      .filter(
+        (approval) =>
+          approval.confirmed &&
+          approval.screenFingerprint &&
+          approval.terminalId === terminalId &&
+          approval.cwd === ref.cwd &&
+          approval.sessionId === ref.sessionId &&
+          identity(approval.ref) === execution,
+      )
+      .map((approval) => approval.nonce)
+      .sort();
+    return stableId("native-approval-progress-v1", execution, terminalId, canonical(nonces));
+  }
 
   create(ownerId: string, chatId: string, ref: ExecutionRef, screen: AgentScreen): Approval {
     if (
@@ -286,9 +314,13 @@ export class Approvals {
       (screen.source !== "visible" ||
         screen.truncated ||
         !screen.text.trim() ||
+        screen.agent.paneId !== approval.ref.paneId ||
+        screen.agent.workspaceId !== approval.ref.workspaceId ||
+        screen.agent.kind !== approval.ref.kind ||
         screen.agent.terminalId !== approval.terminalId ||
         screen.agent.cwd !== approval.cwd ||
         (approval.sessionId && approval.sessionId !== screen.agent.sessionId) ||
+        !["idle", "done", "blocked", "working"].includes(screen.agent.status) ||
         (screen.agent.status === "blocked" &&
           (!approval.menuState ||
             !menuState(screen.text) ||
@@ -299,6 +331,8 @@ export class Approvals {
         "按键后现场尚未确认，请查看现场，不要重复操作。",
         "unknown",
       );
+    if (approval.screenFingerprint)
+      this.store.set("approvals", approval.nonce, { ...current, confirmed: true });
     const updates = this.invalidate(approval.ref, "菜单选择已更新，请使用新的审批卡片。");
     if (screen.agent.status !== "blocked") {
       await updates;

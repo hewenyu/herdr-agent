@@ -30,3 +30,24 @@ test("complete numbered menu changes exclude unrelated terminal output", () => {
     menuState("❯ Allow once\n  Deny\n  Log tick 2"),
   );
 });
+
+test("ASCII selection is accepted only inside a complete numbered menu", () => {
+  const menu = "Current question\n> 1. Allow once\n  2. Deny\nEnter to select · Esc to cancel";
+  const state = menuState(menu);
+  assert.ok(state);
+  assert.equal(state, menuState(menu.replace("> 1.", "❯ 1.")));
+  assert.notEqual(
+    state,
+    menuState(menu.replace("> 1. Allow once\n  2. Deny", "  1. Allow once\n> 2. Deny")),
+  );
+  assert.equal(state, menuState(`Log update\n${menu}\nElapsed 00:15`));
+  for (const text of [
+    "> Allow once\n  Deny\nEnter to confirm",
+    "> Ask Codex anything\n  More composer text",
+    "> 1. Quoted prose\n  2. More prose",
+    "> 1. Quoted prose\n> 2. More prose\n> Enter to select · Esc to cancel",
+    "> 1. Missing second option\nEnter to select · Esc to cancel",
+    `${menu}\n> Ask Codex anything`,
+  ])
+    assert.equal(menuState(text), undefined, text);
+});

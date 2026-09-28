@@ -223,6 +223,129 @@ test("a crash after effect reservation freezes automatic writes even on a later 
   }
 });
 
+for (const menu of [
+  "Permission\n> 1. Allow once\n  2. Cancel\nEnter to select",
+  "Permission\n❯ Allow once\n  Cancel\nEnter to select",
+  "Permission: allow once? [y/N]",
+  "Permission\n> 1. Allow once (expires in {clock}s)\n  2. Cancel\nEnter to select",
+  "Permission\n❯ Allow once (expires in {clock}s)\n  Cancel\nEnter to select",
+]) {
+  for (const failure of ["stale_guard", "no_selection"] as const) {
+    test(`${failure} keeps cooldown and budget across volatile screens and nonces: ${menu.split("\n")[0]}`, async (t) => {
+      const h = await fixture();
+      t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      try {
+        let clock = 0;
+        const changeScreen = () => {
+          h.screen.text = `Clock/spinner/log ${++clock}\n${menu.replace("{clock}", String(60 - clock))}`;
+          h.screen.agent.stateSeq = String(clock);
+        };
+        changeScreen();
+        if (failure === "stale_guard") {
+          (h.herdr as HerdrPort).answer = async () => {
+            changeScreen();
+            throw new OperationError("stale_guard", "screen changed before write");
+          };
+        } else {
+          h.choose("key:enter", 0.3);
+          h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
+        }
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          assert.equal(
+            await h.handle(),
+            failure === "stale_guard" || attempt === 3 ? "manual" : "pending",
+          );
+          assert.equal(h.requests.length, attempt);
+          changeScreen();
+          assert.equal(await h.handle(), attempt === 3 ? "manual" : "pending");
+          assert.equal(h.requests.length, attempt, "new nonce cannot skip persistent cooldown");
+          t.mock.timers.tick(30_001);
+        }
+        for (let observation = 0; observation < 4; observation++) {
+          changeScreen();
+          assert.equal(await h.handle(), "manual");
+        }
+        assert.equal(h.requests.length, 3, "reconstructed controllers cannot replenish attempts");
+        assert.deepEqual(h.writes, []);
+        const decisions = h.store.list<{
+          attempts: number;
+          retryIdentity: string;
+          approvalNonce: string;
+        }>("automatic_approval_decisions");
+        assert.deepEqual(decisions.map((d) => d.attempts).sort(), [1, 2, 3]);
+        assert.equal(new Set(decisions.map((d) => d.approvalNonce)).size, 3);
+        assert.equal(new Set(decisions.map((d) => d.retryIdentity)).size, 1);
+      } finally {
+        await h.close();
+      }
+    });
+  }
+}
+
+test("confirmed menu progress starts a fresh retry budget even when an earlier menu returns", async (t) => {
+  const h = await fixture();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    const first = h.screen.text;
+    let calls = 0;
+    (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
+      await guard.beforeWrite?.();
+      if (++calls <= 2) {
+        h.screen.text = `Clock ${calls}\n${first}`;
+        throw new OperationError("stale_guard", "screen changed before write");
+      }
+      h.writes.push(key);
+      h.screen.text = calls % 2 ? "  Allow once\n❯ Cancel" : first;
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal(await h.handle(), "manual");
+      t.mock.timers.tick(30_001);
+    }
+    for (let step = 0; step < 3; step++) assert.equal(await h.handle(), "handled");
+    const executed = h.store
+      .list<{ state: string; attempts: number }>("automatic_approval_decisions")
+      .filter((d) => d.state === "executed");
+    assert.deepEqual(executed.map((d) => d.attempts).sort(), [1, 1, 3]);
+    assert.equal(h.requests.length, 5);
+    assert.deepEqual(h.writes, ["enter", "enter", "enter"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("verified manual confirmation restores selection for a later identical permission", async (t) => {
+  const h = await fixture();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    const menu = h.screen.text;
+    h.choose("key:enter", 0.3);
+    h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      assert.equal(await h.handle(), attempt < 3 ? "pending" : "manual");
+      t.mock.timers.tick(30_001);
+    }
+    assert.equal(await h.handle(), "manual");
+    const [decision] = h.store.list<{ approvalNonce: string }>("automatic_approval_decisions");
+    assert.ok(decision);
+    await h.app.approvals.answer(
+      h.task.ownerId,
+      h.task.chatId ?? h.actor.chatId,
+      decision.approvalNonce,
+      "enter",
+    );
+    assert.equal(h.screen.agent.status, "working");
+    h.screen.agent.status = "blocked";
+    h.screen.agent.stateSeq = "later-permission-after-work";
+    h.screen.text = menu;
+    h.choose("key:enter");
+    assert.equal(await h.handle(), "handled");
+    assert.equal(h.requests.length, 4);
+    assert.deepEqual(h.writes, ["enter", "enter"]);
+  } finally {
+    await h.close();
+  }
+});
+
 test("navigation loops yield to the user across restarts without discussion round limits", async () => {
   const h = await fixture();
   try {
@@ -260,8 +383,9 @@ test("manual confirmation while Jev is choosing consumes the shared nonce first"
   }
 });
 
-test("stale screen rejected without an effect can select a fresh observation", async () => {
+test("stale screen rejected without an effect can select a fresh observation after cooldown", async (t) => {
   const h = await fixture();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   try {
     let first = true;
     (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
@@ -275,6 +399,8 @@ test("stale screen rejected without an effect can select a fresh observation", a
       h.screen.agent.status = "working";
     };
     assert.equal(await h.handle(), "manual");
+    assert.equal(await h.handle(), "pending");
+    t.mock.timers.tick(30_001);
     assert.equal(await h.handle(), "handled");
     assert.deepEqual(h.writes, ["enter"]);
     assert.equal(h.requests.length, 2);

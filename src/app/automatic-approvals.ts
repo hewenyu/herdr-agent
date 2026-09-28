@@ -35,6 +35,7 @@ interface Decision {
   inputRevision: string;
   directoryIdentity: string;
   approvalNonce: string;
+  retryIdentity: string;
   state:
     | "selecting"
     | "selected"
@@ -216,9 +217,35 @@ export class AutomaticApprovals {
     if (approval.consumed || approval.screenFingerprint !== fingerprint) return "manual";
     const id = stableId("native-approval-v1", approval.nonce, inputRevision);
     const previous = this.ports.store.get<Decision>(namespace, id);
-    if (previous && ["executed", "waiting_user", "failed"].includes(previous.state))
+    // Nonces bind writes to full snapshots, but dynamic text (even inside an
+    // option) must not replenish the selection budget. Only confirmed progress
+    // through the shared automatic/manual approval chain starts another epoch.
+    const retryIdentity = stableId(
+      "native-approval-retry-v1",
+      canonical({
+        workspaceId: ref.workspaceId,
+        paneId: ref.paneId,
+        kind: ref.kind,
+        cwd: ref.cwd,
+        sessionId: ref.sessionId,
+      }),
+      screen.agent.terminalId as string,
+      directoryIdentity,
+      inputRevision,
+      this.ports.approvals.progressRevision(ref, screen.agent.terminalId as string),
+    );
+    const retry = history
+      .filter((d) => d.retryIdentity === retryIdentity)
+      .sort((a, b) => b.attempts - a.attempts)[0];
+    if (
+      retry &&
+      (retry.attempts >= 3 ||
+        retry.state === "waiting_user" ||
+        (retry.state === "failed" &&
+          !["stale_guard", "approval_scope_changed"].includes(retry.error ?? "")))
+    )
       return "manual";
-    if (previous?.retryAt && Date.parse(previous.retryAt) > Date.now()) return "pending";
+    if (retry?.retryAt && Date.parse(retry.retryAt) > Date.now()) return "pending";
     // Catch navigation cycles without constraining the task's discussion rounds.
     if (
       history.filter(
@@ -244,8 +271,9 @@ export class AutomaticApprovals {
       inputRevision,
       directoryIdentity,
       approvalNonce: approval.nonce,
+      retryIdentity,
       state: "selecting",
-      attempts: (previous?.attempts ?? 0) + 1,
+      attempts: (retry?.attempts ?? 0) + 1,
       candidates,
       observation: { screen, userInput },
       createdAt: previous?.createdAt ?? at,
@@ -279,7 +307,6 @@ export class AutomaticApprovals {
     });
     decision.selection = selection;
     decision.state = "selected";
-    decision.retryAt = undefined;
     save();
     this.ports.logger.info("原生菜单选择已记录", {
       event: "approval.automatic_selected",
@@ -299,6 +326,7 @@ export class AutomaticApprovals {
     }
     if (selection.candidateId === "wait_user") {
       decision.state = "waiting_user";
+      decision.retryAt = undefined;
       save();
       return "manual";
     }
@@ -335,6 +363,7 @@ export class AutomaticApprovals {
         assertCurrent,
       });
       decision.state = "executed";
+      decision.retryAt = undefined;
       save();
       this.ports.logger.info("原生菜单选择已执行并回读", {
         event: "approval.automatic_completed",
@@ -348,6 +377,12 @@ export class AutomaticApprovals {
     } catch (error) {
       decision.state = isNotExecuted(error) ? "failed" : "uncertain";
       decision.error = safeError(error).code;
+      decision.retryAt =
+        decision.state === "failed" &&
+        ["stale_guard", "approval_scope_changed"].includes(decision.error) &&
+        decision.attempts < 3
+          ? new Date(Date.now() + 30_000).toISOString()
+          : undefined;
       save();
       this.ports.logger.warn("原生菜单选择未完成", {
         event: "approval.automatic_failed",
