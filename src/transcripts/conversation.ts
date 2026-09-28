@@ -1,4 +1,5 @@
 import { open, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { OperationError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import type { ExecutionRef, TranscriptEntry } from "../core/types.js";
@@ -23,13 +24,25 @@ export async function conversation(
   const source = await resolver.resolve({ ...ref, transcriptReceipt: receipt }, true);
   if (!source || !(await readInitialInput(source, ref, receipt, true)))
     throw new OperationError("transcript_unverified", "尚未找到与本任务初始输入匹配的会话记录。");
-  const binding = stableId(canonical(ref), receipt);
+  // The receipt-verified native session is stable across live lookup and stopped recovery.
+  // Cursor data never chooses the source or supplies an unverified session identity.
+  const target = {
+    ...ref,
+    sessionId:
+      ref.sessionId ??
+      source.sessionId ??
+      (ref.kind === "claude" ? basename(source.path, ".jsonl") : undefined),
+  };
+  const binding = stableId(canonical(target), receipt);
   let previous: Cursor | undefined;
   if (cursor) {
     try {
       previous = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Cursor;
+      // Older stopped reads used the exact sessionless ref, plus the file/receipt checks below.
+      // Do not allow that compatibility form once a caller has a live or stored session ID.
+      const legacy = !ref.sessionId && previous.binding === stableId(canonical(ref), receipt);
       if (
-        previous.binding !== binding ||
+        (previous.binding !== binding && !legacy) ||
         !Number.isSafeInteger(previous.before) ||
         previous.before < 0
       )
@@ -94,7 +107,7 @@ export async function conversation(
     // Recheck the exact receipt/session/cwd after the bounded snapshot; path replacement
     // or native session mutation must not make an old binding authorize another session.
     const current = await file.stat({ bigint: true });
-    const verified = await readInitialInput(source, ref, receipt, true);
+    const verified = await readInitialInput(source, target, receipt, true);
     const pathInfo = await stat(source.path, { bigint: true });
     if (
       !matched ||
