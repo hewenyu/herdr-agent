@@ -58,24 +58,32 @@ export async function finishReportNotifications(
   for (const event of events) {
     const reportId = event.decision?.action === "deliver" ? event.decision.reportId : undefined;
     const record = ports.store.get<ReportDelivery>("workflow_report_deliveries", event.id);
+    const chatId = task.chatId ?? task.entryChatId;
     if (
+      event.taskId !== task.id ||
       event.state !== "done" ||
       event.notified ||
       !reportId ||
-      !record ||
-      record.retired ||
-      record.taskId !== task.id ||
-      record.eventId !== event.id ||
-      record.reportId !== reportId ||
-      record.channel !== "platform" ||
+      (record
+        ? record.retired ||
+          record.taskId !== task.id ||
+          record.eventId !== event.id ||
+          record.reportId !== reportId ||
+          record.channel !== "platform"
+        : !chatId || chatId.startsWith("web:")) ||
       event.userRevision !== ports.revision(task) ||
       ports.store.get<WorkflowState>(WORKFLOWS, task.id)?.report?.id !== reportId ||
       event.dispatches.some((entry) => ["pending", "uncertain"].includes(entry.state))
     )
       continue;
     try {
+      // A persisted deliver decision precedes prepare(); no receipt proves no platform send.
       await ports.recover(task, event);
-      if (event.state === "done" && !event.notified && event.notificationState === "retryable")
+      if (
+        event.state === "done" &&
+        !event.notified &&
+        (!event.notificationState || event.notificationState === "retryable")
+      )
         await ports.notify(task, event);
     } catch (error) {
       const safe = safeError(error);

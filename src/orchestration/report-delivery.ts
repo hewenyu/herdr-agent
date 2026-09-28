@@ -5,9 +5,10 @@ import { OperationError, safeError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { PlatformPort } from "../core/ports.js";
-import type { StoredMessage } from "../core/types.js";
+import type { StoredMessage, Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 import type { ReportRevisionEvidence } from "./revision.js";
+import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 
 export interface ReportEnvelope {
   taskId: string;
@@ -360,17 +361,50 @@ export class ReportDeliveries {
   }
 
   pendingInChat(chatId: string): boolean {
-    return this.store
-      .list<ReportDelivery>(namespace)
-      .some(
-        (record) =>
-          record.chatId === chatId &&
-          record.channel === "platform" &&
-          (this.sending.has(record.eventId) ||
-            !valid(record) ||
-            (!this.retireObsolete(record) &&
-              (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
-      );
+    return (
+      this.store
+        .list<ReportDelivery>(namespace)
+        .some(
+          (record) =>
+            record.chatId === chatId &&
+            record.channel === "platform" &&
+            (this.sending.has(record.eventId) ||
+              !valid(record) ||
+              (!this.retireObsolete(record) &&
+                (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
+        ) || this.pendingWithoutReceipt(chatId)
+    );
+  }
+
+  /** The persisted deliver intent also guards the crash window before prepare(). */
+  private pendingWithoutReceipt(chatId: string): boolean {
+    const tasks = new Map(
+      this.store
+        .list<Task>("tasks")
+        .filter(
+          (task) =>
+            task.chatId === chatId &&
+            task.promptVersion === 3 &&
+            task.orchestration?.mode === "workflow",
+        )
+        .map((task) => [task.id, task]),
+    );
+    return this.store.list<OrchestrationEvent>("task_orchestration_events").some((event) => {
+      const task = tasks.get(event.taskId);
+      const reportId = event.decision?.action === "deliver" ? event.decision.reportId : undefined;
+      if (!task || !reportId || !["done", "attention"].includes(event.state) || event.notified)
+        return false;
+      const record = this.store.get<ReportDelivery>(namespace, event.id);
+      if (record)
+        return (
+          !matches(record, task.id, event.id, reportId) ||
+          record.channel !== "platform" ||
+          record.chatId !== chatId
+        );
+      const state = this.store.get<WorkflowState>(WORKFLOWS, task.id);
+      // No frozen revision evidence exists yet. Only an actual replacement proves staleness.
+      return !(state?.taskId === task.id && state.report?.id && state.report.id !== reportId);
+    });
   }
 }
 
