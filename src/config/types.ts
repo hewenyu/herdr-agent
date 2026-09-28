@@ -25,6 +25,8 @@ export interface JevConfig {
   timeoutMs: number;
   confidenceThreshold: number;
   ingressEnabled: boolean;
+  /** Configured Jev selects native task menus; false keeps manual approval. */
+  approvalsEnabled?: boolean;
   stallRounds: number;
 }
 

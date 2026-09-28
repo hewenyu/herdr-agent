@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { stableId } from "../core/ids.js";
 import type { AgentKind, ScreenOption } from "../core/types.js";
 
 export function cleanScreen(raw: string): string {
@@ -8,6 +9,11 @@ export function cleanScreen(raw: string): string {
       return code === 9 || code === 10 || (code >= 32 && code !== 127);
     })
     .join("");
+}
+
+/** Bind a choice to the complete visible screen, including unnumbered selection state. */
+export function screenFingerprint(raw: string): string {
+  return stableId("native-screen-v1", cleanScreen(raw));
 }
 
 /** Codex 0.157.1's native folder gate; both warning and options are exact templates. */

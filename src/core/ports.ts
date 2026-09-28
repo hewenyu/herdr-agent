@@ -47,6 +47,12 @@ export interface HerdrPort {
       sessionId?: string;
       expiresAt: string;
       signal?: AbortSignal;
+      screenFingerprint?: string;
+      terminalId?: string;
+      cwd?: string;
+      literalKey?: boolean;
+      beforeWrite?: () => Promise<void>;
+      assertCurrent?: () => void;
     },
   ): Promise<void>;
   /** Restricted startup directory trust; no caller-selected approval keys. */

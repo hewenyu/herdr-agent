@@ -3,10 +3,18 @@ import { canonical, newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { HerdrPort, PlatformPort } from "../core/ports.js";
 import type { AgentScreen, ExecutionRef } from "../core/types.js";
+import { menuState } from "../herdr/menu-state.js";
+import { screenFingerprint } from "../herdr/screen.js";
 import type { Store } from "../storage/store.js";
 import { defaultPresentation, presentScreen, type ScreenPresentation } from "./presentation.js";
 
-export const APPROVAL_OPTIONS_VERSION = "current-native-menu-v2";
+export const APPROVAL_OPTIONS_VERSION = "current-native-menu-v3";
+interface AnswerOptions {
+  signal?: AbortSignal;
+  literalKey?: boolean;
+  beforeWrite?: () => Promise<void>;
+  assertCurrent?: () => void;
+}
 
 interface Approval {
   nonce: string;
@@ -18,12 +26,18 @@ interface Approval {
   expiresAt: string;
   keys: string[];
   consumed: boolean;
+  confirmed?: boolean;
   navigationCompleted?: boolean;
+  reobserveAllowed?: boolean;
   invalidatedReason?: string;
   messageId?: string;
   publication?: "sending" | "uncertain" | "retryable" | "sent";
   menuFingerprint?: string;
   replacesNonce?: string;
+  screenFingerprint?: string;
+  menuState?: string;
+  terminalId?: string;
+  cwd?: string;
 }
 
 export class Approvals {
@@ -34,6 +48,33 @@ export class Approvals {
     private readonly platform: () => PlatformPort | undefined,
     private readonly presentation: ScreenPresentation = defaultPresentation,
   ) {}
+
+  /** Successful manual and automatic choices advance the same durable retry epoch. */
+  progressRevision(ref: ExecutionRef, terminalId: string): string {
+    const identity = (execution: ExecutionRef) =>
+      canonical({
+        workspaceId: execution.workspaceId,
+        paneId: execution.paneId,
+        kind: execution.kind,
+        cwd: execution.cwd,
+        sessionId: execution.sessionId,
+      });
+    const execution = identity(ref);
+    const nonces = this.store
+      .list<Approval>("approvals")
+      .filter(
+        (approval) =>
+          approval.confirmed &&
+          approval.screenFingerprint &&
+          approval.terminalId === terminalId &&
+          approval.cwd === ref.cwd &&
+          approval.sessionId === ref.sessionId &&
+          identity(approval.ref) === execution,
+      )
+      .map((approval) => approval.nonce)
+      .sort();
+    return stableId("native-approval-progress-v1", execution, terminalId, canonical(nonces));
+  }
 
   create(ownerId: string, chatId: string, ref: ExecutionRef, screen: AgentScreen): Approval {
     if (
@@ -56,10 +97,16 @@ export class Approvals {
     const nonce = this.store.get<string>("approval_identity", identity);
     const previous = nonce ? this.store.get<Approval>("approvals", nonce) : undefined;
     const keys = [...new Set([...screen.options.map((option) => option.key), "esc"])];
-    const menuFingerprint = stableId(canonical(screen.options));
+    const boundScreen =
+      screen.source === "visible" && !screen.truncated ? screenFingerprint(screen.text) : undefined;
+    const menuFingerprint = stableId(canonical({ options: screen.options, screen: boundScreen }));
+    // Successful transitions may open another menu without a new stateSeq.
+    // Reusing the old snapshot must never reopen the key that was just consumed.
+    if (previous?.navigationCompleted && boundScreen && previous.screenFingerprint === boundScreen)
+      return previous;
     let replacesNonce: string | undefined;
     let retired: Approval | undefined;
-    if (previous && !previous.navigationCompleted) {
+    if (previous && !previous.navigationCompleted && !previous.reobserveAllowed) {
       // Expiry or a parser upgrade is not proof that a previous key/card send
       // had no effect. Only explicit successful navigation may replace these.
       if (
@@ -95,6 +142,14 @@ export class Approvals {
       menuFingerprint,
       ...(replacesNonce ? { replacesNonce } : {}),
       consumed: false,
+      ...(boundScreen
+        ? {
+            screenFingerprint: boundScreen,
+            menuState: menuState(screen.text),
+            terminalId: screen.agent.terminalId,
+            cwd: screen.agent.cwd,
+          }
+        : {}),
     };
     this.store.transaction(() => {
       if (retired) this.store.set("approvals", retired.nonce, retired);
@@ -152,12 +207,18 @@ export class Approvals {
     });
   }
 
-  async answer(ownerId: string, chatId: string, nonce: string, key: string): Promise<void> {
+  async answer(
+    ownerId: string,
+    chatId: string,
+    nonce: string,
+    key: string,
+    options: AnswerOptions = {},
+  ): Promise<void> {
     const initial = this.store.get<Approval>("approvals", nonce);
     if (!initial || initial.ownerId !== ownerId || initial.chatId !== chatId)
       fail("approval_scope", "审批不属于当前会话。");
     return this.locks.run(`answer:${initial.ref.workspaceId}:${initial.ref.paneId}`, () =>
-      this.answerCurrent(ownerId, chatId, nonce, key),
+      this.answerCurrent(ownerId, chatId, nonce, key, options),
     );
   }
 
@@ -171,6 +232,7 @@ export class Approvals {
         ...approval,
         consumed: true,
         navigationCompleted: false,
+        reobserveAllowed: false,
         invalidatedReason: reason,
       };
       this.store.set("approvals", approval.nonce, invalidated);
@@ -184,6 +246,7 @@ export class Approvals {
     chatId: string,
     nonce: string,
     key: string,
+    options: AnswerOptions,
   ): Promise<void> {
     const approval = this.store.get<Approval>("approvals", nonce);
     if (!approval || approval.ownerId !== ownerId || approval.chatId !== chatId)
@@ -195,12 +258,32 @@ export class Approvals {
     this.store.set("approvals", nonce, approval);
     let failure: unknown;
     try {
-      await this.herdr.answer(approval.ref, key, approval);
-      if (["up", "down", "tab"].includes(key)) await this.refreshNavigation(approval);
+      await this.herdr.answer(approval.ref, key, {
+        ...approval,
+        ...options,
+        assertCurrent: () => {
+          options.assertCurrent?.();
+          if (this.store.get<Approval>("approvals", nonce)?.invalidatedReason)
+            fail("approval_expired", "审批在执行前已失效，未发送按键。");
+        },
+      });
+      if (approval.screenFingerprint || ["up", "down", "tab"].includes(key))
+        await this.refreshNavigation(approval);
       else await this.invalidate(approval.ref, "此问题已处理，请等待新的审批现场。");
     } catch (error) {
       failure = error;
       await this.invalidate(approval.ref, "审批按键未确认完成，请查看现场，不要重复点击。");
+      if (
+        approval.screenFingerprint &&
+        isNotExecuted(error) &&
+        error instanceof OperationError &&
+        ["stale_guard", "approval_scope_changed"].includes(error.code)
+      ) {
+        this.store.set("approvals", nonce, {
+          ...this.store.get<Approval>("approvals", nonce),
+          reobserveAllowed: true,
+        });
+      }
     } finally {
       await this.disableCard(approval, !!failure);
     }
@@ -226,6 +309,30 @@ export class Approvals {
     // Automatic startup confirmation or another owner action may have invalidated
     // this pane while the navigation readback was pending. Never revive its cards.
     if (current.invalidatedReason) return;
+    if (
+      approval.screenFingerprint &&
+      (screen.source !== "visible" ||
+        screen.truncated ||
+        !screen.text.trim() ||
+        screen.agent.paneId !== approval.ref.paneId ||
+        screen.agent.workspaceId !== approval.ref.workspaceId ||
+        screen.agent.kind !== approval.ref.kind ||
+        screen.agent.terminalId !== approval.terminalId ||
+        screen.agent.cwd !== approval.cwd ||
+        (approval.sessionId && approval.sessionId !== screen.agent.sessionId) ||
+        !["idle", "done", "blocked", "working"].includes(screen.agent.status) ||
+        (screen.agent.status === "blocked" &&
+          (!approval.menuState ||
+            !menuState(screen.text) ||
+            menuState(screen.text) === approval.menuState)))
+    )
+      throw new OperationError(
+        "approval_refresh_required",
+        "按键后现场尚未确认，请查看现场，不要重复操作。",
+        "unknown",
+      );
+    if (approval.screenFingerprint)
+      this.store.set("approvals", approval.nonce, { ...current, confirmed: true });
     const updates = this.invalidate(approval.ref, "菜单选择已更新，请使用新的审批卡片。");
     if (screen.agent.status !== "blocked") {
       await updates;

@@ -43,6 +43,7 @@ export class TaskService {
   private readonly running = new Set<string>();
   private readonly queued = new Map<string, { start(): void; cancel(): void }>();
   private readonly control = new AbortController();
+  private readonly pendingControls = new Map<string, number>();
 
   constructor(options: TaskServiceOptions) {
     this.remotePolls = new RemotePolls(options.store, () => options.config.tasks.pollIntervalMs);
@@ -59,6 +60,27 @@ export class TaskService {
     this.control.abort();
     for (const pending of this.queued.values()) pending.cancel();
     this.queued.clear();
+  }
+
+  get signal(): AbortSignal {
+    return this.control.signal;
+  }
+
+  approvalsBlocked(id: string): boolean {
+    return this.control.signal.aborted || (this.pendingControls.get(id) ?? 0) > 0;
+  }
+
+  /** A user control queued behind a model call must veto its native approval first. */
+  private async controlLock<T>(actor: ActorContext, id: string, run: () => Promise<T>): Promise<T> {
+    this.records.get(actor, id);
+    this.pendingControls.set(id, (this.pendingControls.get(id) ?? 0) + 1);
+    try {
+      return await this.locks.run(id, run);
+    } finally {
+      const remaining = (this.pendingControls.get(id) ?? 1) - 1;
+      if (remaining) this.pendingControls.set(id, remaining);
+      else this.pendingControls.delete(id);
+    }
   }
 
   create(actor: ActorContext, input: TaskCreateInput, beforeMutation?: () => void): Promise<Task> {
@@ -89,7 +111,7 @@ export class TaskService {
     options: TaskActionOptions = {},
     beforeMutation?: () => void,
   ): Promise<Task> {
-    return this.locks.run(id, async () => {
+    return this.controlLock(actor, id, async () => {
       beforeMutation?.();
       assertActive(this.context);
       const task = this.records.get(actor, id);
@@ -188,7 +210,7 @@ export class TaskService {
     beforeSend?: () => void,
     workflowOperationId?: string,
   ): Promise<unknown> {
-    return this.locks.run(id, async () => {
+    const run = async () => {
       beforeSend?.();
       const task = this.records.get(actor, id);
       if (
@@ -212,7 +234,8 @@ export class TaskService {
         currentUserRequest(this.context.store, actor),
         beforeSend,
       );
-    });
+    };
+    return actor.source === "system" ? this.locks.run(id, run) : this.controlLock(actor, id, run);
   }
 
   async interrupt(
@@ -221,7 +244,7 @@ export class TaskService {
     participantId?: string,
     beforeMutation?: () => void,
   ): Promise<void> {
-    await this.locks.run(id, async () => {
+    await this.controlLock(actor, id, async () => {
       beforeMutation?.();
       const task = this.records.get(actor, id);
       this.pauseScheduling(task);
@@ -257,7 +280,7 @@ export class TaskService {
     input: { kind: AgentKind; name?: string; role?: string },
     beforeMutation?: () => void,
   ): Promise<Participant> {
-    return this.locks.run(id, async () => {
+    return this.controlLock(actor, id, async () => {
       beforeMutation?.();
       assertActive(this.context);
       const task = this.records.get(actor, id);
@@ -308,7 +331,7 @@ export class TaskService {
     participantId: string,
     beforeMutation?: () => void,
   ): Promise<void> {
-    await this.locks.run(id, async () => {
+    await this.controlLock(actor, id, async () => {
       beforeMutation?.();
       const task = this.records.get(actor, id);
       const participant = this.selectParticipant(task, participantId);

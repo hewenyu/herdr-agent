@@ -89,6 +89,12 @@ ingress_enabled = false
 # third-party Jev, not whole history/repositories/attachments. Low confidence,
 # failure, complex requests or uncertain projects retain the original pi route.
 # A key alone does not enable this data flow. Restart after changing [jev].
+# AI + Jev key enables automatic blocked-menu choices for all managed task modes,
+# including existing tasks. Jev receives full visible terminal text and task/user
+# requirements; low confidence/failure uses pi's restricted approval_decide.
+# One guarded key per observation; unknown results are never automatically replayed.
+# false keeps ordinary approvals manual and retains the older startup-trust flow.
+approvals_enabled = true
 stall_rounds = 3 # unchanged open issues -> user decision, never forced closure
 
 [memory]

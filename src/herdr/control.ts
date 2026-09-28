@@ -4,7 +4,14 @@ import type { AgentSnapshot, Delivery, ExecutionRef } from "../core/types.js";
 import { taskWorktreeRoot } from "../projects/worktree-trust.js";
 import type { HerdrClient } from "./client.js";
 import { composerOccupied, verifyEcho, verifyReceipt } from "./echo.js";
-import { cleanScreen, directoryTrustKeys, showsDialog, trustKeys } from "./screen.js";
+import { menuState } from "./menu-state.js";
+import {
+  cleanScreen,
+  directoryTrustKeys,
+  screenFingerprint,
+  showsDialog,
+  trustKeys,
+} from "./screen.js";
 import { pause } from "./timing.js";
 
 const keys = new Set([
@@ -162,7 +169,18 @@ export class AgentControl {
   async answer(
     ref: ExecutionRef,
     key: string,
-    guard: { stateSeq: string; sessionId?: string; expiresAt: string; signal?: AbortSignal },
+    guard: {
+      stateSeq: string;
+      sessionId?: string;
+      expiresAt: string;
+      signal?: AbortSignal;
+      screenFingerprint?: string;
+      terminalId?: string;
+      cwd?: string;
+      literalKey?: boolean;
+      beforeWrite?: () => Promise<void>;
+      assertCurrent?: () => void;
+    },
   ): Promise<void> {
     if (!keys.has(key)) throw new OperationError("invalid_key", "不支持此审批按键。");
     const validate = async () => {
@@ -173,19 +191,66 @@ export class AgentControl {
       if (
         agent.status !== "blocked" ||
         agent.stateSeq !== guard.stateSeq ||
-        (guard.sessionId && guard.sessionId !== agent.sessionId)
+        (guard.sessionId && guard.sessionId !== agent.sessionId) ||
+        (guard.screenFingerprint &&
+          (agent.sessionId !== guard.sessionId ||
+            !guard.terminalId ||
+            agent.terminalId !== guard.terminalId ||
+            agent.cwd !== guard.cwd ||
+            agent.cwd !== ref.cwd))
       )
         throw new OperationError("stale_guard", "审批目标或问题已变化，请刷新卡片。");
     };
     return this.serial(ref.paneId, async () => {
       await validate();
+      let beforeMenu: string | undefined;
+      const checkScreen = async () => {
+        if (!guard.screenFingerprint) return;
+        const read = await this.client.read(ref.paneId, "visible", guard.signal);
+        if (read.truncated || screenFingerprint(read.text) !== guard.screenFingerprint)
+          throw new OperationError("stale_guard", "审批屏幕已变化或不完整，未发送按键。");
+        beforeMenu = menuState(read.text);
+      };
+      await checkScreen();
       let input = [key];
-      if (ref.kind === "codex" && key === "1") {
+      if (!guard.literalKey && ref.kind === "codex" && key === "1") {
         const read = await this.client.read(ref.paneId, "visible", guard.signal);
         if (!read.truncated) input = trustKeys(read.text) ?? input;
         await validate();
       }
+      await validate();
+      await checkScreen();
+      if (guard.signal?.aborted) throw new OperationError("cancelled", "审批已取消，未发送按键。");
+      await guard.beforeWrite?.();
+      await validate();
+      await checkScreen();
+      guard.assertCurrent?.();
+      if (guard.signal?.aborted) throw new OperationError("cancelled", "审批已取消，未发送按键。");
       await this.writeKeys(ref, input, guard.signal);
+      if (guard.screenFingerprint) {
+        try {
+          const after = await this.current(ref, guard.signal);
+          const readback = await this.client.read(ref.paneId, "visible", guard.signal);
+          if (
+            after.cwd !== guard.cwd ||
+            after.terminalId !== guard.terminalId ||
+            (guard.sessionId && after.sessionId !== guard.sessionId) ||
+            !["idle", "done", "blocked", "working"].includes(after.status) ||
+            readback.truncated ||
+            !cleanScreen(readback.text).trim() ||
+            (after.status === "blocked" &&
+              (!beforeMenu || !menuState(readback.text) || menuState(readback.text) === beforeMenu))
+          )
+            throw new Error("approval readback unconfirmed");
+        } catch (cause) {
+          throw new OperationError(
+            "approval_unconfirmed",
+            "按键已尝试，但现场变化尚未确认，不能自动重发。",
+            "unknown",
+            { cause },
+          );
+        }
+      }
     });
   }
 

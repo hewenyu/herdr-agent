@@ -96,7 +96,9 @@ myrix doctor --json
 
 飞书凭据优先级为进程环境 → 状态目录 `.env` → 仓库 `.env`。`.env` 使用字面 `KEY=VALUE`：引号、`#`、`=` 都是值的一部分，不支持 shell `export`。模型、Jev 与 memory key 只从 TOML 读取。不要把包含 key 的配置提交到仓库。
 
-可选 `[jev]` 配置包括 `api_key`、`base_url`（默认 `https://api.typesafe.ai`）、`model`（`jev-1.13.0`）、`timeout`（默认 `10s`，最多 `2m`）、`confidence_threshold`（`0.8`）、`ingress_enabled`（`false`）和 `stall_rounds`（`3`），修改后重启服务。开启私聊分类会把适用私聊原文和已登记项目名称发给第三方 Jev，不默认发送全量历史、仓库或附件。仅配置 key 不会开启这条数据外发路径。低置信度、失败、项目不确定、引用上下文或复杂安排保留原 pi 路径。
+可选 `[jev]` 配置包括 `api_key`、`base_url`（默认 `https://api.typesafe.ai`）、`model`（`jev-1.13.0`）、`timeout`（默认 `10s`，最多 `2m`）、`confidence_threshold`（`0.8`）、`ingress_enabled`（`false`）、`approvals_enabled`（`true`）和 `stall_rounds`（`3`），修改后重启服务。开启私聊分类会把适用私聊原文和已登记项目名称发给第三方 Jev，不默认发送全量历史、仓库或附件。仅配置 key 不会开启这条数据外发路径。低置信度、失败、项目不确定、引用上下文或复杂安排保留原 pi 路径。
+
+AI 已启用且配置 Jev key 时，`approvals_enabled = true` 默认启用受管参与者的阻塞菜单自动选择，适用于新旧任务及所有调度模式。它把完整可见终端屏幕、任务要求和用户修订发给第三方 Jev；Jev 选择一个受支持按键，程序核验任务、执行器身份和屏幕后执行，每次按键后重新观察。Jev 失败或低置信度时，pi 只能用 `approval_decide` 从同一组候选选择。菜单文案和布局可以变化；未知账号、验证码、业务取舍、不可读界面以及写入结果不确定时保留现场交给用户。此开关不启用私聊分类、不改变 Bypass、不代替用户验收。设为 `false` 后恢复普通审批手选及旧的启动目录信任流程，修改后重启生效。详见[修复与验证范围](docs/native-approvals-2026-09-28.md)。
 
 项目所有者可以在初始项目种子中显式设置 `verify = ["npm run check"]` 和可选 `verify_timeout = "2m"`；SQLite 已有项目目录时，通过本机 Web 项目设置修改命令与毫秒超时。缺失或空数组均不启动本机命令。执行器只运行配置命令，固定在任务实际主 cwd（包括 worktree），单命令超时最多 10 分钟。命令使用服务账户的本机权限，固定 cwd 不代表 OS 沙箱；模型不能提供任意命令或另选 cwd，已配置验证的项目变更目录须走本机设置。超时、取消会停止 POSIX 进程组；退出未确认时继续阻塞冲突目录，不自动重跑。证据保存 stdout/stderr、退出事实及配置/代码版本。报告区分“myrix 配置命令验证”“agent 复核”“参与者自述”和“未运行”；无配置时的独立 agent 重跑不标成 myrix 已验证。清空命令阻止新运行，但不自动撤销已经启动的运行。 用户明确禁止测试时，工作流保存用户原文约束、关闭验证命令并保留独立只读评审，报告明确标注“未运行”。
 
@@ -132,7 +134,7 @@ SQLite 的 `ExperimentalWarning` 是内置 Node 对 SQLite API 的提示，不�
 
 任务身份和创建锁都绑定当前 pi session。在另一个 session 中复用 request/message ID 会创建独立任务，不会把无关项目的创建串行阻塞。任务群解散后，程序仍保留任务和会话历史记录，但迟到消息和卡片回调会在入口以及 inbox 执行前再次拒绝，不会回落到主 pi session，也不会消费审批。飞书断线重连时，旧任务调度器会先停止，再由新连接启动调度器重新核对当前记录；旧连接不会继续对新连接的同一批记录执行操作。
 
-参与者启动时，pi 只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。未启用模型调度的 `manual` 讨论只自动尝试首位参与者；后续参与者等待用户或调度器安排。只有当前事实明确显示任务群已经发布仍有效的审批卡时，`blocked` 参与者才提示用户去群里处理；没有群或卡片发布事实时只说明参与者处于 blocked，不能假定存在审批卡。只有上一位参与者产生已核验输出后，`round_robin` 才会自动转交下一位。其他审批提示都留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
+自动审批关闭或未配置 Jev 时，参与者启动由旧 pi 受限流程处理：只会在目录确实属于授权任务项目、且现场是 Claude/Codex 原生目录信任提示时自动确认。未启用模型调度的 `manual` 讨论只自动尝试首位参与者；后续参与者等待用户或调度器安排。只有当前事实明确显示任务群已经发布仍有效的审批卡时，`blocked` 参与者才提示用户去群里处理；没有群或卡片发布事实时只说明参与者处于 blocked，不能假定存在审批卡。只有上一位参与者产生已核验输出后，`round_robin` 才会自动转交下一位。自动审批关闭或未配置 Jev 时，其他审批提示留在任务群中，由用户明确选择。项目或任务的 Bypass 仍是显式配置；目录信任的自动处理不会隐式开启 Bypass。
 
 新任务在 completed 完成确认后默认自动解散群；用户明确保留时使用 `keepGroup: true`。review 不触发解散，明确保留证据继续有效；旧默认或来源不明的保留值在完成/关闭时采用解散，不批量改写活跃旧任务。`complete`（含飞书手动完成）默认通过 herdr 关闭对应执行器并按快照处理群；无论因何种原因解散群，都会关闭对应的 herdr Claude/Codex session。明确 `keepExecution: true` 保留执行器是例外，有群任务必须同时 `keepGroup: true`；`close` 确认完成后关闭受管执行资源；`destroy` 不自动验收；`reopen` 用于保留现场的已完成任务。若执行器已关闭而群仍保留，之后可明确要求解散该群：pi 使用 `destroy` 加 `keepGroup: false`，已验收任务也可使用 `close`。这不会重启执行器或改写原验收事实。任务结束和 pi session 归档是独立操作。默认共享项目目录；显式 worktree 只隔离首目录，其余附加目录仍共享，关闭时不删除代码或 worktree。
 
@@ -142,7 +144,7 @@ AI 开启时，其余聊天文本按上述 opt-in 分类边界处理；exact `/c
 
 旧桥 `/ls` 只列出由 herdr 托管的 Claude/Codex agent；普通 shell pane 不属于可接管目标，也不会出现在选择卡片中。
 
-日常 CLI 为 `serve / setup / configure / doctor / version / help`；`configure` 现用于本地配置和会话记录页，旧 Web 业务管理控件已移除，维护入口为 `migrate` 与只读 `debug ls|screen|transcript`。旧顶层 `key / say / watch / dialog / tail` 等已退出，终端输入通过飞书参与者调度，普通审批在飞书群内由用户选择。`help` 列出有效参数。退出码：0 成功、1 失败、2 用法错误、3 setup 凭据已保存但验证未完成、130 取消；旧 Go 的所有退出码并非逐项兼容。
+日常 CLI 为 `serve / setup / configure / doctor / version / help`；`configure` 现用于本地配置和会话记录页，旧 Web 业务管理控件已移除，维护入口为 `migrate` 与只读 `debug ls|screen|transcript`。旧顶层 `key / say / watch / dialog / tail` 等已退出，终端输入通过飞书参与者调度，普通审批由已启用的 Jev 自动流程处理，需要人工时在飞书群内选择。`help` 列出有效参数。退出码：0 成功、1 失败、2 用法错误、3 setup 凭据已保存但验证未完成、130 取消；旧 Go 的所有退出码并非逐项兼容。
 
 ## 升级与旧数据
 

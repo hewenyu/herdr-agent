@@ -24,7 +24,9 @@ import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
 import { dispatch, snapshot } from "./actions.js";
+import { approvalIngress } from "./approval-priority.js";
 import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
+import { AutomaticApprovals } from "./automatic-approvals.js";
 import type { ApplicationContext } from "./context.js";
 import { DirectoryTrust } from "./directory-trust.js";
 import { canDeleteTaskGroup } from "./group-delivery.js";
@@ -68,6 +70,7 @@ export class Application implements ApplicationContext {
   readonly signal = this.control.signal;
   private readonly engine: ConversationEngine;
   private readonly directoryTrust: DirectoryTrust;
+  private readonly automaticApprovals: AutomaticApprovals;
   private readonly active = new Set<Promise<unknown>>();
   authorization = {
     status: "checking",
@@ -110,6 +113,15 @@ export class Application implements ApplicationContext {
       this.logger,
       this.signal,
     );
+    this.automaticApprovals = new AutomaticApprovals({
+      store: this.store,
+      herdr: this.herdr,
+      approvals: this.approvals,
+      engine: this.engine,
+      logger: this.logger,
+      signal: this.signal,
+      config: () => this.automaticApprovalConfig(),
+    });
     this.tasks = this.taskService();
     this.taskOrchestrator = new TaskOrchestrator({
       config: this.config,
@@ -393,8 +405,16 @@ export class Application implements ApplicationContext {
     this.changed();
   }
 
+  private automaticApprovalConfig() {
+    return this.config.ai.enabled &&
+      this.config.jev?.apiKey &&
+      this.config.jev.approvalsEnabled !== false
+      ? this.config.jev
+      : undefined;
+  }
+
   private taskService(): TaskService {
-    return new TaskService({
+    const service = new TaskService({
       config: this.config,
       store: this.store,
       catalog: this.projects,
@@ -402,6 +422,7 @@ export class Application implements ApplicationContext {
       platform: this.platform,
       hooks: {
         blockedVersion: APPROVAL_OPTIONS_VERSION,
+        recheckBlocked: () => Boolean(this.automaticApprovalConfig()),
         changed: () => this.changed(),
         output: (task, participant, entry) => this.output(task, participant, entry),
         outputConfirmed: (task, participant, entry) =>
@@ -416,7 +437,29 @@ export class Application implements ApplicationContext {
         blocked: async (task, participant) => {
           if (!participant.execution) return;
           let screen = await this.herdr.screen(participant.execution);
-          for (let attempt = 0; this.config.ai.enabled && attempt < 2; attempt++) {
+          if (this.automaticApprovalConfig()) {
+            const result = await this.automaticApprovals.handle(
+              task,
+              participant,
+              screen,
+              this.actor(task, `approval:${participant.id}:${screen.agent.stateSeq}`),
+              {
+                signal: service.signal,
+                allowed: () =>
+                  !service.approvalsBlocked(task.id) &&
+                  this.config.feishu.allowedOpenIds.includes(task.ownerId),
+              },
+            );
+            if (result !== "manual") {
+              this.changed();
+              return;
+            }
+          }
+          for (
+            let attempt = 0;
+            !this.automaticApprovalConfig() && this.config.ai.enabled && attempt < 2;
+            attempt++
+          ) {
             const observedSeq = screen.agent.stateSeq;
             if (
               await this.directoryTrust.handle(
@@ -441,6 +484,8 @@ export class Application implements ApplicationContext {
             if (attempt === 1) return;
           }
           // Re-read after model evaluation: a user may have answered meanwhile.
+          if (service.approvalsBlocked(task.id) || approvalIngress(this.store, task).pending)
+            return;
           screen = await this.herdr.screen(participant.execution);
           if (screen.agent.status !== "blocked") return;
           if (task.chatId && !task.groupDeleted && participant.execution && this.platform) {
@@ -450,6 +495,7 @@ export class Application implements ApplicationContext {
         },
       },
     });
+    return service;
   }
 
   private actor(task: Task, messageId: string): ActorContext {

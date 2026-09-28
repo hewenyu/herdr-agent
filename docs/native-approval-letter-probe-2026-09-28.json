@@ -1,0 +1,70 @@
+{
+  "at": "2026-09-28T08:07:04.663Z",
+  "scope": "synthetic Jev + pi selection; no native writes or Feishu messages",
+  "results": [
+    {
+      "id": "letter-only-permission",
+      "screen": "Project access vNext\nRead /work/project for this task? [y/N]\nOnly y or n is accepted; Enter declines access.",
+      "options": [
+        {
+          "key": "up",
+          "label": "上移选择（不确认）"
+        },
+        {
+          "key": "down",
+          "label": "下移选择（不确认）"
+        },
+        {
+          "key": "enter",
+          "label": "确认当前选项（Enter）"
+        },
+        {
+          "key": "tab",
+          "label": "Tab：移动焦点（仅在屏幕明确支持时选择）"
+        },
+        {
+          "key": "y",
+          "label": "发送 y（仅在屏幕明确支持此按键且含义符合任务时选择）"
+        },
+        {
+          "key": "n",
+          "label": "发送 n（仅在屏幕明确支持此按键且含义符合任务时选择）"
+        }
+      ],
+      "expected": [
+        "key:y"
+      ],
+      "selection": {
+        "jev": {
+          "status": "success",
+          "reason": "accepted",
+          "adapterVersion": "typesafe-choice-v1",
+          "requestedModel": "jev-1.13.0",
+          "threshold": 0.8,
+          "model": "jev-1.13.0",
+          "candidateId": "key:y",
+          "confidence": 0.81,
+          "probabilities": {
+            "key:down": 0,
+            "key:esc": 0,
+            "key:tab": 0,
+            "key:n": 0.02,
+            "key:enter": 0.05,
+            "wait_user": 0.09,
+            "key:y": 0.84,
+            "key:up": 0
+          },
+          "usage": {
+            "inputTokens": 1158,
+            "outputTokens": 87
+          },
+          "durationMs": 855
+        },
+        "source": "jev",
+        "candidateId": "key:y",
+        "reason": "jev_accepted"
+      },
+      "matched": true
+    }
+  ]
+}

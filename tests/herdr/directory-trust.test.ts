@@ -332,7 +332,7 @@ test("complete unnumbered blocked menus expose explicit human navigation without
   let screen = await runtime.screen(client.ref);
   assert.deepEqual(
     screen.options.map((option) => option.key),
-    ["up", "down", "enter"],
+    ["up", "down", "enter", "tab", "y", "n"],
   );
   assert.ok(screen.options.every((option) => option.label.length > 0));
   assert.deepEqual(client.strokes, []);
