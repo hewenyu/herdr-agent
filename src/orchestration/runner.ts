@@ -779,6 +779,13 @@ export class WorkflowOrchestrator {
     this.assertWorkspace(task, event);
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
     if (
+      node?.documentPaths?.length &&
+      state.plan.nodes.some(
+        (entry) => entry.role === "reviewer" && entry.participantId === dispatch.participantId,
+      )
+    )
+      fail("workflow_document_roles", "文档委派与固定评审者冲突，请核对参与者分工后重规划。");
+    if (
       state.documentSource ||
       state.plan.documentDelivery ||
       (task.promptVersion === 3 && task.kind === "discussion")
@@ -935,7 +942,9 @@ export class WorkflowOrchestrator {
     const safe = safeError(error);
     event.error = safe;
     if (
-      ["workflow_verify_unknown", "workflow_document_scope"].includes(safe.code) ||
+      ["workflow_verify_unknown", "workflow_document_scope", "workflow_document_roles"].includes(
+        safe.code,
+      ) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
     )

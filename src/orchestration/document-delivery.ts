@@ -102,12 +102,22 @@ export function addDocumentDelivery(plan: WorkflowPlan): void {
         `文档交付路径缺少负责写入的节点：${missing.join("、")}。请补齐文档分工。`,
       );
   }
-  plan.requiredArtifacts = [...new Set([...(plan.requiredArtifacts ?? []), ...delivery.paths])];
-  if (documentNodes.length) return;
+  if (documentNodes.length) {
+    plan.requiredArtifacts = [...new Set([...(plan.requiredArtifacts ?? []), ...delivery.paths])];
+    return;
+  }
   if (plan.nodes.some((node) => node.id === "document"))
     fail("workflow_plan", "document 节点已存在，须明确其文档写入范围。");
   const reviews = plan.nodes.filter((node) => node.role === "reviewer");
   if (!reviews.length) fail("workflow_plan", "讨论文档必须由另一位参与者复核实际文件。");
+  const fixedReviewers = new Set(reviews.flatMap((node) => node.participantId ?? []));
+  const author = plan.nodes.find(
+    (node) =>
+      node.role === "analyst" && node.participantId && !fixedReviewers.has(node.participantId),
+  )?.participantId;
+  if (!author && fixedReviewers.size)
+    fail("workflow_plan", "固定评审者之外没有可负责文档的参与者，请明确兼容的作者与评审分工。");
+  plan.requiredArtifacts = [...new Set([...(plan.requiredArtifacts ?? []), ...delivery.paths])];
   const reviewIds = new Set(reviews.map((node) => node.id));
   // The document must precede every review, including reviews separated by
   // analyst revisions. Depend only on the frontier before any reviewer.
@@ -143,8 +153,7 @@ export function addDocumentDelivery(plan: WorkflowPlan): void {
     dependsOn: [...dependencies],
     access: "write",
     documentPaths: [...delivery.paths],
-    participantId: plan.nodes.find((node) => node.role === "analyst" && node.participantId)
-      ?.participantId,
+    participantId: author,
   });
 }
 

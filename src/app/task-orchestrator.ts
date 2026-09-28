@@ -821,7 +821,10 @@ export class TaskOrchestrator {
         (event.notificationCause !== "report_delivery_pending" &&
           !(
             !event.notificationCause &&
-            event.error.message === "报告及摘要已准备，等待页面确认展示。"
+            [
+              "报告正文和摘要已准备，等待页面确认展示。",
+              "报告及摘要已准备，等待页面确认展示。",
+            ].includes(event.error.message)
           )))
     )
       return;

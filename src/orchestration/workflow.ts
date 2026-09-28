@@ -230,6 +230,18 @@ export function validatePlan(plan: WorkflowPlan, task: Task, userMessages: strin
   const implementations = plan.nodes.filter(
     (node) => node.role === "implementer" || node.documentPaths?.length,
   );
+  const fixedReviewers = new Set(
+    plan.nodes
+      .filter((node) => node.role === "reviewer")
+      .flatMap((node) => node.participantId ?? []),
+  );
+  for (const node of implementations.filter((entry) => entry.documentPaths?.length))
+    if (
+      node.participantId
+        ? fixedReviewers.has(node.participantId)
+        : task.participantIds.every((id) => fixedReviewers.has(id))
+    )
+      fail("workflow_plan", "文档作者与固定评审者冲突，请保留独立评审并明确兼容的参与者分工。");
   const validations = plan.nodes.filter((node) => node.phase === "validating");
   for (const node of plan.nodes.filter((entry) => entry.role === "reviewer")) {
     const before = ancestors(node.id);

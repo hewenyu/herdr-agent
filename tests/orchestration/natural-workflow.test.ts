@@ -622,6 +622,67 @@ test("frozen document dispatch retains its narrower scope across restart", async
   }
 });
 
+for (const receipt of ["not_sent", "uncertain"] as const)
+  test(`recovered document dispatch cannot use a fixed reviewer and preserves ${receipt} receipt semantics`, async () => {
+    const h = await harness(true);
+    const controller = new AbortController();
+    const worker = new TaskOrchestrator({ ...h.options, signal: controller.signal });
+    const save = h.store.set.bind(h.store);
+    let frozen: OrchestrationEvent | undefined;
+    try {
+      await worker.tick();
+      await worker.tick();
+      await h.finish("opening-1");
+      await worker.tick();
+      await h.finish("opening-2");
+      const sends = h.herdr.sends.length;
+      h.store.set = (namespace, key, value) => {
+        save(namespace, key, value);
+        if (namespace !== "task_orchestration_events" || frozen) return;
+        const event = value as OrchestrationEvent;
+        if (!event.dispatches.some((dispatch) => dispatch.nodeId === "document")) return;
+        frozen = structuredClone(event);
+        controller.abort();
+      };
+      await worker.tick();
+      h.store.set = save;
+      const dispatch = frozen?.dispatches.find((entry) => entry.nodeId === "document");
+      assert.ok(frozen && dispatch);
+      const state = h.state();
+      const review = state.plan.nodes.find((node) => node.role === "reviewer");
+      assert.ok(review);
+      // Persist the previously accepted plan whose automatic author also owns its fixed review.
+      review.participantId = dispatch.participantId;
+      h.store.set(WORKFLOWS, h.task.id, state);
+      if (receipt === "uncertain")
+        h.store.set("operations", dispatch.operationId, { state: "uncertain" });
+      const restarted = new TaskOrchestrator(h.options);
+      await restarted.tick();
+      const blocked = h.store.get<OrchestrationEvent>("task_orchestration_events", frozen.id);
+      assert.equal(blocked?.state, "attention");
+      assert.equal(
+        blocked.error?.code,
+        receipt === "uncertain" ? "orchestration_delivery_unknown" : "workflow_document_roles",
+      );
+      assert.equal(blocked.dispatches[0]?.state, receipt === "uncertain" ? "uncertain" : "failed");
+      assert.equal(h.herdr.sends.length, sends);
+      assert.equal(h.service.get(actor, h.task.id).participantIds.length, 2);
+      assert.equal(
+        h.state().plan.nodes.find((node) => node.id === review.id)?.participantId,
+        dispatch.participantId,
+      );
+      await restarted.tick();
+      assert.equal(h.herdr.sends.length, sends);
+      assert.equal(h.service.get(actor, h.task.id).participantIds.length, 2);
+      if (receipt === "uncertain")
+        assert.deepEqual(h.store.get("operations", dispatch.operationId), { state: "uncertain" });
+    } finally {
+      h.store.set = save;
+      controller.abort();
+      h.close();
+    }
+  });
+
 for (const mutation of ["source contamination", "removed document scope"] as const)
   test(`delivery replay refuses ${mutation} and retires the report to attention once`, async () => {
     const h = await harness(true);

@@ -266,11 +266,36 @@ test("Web ACK cannot recover superseded, differently bound or non-delivery failu
         },
       },
       { notificationCause: "duplicate_identity" },
+      {
+        notificationCause: undefined,
+        error: {
+          code: "orchestration_notification_failed",
+          message: "报告正文和摘要已准备，等待页面确认展示。附加未知错误。",
+          outcome: "not_executed" as const,
+        },
+      },
+      {
+        notificationCause: undefined,
+        error: {
+          code: "workflow_document_scope",
+          message: "报告正文和摘要已准备，等待页面确认展示。",
+          outcome: "not_executed" as const,
+        },
+      },
+      {
+        notificationCause: "duplicate_identity",
+        error: {
+          code: "orchestration_notification_failed",
+          message: "报告正文和摘要已准备，等待页面确认展示。",
+          outcome: "not_executed" as const,
+        },
+      },
     ]) {
       const event: OrchestrationEvent = { ...structuredClone(original), ...change };
       h.store.set("task_orchestration_events", event.id, event);
+      const saved = h.store.get("task_orchestration_events", event.id);
       await h.scheduler.recoverNotification(h.task, event);
-      assert.deepEqual(h.store.get("task_orchestration_events", event.id), event);
+      assert.deepEqual(h.store.get("task_orchestration_events", event.id), saved);
       assert.equal(event.notificationState, "retryable");
     }
   } finally {
@@ -308,33 +333,82 @@ test("a rendered ACK rechecks current source before recovering a prepared report
   }
 });
 
-test("legacy Web reports require both bound rendered body and summary messages", async () => {
-  const h = await harness(2);
-  try {
-    const body = h.store
-      .list<StoredMessage>("messages")
-      .find((entry) => entry.source === "workflow_report");
-    assert.ok(body);
-    assert.equal((await h.post(h.input)).status, 200);
-    await h.scheduler.recoverNotification(
-      h.task,
-      h.store.get<OrchestrationEvent>(
-        "task_orchestration_events",
-        h.event.id,
-      ) as OrchestrationEvent,
-    );
-    assert.equal(
-      h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id)?.notificationState,
-      "retryable",
-    );
-    assert.equal((await h.post({ ...h.input, messageId: body.id })).status, 200);
-    await h.scheduler.tick();
-    assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "awaiting_acceptance");
-  } finally {
-    await h.web.close();
-    await h.close();
-  }
-});
+for (const message of [
+  "报告正文和摘要已准备，等待页面确认展示。",
+  "报告及摘要已准备，等待页面确认展示。",
+])
+  test(`exhausted legacy Web reports recover after both rendered ACKs and restart: ${message}`, async () => {
+    const h = await harness(2);
+    const engineCallsBeforeRecovery = h.engine.calls.length;
+    let restarted: Application | undefined;
+    try {
+      const body = h.store
+        .list<StoredMessage>("messages")
+        .find((entry) => entry.source === "workflow_report");
+      assert.ok(body);
+      const event = h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id);
+      assert.ok(event);
+      event.state = "attention";
+      event.notified = true;
+      event.notificationAttempts = 3;
+      event.notificationCause = undefined;
+      event.error = { code: "orchestration_notification_failed", message, outcome: "not_executed" };
+      h.store.set("task_orchestration_events", event.id, event);
+      h.app.tasks.records.save({
+        ...h.app.tasks.get(h.actor, h.task.id),
+        status: "attention",
+        error: message,
+      });
+      const exhausted = h.store.get<OrchestrationEvent>("task_orchestration_events", event.id);
+      const reportMessageIds = () =>
+        h.store
+          .list<StoredMessage>("messages")
+          .filter((entry) => ["workflow_report", "workflow_report_summary"].includes(entry.source))
+          .map((entry) => entry.id);
+      const frozenMessageIds = reportMessageIds();
+      assert.equal(frozenMessageIds.length, 2);
+      await h.scheduler.tick();
+      assert.deepEqual(h.store.get("task_orchestration_events", event.id), exhausted);
+      assert.equal((await h.post(h.input)).status, 200);
+      await h.scheduler.tick();
+      assert.deepEqual(
+        h.store.get("task_orchestration_events", event.id),
+        exhausted,
+        "the summary ACK cannot substitute for the legacy body receipt",
+      );
+      assert.equal(h.store.get<StoredMessage>("messages", body.id)?.delivery, "prepared");
+      assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "reporting");
+      assert.equal((await h.post({ ...h.input, messageId: body.id })).status, 200);
+      await h.app.shutdown();
+      restarted = new Application({
+        config: h.config,
+        store: h.store,
+        engine: h.engine,
+        herdr: h.herdr,
+        logger,
+      });
+      const scheduler = (restarted as unknown as Internals).taskOrchestrator;
+      await scheduler.tick();
+      const confirmed = h.store.get<OrchestrationEvent>("task_orchestration_events", event.id);
+      assert.equal(confirmed?.state, "done");
+      assert.equal(confirmed.notificationState, "sent");
+      assert.equal(confirmed.notified, true);
+      assert.equal(confirmed.notificationAttempts, 3);
+      assert.equal(confirmed.error, undefined);
+      assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "awaiting_acceptance");
+      assert.notEqual(restarted.tasks.get(h.actor, h.task.id).status, "completed");
+      assert.equal(restarted.tasks.get(h.actor, h.task.id).error, undefined);
+      await scheduler.tick();
+      assert.deepEqual(reportMessageIds(), frozenMessageIds);
+      assert.equal(h.store.list("workflow_report_deliveries").length, 1);
+      assert.equal(h.engine.calls.length, engineCallsBeforeRecovery);
+      assert.equal(h.platform.texts.length, 0);
+    } finally {
+      await h.web.close();
+      await restarted?.shutdown();
+      await h.close();
+    }
+  });
 
 test("workspace replacement during rendered-report validation cannot confirm the old directory", async () => {
   const h = await harness();
