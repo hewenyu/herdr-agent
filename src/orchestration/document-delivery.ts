@@ -5,6 +5,14 @@ import type { Task } from "../core/types.js";
 import { chooseWithJev, type JevOptions, type JevResult } from "./jev.js";
 import type { WorkflowPlan } from "./workflow.js";
 
+/** Applies to custom graphs and persisted plans as well as the automatic document node. */
+export function missingDocumentReviewer(plan: WorkflowPlan): boolean {
+  return (
+    (!!plan.documentDelivery || plan.nodes.some((node) => node.documentPaths?.length)) &&
+    !plan.nodes.some((node) => node.role === "reviewer")
+  );
+}
+
 /** The planner may ground a document task in user text, never in participant feedback. */
 export function validateDocumentDelivery(
   plan: WorkflowPlan,
@@ -40,6 +48,8 @@ export function validateDocumentDelivery(
       !/\.(?:md|txt|rst|adoc)$/i.test(path)
     )
       fail("workflow_scope", "讨论仅能交付任务主目录内明确列出的文档，不能写业务代码或配置。");
+  if (missingDocumentReviewer(plan))
+    fail("workflow_plan", "讨论文档必须由另一位参与者复核实际文件。");
 }
 
 export async function authorizeDocumentDelivery(input: {
@@ -92,6 +102,8 @@ export async function authorizeDocumentDelivery(input: {
 export function addDocumentDelivery(plan: WorkflowPlan): void {
   const delivery = plan.documentDelivery;
   if (!delivery) return;
+  if (missingDocumentReviewer(plan))
+    fail("workflow_plan", "讨论文档必须由另一位参与者复核实际文件。");
   const documentNodes = plan.nodes.filter((node) => node.documentPaths?.length);
   if (documentNodes.length) {
     const assigned = new Set(documentNodes.flatMap((node) => node.documentPaths ?? []));
@@ -109,7 +121,6 @@ export function addDocumentDelivery(plan: WorkflowPlan): void {
   if (plan.nodes.some((node) => node.id === "document"))
     fail("workflow_plan", "document 节点已存在，须明确其文档写入范围。");
   const reviews = plan.nodes.filter((node) => node.role === "reviewer");
-  if (!reviews.length) fail("workflow_plan", "讨论文档必须由另一位参与者复核实际文件。");
   const fixedReviewers = new Set(reviews.flatMap((node) => node.participantId ?? []));
   const author = plan.nodes.find(
     (node) =>

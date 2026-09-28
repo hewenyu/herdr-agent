@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Outbox } from "../app/outbox.js";
+import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { OperationError, safeError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
@@ -39,6 +40,7 @@ export interface ReportDelivery extends ReportEnvelope {
   webBodyId?: string;
   webCardId?: string;
   error?: ReturnType<typeof safeError>;
+  retired?: { reason: "superseded"; at: string };
   updatedAt: string;
 }
 
@@ -47,6 +49,7 @@ const namespace = "workflow_report_deliveries";
 /** Two independently recoverable notification components, never a dispatch authority. */
 export class ReportDeliveries {
   private readonly mutex = new KeyedMutex();
+  private readonly sending = new Set<string>();
   constructor(
     private readonly store: Store,
     private readonly outbox: Outbox,
@@ -69,6 +72,8 @@ export class ReportDeliveries {
         previous.presentation !== input.presentation
       )
         throw new OperationError("report_delivery_conflict", "报告送达回执与原报告不匹配。");
+      if (this.retireSuperseded(previous))
+        throw new OperationError("report_delivery_retired", "旧报告已终止发送，保留原传输记录。");
       return previous;
     }
     const prefix = `workflow-report:${input.taskId}:${input.eventId}:${input.reportId}`;
@@ -89,43 +94,54 @@ export class ReportDeliveries {
   async send(input: ReportEnvelope, beforeSend?: () => Promise<void>): Promise<ReportDelivery> {
     return this.mutex.run(input.eventId, async () => {
       const record = this.prepare(input);
-      if (record.channel !== "platform")
-        throw new OperationError("report_channel", "网页报告需页面确认展示。");
-      // Outbox freezes text and resumes only confirmed-unsent parts.
-      if (record.presentation === "attachment") await this.sendAttachment(record, beforeSend);
-      else {
-        const bodyState = this.outbox.receipt(record.bodyId)?.state;
-        if (!["delivered", "sending", "uncertain"].includes(bodyState ?? "")) await beforeSend?.();
-        await this.outbox.send(record.chatId, record.text, record.bodyId);
-      }
-      if (record.cardState === "delivered") return record;
-      if (["sending", "uncertain"].includes(record.cardState))
-        throw new OperationError(
-          "delivery_uncertain",
-          "报告摘要卡片送达未知，不能自动重发。",
-          "unknown",
-        );
-      const platform = this.platform();
-      if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
-      await beforeSend?.();
-      record.cardState = "sending";
-      this.save(record);
+      this.sending.add(record.eventId);
       try {
-        const id = await platform.sendCard(record.chatId, record.card, stableId(record.cardId));
-        if (!id)
-          throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
-        record.cardMessageId = id;
-        record.cardState = "delivered";
-        record.error = undefined;
-        this.save(record);
-      } catch (error) {
-        record.error = safeError(error);
-        record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
-        this.save(record);
-        throw error;
+        return await this.sendPrepared(record, beforeSend);
+      } finally {
+        this.sending.delete(record.eventId);
       }
-      return record;
     });
+  }
+
+  private async sendPrepared(
+    record: ReportDelivery,
+    beforeSend?: () => Promise<void>,
+  ): Promise<ReportDelivery> {
+    if (record.channel !== "platform")
+      throw new OperationError("report_channel", "网页报告需页面确认展示。");
+    // Outbox freezes text and resumes only confirmed-unsent parts.
+    if (record.presentation === "attachment") await this.sendAttachment(record, beforeSend);
+    else {
+      const bodyState = this.outbox.receipt(record.bodyId)?.state;
+      if (!["delivered", "sending", "uncertain"].includes(bodyState ?? "")) await beforeSend?.();
+      await this.outbox.send(record.chatId, record.text, record.bodyId);
+    }
+    if (record.cardState === "delivered") return record;
+    if (["sending", "uncertain"].includes(record.cardState))
+      throw new OperationError(
+        "delivery_uncertain",
+        "报告摘要卡片送达未知，不能自动重发。",
+        "unknown",
+      );
+    const platform = this.platform();
+    if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
+    await beforeSend?.();
+    record.cardState = "sending";
+    this.save(record);
+    try {
+      const id = await platform.sendCard(record.chatId, record.card, stableId(record.cardId));
+      if (!id) throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
+      record.cardMessageId = id;
+      record.cardState = "delivered";
+      record.error = undefined;
+      this.save(record);
+    } catch (error) {
+      record.error = safeError(error);
+      record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      this.save(record);
+      throw error;
+    }
+    return record;
   }
 
   bindWeb(record: ReportDelivery, bodyId: string | undefined, cardId: string): void {
@@ -161,7 +177,7 @@ export class ReportDeliveries {
 
   async confirmed(taskId: string, eventId: string, reportId: string): Promise<boolean> {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
-    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireSuperseded(record)) return false;
     if (record.channel === "web") {
       const body = record.webBodyId
         ? this.store.get<StoredMessage>("messages", record.webBodyId)
@@ -194,7 +210,7 @@ export class ReportDeliveries {
   retryable(taskId: string, eventId: string, reportId: string): boolean {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
     if (!record) return true;
-    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireSuperseded(record)) return false;
     if (record.channel === "web") return true;
     const body = this.outbox.receipt(record.bodyId);
     return (
@@ -276,6 +292,44 @@ export class ReportDeliveries {
     this.store.set(namespace, record.eventId, { ...record, updatedAt: new Date().toISOString() });
   }
 
+  /** End obsolete, known-settled sends without rewriting any transport receipt. */
+  private retireSuperseded(record: ReportDelivery): boolean {
+    if (record.retired) return true;
+    if (
+      this.sending.has(record.eventId) ||
+      record.channel !== "platform" ||
+      !valid(record) ||
+      !["prepared", "retryable", "delivered"].includes(record.cardState) ||
+      (record.cardState === "delivered" && !record.cardMessageId) ||
+      (this.bodyConfirmed(record) && record.cardState === "delivered")
+    )
+      return false;
+    if (record.presentation === "attachment") {
+      if (
+        !["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? "") ||
+        (record.fileState === "uploaded" && !record.fileKey) ||
+        (record.fileState === "delivered" && !this.bodyConfirmed(record))
+      )
+        return false;
+    } else {
+      // A partial legacy text has its own outbox barrier and recovery authority.
+      const body = this.outbox.receipt(record.bodyId);
+      if (body && body.state !== "delivered") return false;
+    }
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", record.eventId);
+    if (
+      event?.id !== record.eventId ||
+      event.taskId !== record.taskId ||
+      event.state !== "superseded" ||
+      event.decision?.action !== "deliver" ||
+      event.decision.reportId !== record.reportId
+    )
+      return false;
+    record.retired = { reason: "superseded", at: new Date().toISOString() };
+    this.save(record);
+    return true;
+  }
+
   pendingInChat(chatId: string): boolean {
     return this.store
       .list<ReportDelivery>(namespace)
@@ -283,7 +337,10 @@ export class ReportDeliveries {
         (record) =>
           record.chatId === chatId &&
           record.channel === "platform" &&
-          (!valid(record) || record.cardState !== "delivered" || !this.bodyConfirmed(record)),
+          (this.sending.has(record.eventId) ||
+            !valid(record) ||
+            (!this.retireSuperseded(record) &&
+              (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
       );
   }
 }

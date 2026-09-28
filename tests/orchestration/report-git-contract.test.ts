@@ -8,6 +8,7 @@ import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
 import type { StoredMessage, Task } from "../../src/core/types.js";
 import { assertCodeDelivery, codeDeliveryEvidence } from "../../src/orchestration/code-delivery.js";
 import { publishReport, reportText } from "../../src/orchestration/report.js";
+import { ReportDeliveries, type ReportDelivery } from "../../src/orchestration/report-delivery.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import type { StatusBlock } from "../../src/orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
@@ -411,6 +412,105 @@ for (const failure of ["workflow_report", "workflow_artifact"] as const)
       await h.close();
     }
   });
+
+test("resume and replacement delivery allow group cleanup after a superseded partial report, including restart", async () => {
+  const h = await harness();
+  let restarted: Application | undefined;
+  let uploads = 0;
+  let files = 0;
+  try {
+    const platform = h.platform as import("../../src/core/ports.js").PlatformPort;
+    platform.uploadFile = async () => `file-key-${++uploads}`;
+    platform.sendFile = async () => {
+      files++;
+      if (files === 1)
+        await h.git.git("checkout", "--quiet", "-b", "feature/new-report-before-card");
+      return `file-message-${files}`;
+    };
+    h.app.attachPlatform(platform);
+    const chatId = await platform.createGroup("报告群", h.actor.ownerId, "report-group");
+    h.app.tasks.records.save({
+      ...h.app.tasks.get(h.actor, h.task.id),
+      chatId,
+      keepGroup: false,
+    });
+    await h.scheduler.tick();
+    const oldEvent = h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id);
+    assert.equal(oldEvent?.state, "attention");
+    assert.equal(oldEvent.error?.code, "workflow_report");
+    assert.equal(h.app.tasks.get(h.actor, h.task.id).status, "attention");
+    const old = h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id);
+    assert.ok(old);
+    assert.equal(old.fileState, "delivered");
+    assert.equal(old.cardState, "prepared");
+    const receipts = new ReportDeliveries(h.store, h.app.outbox, () => platform);
+    assert.equal(receipts.pendingInChat(chatId), true);
+    assert.equal(
+      h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+      undefined,
+      "a contract failure alone cannot authorize abandoning the incomplete delivery",
+    );
+
+    const resumed = await h.app.tasks.action(
+      { ...h.actor, messageId: "resume-new-report" },
+      h.task.id,
+      "resume",
+    );
+    // Simulate the replacement report's completed work, while using the real resume,
+    // supersession, candidate execution, notification and cleanup paths.
+    h.state.userRevision = h.scheduler.revision(resumed, false);
+    h.state.plan.version++;
+    h.state.phase = "reporting";
+    await h.publish();
+    assert.notEqual(h.state.report?.id, old.reportId);
+    await h.scheduler.tick();
+    assert.equal(
+      h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id)?.state,
+      "superseded",
+    );
+    assert.equal(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.phase, "awaiting_acceptance");
+    assert.equal(uploads, 2);
+    assert.equal(files, 2);
+    assert.equal(h.platform.cards.length, 1, "only the current report receives a summary");
+    assert.equal(
+      h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+      undefined,
+      "the restart must discover the old incomplete record lazily",
+    );
+    await h.app.shutdown();
+    restarted = new Application({
+      config: h.config,
+      store: h.store,
+      engine: h.engine,
+      herdr: h.herdr,
+      platform,
+      logger,
+    });
+    await restarted.tasks.action({ ...h.actor, messageId: "accept-report" }, h.task.id, "complete");
+    await restarted.tasks.reconcile(h.task.id);
+    await restarted.tasks.reconcile(h.task.id);
+    assert.equal(restarted.tasks.get(h.actor, h.task.id).status, "destroyed");
+    assert.equal(restarted.tasks.get(h.actor, h.task.id).groupDeleted, true);
+    assert.equal(h.platform.deletions, 1);
+    assert.equal(h.herdr.closes, 2);
+    const retired = h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id);
+    assert.equal(retired?.retired?.reason, "superseded");
+    assert.equal(retired?.fileMessageId, old.fileMessageId);
+    assert.equal(retired?.fileState, "delivered");
+    assert.equal(retired?.cardState, "prepared");
+    const recovered = new ReportDeliveries(h.store, restarted.outbox, () => platform);
+    assert.equal(recovered.retryable(h.task.id, h.event.id, old.reportId), false);
+    assert.equal(await recovered.confirmed(h.task.id, h.event.id, old.reportId), false);
+    await assert.rejects(recovered.send(old), { code: "report_delivery_retired" });
+    assert.equal(recovered.download(h.task.id, old.cardId).content, old.text);
+    assert.equal(uploads, 2);
+    assert.equal(files, 2);
+    assert.equal(h.platform.cards.length, 1);
+  } finally {
+    await restarted?.shutdown();
+    await h.close();
+  }
+});
 
 for (const notificationState of ["retryable", "sending", "uncertain"] as const)
   test(`confirmed ${notificationState} receipt revalidates Git after restart without resending or rewriting the envelope`, async () => {

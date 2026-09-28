@@ -9,6 +9,7 @@ import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
 import { boardDirectory, inspectArtifact } from "./board.js";
 import { codeDeliveryEvidence, codeDeliveryRevision, codeDeliveryText } from "./code-delivery.js";
+import { missingDocumentReviewer } from "./document-delivery.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -31,6 +32,7 @@ export function reportContract(
     missing.push("仍有未处理阻塞问题");
   if (state.plan.nodes.some((node) => state.nodes[node.id]?.status !== "completed"))
     missing.push("计划节点尚未完成");
+  if (missingDocumentReviewer(state.plan)) missing.push("讨论文档缺少独立评审节点");
   if (
     state.plan.nodes.some(
       (node) =>

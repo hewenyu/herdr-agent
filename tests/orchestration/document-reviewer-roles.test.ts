@@ -3,6 +3,7 @@ import test from "node:test";
 import { workflowCandidates } from "../../src/orchestration/candidates.js";
 import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
 import { planWorkflow } from "../../src/orchestration/planner.js";
+import { reportContract } from "../../src/orchestration/report.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { validatePlan, type WorkflowNode } from "../../src/orchestration/workflow.js";
 import { Engine } from "../app/helpers.js";
@@ -45,6 +46,208 @@ async function fixture(count = 2) {
   };
   return { ...h, task, state, plan, review, report, participants, choices, completeOpenings };
 }
+
+function customWriter(h: Awaited<ReturnType<typeof fixture>>): WorkflowNode {
+  const writer: WorkflowNode = {
+    id: "custom-writer",
+    phase: "discussing",
+    role: "analyst",
+    access: "write",
+    purpose: "保存实际讨论文档",
+    instruction: "保存 docs/DESIGN.md 并交独立参与者复核。",
+    documentPaths: ["docs/DESIGN.md"],
+    participantId: h.task.participantIds[1],
+    dependsOn: [...h.review.dependsOn],
+  };
+  h.plan.nodes.splice(h.plan.nodes.indexOf(h.review), 0, writer);
+  h.review.dependsOn = [writer.id];
+  return writer;
+}
+
+test("custom document graphs cannot skip independent review by going directly from writer to reporter", async () => {
+  const h = await fixture();
+  try {
+    const writer = customWriter(h);
+    h.plan.nodes = h.plan.nodes.filter((node) => node.role !== "reviewer");
+    h.report.dependsOn = [writer.id];
+    const before = structuredClone(h.plan);
+    for (const validate of [
+      () => addDocumentDelivery(h.plan),
+      () => validatePlan(h.plan, h.task),
+    ]) {
+      assert.throws(validate, { code: "workflow_plan", message: /另一位参与者复核实际文件/ });
+      assert.deepEqual(
+        h.plan,
+        before,
+        "rejecting a custom graph never inserts work or changes pins",
+      );
+    }
+  } finally {
+    h.close();
+  }
+});
+
+test("the planner can repair a reviewer-free custom document graph in the same turn", async () => {
+  const h = await fixture();
+  try {
+    const writer = customWriter(h);
+    const nodes = structuredClone(h.plan.nodes.filter((node) => node.role !== "reviewer"));
+    const reporter = nodes.find((node) => node.role === "reporter");
+    assert.ok(reporter);
+    reporter.dependsOn = [writer.id];
+    const engine = new Engine();
+    engine.handler = async (request) => {
+      const tool = request.tools[0];
+      assert.ok(tool);
+      const args = {
+        template: "discussion",
+        instructions: {},
+        deliveryRequirements: [],
+        documentDelivery: h.plan.documentDelivery,
+        nodes,
+      };
+      await assert.rejects(tool.execute(args, request.actor), {
+        code: "workflow_plan",
+        message: /另一位参与者复核实际文件/,
+      });
+      assert.equal(
+        nodes.some((node) => node.role === "reviewer"),
+        false,
+      );
+      nodes.splice(nodes.indexOf(reporter), 0, structuredClone(h.review));
+      reporter.dependsOn = [h.review.id];
+      await tool.execute(args, request.actor);
+      return { text: "", messages: [] };
+    };
+    const plan = await planWorkflow({
+      task: h.task,
+      state: h.state,
+      engine,
+      actor,
+      userMessages: [],
+      signal: new AbortController().signal,
+      assertCurrent() {},
+    });
+    validatePlan(plan, h.task);
+    assert.deepEqual(plan.requiredArtifacts, ["docs/DESIGN.md"]);
+    assert.deepEqual(plan.nodes.find((node) => node.id === h.review.id)?.dependsOn, [writer.id]);
+    assert.equal(
+      plan.nodes.find((node) => node.id === h.review.id)?.participantId,
+      h.task.participantIds[0],
+    );
+    assert.deepEqual(plan.nodes.find((node) => node.id === h.report.id)?.dependsOn, [h.review.id]);
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    h.close();
+  }
+});
+
+test("every custom document writer must precede independent review and the final report", async () => {
+  const h = await fixture();
+  try {
+    const first = customWriter(h);
+    assert.ok(h.plan.documentDelivery);
+    h.plan.documentDelivery.paths.push("docs/SECOND.md");
+    const second: WorkflowNode = {
+      ...first,
+      id: "second-writer",
+      documentPaths: ["docs/SECOND.md"],
+      dependsOn: [first.id],
+    };
+    h.plan.nodes.splice(h.plan.nodes.indexOf(h.review), 0, second);
+    h.report.dependsOn = [h.review.id, second.id];
+    addDocumentDelivery(h.plan);
+    assert.throws(() => validatePlan(h.plan, h.task), {
+      code: "workflow_plan",
+      message: /不能提前证明后续工作/,
+    });
+    h.review.dependsOn = [second.id];
+    h.report.dependsOn = [h.review.id];
+    validatePlan(h.plan, h.task);
+    assert.deepEqual(
+      h.review.dependsOn,
+      [second.id],
+      "transitive review of all prior writers remains supported",
+    );
+    for (const writer of [first, second]) {
+      writer.participantId = h.review.participantId;
+      assert.throws(() => validatePlan(h.plan, h.task), {
+        code: "workflow_plan",
+        message: /文档作者与固定评审者冲突/,
+      });
+      writer.participantId = h.task.participantIds[1];
+    }
+    h.report.dependsOn = [second.id];
+    assert.throws(() => validatePlan(h.plan, h.task), {
+      code: "workflow_plan",
+      message: /报告必须依赖全部工作节点/,
+    });
+    h.report.dependsOn = [h.review.id];
+    validatePlan(h.plan, h.task);
+    assert.equal(h.herdr.sends.length, 0);
+  } finally {
+    h.close();
+  }
+});
+
+test("a persisted reviewer-free document report fails delivery even when every saved node and artifact is complete", async () => {
+  const h = await fixture();
+  try {
+    const writer = customWriter(h);
+    addDocumentDelivery(h.plan);
+    // Older planners accepted this graph; workflowState resumes persisted plans without revalidation.
+    h.plan.nodes = h.plan.nodes.filter((node) => node.role !== "reviewer");
+    h.report.dependsOn = [writer.id];
+    for (const node of h.plan.nodes)
+      h.state.nodes[node.id] = {
+        status: "completed",
+        attempt: 1,
+        participantId: node.participantId ?? h.task.participantIds[0],
+        artifactRevision: "frozen-source",
+      };
+    h.state.artifacts = [
+      {
+        path: "/fixture/docs/DESIGN.md",
+        reference: "docs/DESIGN.md",
+        hash: "frozen-document-hash",
+        outputId: "document-output",
+        artifactRevision: "frozen-source",
+      },
+    ];
+    h.state.report = {
+      id: "old-report",
+      path: "/fixture/report.md",
+      hash: "frozen-report-hash",
+      outputId: "report-output",
+      artifactRevision: "frozen-source",
+    };
+    const before = structuredClone(h.state);
+    const missing = reportContract(h.state, "frozen-source", []);
+    assert.deepEqual(missing, ["讨论文档缺少独立评审节点"]);
+    const candidates = workflowCandidates(
+      h.task,
+      h.state,
+      h.participants,
+      [],
+      missing.length === 0,
+    );
+    assert.equal(
+      candidates.some((candidate) => candidate.kind === "deliver"),
+      false,
+    );
+    assert.equal(
+      candidates.some((candidate) => candidate.id === "replan:missing"),
+      true,
+    );
+    assert.deepEqual(
+      h.state,
+      before,
+      "report validation does not rewrite the persisted graph or evidence",
+    );
+  } finally {
+    h.close();
+  }
+});
 
 test("an automatic document author leaves the fixed first analyst available for independent review", async () => {
   const h = await fixture();
