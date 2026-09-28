@@ -273,6 +273,12 @@ export class AgentControl {
           readback.truncated ||
           !text.trim() ||
           /(?:Accessing workspace:|> You are in )/.test(text) ||
+          text
+            .split("\n")
+            .some(
+              (line) =>
+                line.trim() === "Folder access" || line.trim().startsWith("Trust this folder?"),
+            ) ||
           !isAbsolute(after.cwd) ||
           resolve(after.cwd) !== resolve(expectedDirectory) ||
           after.terminalId !== terminalId ||

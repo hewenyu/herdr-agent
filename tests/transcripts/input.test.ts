@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExecutionRef } from "../../src/core/types.js";
-import { readInitialInput } from "../../src/transcripts/input.js";
+import { nativeInputCandidates, readInitialInput } from "../../src/transcripts/input.js";
 
 const marker = `HERDR_RECEIPT_${"c".repeat(32)}`;
 const text = `任务正文\n${marker}\n\n本轮安排：\n具体安排`;
@@ -63,6 +63,40 @@ test("Claude readback excludes sidechains, metadata and conflicting sessions", a
   assert.equal(await read([{ ...row, isMeta: true }], target), undefined);
   assert.equal(await read([{ ...row, cwd: "/other" }], target), undefined);
   assert.equal(await read([row, { type: "system", sessionId: "another" }], target), undefined);
+});
+
+test("Claude paste compatibility preserves raw input and accepts only one exact native envelope", async () => {
+  const wrap = (value: string) =>
+    `\n\n<pasted_content id="2e42">\n\n${value}\n</pasted_content id="2e42">\n`;
+  const wrapped = wrap(text);
+  assert.deepEqual(nativeInputCandidates("claude", wrapped), [wrapped, text]);
+  assert.deepEqual(nativeInputCandidates("codex", wrapped), [wrapped]);
+  for (const invalid of [
+    `before${wrapped}`,
+    `${wrapped}after`,
+    `${wrapped}\n`,
+    wrapped.replace('</pasted_content id="2e42">', '</pasted_content id="2e43">'),
+    `${wrapped}${wrapped}`,
+    wrap(wrapped),
+    wrapped.replace('id="2e42"', "id='2e42'"),
+  ])
+    assert.deepEqual(nativeInputCandidates("claude", invalid), [invalid]);
+  const target: ExecutionRef = { ...ref, kind: "claude" };
+  assert.equal(
+    await read(
+      [
+        {
+          type: "user",
+          sessionId: target.sessionId,
+          cwd: target.cwd,
+          message: { content: wrapped },
+        },
+      ],
+      target,
+    ),
+    wrapped,
+    "readback must preserve native text rather than rewrite user content",
+  );
 });
 
 test("native input remains recoverable after a session grows beyond 8 MiB", async () => {

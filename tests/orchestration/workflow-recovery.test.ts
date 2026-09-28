@@ -299,6 +299,149 @@ test("malformed status only requests correction and does not count an effective 
   }
 });
 
+for (const wrongOperation of ["unknown", "other-participant"])
+  test(`a settled ${wrongOperation} operation ID is rejected and corrected through rework`, async () => {
+    const h = await harness();
+    try {
+      await h.worker.tick();
+      await h.worker.tick();
+      await h.finish("opening-1");
+      await h.finish("opening-2");
+      await h.worker.tick();
+      const before = h.state();
+      const progress = before.nodes["cross-review"];
+      assert.ok(progress?.operationId);
+      const other = Object.values(before.nodes).find(
+        (node) => node.participantId && node.participantId !== progress.participantId,
+      );
+      assert.ok(other?.operationId);
+      const wrongId =
+        wrongOperation === "unknown" ? `${progress.operationId}-typo` : other.operationId;
+      await h.finish("cross-review", { operationId: wrongId, summary: "错误标识不能完成节点" });
+      let requestedCorrection = false;
+      h.selection.choose = (candidates) => {
+        const current = h.state();
+        assert.equal(current.nodes["cross-review"]?.status, "blocked");
+        assert.match(current.nodes["cross-review"]?.error ?? "", /状态块.*归属/);
+        assert.equal(current.consumedOutputs.length, before.consumedOutputs.length + 1);
+        assert.equal(
+          h.store.get("workflow_status_blocks", current.consumedOutputs.at(-1) ?? ""),
+          undefined,
+        );
+        assert.deepEqual(current.batches, before.batches);
+        const candidate = candidates.find(
+          (entry) => entry.kind === "rework" && entry.assignments?.[0]?.nodeId === "cross-review",
+        );
+        assert.ok(candidate, "protocol failure must offer the existing correction path");
+        requestedCorrection = true;
+        return candidate;
+      };
+      await h.worker.tick();
+      assert.equal(
+        requestedCorrection,
+        true,
+        "wrong IDs cannot leave a settled node dispatched forever",
+      );
+      const correction = h.state().nodes["cross-review"];
+      assert.equal(correction?.status, "dispatched");
+      assert.notEqual(correction?.operationId, progress.operationId);
+      assert.equal(correction?.attempt, progress.attempt + 1);
+      assert.equal(h.replies.length, 0);
+      h.selection.choose = (candidates) =>
+        candidates.find((entry) => entry.kind === "deliver") ?? candidates[0];
+      await h.finish("cross-review");
+      await h.worker.tick();
+      await h.finish("report");
+      await h.worker.tick();
+      assert.equal(h.replies.length, 1);
+      assert.equal(h.state().nodes["cross-review"]?.status, "completed");
+    } finally {
+      h.controller.abort();
+      h.close();
+    }
+  });
+
+test("a fully bound prior dispatch reply stays stale without poisoning the current node", async () => {
+  const h = await harness();
+  try {
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1");
+    await h.finish("opening-2");
+    await h.worker.tick();
+    const before = h.state();
+    const current = before.nodes["cross-review"];
+    const prior = Object.entries(before.nodes).find(
+      ([id, node]) => id.startsWith("opening-") && node.participantId === current?.participantId,
+    );
+    assert.ok(prior);
+    const sent = h.herdr.sends.length;
+    await h.finish("cross-review", {
+      nodeId: prior[0],
+      operationId: prior[1].operationId,
+      inputRevision: prior[1].inputRevision,
+      summary: "已有派发的迟到旧结果",
+      issues: [{ ...openIssue, blocking: true }],
+    });
+    await new TaskOrchestrator(h.options).tick();
+    assert.deepEqual(h.state().nodes["cross-review"], current);
+    assert.deepEqual(h.state().consumedOutputs, before.consumedOutputs);
+    assert.deepEqual(h.state().issues, before.issues);
+    assert.equal(h.herdr.sends.length, sent);
+    await h.finish("cross-review");
+    await h.worker.tick();
+    assert.equal(h.state().nodes["cross-review"]?.status, "completed");
+    assert.equal(h.state().nodes.report?.status, "dispatched");
+  } finally {
+    h.controller.abort();
+    h.close();
+  }
+});
+
+test("late replies from the same node cannot hide a newer malformed correction request", async () => {
+  const h = await harness();
+  try {
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1");
+    await h.finish("opening-2");
+    await h.worker.tick();
+    const previous = h.state().nodes["cross-review"];
+    assert.ok(previous?.operationId);
+    await h.finish("cross-review", {}, "状态块缺失，需要补充。");
+    await h.worker.tick();
+    const current = h.state();
+    assert.notEqual(current.nodes["cross-review"]?.operationId, previous.operationId);
+    const sent = h.herdr.sends.length;
+    const late = {
+      operationId: previous.operationId,
+      inputRevision: previous.inputRevision,
+      summary: "同节点的已结束旧委派",
+    };
+    await h.finish("cross-review", late);
+    await new TaskOrchestrator(h.options).tick();
+    assert.deepEqual(h.state().nodes["cross-review"], current.nodes["cross-review"]);
+    assert.deepEqual(h.state().consumedOutputs, current.consumedOutputs);
+    assert.equal(h.herdr.sends.length, sent);
+
+    h.emit("cross-review", { operationId: "unknown-current-operation" });
+    h.emit("cross-review", late);
+    await h.service.reconcile(h.task.id);
+    await h.worker.tick();
+    assert.equal(h.herdr.sends.length, sent + 1, "the late tail cannot hide a protocol correction");
+    assert.notEqual(
+      h.state().nodes["cross-review"]?.operationId,
+      current.nodes["cross-review"]?.operationId,
+    );
+    assert.equal(h.state().consumedOutputs.length, current.consumedOutputs.length + 1);
+    assert.deepEqual(h.state().batches, current.batches);
+    assert.equal(h.replies.length, 0);
+  } finally {
+    h.controller.abort();
+    h.close();
+  }
+});
+
 test("replanning freezes a new version and retains the original task instructions and contract", async () => {
   const h = await harness();
   try {
@@ -423,6 +566,48 @@ test("an explicit user prohibition skips configured commands, retains independen
   }
 });
 
+test("a reviewed board artifact revision supersedes its old hash without losing history across restart", async () => {
+  const requiredArtifacts: string[] = [];
+  const h = await harness(3, { requiredArtifacts });
+  try {
+    assert.ok(h.task.boardDirectory);
+    const artifact = join(h.task.boardDirectory, "recommendation.md");
+    requiredArtifacts.push(artifact);
+    writeFileSync(artifact, "初稿：待独立核对。\n");
+    await h.worker.tick();
+    await h.worker.tick();
+    await h.finish("opening-1", { artifactRefs: [artifact] });
+    await h.finish("opening-2");
+    await h.worker.tick();
+    const original = structuredClone(h.state().artifacts[0]);
+    assert.ok(original);
+
+    writeFileSync(artifact, "终稿：已结合交叉评审澄清方案。\n");
+    await h.finish("cross-review", { artifactRefs: [artifact] });
+    await h.worker.tick();
+    const latest = h.state().artifacts.at(-1);
+    assert.ok(latest);
+    assert.equal(latest.artifactRevision, original.artifactRevision);
+    assert.notEqual(latest.hash, original.hash);
+    assert.deepEqual(h.state().artifacts[0], original);
+
+    const restarted = new TaskOrchestrator(h.options);
+    await restarted.tick();
+    await h.finish("report");
+    await restarted.tick();
+    assert.equal(h.replies.length, 1);
+    assert.equal(h.events().find((event) => event.decision?.action === "deliver")?.state, "done");
+    await restarted.tick();
+    assert.equal(h.state().phase, "awaiting_acceptance");
+    assert.equal(h.replies.length, 1);
+    assert.deepEqual(h.state().artifacts[0], original);
+    assert.equal(h.state().artifacts.length, 2);
+  } finally {
+    h.controller.abort();
+    h.close();
+  }
+});
+
 for (const change of ["deleted", "modified"])
   test(`a required artifact ${change} after selection cannot be delivered using its saved hash`, async () => {
     const requiredArtifacts: string[] = [];
@@ -437,7 +622,8 @@ for (const change of ["deleted", "modified"])
       await h.finish("opening-1", { artifactRefs: [artifact], issues: [openIssue] });
       await h.finish("opening-2");
       await h.worker.tick();
-      await h.finish("cross-review");
+      writeFileSync(artifact, "根据交叉评审澄清后的方案。\n");
+      await h.finish("cross-review", { artifactRefs: [artifact] });
       await h.worker.tick();
       assert.match(h.herdr.sends.at(-1)?.text ?? "", /必需交付文件/);
       await h.finish("report");

@@ -160,7 +160,9 @@ myrix serve --state-dir /absolute/state
 
 ## 验证边界
 
-[Jev/LLM 编排设计 v1.1](docs/myrix-jev-llm-orchestration-design.md) 对应本地已实现、尚未发布的 S3/S4，已确认入口路由和配置验证命令两项边界变更。[真实 Jev Choice 记录](docs/jev-choice-live-evidence-2026-09-27.json) 使用合成输入；它和本地自动测试都不代表完整飞书、Claude/Codex 工作流已完成真实验收。
+[Jev/LLM 编排设计 v1.1](docs/myrix-jev-llm-orchestration-design.md) 对应 PR #54 已合并的 S3/S4，用户已确认验收通过。[真实 Jev Choice 记录](docs/jev-choice-live-evidence-2026-09-27.json) 使用合成输入；开发者实际执行的链路与未取得的具体证据分别记账，见[合并后补齐记录](docs/workflow-completion-2026-09-27.md)。
+
+讨论、新需求和 Bug 修复三套隔离本地工作流已使用真实 Jev、pi、Claude 与 Codex 跑通。可运行 `node --import tsx scripts/live/jev-ingress-probe.ts` 复测合成入口分类，或 `node --import tsx scripts/live/workflow-acceptance.ts --template all` 复测隔离本地工作流。这两个手工脚本使用本机模型凭据，保留失败与回退记录，不发送飞书消息或修改常驻配置。
 
 自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
 

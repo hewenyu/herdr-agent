@@ -1,6 +1,7 @@
 # S3 · workflow 状态、Jev 决策与报告交付
 
-日期：2026-09-27。状态：S3-01～29 已完成本地实现及自动检查；S3-30 部分完成，完整现场验收未完成。
+日期：2026-09-27。状态：S3-01～29 已完成本地实现及自动检查；S3-30 已通过真实 Jev、pi、Claude/Codex 本地三模板验证，飞书联合实测未执行。
+后续：PR #54 已合并，用户已确认验收通过；开发者可复现链路与具体证据范围另见[合并后补齐记录](../workflow-completion-2026-09-27.md)。本页不据此补写未执行的飞书检查。
 依据：[编排设计 v1.1](../myrix-jev-llm-orchestration-design.md)。源码基线：`d2a0ba0c3e1c302dbb809e66db18a87b6e2974cb`。
 
 S3 与 [S4](S4-ingress-verification.md) 顺序实施、一起发版。S1/S2 是早期 Go 设计，不能直接作为当前 Node/pi 接口定义；现状以源码和[持续调度审计](../ai-orchestration-audit-2026-09-25.md)为准。
@@ -35,7 +36,7 @@ S3 与 [S4](S4-ingress-verification.md) 顺序实施、一起发版。S1/S2 是�
 
 ## 4. 实施任务清单
 
-S3-01～29 的实现和自动验证映射见[交付与复核记录](../workflow-implementation-2026-09-27.md)。S3-30 已有真实 Jev 合成 Choice 和 pi 规划/选择探针；尚无真实 Claude/Codex 参与及飞书三模板验收。编号用于评审追踪，不把自动 fixture 当作现场证据。
+S3-01～29 的实现和自动验证映射见[交付与复核记录](../workflow-implementation-2026-09-27.md)。S3-30 已有真实 Jev 合成 Choice、pi 规划/选择探针，以及真实 Claude/Codex 参与的隔离本地三模板成功记录，见[实跑证据索引](../workflow-live-evidence-2026-09-27.json)；本轮未执行飞书三模板联合验收。编号用于评审追踪，本地合成任务与平台实测分别记账。
 
 | 编号 | 任务 | 可评审产出 |
 | --- | --- | --- |

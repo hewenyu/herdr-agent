@@ -59,6 +59,17 @@ export async function publishOutput(
   );
 }
 
+/** Board files can change without changing source revision; retain superseded hashes as history. */
+export function latestArtifacts(
+  state: WorkflowState,
+  artifactRevision: string,
+): WorkflowState["artifacts"] {
+  const latest = new Map<string, WorkflowState["artifacts"][number]>();
+  for (const artifact of state.artifacts)
+    if (artifact.artifactRevision === artifactRevision) latest.set(artifact.path, artifact);
+  return [...latest.values()];
+}
+
 export async function inspectArtifact(
   task: Task,
   path: string,

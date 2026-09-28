@@ -4,6 +4,8 @@ import type { ExecutionRef } from "../core/types.js";
 
 export interface TranscriptSource {
   path: string;
+  /** Recovered only from a unique native receipt and its validated session metadata. */
+  sessionId?: string;
   /** Only records following the participant's initial user input belong to this task. */
   afterOffset?: number;
 }

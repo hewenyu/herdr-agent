@@ -10,7 +10,38 @@ export function cleanScreen(raw: string): string {
     .join("");
 }
 
+/** Codex 0.157.1's native folder gate; both warning and options are exact templates. */
+function codexFolderTrust(raw: string): { directory: string; input: string[] } | undefined {
+  const lines = cleanScreen(raw)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines[0] !== "Folder access" || lines.at(-1) !== "enter continue · esc back") return;
+  const question = lines.findIndex((line) => line.startsWith("Trust this folder?"));
+  if (question < 2) return;
+  const directory = lines.slice(1, question).join("");
+  if (!directory.startsWith("/")) return;
+  if (
+    lines.slice(question, -3).join(" ") !==
+    "Trust this folder? Codex can read, edit, and run files here, subject to your permission settings. Folder settings can run code automatically, even without a model request. Continue only if you trust these files. Your trust decision will be saved."
+  )
+    return;
+  if (
+    lines.at(-3) === "› 1. Trust and continue" &&
+    lines.at(-2) === "2. Back to Agent Command Center"
+  )
+    return { directory, input: ["enter"] };
+  if (
+    lines.at(-3) === "1. Trust and continue" &&
+    lines.at(-2) === "› 2. Back to Agent Command Center"
+  )
+    return { directory, input: ["up", "enter"] };
+  return;
+}
+
 export function trustKeys(raw: string): string[] | undefined {
+  const folder = codexFolderTrust(raw);
+  if (folder) return folder.input;
   const lines = cleanScreen(raw)
     .split("\n")
     .map((line) => line.trim())
@@ -49,6 +80,8 @@ export function directoryTrustKeys(
     .map((line) => line.trim())
     .filter(Boolean);
   if (kind === "codex") {
+    const folder = codexFolderTrust(raw);
+    if (folder) return folder.directory === expectedDirectory ? folder.input : undefined;
     const input = trustKeys(raw);
     if (!input) return;
     const start = lines.findIndex((line) => line.startsWith("> You are in "));
@@ -138,6 +171,11 @@ export function showsStartupMenu(raw: string): boolean {
 }
 
 export function parseOptions(raw: string): ScreenOption[] {
+  if (codexFolderTrust(raw))
+    return [
+      { key: "1", label: "Trust and continue" },
+      { key: "2", label: "Back to Agent Command Center" },
+    ];
   const lines = cleanScreen(raw).split("\n");
   // A current unnumbered menu/composer must not expose an earlier numbered list.
   const selected = lines.findLastIndex((line) => /^\s*[❯›>]\s+\S/.test(line));

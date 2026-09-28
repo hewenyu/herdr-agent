@@ -129,8 +129,11 @@ export function statusInstructions(expected: {
       2,
     ),
     "```",
+    "nodeId、operationId、inputRevision 必须逐字复制本轮模板中的值，不得从其他节点或历史回复拼接。",
     "issues 使用稳定 id、description、status(open/resolved/deferred)、blocking、evidenceRefs；回应已有问题保留其 id，不得仅改名。",
+    "evidenceRefs 只填看板中已有的 outputId、evidence.id 或已登记产物 path；新产物路径须同时列入 artifactRefs 供实际采集。outputs/<id>.md 文件路径不等于 outputId。没有已登记引用时填 []，依据可写入 description。",
     "evidence 每项填写 description、实际 command（若运行）、result(passed/failed/not_run)。未运行不能写 passed。",
+    '未执行命令时省略 command 字段，不要填写空字符串；例如未运行记录为 {"description":"用户要求只读讨论","result":"not_run"}。',
     "artifactRefs 仅填写实际产物文件路径。需要返工用 needs_work；只能由用户决定/授权的阻塞用 blocked 并填 blockers。",
     "报告节点额外填 reportSections，键为任务书给出的全部必需章节名，值为对应报告正文。状态块不是验收或新授权。",
   ].join("\n");
