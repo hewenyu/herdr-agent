@@ -7,6 +7,7 @@ import type { RuntimeTool, SessionService } from "../runtime/index.js";
 import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { TaskService } from "../tasks/service.js";
+import { associateTaskUserRequest } from "../tasks/user-request.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
 import { taskProgress } from "./workflow-progress.js";
 
@@ -50,7 +51,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       true,
       { all: { type: "boolean" } },
       [],
-      async (args, ctx) => services.tasks.list(ctx, boolean(args, "all")),
+      async (args, ctx) => {
+        const tasks = services.tasks.list(ctx, boolean(args, "all"));
+        for (const task of tasks) associateTaskUserRequest(services.store, ctx, task, "read");
+        return tasks;
+      },
     ),
     tool(
       "task_get",
@@ -61,6 +66,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       [],
       async (args, ctx) => {
         const task = services.tasks.get(ctx, id(args, ctx));
+        associateTaskUserRequest(services.store, ctx, task, "read");
         const participants = await Promise.all(
           task.participants.map(async (participant) => {
             if (!participant.execution) return participant;
@@ -102,14 +108,17 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       true,
       { taskId, participantId, cursor: text("上次本工具返回的参与者分页游标；省略读取最近对话") },
       [],
-      async (args, ctx) =>
-        taskProgress(
+      async (args, ctx) => {
+        const target = id(args, ctx);
+        associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, target), "read");
+        return taskProgress(
           services,
           ctx,
-          id(args, ctx),
+          target,
           optionalString(args, "participantId"),
           optionalString(args, "cursor"),
-        ),
+        );
+      },
     ),
     tool(
       "participant_screen",
@@ -117,8 +126,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       true,
       { taskId, participantId },
       [],
-      async (args, ctx) =>
-        services.tasks.screen(ctx, id(args, ctx), optionalString(args, "participantId")),
+      async (args, ctx) => {
+        const target = id(args, ctx);
+        associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, target), "read");
+        return services.tasks.screen(ctx, target, optionalString(args, "participantId"));
+      },
     ),
     tool(
       "participant_send",

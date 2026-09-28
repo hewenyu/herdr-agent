@@ -12,7 +12,12 @@ import type {
   UserRequestSource,
 } from "../core/types.js";
 import type { WorkflowCandidate } from "../orchestration/candidates.js";
+import {
+  currentOrchestrationTask,
+  finishReportNotifications,
+} from "../orchestration/report-cleanup.js";
 import { validatedReport } from "../orchestration/report-validation.js";
+import { type RevisionInputs, revisionHash, revisionInputs } from "../orchestration/revision.js";
 import { WorkflowOrchestrator } from "../orchestration/runner.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
@@ -225,27 +230,8 @@ export class TaskOrchestrator {
   }
 
   private revision(task: Task, includeWorkflow = true): string {
-    const resumes = this.options.store
-      .entries<{ action?: string; at?: string }>("task_actions")
-      .filter(([id, action]) => id.startsWith(`${task.id}:`) && action.action === "resume")
-      .map(([id]) => id)
-      .sort();
-    const mutations = this.options.store
-      .entries<TaskMutationRevision>("task_mutation_revisions")
-      .filter(([, mutation]) => mutation.taskId === task.id)
-      .map(([id]) => id)
-      .sort();
-    return stableId(
-      task.requirements,
-      ...this.userMessages(task).map((message) => message.id),
-      ...resumes,
-      ...mutations,
-      ...(includeWorkflow && task.orchestration?.mode === "workflow"
-        ? (() => {
-            const state = this.options.store.get<WorkflowState>(WORKFLOWS, task.id);
-            return state ? [String(state.plan.version), state.phase] : [];
-          })()
-        : []),
+    return revisionHash(
+      revisionInputs(this.options.store, task, this.userMessages(task), includeWorkflow),
     );
   }
 
@@ -267,24 +253,8 @@ export class TaskOrchestrator {
     });
   }
 
-  private current(taskId: string): Task | undefined {
-    const task = this.options.store.get<Task>("tasks", taskId);
-    if (
-      !task ||
-      !["model", "workflow"].includes(task.orchestration?.mode ?? "") ||
-      task.discussion.paused ||
-      task.closeRequested ||
-      task.completionRequest ||
-      task.groupDeleted ||
-      ["completed", "destroying", "destroyed", "paused"].includes(task.status)
-    )
-      return;
-    try {
-      this.options.tasks().records.authorize(task.ownerId);
-    } catch {
-      return;
-    }
-    return task;
+  private current(taskId: string, reportDelivery = false): Task | undefined {
+    return currentOrchestrationTask(this.options, taskId, reportDelivery);
   }
 
   private save(event: OrchestrationEvent): void {
@@ -332,6 +302,8 @@ export class TaskOrchestrator {
   }
 
   private async processTask(taskId: string): Promise<void> {
+    const persisted = this.options.store.get<Task>("tasks", taskId);
+    if (persisted) await this.finishReportNotifications(persisted);
     let task = this.current(taskId);
     if (!task) return;
     if (this.foregroundPending(task)) return;
@@ -467,20 +439,32 @@ export class TaskOrchestrator {
   }
 
   assertNotificationCurrent(event: OrchestrationEvent): Task {
-    return this.assertCurrent(event);
+    return this.assertCurrent(event, true);
   }
 
-  notificationRevision(task: Task): string {
-    return this.revision(task);
+  private finishReportNotifications(task: Task): Promise<void> {
+    return finishReportNotifications(task, this.events(task.id), {
+      store: this.options.store,
+      revision: (current) => this.revision(current),
+      recover: (current, event) => this.recoverNotification(current, event, true),
+      notify: (current, event) => this.notify(current, event, true),
+    });
+  }
+
+  notificationInputs(task: Task): RevisionInputs {
+    return revisionInputs(this.options.store, task, this.userMessages(task));
   }
 
   assertNotificationDelivery(task: Task, state: WorkflowState): Promise<void> {
     return this.workflow.assertDelivery(task, state);
   }
 
-  private assertCurrent(event: OrchestrationEvent): Task {
+  private assertCurrent(event: OrchestrationEvent, reportDelivery = false): Task {
     if (this.options.signal.aborted) fail("stopping", "服务正在停止。");
-    const task = this.current(event.taskId);
+    const task = this.current(
+      event.taskId,
+      reportDelivery && event.decision?.action === "deliver" && !!event.decision.reportId,
+    );
     if (!task || event.userRevision !== this.revision(task))
       fail("orchestration_superseded", "任务已暂停、结束或收到新的用户要求，请重新核对。");
     if (this.foregroundPending(task))
@@ -812,7 +796,11 @@ export class TaskOrchestrator {
     }
   }
 
-  private async recoverNotification(task: Task, event: OrchestrationEvent): Promise<void> {
+  private async recoverNotification(
+    task: Task,
+    event: OrchestrationEvent,
+    reportDelivery = false,
+  ): Promise<void> {
     if (
       !event.decision ||
       event.decision.action === "continue" ||
@@ -870,7 +858,7 @@ export class TaskOrchestrator {
       try {
         await validatedReport(event, {
           store: this.options.store,
-          current: () => this.assertCurrent(event),
+          current: () => this.assertCurrent(event, reportDelivery),
           assertDelivery: (current, state) => this.workflow.assertDelivery(current, state),
         });
       } catch (error) {
@@ -913,9 +901,13 @@ export class TaskOrchestrator {
     });
   }
 
-  private async notify(task: Task, event: OrchestrationEvent): Promise<void> {
+  private async notify(
+    task: Task,
+    event: OrchestrationEvent,
+    reportDelivery = false,
+  ): Promise<void> {
     if (!event.decision || event.decision.action === "continue" || event.notified) return;
-    task = this.assertCurrent(event);
+    task = this.assertCurrent(event, reportDelivery);
     if (event.notificationState === "uncertain") return;
     if (event.notificationState === "sending") {
       event.notificationState = "uncertain";
@@ -938,7 +930,7 @@ export class TaskOrchestrator {
     if (event.decision.action === "deliver" && event.decision.reportId) {
       ({ task, text } = await validatedReport(event, {
         store: this.options.store,
-        current: () => this.assertCurrent(event),
+        current: () => this.assertCurrent(event, reportDelivery),
         assertDelivery: (current, state) => this.workflow.assertDelivery(current, state),
       }));
     } else if (event.decision.action === "deliver") {

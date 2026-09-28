@@ -7,6 +7,7 @@ import { KeyedMutex } from "../core/mutex.js";
 import type { PlatformPort } from "../core/ports.js";
 import type { StoredMessage } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import type { ReportRevisionEvidence } from "./revision.js";
 
 export interface ReportEnvelope {
   taskId: string;
@@ -41,6 +42,7 @@ export interface ReportDelivery extends ReportEnvelope {
   webCardId?: string;
   error?: ReturnType<typeof safeError>;
   retired?: { reason: "superseded" | "stale_report"; at: string };
+  revisionEvidence?: ReportRevisionEvidence;
   updatedAt: string;
 }
 
@@ -54,7 +56,10 @@ export class ReportDeliveries {
     private readonly store: Store,
     private readonly outbox: Outbox,
     private readonly platform: () => PlatformPort | undefined,
-    private readonly staleReport?: (event: OrchestrationEvent) => boolean,
+    private readonly staleReport?: (event: OrchestrationEvent, record: ReportDelivery) => boolean,
+    private readonly captureRevision?: (
+      event: OrchestrationEvent,
+    ) => ReportRevisionEvidence | undefined,
   ) {}
 
   prepare(input: ReportEnvelope): ReportDelivery {
@@ -78,6 +83,14 @@ export class ReportDeliveries {
       return previous;
     }
     const prefix = `workflow-report:${input.taskId}:${input.eventId}:${input.reportId}`;
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", input.eventId);
+    const revisionEvidence =
+      event?.id === input.eventId &&
+      event.taskId === input.taskId &&
+      event.decision?.action === "deliver" &&
+      event.decision?.reportId === input.reportId
+        ? this.captureRevision?.(event)
+        : undefined;
     const record: ReportDelivery = {
       ...structuredClone(input),
       version: input.presentation === "attachment" ? 2 : 1,
@@ -86,6 +99,7 @@ export class ReportDeliveries {
       bodyId: `${prefix}:body`,
       cardId: `${prefix}:card`,
       cardState: "prepared",
+      ...(revisionEvidence ? { revisionEvidence } : {}),
       updatedAt: new Date().toISOString(),
     };
     this.save(record);
@@ -333,7 +347,7 @@ export class ReportDeliveries {
         !event.notified &&
         ["retryable", "sending", "uncertain"].includes(event.notificationState ?? "") &&
         !event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state)) &&
-        this.staleReport?.(event) === true
+        this.staleReport?.(event, record) === true
       )
     )
       return false;

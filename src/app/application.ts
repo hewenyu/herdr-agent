@@ -15,6 +15,7 @@ import { isLegacyReplay } from "../migration/index.js";
 import { ingressRouteFor } from "../orchestration/ingress.js";
 import { reportCard } from "../orchestration/report.js";
 import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
+import { reportInputsChanged, revisionHash } from "../orchestration/revision.js";
 import { visibleOutput } from "../orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import { workspaceRevision } from "../orchestration/workspace.js";
@@ -113,16 +114,27 @@ export class Application implements ApplicationContext {
       this.store,
       this.outbox,
       () => this.platform,
-      (event) => {
+      (event, record) => {
         const task = this.store.get<Task>("tasks", event.taskId);
         const state = this.store.get<WorkflowState>(WORKFLOWS, event.taskId);
         return (
           task?.id === event.taskId &&
           task.orchestration?.mode === "workflow" &&
           state?.taskId === task.id &&
-          (event.userRevision !== this.taskOrchestrator.notificationRevision(task) ||
-            state.report?.id !== event.decision?.reportId)
+          (reportInputsChanged(
+            record.revisionEvidence,
+            event.userRevision,
+            this.taskOrchestrator.notificationInputs(task),
+          ) ||
+            (!!state.report && state.report.id !== event.decision?.reportId))
         );
+      },
+      (event) => {
+        const task = this.store.get<Task>("tasks", event.taskId);
+        if (!task || task.orchestration?.mode !== "workflow") return;
+        const inputs = this.taskOrchestrator.notificationInputs(task);
+        if (revisionHash(inputs) !== event.userRevision) return;
+        return { version: 1, revision: event.userRevision, inputs };
       },
     );
     this.approvals = new Approvals(this.store, this.herdr, () => this.platform, this.config.ui);

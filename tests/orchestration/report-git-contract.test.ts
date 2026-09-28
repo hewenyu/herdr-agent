@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { Application } from "../../src/app/application.js";
+import type { InboxRecord } from "../../src/app/inbox.js";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
@@ -14,7 +15,8 @@ import { workflowState } from "../../src/orchestration/state.js";
 import type { StatusBlock } from "../../src/orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
-import { logger, setup } from "../app/helpers.js";
+import type { TaskUserRevision } from "../../src/tasks/user-request.js";
+import { logger, message, setup } from "../app/helpers.js";
 import { branch, fixture, prUrl } from "./code-delivery-fixture.js";
 
 interface Internals {
@@ -675,6 +677,207 @@ for (const change of ["user_revision", "report"] as const)
       await h.close();
     }
   });
+
+for (const chatType of ["group", "private"] as const)
+  for (const action of ["pause", "complete"] as const)
+    test(`real Feishu ${chatType} ${action} provenance cannot discard a current failed report card`, async () => {
+      const h = await failedCardReport();
+      let restarted: Application | undefined;
+      const errors: unknown[] = [];
+      try {
+        h.store.set("task_orchestration_events", h.event.id, {
+          ...h.failedEvent,
+          notificationNextAttemptAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+        const report = structuredClone(h.state.report);
+        const before = h.scheduler.revision(h.app.tasks.get(h.actor, h.task.id));
+        h.engine.handler = async (turn) => {
+          try {
+            assert.equal(turn.actor.source, "feishu");
+            assert.equal(turn.actor.chatType, chatType);
+            const tool = turn.tools.find((entry) => entry.name === "task_action");
+            assert.ok(tool);
+            await tool.execute(
+              {
+                action,
+                ...(chatType === "private"
+                  ? {
+                      taskId: h.task.id,
+                      ...(action === "complete" ? { keepGroup: true, keepExecution: true } : {}),
+                    }
+                  : {}),
+              },
+              turn.actor,
+            );
+            return { text: "已记录本次控制操作。", messages: [] };
+          } catch (error) {
+            errors.push(error);
+            throw error;
+          }
+        };
+        const messageId = `${chatType}-${action}`;
+        await h.app.handlers().message({
+          ...message(
+            messageId,
+            action === "pause" ? "暂停一下，等我回来" : "验收通过，完成这个任务",
+            chatType === "group" ? h.chatId : "entry",
+          ),
+          chatType,
+          mentionedBot: true,
+        });
+        await h.app.inbox.drain();
+        assert.deepEqual(errors, []);
+        assert.equal(h.store.get<InboxRecord>("inbox", `message:${messageId}`)?.state, "done");
+        const provenance = h.store
+          .list<TaskUserRevision>("task_user_revisions")
+          .find((entry) => entry.source.messageId === messageId);
+        assert.equal(provenance?.usage, "control");
+        assert.equal(provenance?.taskId, h.task.id);
+        assert.equal(provenance?.source.source, "feishu");
+        assert.equal(h.scheduler.revision(h.app.tasks.get(h.actor, h.task.id)), before);
+        await h.scheduler.tick();
+        await h.app.tasks.reconcile(h.task.id);
+        assert.deepEqual(h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.report, report);
+        assert.equal(h.receipts.pendingInChat(h.chatId), true);
+        assert.equal(
+          h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+          undefined,
+        );
+        assert.equal(h.platform.deletions, 0);
+        await h.app.shutdown();
+        restarted = new Application({
+          config: h.config,
+          store: h.store,
+          engine: h.engine,
+          herdr: h.herdr,
+          platform: h.platform,
+          logger,
+        });
+        await restarted.tasks.reconcile(h.task.id);
+        assert.equal(
+          (restarted as unknown as Internals).reportDeliveries.pendingInChat(h.chatId),
+          true,
+        );
+        assert.equal(h.platform.deletions, 0);
+        assert.deepEqual(h.calls, { uploads: 1, files: 1, cards: 1 });
+        if (action === "complete") {
+          const pending = h.store.get<OrchestrationEvent>("task_orchestration_events", h.event.id);
+          assert.ok(pending);
+          h.store.set("task_orchestration_events", h.event.id, {
+            ...pending,
+            notificationNextAttemptAt: undefined,
+          });
+          const inputs = h.herdr.sends.length;
+          await (restarted as unknown as Internals).taskOrchestrator.tick();
+          await restarted.tasks.reconcile(h.task.id);
+          await (restarted as unknown as Internals).taskOrchestrator.tick();
+          assert.deepEqual(h.calls, { uploads: 1, files: 1, cards: 2 });
+          assert.equal(
+            h.herdr.sends.length,
+            inputs,
+            "completion resumes notification only, never native work",
+          );
+          assert.equal(h.platform.deletions, chatType === "group" ? 1 : 0);
+          assert.equal(
+            restarted.tasks.get(h.actor, h.task.id).status,
+            chatType === "group" ? "destroyed" : "completed",
+          );
+          assert.equal(
+            h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+            undefined,
+          );
+          assert.equal(
+            await (restarted as unknown as Internals).reportDeliveries.confirmed(
+              h.task.id,
+              h.event.id,
+              h.record.reportId,
+            ),
+            true,
+          );
+        }
+      } finally {
+        await restarted?.shutdown();
+        await h.close();
+      }
+    });
+
+for (const action of ["resume", "reopen"] as const)
+  test(`real Feishu ${action} retains an explicit report input revision`, async () => {
+    const h = await failedCardReport();
+    const errors: unknown[] = [];
+    try {
+      if (action === "reopen")
+        await h.app.tasks.action(
+          { ...h.actor, messageId: "complete-keep" },
+          h.task.id,
+          "complete",
+          { keepExecution: true, keepGroup: true },
+        );
+      h.engine.handler = async (turn) => {
+        try {
+          assert.equal(turn.actor.source, "feishu");
+          const tool = turn.tools.find((entry) => entry.name === "task_action");
+          assert.ok(tool);
+          await tool.execute({ action, taskId: h.task.id }, turn.actor);
+          return { text: "已记录恢复操作。", messages: [] };
+        } catch (error) {
+          errors.push(error);
+          throw error;
+        }
+      };
+      await h.app.handlers().message(message(`real-${action}`, "请恢复这个任务", "entry"));
+      await h.app.inbox.drain();
+      assert.deepEqual(errors, []);
+      assert.equal(h.store.get<InboxRecord>("inbox", `message:real-${action}`)?.state, "done");
+      const source = h.store
+        .list<TaskUserRevision>("task_user_revisions")
+        .find((entry) => entry.source.messageId === `real-${action}`);
+      assert.equal(source?.usage, "input");
+      assert.notEqual(
+        h.scheduler.revision(h.app.tasks.get(h.actor, h.task.id)),
+        h.failedEvent.userRevision,
+      );
+      assert.equal(h.receipts.pendingInChat(h.chatId), false);
+      assert.equal(
+        h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired?.reason,
+        "stale_report",
+      );
+      assert.deepEqual(h.calls, { uploads: 1, files: 1, cards: 1 });
+    } finally {
+      await h.close();
+    }
+  });
+
+test("legacy partial reports without revision evidence keep their barrier until an actual replacement report exists", async () => {
+  const h = await failedCardReport();
+  try {
+    const { revisionEvidence: _evidence, ...legacy } = h.record;
+    h.store.set("workflow_report_deliveries", h.event.id, legacy);
+    const current = h.app.tasks.get(h.actor, h.task.id);
+    h.app.tasks.records.save({
+      ...current,
+      requirements: "新的需求，但历史回执不能推造旧需求快照",
+    });
+    assert.equal(h.receipts.pendingInChat(h.chatId), true);
+    assert.equal(
+      h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired,
+      undefined,
+    );
+    h.block.reportSections = Object.fromEntries(
+      h.state.plan.deliveryRequirements.map((name) => [name, "替代报告实际产出"]),
+    );
+    await h.publish();
+    assert.notEqual(h.state.report?.id, h.record.reportId);
+    assert.equal(h.receipts.pendingInChat(h.chatId), false);
+    assert.equal(
+      h.store.get<ReportDelivery>("workflow_report_deliveries", h.event.id)?.retired?.reason,
+      "stale_report",
+    );
+    assert.deepEqual(h.calls, { uploads: 1, files: 1, cards: 1 });
+  } finally {
+    await h.close();
+  }
+});
 
 for (const notificationState of ["retryable", "sending", "uncertain"] as const)
   test(`confirmed ${notificationState} receipt revalidates Git after restart without resending or rewriting the envelope`, async () => {

@@ -58,6 +58,7 @@ export async function conversation(
     let characters = 0;
     let entryCount = 0;
     let truncated = false;
+    let earlierRecords = false;
     for await (const line of nativeInputLines(file, size)) {
       const start = offset;
       offset = line.afterOffset;
@@ -79,12 +80,14 @@ export async function conversation(
       characters += compact.reduce((sum, entry) => sum + entry.text.length, 0);
       entryCount += compact.length;
       collected.push({ offset: start, entries: compact });
-      while (entryCount > 40 || (characters > 24_000 && collected.length > 1)) {
+      while (collected.length > 1 && (entryCount > 40 || characters > 24_000)) {
         // Keep all entries from a native record together: pagination is by record offset.
+        // A single oversized record must survive so its offset remains reachable.
         const removed = collected.shift();
         characters -= removed?.entries.reduce((sum, entry) => sum + entry.text.length, 0) ?? 0;
         entryCount -= removed?.entries.length ?? 0;
         truncated = true;
+        earlierRecords = true;
       }
       if (entries.some((entry) => entry.text.length > 4000)) truncated = true;
     }
@@ -105,7 +108,7 @@ export async function conversation(
     return {
       entries: collected.flatMap((item) => item.entries),
       cursor:
-        truncated && first !== undefined
+        earlierRecords && first !== undefined
           ? Buffer.from(JSON.stringify({ binding, inode, device, before: first })).toString(
               "base64url",
             )
