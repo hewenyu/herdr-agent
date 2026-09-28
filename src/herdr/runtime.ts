@@ -6,13 +6,7 @@ import { TranscriptResolver } from "../transcripts/resolver.js";
 import { HerdrClient } from "./client.js";
 import { AgentControl } from "./control.js";
 import { createWorkspace, startAgent } from "./lifecycle.js";
-import {
-  cleanScreen,
-  directoryTrustKeys,
-  parseOptions,
-  showsStartupMenu,
-  trustKeys,
-} from "./screen.js";
+import { cleanScreen, parseOptions } from "./screen.js";
 import { resolveSocketPath } from "./socket-path.js";
 import { HerdrTransport } from "./transport.js";
 
@@ -47,30 +41,20 @@ export class HerdrRuntime implements HerdrPort {
 
   async screen(ref: ExecutionRef, signal?: AbortSignal): Promise<AgentScreen> {
     const agent = await this.control.current(ref, signal);
-    let read = await this.client.read(
-      ref.paneId,
-      agent.status === "blocked" ? "detection" : "visible",
-      signal,
-    );
-    if (agent.status === "blocked") {
-      const visible = await this.client.read(ref.paneId, "visible", signal);
-      if (
-        !visible.truncated &&
-        (showsStartupMenu(visible.text) ||
-          directoryTrustKeys(ref.kind, visible.text, ref.cwd) ||
-          (ref.kind === "codex" && trustKeys(visible.text)))
-      )
-        read = visible;
-    }
+    // Choices depend on the current visible UI, not a version-specific detection slice.
+    const read = await this.client.read(ref.paneId, "visible", signal);
     const text = cleanScreen(read.text);
     const options = read.truncated ? [] : parseOptions(text);
-    // Unnumbered native menus still need an explicit human navigation path.
-    // These choices never become automatic approval keys.
-    if (agent.status === "blocked" && !read.truncated && text.trim() && !options.length) {
+    // Unnumbered menus expose one navigation key at a time; selection is re-read
+    // after every key rather than inferred from an old menu or a key sequence.
+    if (agent.status === "blocked" && !read.truncated && text.trim()) {
       options.push(
         { key: "up", label: "上移选择（不确认）" },
         { key: "down", label: "下移选择（不确认）" },
         { key: "enter", label: "确认当前选项（Enter）" },
+        { key: "tab", label: "Tab：移动焦点（仅在屏幕明确支持时选择）" },
+        { key: "y", label: "发送 y（仅在屏幕明确支持此按键且含义符合任务时选择）" },
+        { key: "n", label: "发送 n（仅在屏幕明确支持此按键且含义符合任务时选择）" },
       );
     }
     return {
@@ -78,6 +62,8 @@ export class HerdrRuntime implements HerdrPort {
       text: read.truncated ? `${text}\n[屏幕读取被截断]` : text,
       question: text,
       options,
+      source: "visible",
+      truncated: read.truncated,
     };
   }
 

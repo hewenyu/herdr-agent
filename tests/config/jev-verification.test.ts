@@ -11,6 +11,7 @@ test("Jev key does not enable private ingress and explicit operation settings su
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const load = () => loadConfig({ stateDir, home: stateDir, cwd: stateDir, env: {} });
   assert.equal(load().jev?.ingressEnabled, false);
+  assert.equal(load().jev?.apiKey, "");
   await writeFile(
     join(stateDir, "config.toml"),
     `[jev]
@@ -36,6 +37,7 @@ verify_timeout = "30s"
     timeoutMs: 4000,
     confidenceThreshold: 0.9,
     ingressEnabled: false,
+    approvalsEnabled: true,
     stallRounds: 5,
   });
   assert.deepEqual(config.catalog.projects[0]?.verify, ["npm run check"]);
@@ -54,6 +56,12 @@ verify_timeout = "30s"
     () => validateConfig({ ...config, jev: { ...jev, ingressEnabled: true, apiKey: "" } }),
     { code: "jev_key" },
   );
+  await writeFile(
+    join(stateDir, "config.toml"),
+    '[jev]\napi_key="fixture-secret"\napprovals_enabled=false\n',
+  );
+  assert.equal(load().jev?.approvalsEnabled, false);
+  assert.equal(load().jev?.ingressEnabled, false);
 });
 
 test("TOML verification rejects malformed command lists and out-of-range timeout", async (t) => {

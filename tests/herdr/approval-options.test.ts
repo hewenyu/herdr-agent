@@ -111,8 +111,38 @@ test("runtime keeps unrecognized live menus navigable and never trusts truncated
   };
   assert.deepEqual(
     (await runtime.screen(ref)).options.map((choice) => choice.key),
-    ["up", "down", "enter"],
+    ["up", "down", "enter", "tab", "y", "n"],
   );
   truncated = true;
   assert.deepEqual((await runtime.screen(ref)).options, []);
+});
+
+test("redesigned letter-only permission menus expose y/n without sending native keys", async () => {
+  const ref: ExecutionRef = { paneId: "w1:p1", workspaceId: "w1", kind: "claude", cwd: "/tmp" };
+  const runtime = new HerdrRuntime({ socket: "/not-used" });
+  const text = "Project access vNext\nRead /tmp for this task? [y/N]\nOnly y or n is accepted.";
+  const calls: string[] = [];
+  runtime.client.transport.call = async (method) => {
+    calls.push(method);
+    if (method === "agent.get")
+      return {
+        agent: {
+          pane_id: ref.paneId,
+          workspace_id: ref.workspaceId,
+          agent: ref.kind,
+          cwd: ref.cwd,
+          agent_status: "blocked",
+          state_change_seq: 1,
+          interactive_ready: true,
+          launch_pending: false,
+        },
+      };
+    if (method === "agent.read") return { read: { text, truncated: false } };
+    throw new Error(`Unexpected write: ${method}`);
+  };
+  const screen = await runtime.screen(ref);
+  assert.equal(screen.text, text);
+  assert.equal(screen.question, text);
+  for (const key of ["y", "n"]) assert.ok(screen.options.some((option) => option.key === key));
+  assert.deepEqual(calls, ["agent.get", "agent.read"]);
 });

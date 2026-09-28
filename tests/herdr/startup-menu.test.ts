@@ -75,7 +75,7 @@ test("manual approval receives the visible startup menu instead of stale herdr d
   assert.equal(screen.text, menu);
   assert.deepEqual(
     screen.options.map((option) => option.key),
-    ["1", "2", "3"],
+    ["1", "2", "3", "up", "down", "enter", "tab", "y", "n"],
   );
   assert.ok(transport.calls.every((method) => ["agent.get", "agent.read"].includes(method)));
 });

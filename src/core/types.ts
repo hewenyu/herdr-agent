@@ -75,6 +75,8 @@ export interface AgentScreen {
   text: string;
   question: string;
   options: ScreenOption[];
+  source?: "visible" | "detection";
+  truncated?: boolean;
 }
 
 export interface TranscriptEntry {

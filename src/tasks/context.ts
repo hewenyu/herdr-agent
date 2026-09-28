@@ -16,6 +16,8 @@ export interface NoticeUnavailable {
 export interface TaskHooks {
   /** Re-observe a blocked menu once when its presentation parser changes. */
   blockedVersion?: string;
+  /** Automatic navigation/retry must re-observe menus even if stateSeq is unchanged. */
+  recheckBlocked?: () => boolean;
   changed?(task: Task): void;
   output?(task: Task, participant: Participant, entry: TranscriptEntry): Promise<void>;
   /** Read-only proof that the existing output envelope is already delivered. */

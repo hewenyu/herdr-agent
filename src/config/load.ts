@@ -226,6 +226,7 @@ export function loadConfig(
       timeoutMs: duration(jev.timeout, 10_000),
       confidenceThreshold: number(jev.confidence_threshold, 0.8),
       ingressEnabled: bool(jev.ingress_enabled, false),
+      approvalsEnabled: bool(jev.approvals_enabled, true),
       stallRounds: number(jev.stall_rounds, 3),
     },
     catalog,
