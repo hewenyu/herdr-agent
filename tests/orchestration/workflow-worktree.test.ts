@@ -77,6 +77,7 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
     });
   };
   const replies: string[] = [];
+  const controller = new AbortController();
   const options = {
     store: h.store,
     config: h.config,
@@ -84,7 +85,7 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
     engine,
     fetch,
     logger,
-    signal: new AbortController().signal,
+    signal: controller.signal,
     tasks: () => h.service,
     tools: () => [],
     retryDelayMs: 0,
@@ -94,7 +95,17 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
   };
   const state = () => h.store.get<WorkflowState>(WORKFLOWS, task.id);
   const events = () => h.store.list<OrchestrationEvent>("task_orchestration_events");
-  return { ...h, task, source, options, state, events, replies, modelCalls: () => modelCalls };
+  return {
+    ...h,
+    task,
+    source,
+    controller,
+    options,
+    state,
+    events,
+    replies,
+    modelCalls: () => modelCalls,
+  };
 }
 
 for (const [version, recovered] of [
@@ -363,6 +374,51 @@ for (const change of ["readiness", "directories"] as const)
     } finally {
       await h.internals.workflow.verification.cancel(h.task.id);
       await ticking;
+      h.close();
+    }
+  });
+
+for (const change of ["requirements", "shutdown with directory change"] as const)
+  test(`cancelled verification cannot overwrite newer workflow state after ${change}`, async () => {
+    const h = await verificationFixture(true);
+    let running: Promise<void> | undefined;
+    try {
+      running = h.worker.tick();
+      for (let attempt = 0; attempt < 1000 && !existsSync(h.marker); attempt++)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(existsSync(h.marker), true);
+      h.service.records.save({
+        ...h.ready,
+        ...(change === "requirements"
+          ? { requirements: `${h.ready.requirements}\n用户新增了验收要求。` }
+          : { directories: [h.source] }),
+      });
+      const state = h.state();
+      assert.ok(state);
+      state.issues.push({
+        id: "newer-review",
+        description: "新版要求待核查。",
+        status: "open",
+        blocking: true,
+        evidenceRefs: [],
+        raisedBy: "user",
+        responses: [],
+      });
+      h.store.set(WORKFLOWS, h.task.id, state);
+      if (change === "shutdown with directory change") h.controller.abort();
+      await running;
+      assert.equal(h.runs()[0]?.status, "cancelled");
+      assert.equal(h.runs()[0]?.exitConfirmed, true);
+      assert.deepEqual(
+        h.state(),
+        state,
+        "old cancellation must not save its stale workflow snapshot",
+      );
+      assert.deepEqual(h.state()?.evidence, []);
+    } finally {
+      h.controller.abort();
+      await h.internals.workflow.verification.cancel(h.task.id);
+      await running;
       h.close();
     }
   });

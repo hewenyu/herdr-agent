@@ -836,8 +836,23 @@ export class WorkflowOrchestrator {
     if (!candidate || !this.verification) fail("workflow_verify", "缺少验证候选。");
     const cancellation = new AbortController();
     let interrupted: unknown;
+    let invalidated = false;
+    const inputsCurrent = () => {
+      // Pause and shutdown prevent new effects, but still permit unchanged-input failure audit.
+      const current = this.ports.store.get<Task>("tasks", task.id);
+      return (
+        !!current &&
+        workspaceReady(current) &&
+        sameWorkspace(task, current) &&
+        this.ports.revision(current) === event.userRevision
+      );
+    };
     const monitor = () => {
       try {
+        if (!inputsCurrent()) {
+          invalidated = true;
+          cancellation.abort();
+        }
         this.assertWorkspace(task, event);
       } catch (error) {
         interrupted ??= error;
@@ -855,14 +870,22 @@ export class WorkflowOrchestrator {
       );
       if (run.status === "unknown")
         fail("workflow_verify_unknown", "验证执行状态尚未确认；保留目录阻塞，不能自动重跑。");
-      // A cancelled attempt is audit history, never evidence against the current workspace.
-      // Its retryOf candidate receives a new decision identity and must be selected again.
-      if (run.status === "cancelled" && run.exitConfirmed) return;
-      if (interrupted) throw interrupted;
-      this.assertWorkspace(task, event);
+      const cancelled = run.status === "cancelled" && run.exitConfirmed;
+      // Lifecycle cancellation keeps failed evidence; workspace/revision invalidation does not.
+      // Either cancelled run may be selected again through its existing retryOf identity.
+      if (cancelled) {
+        if (invalidated || !inputsCurrent()) return;
+      } else {
+        if (interrupted) throw interrupted;
+        this.assertWorkspace(task, event);
+      }
       const after = await workspaceRevision(task.directories);
-      if (interrupted) throw interrupted;
-      this.assertWorkspace(task, event);
+      if (cancelled) {
+        if (invalidated || !inputsCurrent()) return;
+      } else {
+        if (interrupted) throw interrupted;
+        this.assertWorkspace(task, event);
+      }
       const result =
         run.status === "passed" && after === candidate.artifactRevision ? "passed" : "failed";
       if (!state.evidence.some((entry) => entry.verificationId === run.id))
