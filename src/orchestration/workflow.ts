@@ -92,7 +92,13 @@ export interface WorkflowState {
   /** Existing user hash before adding the plan and phase. */
   userRevision: string;
   /** Frozen with the first discussion plan, before any node; resumes never reset source. */
-  documentSource?: { directories: string[]; paths: string[]; revision: string };
+  documentSource?: {
+    directories: string[];
+    paths: string[];
+    revision: string;
+    /** Exact formerly writable documents remain protected even when Git ignores them. */
+    readonlyDocuments?: Array<{ path: string; hash: string | null }>;
+  };
   nodes: Record<string, NodeProgress>;
   /** Cumulative implementation authors across retries, plan versions and source snapshots. */
   implementationParticipants?: string[];
