@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import type { FileLog } from "../app/file-log.js";
 import { webAssets } from "../build-assets.js";
+import { COMMIT, VERSION } from "../build-info.js";
 import type { AppConfig } from "../config/types.js";
 import { validateConfig } from "../config/validate.js";
 import { OperationError, safeError } from "../core/errors.js";
@@ -37,10 +39,21 @@ export async function service(
   let platform: PlatformPort | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let authorization: Promise<void> | undefined;
+  let log: FileLog | undefined;
+  let logAnnounced = false;
+  const announceLog = () => {
+    if (!log?.path || logAnnounced) return;
+    deps.stdout(
+      args.json ? JSON.stringify({ event: "log_ready", path: log.path }) : `日志：${log.path}`,
+    );
+    logAnnounced = true;
+  };
   const ticks = new Set<Promise<void>>();
   const tick = () => {
     if (signal.aborted || !app) return;
     const operation = app.tick().catch((error: unknown) => {
+      const { code, outcome } = safeError(error);
+      deps.logger.error("调度周期未完成", { event: "service.tick_failed", code, outcome });
       deps.stderr(safeError(error).message);
     });
     ticks.add(operation);
@@ -61,8 +74,17 @@ export async function service(
   };
   try {
     signal.throwIfAborted();
+    log = deps.startLogging(config.stateDir);
+    deps.logger.info("本机服务启动", {
+      event: "service.started",
+      version: VERSION,
+      commit: COMMIT,
+      pid: process.pid,
+      command: args.command,
+    });
     store = deps.openStore(join(config.stateDir, "state.sqlite"));
     const migration = await deps.migrate(config.stateDir, store);
+    if (migration.warnings.length) announceLog();
     for (const warning of migration.warnings) deps.stderr(warning);
     const herdr = deps.createHerdr(config);
     app = deps.createApp(config, store, herdr, recoveryError);
@@ -71,6 +93,7 @@ export async function service(
       deps.stdout(args.json ? JSON.stringify({ event: "web_ready", url: web.url }) : web.url);
       if (args.open) await openBrowser(deps, web.url);
     }
+    announceLog();
     if (args.command === "configure") {
       app.authorization = { status: "offline", message: "本机记录查看模式；飞书连接未启动。" };
       app.runtime = recoveryError
@@ -102,6 +125,11 @@ export async function service(
           if (startupFailure) throw startupFailure;
           runningApp.runtime = { status: "ready", message: "飞书连接与任务调度已启动。" };
           runningApp.changed();
+          deps.logger.info("飞书连接与任务调度已就绪", {
+            event: "service.ready",
+            tasksEnabled: config.tasks.enabled,
+          });
+          deps.stdout(args.json ? JSON.stringify({ event: "service_ready" }) : "飞书连接已就绪。");
           startTicks();
           starting = false;
         },
@@ -114,6 +142,11 @@ export async function service(
       );
     }
     await aborted(signal);
+  } catch (error) {
+    announceLog();
+    const { code, outcome } = safeError(error);
+    deps.logger.error("本机服务未完成", { event: "service.failed", code, outcome });
+    throw error;
   } finally {
     control.abort();
     if (timer) clearInterval(timer);
@@ -125,6 +158,16 @@ export async function service(
     if (web) await clean(() => web?.close());
     await Promise.allSettled([...ticks]);
     if (store) await clean(() => store?.close());
+    for (const error of cleanupErrors) {
+      const { code, outcome } = safeError(error);
+      deps.logger.error("服务资源清理未完成", { event: "service.cleanup_failed", code, outcome });
+    }
+    deps.logger.info("本机服务已停止", {
+      event: "service.stopped",
+      pid: process.pid,
+      cleanupErrors: cleanupErrors.length,
+    });
+    log?.close();
     await clean(() => lock.release());
     for (const error of cleanupErrors) deps.stderr(safeError(error).message);
   }
@@ -204,6 +247,11 @@ async function authorize(
       if (signal.aborted) return;
       await stop().catch(() => {});
       const failure = safeError(error);
+      deps.logger.warn("服务连接未成功，稍后重试", {
+        event: "service.connection_failed",
+        code: failure.code,
+        outcome: failure.outcome,
+      });
       app.authorization = { status: "unknown", message: failure.message };
       app.runtime = { status: "waiting", message: "连接检查未成功，稍后重试；Web 仍可用。" };
       app.changed();

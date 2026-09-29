@@ -11,6 +11,22 @@ export function cleanScreen(raw: string): string {
     .join("");
 }
 
+/** Recognize an explicit confirmation hint, never infer Enter from a model explanation. */
+export function hasEnterConfirmation(lines: string[]): boolean {
+  return lines
+    .filter((line) => line.trim())
+    .slice(-3)
+    .some((line) =>
+      line
+        .split(/[·•]/u)
+        .some((part) =>
+          /^(?:(?:press\s+)?enter\s+(?:(?:to\s+)?(?:confirm|select|continue)|confirms)|confirm\s+with\s+enter|use\s+(?:the\s+)?(?:arrows|arrow keys),?\s+then\s+enter)\b/i.test(
+            part.trim(),
+          ),
+        ),
+    );
+}
+
 /** Bind a choice to the complete visible screen, including unnumbered selection state. */
 export function screenFingerprint(raw: string): string {
   return stableId("native-screen-v1", cleanScreen(raw));
@@ -172,7 +188,7 @@ export function showsStartupMenu(raw: string): boolean {
     .filter(Boolean);
   if (lines.at(-1) !== "Press enter to continue") return false;
   return (
-    lines.some((line) => /^[❯›>]\s+[1-9][.)]\s+\S/.test(line)) && parseOptions(raw).length >= 2
+    lines.some((line) => /^[❯›▶>]\s+[1-9][.)]\s+\S/.test(line)) && parseOptions(raw).length >= 2
   );
 }
 
@@ -184,10 +200,10 @@ export function parseOptions(raw: string): ScreenOption[] {
     ];
   const lines = cleanScreen(raw).split("\n");
   // A current unnumbered menu/composer must not expose an earlier numbered list.
-  const selected = lines.findLastIndex((line) => /^\s*[❯›>]\s+\S/.test(line));
+  const selected = lines.findLastIndex((line) => /^\s*[❯›▶>]\s+\S/.test(line));
   if (selected < 0) return [];
   const option = (line: string) => {
-    const match = /^(\s*[❯›>]?\s*)([1-9])[.)]\s+(.+)$/.exec(line);
+    const match = /^(\s*[❯›▶>]?\s*)([1-9])[.)]\s+(.+)$/.exec(line);
     return match?.[2] && match[3]
       ? { key: match[2], label: match[3].trim(), column: match[1]?.length ?? 0 }
       : undefined;
@@ -236,9 +252,9 @@ export function parseOptions(raw: string): ScreenOption[] {
   const before = lines.slice(0, start).join("").replace(/\s/g, "");
   // Native footers or the permission question establish menu context. Plain
   // numbered prose, even with a copied selection glyph, stays non-actionable.
-  return /Press enter to continue|Enter to (?:select|confirm)|↑\/↓ to navigate|esc to cancel/i.test(
-    tail,
-  ) || before.endsWith("Doyouwanttoproceed?")
+  return hasEnterConfirmation(lines.slice(selected + 1)) ||
+    /↑\/↓ to navigate|esc to cancel/i.test(tail) ||
+    before.endsWith("Doyouwanttoproceed?")
     ? run
     : [];
 }

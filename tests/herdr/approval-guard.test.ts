@@ -166,7 +166,7 @@ test("ASCII composer readback cannot prove a blocked menu navigation succeeded",
   assert.deepEqual(client.strokes, [["down"]]);
 });
 
-test("automatic numeric choice remains exactly one key even on a legacy Codex trust screen", async () => {
+test("explicit literal manual numeric input remains exactly one key on a legacy Codex trust screen", async () => {
   const client = new Client();
   client.text =
     "> You are in /tmp\nDo you trust the contents of this directory?\n1. Yes, continue\n› 2. No, quit\nPress enter to continue";

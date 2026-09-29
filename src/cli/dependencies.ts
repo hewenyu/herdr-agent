@@ -4,11 +4,12 @@ import { access } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Application } from "../app/application.js";
+import { type FileLog, openFileLog } from "../app/file-log.js";
 import { createLogger } from "../app/logger.js";
 import { loadConfig } from "../config/load.js";
 import type { AppConfig } from "../config/types.js";
 import { OperationError } from "../core/errors.js";
-import type { HerdrPort, PlatformPort } from "../core/ports.js";
+import type { HerdrPort, Logger, PlatformPort } from "../core/ports.js";
 import { FeishuPlatform } from "../feishu/index.js";
 import { HerdrRuntime } from "../herdr/index.js";
 import { migrateLegacy } from "../migration/index.js";
@@ -39,6 +40,8 @@ export interface Dependencies {
   signal: AbortSignal;
   stdout(line: string): void;
   stderr(line: string): void;
+  logger: Logger;
+  startLogging(stateDir: string): FileLog;
   loadConfig: typeof loadConfig;
   acquireLock: typeof acquireLock;
   openStore(path: string): Store;
@@ -64,13 +67,20 @@ export interface Dependencies {
 }
 export function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   const stderr = overrides.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const logger = createLogger(stderr);
+  let log: FileLog | undefined;
+  const logger = overrides.logger ?? createLogger((line) => (log ? log.write(line) : stderr(line)));
   return {
     signal: new AbortController().signal,
     stdout: (line) => {
       process.stdout.write(`${line}\n`);
     },
     stderr,
+    logger,
+    startLogging: (stateDir) => {
+      log?.close();
+      log = openFileLog(stateDir, stderr);
+      return log;
+    },
     loadConfig,
     acquireLock,
     openStore: (path) => new Store(path),

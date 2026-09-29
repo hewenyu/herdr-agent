@@ -1,137 +1,14 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { AutomaticApprovals } from "../../src/app/automatic-approvals.js";
 import { OperationError } from "../../src/core/errors.js";
+import { canonical, stableId } from "../../src/core/ids.js";
 import type { HerdrPort } from "../../src/core/ports.js";
-import type { ActorContext, AgentScreen, Participant, Task } from "../../src/core/types.js";
-import { screenFingerprint } from "../../src/herdr/screen.js";
-import { deferred, logger, message, setup } from "./helpers.js";
-
-async function fixture() {
-  const h = setup();
-  const created = (await h.app.dispatch("task.create", {
-    kind: "development",
-    title: "菜单自动选择",
-    requirements: "在项目内实现并验证功能。",
-    participants: [{ kind: "claude" }],
-    orchestration: { mode: "manual" },
-  })) as Task;
-  await h.app.tasks.reconcile(created.id);
-  const task = h.store.get<Task>("tasks", created.id);
-  assert.ok(task);
-  const participant = h.app.tasks.records.participants(task)[0] as Participant;
-  assert.ok(participant.execution);
-  const agent = h.herdr.agents.get(participant.execution.paneId);
-  assert.ok(agent);
-  agent.status = "blocked";
-  agent.terminalId = "native-terminal-1";
-  participant.status = "blocked";
-  h.app.tasks.records.saveParticipant(participant);
-  const screen: AgentScreen = {
-    agent: { ...agent },
-    text: "Permission dialog v999\n❯ Allow once\n  Cancel\nConfirm with Enter",
-    question: "Permission dialog v999",
-    source: "visible",
-    truncated: false,
-    options: [
-      { key: "up", label: "上移" },
-      { key: "down", label: "下移" },
-      { key: "enter", label: "确认当前项" },
-    ],
-  };
-  h.herdr.screen = async () => structuredClone(screen);
-  const actor: ActorContext = {
-    ownerId: task.ownerId,
-    chatId: task.chatId ?? "entry",
-    sessionId: "approval",
-    taskId: task.id,
-    messageId: "blocked",
-  };
-  const writes: string[] = [];
-  const requests: Array<Record<string, unknown>> = [];
-  let candidate = "key:enter";
-  let confidence = 0.98;
-  let beforeResponse: (() => void | Promise<void>) | undefined;
-  let writeFailure: OperationError | undefined;
-  (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
-    await guard.beforeWrite?.();
-    guard.assertCurrent?.();
-    assert.equal(guard?.screenFingerprint, screenFingerprint(screen.text));
-    assert.equal(guard?.terminalId, "native-terminal-1");
-    if (writeFailure?.outcome === "not_executed") throw writeFailure;
-    writes.push(key ?? "");
-    if (writeFailure) throw writeFailure;
-    if (key === "down")
-      screen.text = screen.text.replace("❯ Allow once\n  Cancel", "  Allow once\n❯ Cancel");
-    else {
-      screen.text = "Agent resumed";
-      screen.agent.status = "working";
-    }
-  };
-  h.engine.handler = async () => {
-    throw new Error("pi must not run for accepted Jev choice");
-  };
-  const fetchImpl: typeof fetch = async (_url, init) => {
-    const body = JSON.parse(String(init?.body));
-    requests.push(body);
-    await beforeResponse?.();
-    const ids = Object.keys(body.questions.action.criteria);
-    return new Response(
-      JSON.stringify({
-        model: "jev-1.13.0",
-        answers: {
-          action: {
-            type: "choice",
-            choice: candidate,
-            confidence,
-            probabilities: Object.fromEntries(ids.map((id) => [id, id === candidate ? 1 : 0])),
-          },
-        },
-        usage: { input_tokens: 30, output_tokens: 10 },
-      }),
-      { status: 200 },
-    );
-  };
-  let enabled = true;
-  const abort = new AbortController();
-  const controller = () =>
-    new AutomaticApprovals({
-      store: h.store,
-      herdr: h.herdr,
-      approvals: h.app.approvals,
-      engine: h.engine,
-      logger,
-      signal: abort.signal,
-      config: () => (enabled ? { apiKey: "fixture-secret" } : undefined),
-      fetch: fetchImpl,
-    });
-  return {
-    ...h,
-    task,
-    participant,
-    screen,
-    actor,
-    writes,
-    requests,
-    controller,
-    fetchImpl,
-    disable: () => {
-      enabled = false;
-    },
-    abort,
-    choose: (value: string, probability = 0.98) => {
-      candidate = value;
-      confidence = probability;
-    },
-    before: (run: () => void | Promise<void>) => {
-      beforeResponse = run;
-    },
-    failWrite: (error: OperationError) => {
-      writeFailure = error;
-    },
-    handle: () => controller().handle(task, participant, structuredClone(screen), actor),
-  };
-}
+import type { Task } from "../../src/core/types.js";
+import { ApprovalEffectError } from "../../src/herdr/approval-error.js";
+import { nativeMenu } from "../../src/herdr/native-menu.js";
+import { automaticApprovalFixture as fixture } from "./automatic-approval-helpers.js";
+import { deferred, message } from "./helpers.js";
 
 test("Jev confirms changed native text through the existing approval nonce without pi or cards", async () => {
   const h = await fixture();
@@ -158,13 +35,218 @@ test("Jev confirms changed native text through the existing approval nonce witho
   }
 });
 
+test("pi selects the Claude trust target; its incorrect cursor explanation cannot press Enter on No", async () => {
+  const h = await fixture();
+  try {
+    h.screen.text = await readFile(
+      new URL("../fixtures/native/claude-directory-trust.txt", import.meta.url),
+      "utf8",
+    );
+    h.choose("option:2", 0.39);
+    h.engine.handler = async (input) => {
+      await input.tools[0]?.execute(
+        {
+          candidateId: nativeMenu(h.screen.text)?.options[1]?.id,
+          reason: "当前已选中 Yes，直接确认",
+        },
+        input.actor,
+      );
+      return { text: "Selected", messages: [] };
+    };
+    (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
+      await guard.beforeWrite?.();
+      h.writes.push(key);
+      if (key === "down")
+        h.screen.text = h.screen.text.replace(
+          " ❯ No, exit\n   Yes, I trust this folder",
+          "   No, exit\n ❯ Yes, I trust this folder",
+        );
+      else h.screen.agent.status = "working";
+    };
+    assert.equal(await h.handle(), "handled");
+    assert.deepEqual(h.writes, ["down"]);
+    assert.match(h.screen.text, /❯ Yes, I trust this folder/);
+    assert.equal(await h.handle(), "handled");
+    assert.deepEqual(h.writes, ["down", "enter"]);
+    const decisions = h.store.list<{ selection: { source: string }; action: { key: string } }>(
+      "automatic_approval_decisions",
+    );
+    assert.ok(decisions.every((entry) => entry.selection.source === "pi"));
+    assert.deepEqual(decisions.map((entry) => entry.action.key).sort(), ["down", "enter"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("approval authorization uses bound user text rather than requirements invented by pi", async () => {
+  const h = await fixture();
+  try {
+    h.task.requirements = "模型错误摘要：不要自动确认。";
+    h.task.userRequest = {
+      source: "feishu",
+      ownerId: h.task.ownerId,
+      sessionId: "s1",
+      chatId: h.actor.chatId,
+      messageId: "m1",
+      eventId: "e1",
+      text: "请在项目中完成这项功能。",
+    };
+    h.app.tasks.records.save(h.task);
+    assert.equal(await h.handle(), "handled");
+    const state = h.requests[0]?.state as { userInput: Record<string, unknown> };
+    assert.equal(state.userInput.source, "user_request");
+    assert.equal(state.userInput.request, h.task.userRequest.text);
+    assert.equal(JSON.stringify(state).includes("模型错误摘要"), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("real logger retains actual input and failure phase without leaking selector or cause prose", async () => {
+  const h = await fixture();
+  try {
+    h.choose("option:1", 0.39);
+    h.engine.handler = async (input) => {
+      await input.tools[0]?.execute(
+        {
+          candidateId: nativeMenu(h.screen.text)?.options[0]?.id,
+          reason: "private-selector-details",
+        },
+        input.actor,
+      );
+      return { text: "Selected", messages: [] };
+    };
+    h.failWrite(
+      new ApprovalEffectError(
+        "input_unconfirmed",
+        "private-native-details",
+        "identity",
+        "input_effect_unknown",
+        new OperationError("agent_not_found", "private-cause-details"),
+      ),
+    );
+    assert.equal(await h.handle(), "manual");
+    const logs = h.logLines.map((line) => JSON.parse(line));
+    const selected = logs.find((entry) => entry.event === "approval.automatic_selected");
+    const failed = logs.find((entry) => entry.event === "approval.automatic_failed");
+    assert.equal(selected?.source, "pi");
+    assert.equal(selected?.jevConfidence, 0.39);
+    assert.equal(selected?.pressed, "enter");
+    assert.equal(failed?.pressed, "enter");
+    assert.equal(failed?.failurePhase, "identity");
+    assert.equal(failed?.causeCode, "agent_not_found");
+    assert.equal(failed?.readbackReason, "input_effect_unknown");
+    assert.ok(!h.logLines.join("\n").includes("private-"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("explicit y/n can advance to a different native control through shared approval readback", async () => {
+  const h = await fixture();
+  try {
+    h.screen.text = "Read project? [y/N]";
+    (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
+      await guard.beforeWrite?.();
+      h.writes.push(key);
+      if (key === "y") h.screen.text = "Permission\n❯ Allow once\n  Cancel\nEnter to confirm";
+      else h.screen.agent.status = "working";
+    };
+    assert.equal(await h.handle(), "handled");
+    assert.equal(await h.handle(), "handled");
+    assert.deepEqual(h.writes, ["y", "enter"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("changed question or countdown on the same y/n control cannot prove an input effect", async () => {
+  const h = await fixture();
+  try {
+    h.screen.text = "Read project, 10 seconds left? [y/N]";
+    (h.herdr as HerdrPort).answer = async (_ref, key) => {
+      h.writes.push(key);
+      h.screen.text = "Read project, 9 seconds left? [y/N]";
+    };
+    assert.equal(await h.handle(), "manual");
+    assert.equal(await h.handle(), "manual");
+    assert.deepEqual(h.writes, ["y"]);
+    const decision = h.store.list<{ state: string; error: string }>(
+      "automatic_approval_decisions",
+    )[0];
+    assert.equal(decision?.state, "uncertain");
+    assert.equal(decision?.error, "approval_refresh_required");
+  } finally {
+    await h.close();
+  }
+});
+
+test("unrecognized menus and model-generated raw keys cannot write native input", async () => {
+  const h = await fixture();
+  try {
+    h.choose("key:enter");
+    h.engine.handler = async () => ({ text: "Press Enter", messages: [] });
+    assert.equal(await h.handle(), "pending");
+    assert.deepEqual(h.writes, []);
+    h.screen.text = "Sign in\nEnter the unknown password to continue:";
+    h.screen.agent.stateSeq = "unrecognized";
+    assert.equal(await h.handle(), "manual");
+    assert.deepEqual(h.writes, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("upgrading a v1 raw-key decision preserves its waiting-user budget and never replays it", async () => {
+  const h = await fixture();
+  try {
+    h.choose("wait_user");
+    assert.equal(await h.handle(), "manual");
+    const entry = h.store.entries<{
+      id: string;
+      approvalNonce: string;
+      inputRevision: string;
+      userRevision: string;
+      observation: { userInput: Record<string, unknown> };
+      candidates: unknown[];
+    }>("automatic_approval_decisions")[0];
+    assert.ok(entry);
+    const [id, decision] = entry;
+    const legacyInput = {
+      ...Object.fromEntries(
+        Object.entries(decision.observation.userInput).filter(([key]) => key !== "source"),
+      ),
+      requirements: h.task.requirements,
+      boardDirectory: h.task.boardDirectory,
+    };
+    assert.equal(decision.userRevision, stableId(canonical(legacyInput)));
+    const legacyId = stableId("native-approval-v1", decision.approvalNonce, decision.inputRevision);
+    h.store.delete("automatic_approval_decisions", id);
+    h.store.set("automatic_approval_decisions", legacyId, {
+      ...decision,
+      id: legacyId,
+      observation: { ...decision.observation, userInput: legacyInput },
+      candidates: [
+        { id: "key:enter", description: "Confirm" },
+        { id: "wait_user", description: "Wait" },
+      ],
+    });
+    h.choose("option:1");
+    assert.equal(await h.handle(), "manual");
+    assert.equal(h.requests.length, 1);
+    assert.deepEqual(h.writes, []);
+  } finally {
+    await h.close();
+  }
+});
+
 test("successful confirmation observes another menu at the same stateSeq", async () => {
   const h = await fixture();
   try {
     (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
       await guard.beforeWrite?.();
       h.writes.push(key);
-      h.screen.text = `Different permission step ${h.writes.length}\n❯ Allow step ${h.writes.length}\n  Cancel`;
+      h.screen.text = `Different permission step ${h.writes.length}\n❯ Allow step ${h.writes.length}\n  Cancel\nEnter to select`;
     };
     assert.equal(await h.handle(), "handled");
     assert.equal(await h.handle(), "handled");
@@ -178,7 +260,7 @@ test("successful confirmation observes another menu at the same stateSeq", async
 test("no-selection retries keep backoff and attempt budget across controller reconstruction", async () => {
   const h = await fixture();
   try {
-    h.choose("key:enter", 0.3);
+    h.choose("option:1", 0.3);
     h.engine.handler = async () => ({ text: "已确认", messages: [] });
     for (let attempt = 1; attempt <= 3; attempt++) {
       assert.equal(await h.handle(), attempt === 3 ? "manual" : "pending");
@@ -214,7 +296,7 @@ test("a crash after effect reservation freezes automatic writes even on a later 
     h.store.set("automatic_approval_decisions", id, { ...decision, state: "executing" });
     h.screen.agent.stateSeq = "100";
     h.screen.text = "Next menu";
-    h.choose("key:enter");
+    h.choose("option:1");
     assert.equal(await h.handle(), "manual");
     assert.equal(h.requests.length, 1);
     assert.deepEqual(h.writes, []);
@@ -247,7 +329,7 @@ for (const menu of [
             throw new OperationError("stale_guard", "screen changed before write");
           };
         } else {
-          h.choose("key:enter", 0.3);
+          h.choose("option:1", 0.3);
           h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
         }
         for (let attempt = 1; attempt <= 3; attempt++) {
@@ -295,7 +377,7 @@ test("confirmed menu progress starts a fresh retry budget even when an earlier m
         throw new OperationError("stale_guard", "screen changed before write");
       }
       h.writes.push(key);
-      h.screen.text = calls % 2 ? "  Allow once\n❯ Cancel" : first;
+      h.screen.text = calls % 2 ? "  Allow once\n❯ Cancel\nEnter to select" : first;
     };
     for (let attempt = 0; attempt < 2; attempt++) {
       assert.equal(await h.handle(), "manual");
@@ -307,7 +389,7 @@ test("confirmed menu progress starts a fresh retry budget even when an earlier m
       .filter((d) => d.state === "executed");
     assert.deepEqual(executed.map((d) => d.attempts).sort(), [1, 1, 3]);
     assert.equal(h.requests.length, 5);
-    assert.deepEqual(h.writes, ["enter", "enter", "enter"]);
+    assert.deepEqual(h.writes, ["enter", "up", "enter"]);
   } finally {
     await h.close();
   }
@@ -318,7 +400,7 @@ test("verified manual confirmation restores selection for a later identical perm
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   try {
     const menu = h.screen.text;
-    h.choose("key:enter", 0.3);
+    h.choose("option:1", 0.3);
     h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
     for (let attempt = 1; attempt <= 3; attempt++) {
       assert.equal(await h.handle(), attempt < 3 ? "pending" : "manual");
@@ -337,7 +419,7 @@ test("verified manual confirmation restores selection for a later identical perm
     h.screen.agent.status = "blocked";
     h.screen.agent.stateSeq = "later-permission-after-work";
     h.screen.text = menu;
-    h.choose("key:enter");
+    h.choose("option:1");
     assert.equal(await h.handle(), "handled");
     assert.equal(h.requests.length, 4);
     assert.deepEqual(h.writes, ["enter", "enter"]);
@@ -350,11 +432,11 @@ test("navigation loops yield to the user across restarts without discussion roun
   const h = await fixture();
   try {
     const first = h.screen.text;
-    h.choose("key:down");
+    h.choose("option:2");
     (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
       await guard.beforeWrite?.();
       h.writes.push(key);
-      h.screen.text = h.screen.text === first ? "❯ Cancel\n  Allow once" : first;
+      h.screen.text = h.screen.text === first ? "❯ Cancel\n  Allow once\nEnter to select" : first;
     };
     for (let step = 0; step < 4; step++) assert.equal(await h.handle(), "handled");
     assert.equal(await h.handle(), "manual");
@@ -392,7 +474,7 @@ test("stale screen rejected without an effect can select a fresh observation aft
       await guard.beforeWrite?.();
       if (first) {
         first = false;
-        h.screen.text = "Changed menu\n❯ Confirm\n  Cancel";
+        h.screen.text = "Changed menu\n❯ Confirm\n  Cancel\nEnter to select";
         throw new OperationError("stale_guard", "screen changed");
       }
       h.writes.push(key);
@@ -419,9 +501,9 @@ for (const enabled of [true, false]) {
       h.participant.initialSent = true;
       h.participant.lastNotifiedState = h.screen.agent.stateSeq;
       h.app.tasks.records.saveParticipant(h.participant);
-      h.choose("key:down");
+      h.choose("option:2");
       await h.app.tasks.reconcile(h.task.id);
-      h.choose("key:enter");
+      h.choose("option:2");
       await h.app.tasks.reconcile(h.task.id);
       assert.deepEqual(h.writes, enabled ? ["down", "enter"] : []);
       assert.equal(h.requests.length, enabled ? 2 : 0);
@@ -435,10 +517,10 @@ for (const enabled of [true, false]) {
 test("unnumbered menu navigation re-reads selection even when stateSeq does not change", async () => {
   const h = await fixture();
   try {
-    h.choose("key:down");
+    h.choose("option:2");
     assert.equal(await h.handle(), "handled");
     assert.match(h.screen.text, /❯ Cancel/);
-    h.choose("key:enter");
+    h.choose("option:2");
     assert.equal(await h.handle(), "handled");
     assert.deepEqual(h.writes, ["down", "enter"]);
     assert.equal(h.store.list("automatic_approval_decisions").length, 2);
@@ -450,7 +532,7 @@ test("unnumbered menu navigation re-reads selection even when stateSeq does not 
 test("low-confidence Jev uses pi only on the same candidates; plain text cannot execute", async () => {
   const h = await fixture();
   try {
-    h.choose("key:enter", 0.4);
+    h.choose("option:1", 0.4);
     h.engine.handler = async (input) => {
       assert.equal(input.tools[0]?.name, "approval_decide");
       await assert.rejects(
@@ -458,7 +540,10 @@ test("low-confidence Jev uses pi only on the same candidates; plain text cannot 
           Promise.resolve(),
       );
       await input.tools[0]?.execute(
-        { candidateId: "key:enter", reason: "已核对当前任务与选中项" },
+        {
+          candidateId: nativeMenu(h.screen.text)?.options[0]?.id,
+          reason: "目标是 Allow once，程序核对游标",
+        },
         input.actor,
       );
       return { text: "选择完毕", messages: [] };
@@ -475,7 +560,7 @@ test("low-confidence Jev uses pi only on the same candidates; plain text cannot 
   }
   const textOnly = await fixture();
   try {
-    textOnly.choose("key:enter", 0.4);
+    textOnly.choose("option:1", 0.4);
     textOnly.engine.handler = async () => ({ text: "已自动确认", messages: [] });
     assert.equal(await textOnly.handle(), "pending");
     assert.equal(await textOnly.handle(), "pending");
@@ -737,7 +822,7 @@ for (const type of ["task", "group"] as const) {
         h.config.jev.apiKey = "fixture-secret";
         t.mock.method(globalThis, "fetch", h.fetchImpl);
         if (failure === "no_selection") {
-          h.choose("key:enter", 0.3);
+          h.choose("option:1", 0.3);
           h.engine.handler = async () => ({ text: "No tool selection", messages: [] });
         } else {
           let calls = 0;
@@ -776,7 +861,7 @@ for (const type of ["task", "group"] as const) {
         // An explicit user resume is semantic input and may start another epoch.
         await h.app.tasks.action({ ...h.actor, messageId: "pause-budget" }, h.task.id, "pause");
         await h.app.tasks.action({ ...h.actor, messageId: "resume-budget" }, h.task.id, "resume");
-        h.choose("key:enter");
+        h.choose("option:1");
         assert.equal(await h.handle(), "handled");
         assert.equal(h.requests.length, 4);
         assert.deepEqual(h.writes, ["enter"]);
@@ -792,11 +877,11 @@ test("harmless lifecycle ingress cannot clear successful navigation-loop history
   try {
     assert.ok(h.task.remoteTaskId);
     const first = h.screen.text;
-    h.choose("key:down");
+    h.choose("option:2");
     (h.herdr as HerdrPort).answer = async (_ref, key, guard) => {
       await guard.beforeWrite?.();
       h.writes.push(key);
-      h.screen.text = h.screen.text === first ? "❯ Cancel\n  Allow once" : first;
+      h.screen.text = h.screen.text === first ? "❯ Cancel\n  Allow once\nEnter to select" : first;
     };
     for (let step = 0; step < 4; step++) {
       h.app.inbox.enqueue("task", `loop-notice:${step}`, { id: h.task.remoteTaskId });

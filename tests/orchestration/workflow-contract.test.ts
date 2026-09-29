@@ -10,7 +10,7 @@ import { participantPrompt, participantPromptCandidates } from "../../src/tasks/
 import { Engine } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-test("only new eligible tasks default to workflow and explicit historical modes are preserved", async () => {
+test("new automatic tasks use workflow while existing tasks and manual controls are preserved", async () => {
   const h = setup();
   try {
     h.config.ai.enabled = true;
@@ -27,7 +27,7 @@ test("only new eligible tasks default to workflow and explicit historical modes 
       expected: "workflow" | "manual" | "model" | undefined;
     }> = [
       { input: {}, expected: "workflow" },
-      { input: { orchestration: { mode: "model" } }, expected: "model" },
+      { input: { orchestration: { mode: "model" } }, expected: "workflow" },
       { input: { orchestration: { mode: "manual" } }, expected: "manual" },
       { input: { discussion: { mode: "manual" } }, expected: undefined },
       { input: { discussion: { mode: "round_robin" } }, expected: undefined },

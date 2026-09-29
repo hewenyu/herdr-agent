@@ -3,7 +3,9 @@ import { writeFile } from "node:fs/promises";
 import { approvalCandidates, chooseApproval } from "../../src/app/approval-choice.js";
 import { loadConfig } from "../../src/config/load.js";
 import type { ExecutionRef } from "../../src/core/types.js";
+import { menuAction, nativeMenu } from "../../src/herdr/native-menu.js";
 import { HerdrRuntime } from "../../src/herdr/runtime.js";
+import { skippedJev } from "../../src/orchestration/jev.js";
 import { PiEngine } from "../../src/runtime/engine.js";
 
 const config = loadConfig();
@@ -17,6 +19,12 @@ const ref: ExecutionRef = {
   kind: "claude",
 };
 const cases = [
+  {
+    id: "codex-folder-access",
+    screen:
+      "Folder access\n/work/project\nTrust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Back to Agent Command Center\nenter continue · esc back",
+    expected: ["key:enter"],
+  },
   {
     id: "claude-shell-echo",
     screen:
@@ -79,50 +87,62 @@ for (const sample of cases.filter((sample) => !caseId || sample.id === caseId)) 
     throw new Error("The probe cannot execute native operations.");
   };
   const screen = await runtime.screen(ref);
-  const selection = await chooseApproval({
-    jev: config.jev,
-    id: sample.id,
-    actor: {
-      ownerId: "synthetic-owner",
-      taskId: "synthetic-task",
-      chatId: "synthetic",
-      sessionId: "synthetic",
-      messageId: sample.id,
-    },
-    engine: withPi
-      ? new PiEngine(config.ai)
-      : {
-          contextTokens: 16000,
-          async run() {
-            throw new Error("Probe records Jev only; no pi fallback call.");
-          },
-          async summarize() {
-            return "";
-          },
+  const menu = nativeMenu(screen.text);
+  const selection = menu
+    ? await chooseApproval({
+        jev: config.jev,
+        id: sample.id,
+        actor: {
+          ownerId: "synthetic-owner",
+          taskId: "synthetic-task",
+          chatId: "synthetic",
+          sessionId: "synthetic",
+          messageId: sample.id,
         },
-    state: {
-      userInput: {
-        request: "在 /work/project 实现功能并运行 npm test 验证，处理所需权限菜单。",
-        kind: "development",
-        revisions: [],
-      },
-      taskId: "synthetic-task",
-      participantId: "synthetic-participant",
-      kind: ref.kind,
-      directory: ref.cwd,
-      screen: screen.text,
-      options: screen.options,
-    },
-    candidates: approvalCandidates(screen.options),
-    signal: AbortSignal.timeout(150_000),
-  });
+        engine: withPi
+          ? new PiEngine(config.ai)
+          : {
+              contextTokens: 16000,
+              async run() {
+                throw new Error("Probe records Jev only; no pi fallback call.");
+              },
+              async summarize() {
+                return "";
+              },
+            },
+        state: {
+          userInput: {
+            source: "user_request",
+            request: "在 /work/project 实现功能并运行 npm test 验证，处理所需权限菜单。",
+            kind: "development",
+            revisions: [],
+          },
+          taskId: "synthetic-task",
+          participantId: "synthetic-participant",
+          kind: ref.kind,
+          directory: ref.cwd,
+          screen: screen.text,
+          menu,
+        },
+        candidates: approvalCandidates(menu),
+        signal: AbortSignal.timeout(150_000),
+      })
+    : {
+        source: "none",
+        candidateId: "wait_user",
+        reason: "unrecognized_menu",
+        jev: skippedJev(config.jev, "unrecognized_menu"),
+      };
+  const action =
+    menu && selection.candidateId ? menuAction(menu, selection.candidateId) : undefined;
   const result = {
     id: sample.id,
     screen: sample.screen,
     options: screen.options,
     expected: sample.expected,
     selection,
-    matched: !!selection.candidateId && sample.expected.includes(selection.candidateId),
+    action,
+    matched: sample.expected.includes(action ? `key:${action.key}` : (selection.candidateId ?? "")),
   };
   results.push(result);
   console.log(
@@ -131,6 +151,7 @@ for (const sample of cases.filter((sample) => !caseId || sample.id === caseId)) 
       matched: result.matched,
       source: selection.source,
       candidate: selection.candidateId,
+      actionKey: action?.key,
       confidence: selection.jev.confidence,
       status: selection.jev.status,
     }),
