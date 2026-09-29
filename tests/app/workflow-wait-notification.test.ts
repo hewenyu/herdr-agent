@@ -55,7 +55,8 @@ test("workflow evidence waits notify once across silent progress, repeated recon
     h.wait("same-evidence");
     await h.app.tasks.reconcile(h.task.id);
     assert.equal(h.notices().length, 1, "an actionable wait bypasses progress cooldown");
-    assert.match(h.notices()[0]?.text ?? "", /请在本任务会话补充相关要求、材料或检查结果/);
+    assert.match(h.notices()[0]?.text ?? "", /不能证明缺少你的需求或材料/);
+    assert.match(h.notices()[0]?.text ?? "", /查看当前卡点及失败原因/);
     assert.equal(h.notices()[0]?.chat, h.app.tasks.get(actor, h.task.id).chatId);
     const firstKey = h.notices()[0]?.key;
 

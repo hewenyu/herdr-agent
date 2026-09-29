@@ -26,6 +26,7 @@ import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
 import { assertTaskIngress, taskIngress } from "./task-ingress.js";
+import { workflowWaitText } from "./workflow-notifications.js";
 
 export interface SettledTaskOutput {
   taskId: string;
@@ -898,6 +899,21 @@ export class TaskOrchestrator {
     )
       return;
     let text = event.decision.reason;
+    if (
+      task.promptVersion === 3 &&
+      task.orchestration?.mode === "workflow" &&
+      event.decision.action === "wait"
+    ) {
+      const question = await workflowWaitText(this.options.store, event, () =>
+        this.assertCurrent(event),
+      );
+      if (question === undefined) {
+        event.state = "superseded";
+        this.save(event);
+        return;
+      }
+      text = question;
+    }
     if (event.decision.action === "deliver" && event.decision.reportId) {
       ({ task, text } = await validatedReport(event, {
         store: this.options.store,

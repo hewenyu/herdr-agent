@@ -45,7 +45,7 @@ import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
 import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
-import { quietWorkflow, workflowNotice } from "./workflow-notifications.js";
+import { currentWorkflowNotice, quietWorkflow } from "./workflow-notifications.js";
 import { compactReportCard } from "./workflow-report.js";
 
 interface ApplicationOptions {
@@ -762,8 +762,9 @@ export class Application implements ApplicationContext {
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
   ): Promise<NoticeUnavailable | undefined> {
     const workflow = quietWorkflow(task)
-      ? workflowNotice(task, kind, this.tasks.records.participants(task), this.store)
+      ? await currentWorkflowNotice(task, kind, this.tasks.records.participants(task), this.store)
       : undefined;
+    if (quietWorkflow(task) && !workflow) return;
     const signature =
       workflow?.evidenceFingerprint !== undefined
         ? stableId(task.id, kind, "evidence-wait", workflow.evidenceFingerprint)

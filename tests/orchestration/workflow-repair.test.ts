@@ -1,0 +1,211 @@
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  type OrchestrationEvent,
+  type SettledTaskOutput,
+  TaskOrchestrator,
+} from "../../src/app/task-orchestrator.js";
+import type { DecisionLog } from "../../src/orchestration/decision-log.js";
+import { handoffDirectory } from "../../src/orchestration/handoff.js";
+import {
+  WORKFLOW_RECOVERY,
+  type WorkflowRecoveryMaterial,
+} from "../../src/orchestration/receipt-recovery.js";
+import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
+import { Engine, logger } from "../app/helpers.js";
+import { actor, discussion, setup } from "../tasks/helpers.js";
+
+async function harness() {
+  const h = setup();
+  h.config.ai.enabled = true;
+  assert.ok(h.config.jev);
+  h.config.jev.apiKey = "fixture-only";
+  const repo = join(h.directory, "repo");
+  mkdirSync(repo);
+  writeFileSync(join(repo, "README.md"), "source stays unchanged");
+  await h.catalog.save({ name: "repair", directories: [repo], agent: "codex" });
+  const task = await h.service.create(actor, {
+    ...discussion,
+    project: "repair",
+    requirements: "双方轮流讨论小说阅读器设计。",
+    orchestration: { mode: "workflow" },
+  });
+  await h.service.reconcile(task.id);
+  const engine = new Engine();
+  engine.handler = async () => {
+    throw new Error("protocol repair must not call pi");
+  };
+  const calls: string[][] = [];
+  const replies: string[] = [];
+  const options = {
+    store: h.store,
+    config: h.config,
+    projects: h.catalog,
+    engine,
+    tasks: () => h.service,
+    tools: () => [],
+    logger,
+    signal: new AbortController().signal,
+    retryDelayMs: 0,
+    fetch: (async (_url, init) => {
+      const ids = Object.keys(JSON.parse(String(init?.body)).questions.action.criteria);
+      calls.push(ids);
+      const choice = ids.includes("use_template") ? "use_template" : ids[0];
+      return Response.json({
+        model: "jev-fixture",
+        answers: {
+          action: {
+            type: "choice",
+            choice,
+            confidence: 0.99,
+            probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
+          },
+        },
+        usage: { input_tokens: 10, output_tokens: 1 },
+      });
+    }) as typeof fetch,
+    onReply: async (_task: unknown, text: string) => {
+      replies.push(text);
+    },
+  };
+  const worker = new TaskOrchestrator(options);
+  const state = () => h.store.get<WorkflowState>(WORKFLOWS, task.id) as WorkflowState;
+  const events = () => h.store.list<OrchestrationEvent>("task_orchestration_events");
+  const finish = async (nodeId: string, malformed = false) => {
+    const progress = state().nodes[nodeId];
+    assert.ok(progress?.operationId);
+    const participant = h.service.records
+      .participants(task)
+      .find((p) => p.id === progress.participantId);
+    assert.ok(participant?.execution);
+    const directory = handoffDirectory(h.config.stateDir, task.id, progress.operationId);
+    const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8"));
+    writeFileSync(
+      join(directory, "notes.md"),
+      "已读取对方初稿。我建议将翻页原型提前，并同意本地优先。需要对方回应。\n",
+    );
+    writeFileSync(
+      join(directory, "result.json"),
+      JSON.stringify({
+        ...request,
+        summary: "已完成实质评审",
+        artifactRefs: [join(directory, "notes.md")],
+      }),
+    );
+    h.herdr.finish(
+      participant.execution.paneId,
+      malformed ? "完成评审，详见本轮 notes.md。" : `已回应对方，见 ${join(directory, "notes.md")}`,
+    );
+    await h.service.reconcile(task.id);
+    return { directory, operationId: progress.operationId };
+  };
+  await worker.tick();
+  await worker.tick();
+  await finish("opening-1");
+  await worker.tick();
+  return { ...h, task, repo, worker, options, state, events, finish, calls, replies, engine };
+}
+
+test("a rejected Claude handoff is repaired once through the existing dispatch chain without Jev or pi", async () => {
+  const h = await harness();
+  try {
+    const initial = await h.finish("opening-2", true);
+    const calls = h.calls.length;
+    await h.worker.tick();
+    const progress = h.state().nodes["opening-2"];
+    assert.equal(progress?.status, "dispatched");
+    assert.notEqual(progress.operationId, initial.operationId);
+    assert.equal(h.calls.length, calls, "a known protocol repair is deterministic");
+    assert.equal(h.engine.calls.length, 0);
+    const repairEvent = h.events().find((event) => event.decision?.reason === "receipt_repair");
+    assert.equal(repairEvent?.decision?.source, "rule");
+    assert.equal(repairEvent?.dispatches.length, 1);
+    assert.equal(repairEvent?.dispatches[0]?.state, "sent");
+    const material = h.store.list<WorkflowRecoveryMaterial>(WORKFLOW_RECOVERY)[0];
+    assert.equal(material?.validation, "unverified");
+    assert.match(material?.notes ?? "", /翻页原型提前/);
+    assert.equal(
+      h.store.get("workflow_conversation_evidence", material?.outputId ?? ""),
+      undefined,
+    );
+    const log = h.store.get<DecisionLog>("workflow_decisions", repairEvent?.selectionLogId ?? "");
+    assert.match(JSON.stringify(log?.snapshot), /unverified.*翻页原型提前/s);
+    const directory = handoffDirectory(
+      h.config.stateDir,
+      h.task.id,
+      progress.operationId as string,
+    );
+    assert.match(readFileSync(join(directory, "brief.md"), "utf8"), /修复|修正/);
+    assert.match(readFileSync(join(directory, "prior-notes.md"), "utf8"), /翻页原型提前/);
+    const count = h.herdr.sends.length;
+    await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.herdr.sends.length, count, "worker restart does not repeat a live dispatch");
+    await h.finish("opening-2");
+    await h.worker.tick();
+    assert.equal(h.state().nodes["opening-2"]?.status, "completed");
+    assert.equal(h.state().nodes["opening-2"]?.repair, undefined);
+    assert.equal(h.state().assistanceWait, undefined);
+    assert.equal(h.replies.length, 0);
+  } finally {
+    h.close();
+  }
+});
+
+test("the same invalid handoff after targeted repair stops with a concrete internal diagnostic", async () => {
+  const h = await harness();
+  try {
+    await h.finish("opening-2", true);
+    await h.worker.tick();
+    await h.finish("opening-2", true);
+    await h.worker.tick();
+    assert.equal(h.state().nodes["opening-2"]?.repair?.repeated, 2);
+    const failed = h.events().find((event) => event.error?.code === "workflow_receipt_no_progress");
+    assert.equal(failed?.state, "attention");
+    assert.match(h.replies[0] ?? "", /交接回执连续出现相同错误/);
+    assert.match(h.replies[0] ?? "", /无需补交业务需求/);
+    const sends = h.herdr.sends.length;
+    const calls = h.calls.length;
+    for (let i = 0; i < 3; i++) await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.herdr.sends.length, sends);
+    assert.equal(h.calls.length, calls);
+    assert.equal(h.replies.length, 1);
+  } finally {
+    h.close();
+  }
+});
+
+test("an old blocked receipt and assistance wait are recovered after upgrade without accepting the old output", async () => {
+  const h = await harness();
+  try {
+    await h.finish("opening-2", true);
+    const s = h.state();
+    const progress = s.nodes["opening-2"];
+    assert.ok(progress?.operationId && progress.participantId);
+    const originalOperation = progress.operationId;
+    const output = h.store
+      .list<SettledTaskOutput>("task_settled_outputs")
+      .find((entry) => entry.participantId === progress.participantId);
+    assert.ok(output);
+    // This is the persisted shape produced by v0.3.22 after rejecting a receipt.
+    progress.status = "blocked";
+    progress.outputId = output.entry.id;
+    progress.error = "参与者交接缺少本轮材料位置，不能将无归属输出视为完成。";
+    s.consumedOutputs.push(output.entry.id);
+    s.assistanceWait = {
+      eventId: "old-deferred",
+      fingerprint: "old-policy",
+      reason: "等待新的判断依据",
+    };
+    h.store.set(WORKFLOWS, h.task.id, s);
+    await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.state().nodes["opening-2"]?.status, "dispatched");
+    assert.notEqual(h.state().nodes["opening-2"]?.operationId, originalOperation);
+    assert.equal(h.store.get("workflow_status_blocks", output.entry.id), undefined);
+    assert.ok(h.state().consumedOutputs.includes(output.entry.id));
+    assert.equal(h.state().assistanceWait, undefined);
+  } finally {
+    h.close();
+  }
+});

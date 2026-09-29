@@ -4,6 +4,7 @@ import type { CodeDeliveryEvidence } from "./code-delivery.js";
 import { validateConsensusPlan } from "./consensus.js";
 import type { WorkflowContractChange } from "./contract-change.js";
 import { validateDocumentDelivery } from "./document-delivery.js";
+import type { WorkflowUserDecision } from "./user-decision.js";
 
 export type WorkflowTemplate = "discussion" | "development" | "bugfix";
 export type Phase =
@@ -83,6 +84,7 @@ export interface NodeProgress {
   outputId?: string;
   summary?: string;
   error?: string;
+  repair?: import("./receipt-recovery.js").WorkflowRepair;
 }
 
 export interface WorkflowState {
@@ -123,6 +125,7 @@ export interface WorkflowState {
   planning?: "needed" | "ready";
   planningReason?: string;
   assistanceWait?: { eventId: string; fingerprint: string; reason: string };
+  userDecision?: WorkflowUserDecision;
   deliveryEvidence?: CodeDeliveryEvidence;
   report?: {
     id: string;

@@ -29,20 +29,29 @@ export async function publishBoard(
     "",
     "## 节点",
     ...state.plan.nodes.map(
-      (node) => `- ${node.id} · ${state.nodes[node.id]?.status}: ${node.purpose}`,
+      (node) =>
+        `- ${node.id} · ${state.nodes[node.id]?.status}: ${node.purpose}${state.nodes[node.id]?.error ? `\n  原因：${state.nodes[node.id]?.error}` : ""}`,
     ),
     "",
     "## 问题",
     ...state.issues.map((issue) => `- ${issue.id} · ${issue.status}: ${issue.description}`),
     "",
     "## 证据",
-    ...state.evidence.map((item) => `- ${item.source} · ${item.result}: ${item.description}`),
-    "",
-    "## 已采集的完整参与者输出",
-    ...state.consumedOutputs.map(
-      (id) =>
-        `- [${id}](outputs/${id}.md)${task.promptVersion === 3 ? ` · [详细材料](outputs/${id}.notes.md)` : ""}`,
+    ...state.evidence.map(
+      (item) => `- ${item.id} · ${item.source} · ${item.result}: ${item.description}`,
     ),
+    "",
+    "## 参与者交接记录（拒收材料不能作为已接受证据）",
+    ...state.consumedOutputs.map((id) => {
+      const progress = Object.values(state.nodes).find((entry) => entry.outputId === id);
+      const repair = progress?.repair;
+      const notes = repair?.notes
+        ? ` · [未验证恢复材料](${relative(directory, repair.notes.path)})`
+        : task.promptVersion === 3 && progress && !repair
+          ? ` · [已接受材料](outputs/${id}.notes.md)`
+          : "";
+      return `- [${id}](outputs/${id}.md)${notes}${repair ? " · 回执未通过" : ""}`;
+    }),
     "",
   ].join("\n");
   await atomicWrite(join(directory, "board.md"), text);

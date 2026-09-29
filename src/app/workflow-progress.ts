@@ -5,6 +5,7 @@ import { visibleOutput } from "../orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
+import { currentTaskUserDecision } from "./workflow-notifications.js";
 
 export async function taskProgress(
   services: { tasks: TaskService; herdr: HerdrPort; store: Store },
@@ -85,6 +86,7 @@ export async function taskProgress(
     }),
   );
   const state = services.store.get<WorkflowState>(WORKFLOWS, task.id);
+  const decision = state?.userDecision && (await currentTaskUserDecision(services.store, task));
   return {
     id: task.id,
     taskId: task.id,
@@ -109,11 +111,18 @@ export async function taskProgress(
           artifacts: state.artifacts,
           evidence: state.evidence,
           report: state.report,
-          awaitingUser: state.stall.awaitingUser,
-          waitingForEvidence: state.assistanceWait?.reason,
+          awaitingUser: state.userDecision
+            ? decision?.status === "ready"
+            : state.stall.awaitingUser,
+          waitingForEvidence:
+            state.assistanceWait &&
+            (state.userDecision && !decision
+              ? "待决问题依据暂未通过当前项目版本核验，等待重新整理。"
+              : state.assistanceWait.reason),
+          userDecision: decision,
         }
       : undefined,
     interpretation:
-      "会话文本是参与者自述；工具记录、产物证据、最终交付和用户验收分别判断。读取失败不证明未执行或未完成，不得补发输入。",
+      "会话文本是参与者自述；工具记录、产物证据、最终交付和用户验收分别判断。读取失败不证明未执行或未完成，不得补发输入。只有 userDecision.status=ready 的当前具体问题才需要用户回答；system/failed 表示系统恢复或问题整理失败，不能笼统要求用户补需求或材料。",
   };
 }

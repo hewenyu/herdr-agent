@@ -27,6 +27,15 @@ import { legacyAssignment, prepareHandoff } from "./handoff.js";
 import { choosePlan } from "./plan-selection.js";
 import { selectWorkflowCandidate } from "./policy.js";
 import { reportContract } from "./report.js";
+import {
+  assistanceFingerprint,
+  awaitingEvidence,
+  deferAssistance,
+  prepareUserDecision,
+  receiptRepairRule,
+  recentConversation,
+  recoveryContext,
+} from "./selection-context.js";
 import { settleWorkflow } from "./settlement.js";
 import { invalidateFrom, readyNodes, workflowState } from "./state.js";
 import { VerificationRunner } from "./verify.js";
@@ -128,53 +137,6 @@ export class WorkflowOrchestrator {
       : undefined;
   }
 
-  private async assistanceFingerprint(
-    task: Task,
-    state: WorkflowState,
-    event: OrchestrationEvent,
-    candidates?: WorkflowCandidate[],
-  ): Promise<string> {
-    return stableId(
-      event.id,
-      await workspaceRevision(task.directories),
-      this.configRevision(task) ?? "",
-      JSON.stringify(state.issues),
-      JSON.stringify(candidates ?? state.plan),
-      JSON.stringify(this.ports.outputs(task.id).map((output) => output.entry.id)),
-    );
-  }
-
-  private deferAssistance(
-    state: WorkflowState,
-    event: OrchestrationEvent,
-    fingerprint: string,
-    reason: string,
-  ): void {
-    // An evidence wait is not a failed model attempt and survives worker restarts.
-    event.state = "pending";
-    event.attempts = Math.max(0, event.attempts - 1);
-    event.nextAttemptAt = undefined;
-    event.error = {
-      code: "workflow_assistance_deferred",
-      message: reason,
-      outcome: "not_executed",
-    };
-    state.assistanceWait = { eventId: event.id, fingerprint, reason };
-    this.ports.store.transaction(() => {
-      this.save(state);
-      this.ports.save(event);
-    });
-  }
-
-  private awaitingEvidence(state: WorkflowState, fingerprint: string): boolean {
-    if (state.assistanceWait?.fingerprint === fingerprint) return true;
-    if (state.assistanceWait) {
-      state.assistanceWait = undefined;
-      this.save(state);
-    }
-    return false;
-  }
-
   async admit<T>(task: Task, access: "read" | "write", run: () => Promise<T>): Promise<T> {
     return this.admission.run("directories", async () => {
       if (
@@ -250,9 +212,25 @@ export class WorkflowOrchestrator {
       }
       if (event.state === "done" && event.decision && !event.notified) {
         try {
+          if (task.promptVersion === 3 && event.decision.action === "wait") {
+            const request = await prepareUserDecision(
+              ports,
+              task,
+              state,
+              event,
+              event.workflow?.candidate.description ?? "工作流等待用户决定。",
+            );
+            event.decision.reason = request.text;
+            ports.save(event);
+          }
           await ports.notify(task, event);
         } catch (error) {
           const safe = safeError(error);
+          if (event.decision.action === "wait" && safe.code === "workflow_artifact_changed") {
+            event.state = "superseded";
+            ports.save(event);
+            continue;
+          }
           if (
             ![
               "workflow_report",
@@ -298,6 +276,7 @@ export class WorkflowOrchestrator {
       state.phase = "planning";
       state.report = undefined;
       state.assistanceWait = undefined;
+      state.userDecision = undefined;
       state.stall = { open: [], unchanged: 0, awaitingUser: false };
       state.nodes = Object.fromEntries(
         state.plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
@@ -445,15 +424,27 @@ export class WorkflowOrchestrator {
     if (event.state === "done" || event.state === "superseded" || event.state === "attention")
       return;
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
-    const assistanceFingerprint =
+    const fingerprint =
       task.promptVersion === 3
-        ? await this.assistanceFingerprint(task, state, event, candidates)
+        ? await assistanceFingerprint(
+            ports,
+            task,
+            state,
+            event,
+            this.configRevision(task),
+            candidates,
+          )
         : "";
-    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
+    if (awaitingEvidence(this.ports, state, fingerprint)) return;
     event.attempts++;
     event.state = "processing";
     ports.save(event);
     try {
+      const repair =
+        task.promptVersion === 3
+          ? receiptRepairRule(state, candidates, event.userRevision, artifactRevision)
+          : undefined;
+      if (repair?.noProgress) fail("workflow_receipt_no_progress", repair.diagnostic);
       const previous = event.selectionLogId
         ? ports.store.get<DecisionLog>("workflow_decisions", event.selectionLogId)
         : undefined;
@@ -477,25 +468,8 @@ export class WorkflowOrchestrator {
                 issues: state.issues,
                 nodes: state.nodes,
                 evidence: state.evidence,
-                recentConversation:
-                  task.promptVersion === 3
-                    ? state.consumedOutputs
-                        .slice(-4)
-                        .map((id) =>
-                          ports.store.get<{
-                            text: string;
-                            notes: string;
-                            hash: string;
-                            participantId: string;
-                          }>("workflow_conversation_evidence", id),
-                        )
-                        .filter((entry) => !!entry)
-                        .map((entry) => ({
-                          ...entry,
-                          notes: entry.notes.slice(0, 12000),
-                          truncated: entry.notes.length > 12000,
-                        }))
-                    : undefined,
+                recentConversation: recentConversation(ports, task, state),
+                recoveryMaterials: recoveryContext(ports, task, state),
                 reportMissing: reportContract(
                   state,
                   artifactRevision,
@@ -504,6 +478,9 @@ export class WorkflowOrchestrator {
                 ),
               },
               candidates,
+              ...(repair
+                ? { rule: { candidateId: repair.candidateId, reason: repair.reason } }
+                : {}),
               jev: ports.config.jev,
               piModel: ports.config.ai.model,
               ...(task.promptVersion === 3 ? { assistancePolicy: "jev-requested" as const } : {}),
@@ -518,12 +495,8 @@ export class WorkflowOrchestrator {
             });
       ports.assertCurrent(event);
       if ("deferred" in selection && selection.deferred) {
-        this.deferAssistance(
-          state,
-          event,
-          assistanceFingerprint,
-          "Jev 正在等待新的判断依据，尚未请求 pi 协助。",
-        );
+        const request = await prepareUserDecision(ports, task, state, event, selection.reason);
+        deferAssistance(ports, state, event, fingerprint, request.text);
         return;
       }
       const candidate = candidates.find((entry) => entry.id === selection.candidateId);
@@ -559,9 +532,11 @@ export class WorkflowOrchestrator {
       return;
     }
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
-    const assistanceFingerprint =
-      task.promptVersion === 3 ? await this.assistanceFingerprint(task, state, event) : "";
-    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
+    const fingerprint =
+      task.promptVersion === 3
+        ? await assistanceFingerprint(this.ports, task, state, event, this.configRevision(task))
+        : "";
+    if (awaitingEvidence(this.ports, state, fingerprint)) return;
     event.attempts++;
     this.ports.save(event);
     try {
@@ -603,9 +578,14 @@ export class WorkflowOrchestrator {
       await publishBoard(this.ports.config?.stateDir ?? "", task, state);
     } catch (error) {
       const safe = safeError(error);
-      if (safe.code === "workflow_assistance_deferred")
-        this.deferAssistance(state, event, assistanceFingerprint, safe.message);
-      else await this.failed(task, event, error);
+      if (safe.code === "workflow_assistance_deferred") {
+        try {
+          const request = await prepareUserDecision(this.ports, task, state, event, safe.message);
+          deferAssistance(this.ports, state, event, fingerprint, request.text);
+        } catch (recoveryError) {
+          await this.failed(task, event, recoveryError);
+        }
+      } else await this.failed(task, event, error);
     }
   }
 
@@ -764,7 +744,14 @@ export class WorkflowOrchestrator {
     } else if (candidate.kind === "deliver") {
       await this.assertDelivery(task, state);
       event.workflow.applied = true;
-    } else event.workflow.applied = true;
+    } else {
+      if (task.promptVersion === 3 && candidate.kind === "user") {
+        const request = await prepareUserDecision(ports, task, state, event, candidate.description);
+        this.assertWorkspace(task, event);
+        if (event.decision) event.decision.reason = request.text;
+      }
+      event.workflow.applied = true;
+    }
     event.state = "done";
     event.error = undefined;
     ports.save(event);
@@ -820,6 +807,7 @@ export class WorkflowOrchestrator {
       inputRevision: dispatch.inputRevision,
       artifactRevision: dispatch.artifactRevision,
       sourceRevision: dispatch.sourceRevision,
+      ...(old?.repair ? { repair: old.repair } : {}),
     };
     this.save(state);
     dispatch.state = "pending";
@@ -959,6 +947,7 @@ export class WorkflowOrchestrator {
         "workflow_consensus",
         "workflow_artifact",
         "workflow_plan_no_progress",
+        "workflow_receipt_no_progress",
       ].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
