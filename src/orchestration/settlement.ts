@@ -3,19 +3,40 @@ import type { Participant, Task } from "../core/types.js";
 import type { InputDelivery } from "../tasks/input-delivery.js";
 import { rememberImplementer } from "./authorship.js";
 import { inspectArtifact, publishBoard, publishNotes, publishOutput } from "./board.js";
-import { captureConsensus } from "./consensus.js";
+import { captureConsensus, responseOutputs } from "./consensus.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource } from "./document-source.js";
-import { readHandoff } from "./handoff.js";
+import { handoffDirectory, readHandoff } from "./handoff.js";
 import { selectWorkflowOutput } from "./output-selection.js";
+import { rejectReceipt } from "./receipt-diagnostics.js";
+import { receiptRepairRevision, recordWorkflowRejection } from "./receipt-recovery.js";
 import { publishReport } from "./report.js";
 import type { WorkflowPorts } from "./runner.js";
 import { countSettledBatch, mergeStatus } from "./state.js";
-import { parseStatusBlock } from "./status-block.js";
-import { WORKFLOWS, type WorkflowState } from "./workflow.js";
+import { bindEvidenceReferences, parseStatusBlock, type StatusBlock } from "./status-block.js";
+import { WORKFLOWS, type WorkflowNode, type WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
 
 const documentScopeIssueId = "document-scope-violation";
+
+function validateResponses(state: WorkflowState, node: WorkflowNode, block: StatusBlock): void {
+  if (!state.plan.consensus) return;
+  const expected = responseOutputs(state, node);
+  const actual = (block.responses ?? []).map((entry) => entry.outputId);
+  if (
+    expected.some((id) => !actual.includes(id)) ||
+    actual.some((id) => !expected.includes(id)) ||
+    new Set(actual).size !== actual.length
+  )
+    rejectReceipt("workflow_response", "本轮 responses 未逐项对应实际前序材料。", [
+      {
+        field: "responses.outputId",
+        reason: "predecessor_mismatch",
+        expected: JSON.stringify(expected),
+        actual: JSON.stringify(actual),
+      },
+    ]);
+}
 
 /** Older settlements could append the same issue repeatedly; preserve all observed evidence. */
 function consolidateDocumentScopeIssue(state: WorkflowState): boolean {
@@ -84,6 +105,8 @@ export async function settleWorkflow(
     );
     if (!output) continue;
     await publishOutput(ports.config?.stateDir ?? "", task.id, output.entry.id, output.entry.text);
+    let observedArtifactRevision: string | undefined;
+    let continuingReceiptRepair = false;
     try {
       const artifactRevision = await workspaceRevision(task.directories);
       if (progress.artifactRevision !== artifactRevision) {
@@ -93,22 +116,32 @@ export async function settleWorkflow(
       }
       if (state.documentSource || node.documentPaths?.length)
         await assertDocumentSource(ports.store, task, state);
-      const identity = {
-        nodeId: node.id,
-        operationId: progress.operationId,
-        inputRevision: progress.inputRevision,
-      };
-      const block =
-        task.promptVersion === 3
-          ? await readHandoff(
-              ports.config?.stateDir ?? "",
-              task,
-              state,
-              node,
-              identity,
-              output.entry.text,
-            )
-          : parseStatusBlock(output.entry.text, identity);
+      const receiptOnly = ports
+        .events(task.id)
+        .some(
+          (event) =>
+            event.decision?.source === "rule" &&
+            event.decision.reason === "receipt_repair" &&
+            event.dispatches.some(
+              (dispatch) =>
+                dispatch.operationId === progress.operationId &&
+                dispatch.nodeId === node.id &&
+                dispatch.participantId === participant.id &&
+                dispatch.state === "sent",
+            ),
+        );
+      continuingReceiptRepair = receiptOnly;
+      if (
+        receiptOnly &&
+        (!progress.repair ||
+          receiptRepairRevision(progress.repair) !== progress.artifactRevision ||
+          receiptRepairRevision(progress.repair) !== artifactRevision)
+      )
+        fail(
+          "workflow_artifact_changed",
+          "仅修复交接回执期间项目文件再次变化，不能复用原材料，需按新版本重新核对。",
+        );
+      // Validate original permissions before parsing: malformed receipts cannot hide writes.
       if (node.documentPaths?.length) await validateDocumentPaths(task, node.documentPaths);
       if (
         node.documentPaths?.length &&
@@ -128,18 +161,55 @@ export async function settleWorkflow(
           "workflow_artifact_changed",
           "执行期间代码版本变化，原评审/读取结果不能证明新版本，需重新核对。",
         );
-      const validReferences = new Set([
-        ...state.consumedOutputs,
-        output.entry.id,
-        ...state.evidence.map((entry) => entry.id),
-        ...state.artifacts.map((entry) => entry.path),
-        ...block.artifactRefs,
-      ]);
-      if (block.issues.some((issue) => issue.evidenceRefs.some((ref) => !validReferences.has(ref))))
-        fail("workflow_evidence", "问题引用了不存在或不属于本任务的证据。");
-      for (const path of block.artifactRefs) {
-        const artifact = await inspectArtifact(task, path);
-        state.artifacts.push({
+      observedArtifactRevision = artifactRevision;
+      const identity = {
+        nodeId: node.id,
+        operationId: progress.operationId,
+        inputRevision: progress.inputRevision,
+      };
+      const block =
+        task.promptVersion === 3
+          ? await readHandoff(
+              ports.config?.stateDir ?? "",
+              task,
+              state,
+              node,
+              identity,
+              output.entry.text,
+            )
+          : parseStatusBlock(output.entry.text, identity);
+      bindEvidenceReferences(state, block, output.entry.id, {
+        localEvidenceAliases: task.promptVersion === 3,
+      });
+      validateResponses(state, node, block);
+      // Rejected receipts must not leak partially collected artifacts, issues or approvals.
+      const accepted = structuredClone(state);
+      for (const [index, path] of block.artifactRefs.entries()) {
+        const artifact = await inspectArtifact(task, path).catch((error) => {
+          if (safeError(error).code !== "workflow_artifact") throw error;
+          const localNotes =
+            task.promptVersion === 3 &&
+            ["notes.md", "./notes.md"].includes(path) &&
+            !safeError(error).message.includes("超出");
+          rejectReceipt(
+            "workflow_artifact",
+            "回执产物路径无法对应当前任务的实际文件。",
+            [
+              {
+                field: `artifactRefs[${index}]`,
+                reason: localNotes ? "relative_notes_path" : "unavailable_artifact",
+                actual: path,
+                ...(localNotes
+                  ? {
+                      expected: `${handoffDirectory(ports.config?.stateDir ?? "", task.id, identity.operationId)}/notes.md`,
+                    }
+                  : {}),
+              },
+            ],
+            localNotes,
+          );
+        });
+        accepted.artifacts.push({
           ...artifact,
           reference: path,
           outputId: output.entry.id,
@@ -148,55 +218,104 @@ export async function settleWorkflow(
       }
       await captureConsensus(
         task,
-        state,
+        accepted,
         node,
         block,
         participant.id,
         output.entry.id,
         artifactRevision,
       );
-      mergeStatus(state, node, block, output.entry.id, artifactRevision);
+      mergeStatus(accepted, node, block, output.entry.id, artifactRevision);
+      const acceptedProgress = accepted.nodes[node.id];
+      if (!acceptedProgress) fail("workflow_status", "节点已失效。");
       if (
         node.phase === "validating" &&
-        state.plan.validation?.mode !== "not_run" &&
+        accepted.plan.validation?.mode !== "not_run" &&
         !commands.length &&
-        !state.evidence.some(
+        !accepted.evidence.some(
           (entry) =>
             entry.outputId === output.entry.id &&
             entry.source === "agent_review" &&
             entry.result === "passed",
         )
       ) {
-        progress.status = "blocked";
-        progress.error =
+        acceptedProgress.status = "blocked";
+        acceptedProgress.error =
           "未取得独立 agent 实际重跑的证据，请补充检查结果或说明需用户处理的环境阻塞。";
       }
-      if (node.phase === "reporting" && state.nodes[node.id]?.status === "completed")
+      if (node.phase === "reporting" && acceptedProgress.status === "completed")
         await publishReport(
           ports.config?.stateDir ?? "",
           task,
-          state,
+          accepted,
           block,
           output.entry.id,
           artifactRevision,
         );
-      ports.store.set("workflow_status_blocks", output.entry.id, { taskId: task.id, block });
+      let conversation:
+        | {
+            taskId: string;
+            participantId: string;
+            outputId: string;
+            text: string;
+            notes: string;
+            hash: string;
+          }
+        | undefined;
       if ("capturedNotes" in block) {
         const captured = block.capturedNotes as { text: string; hash: string };
         await publishNotes(ports.config?.stateDir ?? "", task.id, output.entry.id, captured.text);
-        ports.store.set("workflow_conversation_evidence", output.entry.id, {
+        conversation = {
           taskId: task.id,
           participantId: participant.id,
           outputId: output.entry.id,
           text: output.entry.text.slice(0, 4000),
           notes: captured.text,
           hash: captured.hash,
-        });
+        };
       }
+      ports.store.transaction(() => {
+        if (conversation)
+          ports.store.set("workflow_conversation_evidence", output.entry.id, conversation);
+        ports.store.set("workflow_status_blocks", output.entry.id, { taskId: task.id, block });
+        ports.store.set(WORKFLOWS, accepted.taskId, accepted);
+      });
+      Object.assign(state, accepted);
+      if (progress.repair)
+        ports.logger.info("工作流交接回执已恢复", {
+          event: "workflow.receipt_recovered",
+          taskId: task.id,
+          nodeId: node.id,
+          outputId: output.entry.id,
+          previousOutputId: progress.repair.outputId,
+        });
     } catch (error) {
       progress.status = "blocked";
       progress.outputId = output.entry.id;
       progress.error = safeError(error).message;
+      progress.repair = await recordWorkflowRejection({
+        store: ports.store,
+        stateDir: ports.config?.stateDir ?? "",
+        task,
+        state,
+        node,
+        progress,
+        participantId: participant.id,
+        output: output.entry,
+        error,
+        observedArtifactRevision,
+        continuingReceiptRepair,
+      });
+      ports.logger.warn("工作流交接回执未通过校验", {
+        event: "workflow.receipt_rejected",
+        taskId: task.id,
+        nodeId: node.id,
+        outputId: output.entry.id,
+        code: progress.repair.code,
+        fields: progress.repair.details.map((detail) => detail.field),
+        recoverable: progress.repair.recoverable,
+        repeated: progress.repair.repeated,
+      });
       if (safeError(error).code === "workflow_document_scope") {
         state.stall.awaitingUser = true;
         let issue = state.issues.find((entry) => entry.id === documentScopeIssueId);
@@ -223,6 +342,7 @@ export async function settleWorkflow(
     }
     changed = true;
   }
+  changed = (await backfillReceiptRecovery(ports, task, state)) || changed;
   if (changed) {
     for (const batch of ports.events(task.id)) {
       if (!batch.workflow?.applied || !batch.dispatches.length || state.batches.includes(batch.id))
@@ -242,4 +362,137 @@ export async function settleWorkflow(
     save();
     await publishBoard(ports.config?.stateDir ?? "", task, state);
   }
+}
+
+/** Upgrade a rejected v3 output into repair context, never into an accepted completion. */
+export async function backfillReceiptRecovery(
+  ports: WorkflowPorts,
+  task: Task,
+  state: WorkflowState,
+): Promise<boolean> {
+  if (task.promptVersion !== 3) return false;
+  let changed = false;
+  for (const node of state.plan.nodes) {
+    const progress = state.nodes[node.id];
+    if (
+      progress?.status !== "blocked" ||
+      progress.repair ||
+      !progress.operationId ||
+      !progress.inputRevision ||
+      !progress.outputId ||
+      !progress.participantId ||
+      ports.store.get("workflow_status_blocks", progress.outputId)
+    )
+      continue;
+    const delivery = ports.store.get<InputDelivery>("input_deliveries", progress.operationId);
+    const output = ports.outputs(task.id).find((entry) => entry.entry.id === progress.outputId);
+    if (
+      !delivery ||
+      delivery.taskId !== task.id ||
+      delivery.participantId !== progress.participantId ||
+      !output ||
+      output.participantId !== progress.participantId ||
+      (output.sequence ?? 0) <= delivery.outputSequence
+    )
+      continue;
+    let failure: unknown;
+    let observedArtifactRevision: string | undefined;
+    try {
+      const events = ports.events(task.id);
+      const event = events.find((entry) =>
+        entry.dispatches.some(
+          (dispatch) =>
+            dispatch.operationId === progress.operationId &&
+            dispatch.nodeId === node.id &&
+            dispatch.participantId === progress.participantId &&
+            dispatch.state === "sent" &&
+            dispatch.inputRevision === progress.inputRevision,
+        ),
+      );
+      if (
+        !event ||
+        event.workflow?.planVersion !== state.plan.version ||
+        progress.inputRevision !== ports.revision(task) ||
+        !state.consumedOutputs.includes(output.entry.id)
+      )
+        fail("workflow_superseded", "历史拒收输出不匹配当前计划或用户修订，不能自动补回执。");
+      if (
+        !selectWorkflowOutput(
+          [output],
+          delivery,
+          events.flatMap((entry) => entry.dispatches),
+          ports.store,
+          { stateDir: ports.config?.stateDir ?? "", taskId: task.id },
+        )
+      )
+        fail("workflow_superseded", "历史输出属于其他委派，不能用于当前恢复。");
+      const artifactRevision = await workspaceRevision(task.directories);
+      if (artifactRevision !== progress.artifactRevision)
+        fail("workflow_artifact_changed", "历史回执对应的源码版本已变化，不能只修回执。");
+      if (state.documentSource || node.documentPaths?.length)
+        await assertDocumentSource(ports.store, task, state);
+      if (
+        node.documentPaths?.length &&
+        (!progress.sourceRevision ||
+          progress.sourceRevision !==
+            (await workspaceRevision(task.directories, node.documentPaths)))
+      )
+        fail("workflow_document_scope", "历史文档回执的源码边界已变化。");
+      observedArtifactRevision = artifactRevision;
+      const block = await readHandoff(
+        ports.config?.stateDir ?? "",
+        task,
+        state,
+        node,
+        {
+          nodeId: node.id,
+          operationId: progress.operationId,
+          inputRevision: progress.inputRevision,
+        },
+        output.entry.text,
+      );
+      bindEvidenceReferences(state, block, output.entry.id, { localEvidenceAliases: true });
+      validateResponses(state, node, block);
+      for (const path of block.artifactRefs) await inspectArtifact(task, path);
+      await captureConsensus(
+        task,
+        structuredClone(state),
+        node,
+        block,
+        progress.participantId,
+        output.entry.id,
+        progress.artifactRevision ?? "",
+      );
+      rejectReceipt(
+        "workflow_status",
+        "历史回执尚未被接纳，请用新委派的归属字段重新提交已有材料。",
+        [{ field: "$", reason: "historical_unaccepted" }],
+      );
+    } catch (error) {
+      failure = error;
+    }
+    progress.repair = await recordWorkflowRejection({
+      store: ports.store,
+      stateDir: ports.config?.stateDir ?? "",
+      task,
+      state,
+      node,
+      progress,
+      participantId: progress.participantId,
+      output: output.entry,
+      error: failure,
+      observedArtifactRevision,
+    });
+    ports.logger.info("历史拒收回执已建立恢复记录", {
+      event: "workflow.receipt_recovery_backfilled",
+      taskId: task.id,
+      nodeId: node.id,
+      outputId: output.entry.id,
+      code: progress.repair.code,
+      recoverable: progress.repair.recoverable,
+      repeated: progress.repair.repeated,
+    });
+    changed = true;
+  }
+  return changed;
 }

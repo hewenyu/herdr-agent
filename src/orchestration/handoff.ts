@@ -8,8 +8,11 @@ import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { boardDirectory } from "./board.js";
 import { consensusDocuments, responseOutputs } from "./consensus.js";
+import { rejectReceipt } from "./receipt-diagnostics.js";
+import { receiptRepairRevision, type WorkflowRepair } from "./receipt-recovery.js";
 import { parseStatusBlock, type StatusBlock, statusInstructions } from "./status-block.js";
 import type { WorkflowNode, WorkflowState } from "./workflow.js";
+import { workspaceRevision } from "./workspace.js";
 
 export interface HandoffIdentity {
   nodeId: string;
@@ -21,7 +24,7 @@ export function handoffDirectory(stateDir: string, taskId: string, operationId: 
   return join(boardDirectory(stateDir, taskId), "handoffs", stableId(operationId));
 }
 
-async function checkedDirectory(
+export async function checkedHandoffDirectory(
   stateDir: string,
   directory: string,
   create = false,
@@ -50,9 +53,10 @@ export async function prepareHandoff(
   node: WorkflowNode,
   identity: HandoffIdentity,
   userMessages: string[],
+  repair?: WorkflowRepair,
 ): Promise<string> {
   const directory = handoffDirectory(stateDir, task.id, identity.operationId);
-  await checkedDirectory(stateDir, directory, true);
+  await checkedHandoffDirectory(stateDir, directory, true);
   const request = {
     protocolVersion: 1,
     ...identity,
@@ -69,7 +73,7 @@ export async function prepareHandoff(
       ? { consensus: { approved: false, documents: await consensusDocuments(task, state) } }
       : {}),
   };
-  const brief = [
+  const legacyBrief = [
     `# ${task.title} · ${node.purpose}`,
     "## 用户要求（原文和后续修订优先）",
     task.userRequest?.text ?? task.requirements,
@@ -110,15 +114,72 @@ export async function prepareHandoff(
         ]
       : []),
   ].join("\n\n");
+  const repairCurrent =
+    repair?.recoverable &&
+    repair.inputRevision === identity.inputRevision &&
+    repair.planVersion === state.plan.version &&
+    receiptRepairRevision(repair) === (await workspaceRevision(task.directories));
+  let priorNotes: string | undefined;
+  if (repairCurrent && repair.notes) {
+    const expected = join(boardDirectory(stateDir, task.id), "recovery", repair.snapshotId);
+    if (repair.notes.path === join(expected, "notes.md")) {
+      const captured = await readHandoffFile(stateDir, expected, "notes.md");
+      if (createHash("sha256").update(captured).digest("hex") !== repair.notes.hash)
+        rejectReceipt(
+          "workflow_handoff",
+          "恢复材料快照变化，不能复用。",
+          [{ field: "repair.notes", reason: "snapshot_changed" }],
+          false,
+        );
+      priorNotes = captured;
+    }
+  }
+  const example = {
+    ...request,
+    summary: "本轮实际结论；下列议题和证据仅为字段示例，请替换为真实内容",
+    artifactRefs: [join(directory, "notes.md")],
+    issues: [
+      {
+        id: "D-EXAMPLE",
+        description: "具体待回应意见",
+        status: "open",
+        blocking: false,
+        evidenceRefs: ["E-1"],
+      },
+    ],
+    evidence: [{ id: "E-1", description: "已阅读本轮材料；未执行原型或测试", result: "not_run" }],
+  };
+  const brief = [
+    legacyBrief,
+    "## 回执字段示例（不是实际结果，不要复制示例议题）",
+    `\`\`\`json\n${JSON.stringify(example, null, 2)}\n\`\`\``,
+    "evidence 可选择填写本轮唯一别名 id（E-1、E-2 等），本回执的问题可以引用该别名；程序将其转换为稳定证据编号。已有证据使用看板 state.json 的 evidence.id；不能自造外部任务、输出或证据编号。未运行不能写 passed。",
+    ...(repairCurrent
+      ? [
+          "## 本次仅修复交接与回执",
+          "上一轮内容尚未通过协议校验，不代表意见被否定。本次只补全下列交接/回执错误，保留已有设计和真实分歧，不重做整轮设计，也不把未验证材料视为已经通过的结论。使用本轮 request.json 的归属字段。",
+          ...repair.details.map(
+            (detail) =>
+              `${detail.field}: ${detail.reason}${detail.expected ? `；要求 ${detail.expected}` : ""}${detail.actual ? `；收到 ${detail.actual}` : ""}`,
+          ),
+          ...(priorNotes
+            ? [
+                `已保留上一轮未验证材料的受控副本 ${join(directory, "prior-notes.md")}。读取核对后可复制为本轮 ${join(directory, "notes.md")}，修正回执并在聊天引用本轮 notes.md 完整路径；不要再次生成同一份设计。`,
+              ]
+            : ["没有可安全复用的本轮材料快照；只补充缺失材料，不假定之前的内容已获接受。"]),
+        ]
+      : []),
+  ].join("\n\n");
   // Existing dispatches keep their frozen brief/request across restarts.
   for (const [name, content] of [
     ["request.json", `${JSON.stringify(request, null, 2)}\n`],
     ["brief.md", brief],
+    ...(priorNotes ? [["prior-notes.md", priorNotes]] : []),
   ]) {
     const path = join(directory, name as string);
     try {
       const existing = await readHandoffFile(stateDir, directory, name as string);
-      if (existing !== content)
+      if (existing !== content && !(name === "brief.md" && existing === legacyBrief))
         fail("workflow_handoff", "已冻结的任务书发生变化，不能复用原委派。");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -128,17 +189,31 @@ export async function prepareHandoff(
   return `请读取本轮任务书 ${join(directory, "brief.md")}，按顺序回应上一位参与者并完成本轮工作。详细内容留在材料文件；聊天只给简短反馈及本轮 notes.md 的完整位置。回执按任务书写入独立文件，不在对话输出机器协议。`;
 }
 
-async function readHandoffFile(stateDir: string, directory: string, name: string): Promise<string> {
-  await checkedDirectory(stateDir, directory);
+export async function readHandoffFile(
+  stateDir: string,
+  directory: string,
+  name: string,
+): Promise<string> {
+  await checkedHandoffDirectory(stateDir, directory);
   const path = join(directory, name);
   const metadata = await lstat(path);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1024 * 1024)
-    fail("workflow_handoff", "交接文件不是普通文件或超过读取上限。");
+    rejectReceipt(
+      "workflow_handoff",
+      "交接文件不是普通文件或超过读取上限。",
+      [{ field: name, reason: metadata.size > 1024 * 1024 ? "oversized_file" : "unsafe_file" }],
+      false,
+    );
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await file.stat();
     if (before.ino !== metadata.ino || before.dev !== metadata.dev)
-      fail("workflow_handoff", "交接文件读取期间发生变化。");
+      rejectReceipt(
+        "workflow_handoff",
+        "交接文件读取期间发生变化。",
+        [{ field: name, reason: "changed_during_read" }],
+        false,
+      );
     const content = await file.readFile("utf8");
     const after = await file.stat();
     if (
@@ -146,7 +221,12 @@ async function readHandoffFile(stateDir: string, directory: string, name: string
       before.mtimeMs !== after.mtimeMs ||
       content.length > 1024 * 1024
     )
-      fail("workflow_handoff", "交接文件读取期间发生变化。");
+      rejectReceipt(
+        "workflow_handoff",
+        "交接文件读取期间发生变化。",
+        [{ field: name, reason: "changed_during_read" }],
+        false,
+      );
     return content;
   } finally {
     await file.close();
@@ -171,13 +251,34 @@ export async function readHandoff(
 ): Promise<StatusBlock & { capturedNotes: { text: string; hash: string } }> {
   const directory = handoffDirectory(stateDir, task.id, identity.operationId);
   if (!output.includes(join(directory, "notes.md")))
-    fail("workflow_handoff", "参与者交接缺少本轮材料位置，不能将无归属输出视为完成。");
-  const notes = await readHandoffFile(stateDir, directory, "notes.md");
-  if (!notes.trim()) fail("workflow_handoff", "本轮材料为空，不能推进任务。");
-  const raw = await readHandoffFile(stateDir, directory, "result.json");
-  const block = parseStatusBlock(`\`\`\`myrix-status\n${raw.trim()}\n\`\`\``, identity);
+    rejectReceipt("workflow_handoff", "参与者交接缺少本轮材料位置，不能将无归属输出视为完成。", [
+      {
+        field: "output.notesPath",
+        reason: "missing_current_path",
+        expected: join(directory, "notes.md"),
+      },
+    ]);
+  const required = async (name: string) => {
+    try {
+      return await readHandoffFile(stateDir, directory, name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      rejectReceipt("workflow_handoff", `本轮交接缺少 ${name}。`, [
+        { field: name, reason: "missing_file", expected: join(directory, name) },
+      ]);
+    }
+  };
+  const notes = await required("notes.md");
+  if (!notes.trim())
+    rejectReceipt("workflow_handoff", "本轮材料为空，不能推进任务。", [
+      { field: "notes.md", reason: "empty_material" },
+    ]);
+  const raw = await required("result.json");
+  const block = parseStatusBlock(`\`\`\`myrix-status\n${raw.trim()}\n\`\`\``, identity, {
+    localEvidenceAliases: true,
+  });
   if (node.phase === "reporting" && block.status === "completed") {
-    const report = await readHandoffFile(stateDir, directory, "report.md");
+    const report = await required("report.md");
     block.reportSections = reportSections(report, state.plan.deliveryRequirements);
   }
   return Object.assign(block, {
@@ -190,13 +291,29 @@ export function reportSections(text: string, required: string[]): Record<string,
   const headings = [...text.matchAll(/^## ([^\n]+)\r?$/gm)];
   for (const [index, match] of headings.entries()) {
     const title = match[1]?.trim() ?? "";
-    if (Object.hasOwn(sections, title)) fail("workflow_report", "报告章节重复。");
+    if (Object.hasOwn(sections, title))
+      rejectReceipt("workflow_report", "报告章节重复。", [
+        {
+          field: `report.md.sections[${JSON.stringify(title)}]`,
+          reason: "duplicate_heading",
+          expected: `仅保留一个 ## ${title} 章节，并合并真实内容。`,
+        },
+      ]);
     sections[title] = text
       .slice((match.index ?? 0) + match[0].length, headings[index + 1]?.index ?? text.length)
       .trim();
   }
-  if (required.some((title) => !sections[title]))
-    fail("workflow_report", "报告文件缺少必需章节正文。");
+  const missing = required.filter((title) => !sections[title]);
+  if (missing.length)
+    rejectReceipt(
+      "workflow_report",
+      "报告文件缺少必需章节正文。",
+      missing.map((title) => ({
+        field: `report.md.sections[${JSON.stringify(title)}]`,
+        reason: Object.hasOwn(sections, title) ? "empty_section" : "missing_heading",
+        expected: `## ${title} 下填写真实交付内容，未完成项明确说明；不能省略必需章节。`,
+      })),
+    );
   return sections;
 }
 

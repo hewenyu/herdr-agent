@@ -11,6 +11,10 @@ import type {
   TranscriptEntry,
 } from "../../src/core/types.js";
 import { HerdrRuntime } from "../../src/herdr/runtime.js";
+import { revisionHash, revisionInputs } from "../../src/orchestration/revision.js";
+import { workflowState } from "../../src/orchestration/state.js";
+import { ensureUserDecision } from "../../src/orchestration/user-decision.js";
+import { WORKFLOWS } from "../../src/orchestration/workflow.js";
 import { setup } from "./helpers.js";
 
 const actor = { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "progress" };
@@ -269,6 +273,100 @@ test("progress fixes the observed live session before the runtime rechecks a reu
     assert.equal(observations, 2);
     assert.equal(nativeReads, 0);
     assert.deepEqual(h.store.get<Participant>("participants", h.participant.id), h.participant);
+  } finally {
+    await h.close();
+  }
+});
+
+test("progress summaries receive actionable questions and exclude a dispute after it is resolved", async () => {
+  const h = setup();
+  try {
+    const task = await create(h);
+    const state = workflowState(
+      h.store,
+      task,
+      revisionHash(revisionInputs(h.store, task, [], false)),
+    );
+    state.issues.push({
+      id: "sync",
+      description: "首版是否启用跨设备同步需要所有者选择。",
+      status: "open",
+      blocking: true,
+      evidenceRefs: [],
+      raisedBy: task.participantIds[0] ?? "",
+      responses: [{ outputId: "review-output", summary: "现有要求未确定是否引入账号与服务端。" }],
+    });
+    h.engine.handler = async (input) => {
+      await input.tools[0]?.execute(
+        {
+          status: "ready",
+          questions: [
+            {
+              kind: "choice",
+              question: "首版是否包含跨设备同步？",
+              why: "同步方案将增加账号和服务端，目前双方无法从需求确定范围。",
+              blockedScope: "阻塞账号与存储章节定稿。",
+              sourceRefs: ["issue:sync"],
+              options: [
+                { label: "本地优先", impact: "首版无需账号，进度仅留在本机。" },
+                { label: "包含云同步", impact: "需增加账号服务与同步冲突设计。" },
+              ],
+              replyExample: "首版本地优先，云同步后续再做。",
+            },
+          ],
+        },
+        input.actor,
+      );
+      return { text: "", messages: [] };
+    };
+    const decision = await ensureUserDecision({
+      task,
+      state,
+      eventId: "event",
+      revision: "r1",
+      actor,
+      engine: h.engine,
+      assertCurrent() {},
+      persist(value) {
+        state.userDecision = value;
+        h.store.set(WORKFLOWS, task.id, state);
+      },
+    });
+    const services = { tasks: h.app.tasks, herdr: h.herdr, store: h.store };
+    const result = await taskProgress(services, actor, task.id);
+    assert.deepEqual(result.workflow?.userDecision, decision);
+    assert.equal(state.stall.awaitingUser, false);
+    assert.equal(
+      result.workflow?.awaitingUser,
+      true,
+      "a real user question does not need an unrelated stall flag",
+    );
+    assert.match(result.interpretation, /system\/failed 表示系统恢复/);
+    const issue = state.issues[0];
+    assert.ok(issue);
+    issue.status = "resolved";
+    h.store.set(WORKFLOWS, task.id, state);
+    const resolved = await taskProgress(services, actor, task.id);
+    assert.equal(resolved.workflow?.userDecision, undefined);
+    assert.equal(h.engine.calls.length, 1, "progress reads only expose the persisted contract");
+    assert.equal(h.herdr.sends.length, 0);
+    const system = await ensureUserDecision({
+      task,
+      state,
+      eventId: "system-event",
+      revision: "r1",
+      actor,
+      engine: h.engine,
+      assertCurrent() {},
+      persist(value) {
+        state.userDecision = value;
+        h.store.set(WORKFLOWS, task.id, state);
+      },
+    });
+    assert.equal(system.status, "system");
+    state.stall.awaitingUser = true;
+    h.store.set(WORKFLOWS, task.id, state);
+    assert.equal((await taskProgress(services, actor, task.id)).workflow?.awaitingUser, false);
   } finally {
     await h.close();
   }

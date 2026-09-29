@@ -55,7 +55,11 @@ export function invalidateFrom(state: WorkflowState, nodeId: string): void {
     }
   }
   for (const id of invalid)
-    state.nodes[id] = { status: "pending", attempt: state.nodes[id]?.attempt ?? 0 };
+    state.nodes[id] = {
+      status: "pending",
+      attempt: state.nodes[id]?.attempt ?? 0,
+      ...(id === nodeId && state.nodes[id]?.repair ? { repair: state.nodes[id]?.repair } : {}),
+    };
   state.report = undefined;
 }
 
@@ -69,6 +73,7 @@ export function mergeStatus(
   const progress = state.nodes[node.id];
   if (!progress || state.consumedOutputs.includes(outputId)) return;
   progress.outputId = outputId;
+  progress.repair = undefined;
   progress.summary = block.summary;
   progress.artifactRevision = artifactRevision;
   progress.status =

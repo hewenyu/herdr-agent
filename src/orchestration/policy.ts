@@ -5,7 +5,7 @@ import { decidePiAssistance, REQUEST_PI_CANDIDATE } from "./assistance.js";
 import {
   type DecisionLog,
   decisionSnapshotRef,
-  REQUESTED_ASSISTANCE_POLICY_VERSION,
+  RECOVERY_ASSISTANCE_POLICY_VERSION,
   SELECTION_POLICY_VERSION,
 } from "./decision-log.js";
 import { type ChoiceCandidate, chooseWithJev, type JevOptions, skippedJev } from "./jev.js";
@@ -70,7 +70,7 @@ export async function selectWorkflowCandidate(
   const log: DecisionLog = {
     version: 1,
     policyVersion: requestedAssistance
-      ? REQUESTED_ASSISTANCE_POLICY_VERSION
+      ? RECOVERY_ASSISTANCE_POLICY_VERSION
       : SELECTION_POLICY_VERSION,
     eventId: input.eventId,
     revision: input.revision,

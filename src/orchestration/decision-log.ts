@@ -9,10 +9,14 @@ import type { ChoiceCandidate, JevResult } from "./jev.js";
 
 export const SELECTION_POLICY_VERSION = "workflow-selection-v1";
 export const REQUESTED_ASSISTANCE_POLICY_VERSION = "workflow-selection-v2";
+export const RECOVERY_ASSISTANCE_POLICY_VERSION = "workflow-selection-v3";
 
 export interface DecisionLog {
   version: 1;
-  policyVersion: typeof SELECTION_POLICY_VERSION | typeof REQUESTED_ASSISTANCE_POLICY_VERSION;
+  policyVersion:
+    | typeof SELECTION_POLICY_VERSION
+    | typeof REQUESTED_ASSISTANCE_POLICY_VERSION
+    | typeof RECOVERY_ASSISTANCE_POLICY_VERSION;
   eventId: string;
   revision: string;
   planVersion: string | number;
@@ -92,7 +96,11 @@ export function replayDecision(log: DecisionLog): {
   const errors: string[] = [];
   if (
     log.version !== 1 ||
-    ![SELECTION_POLICY_VERSION, REQUESTED_ASSISTANCE_POLICY_VERSION].includes(log.policyVersion)
+    ![
+      SELECTION_POLICY_VERSION,
+      REQUESTED_ASSISTANCE_POLICY_VERSION,
+      RECOVERY_ASSISTANCE_POLICY_VERSION,
+    ].includes(log.policyVersion)
   )
     errors.push("unsupported_version");
   if (log.snapshotRef !== decisionSnapshotRef(log.snapshot)) errors.push("snapshot_mismatch");
@@ -114,7 +122,7 @@ export function replayDecision(log: DecisionLog): {
     (log.pi.status !== "success" || log.pi.candidateId !== log.final.candidateId)
   )
     errors.push("pi_mismatch");
-  const requestedAssistance = log.policyVersion === REQUESTED_ASSISTANCE_POLICY_VERSION;
+  const requestedAssistance = log.policyVersion !== SELECTION_POLICY_VERSION;
   const selectorIds = requestedAssistance
     ? (log.selectorCandidates?.map((entry) => entry.id) ?? [])
     : ids;
@@ -167,9 +175,13 @@ export function replayDecision(log: DecisionLog): {
               assistance.jev?.status === "success" &&
               assistance.jev.candidateId === "request_pi"
             : assistance.requestedBy === "recovery" &&
-              ["error", "timeout", "invalid", "skipped"].includes(
+              (["error", "timeout", "invalid", "skipped"].includes(
                 assistance.jev?.status ?? log.jev.status,
-              );
+              ) ||
+                (log.policyVersion === RECOVERY_ASSISTANCE_POLICY_VERSION &&
+                  log.jev.status === "low-confidence" &&
+                  assistance.jev?.status === "low-confidence" &&
+                  assistance.reason === "jev_assistance_uncertain_recovery"));
       if (!valid) errors.push("invalid_assistance_request");
     }
   }

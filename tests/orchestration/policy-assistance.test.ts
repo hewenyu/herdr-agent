@@ -40,7 +40,9 @@ const input: WorkflowSelectionInput = {
   assistancePolicy: "jev-requested",
 };
 
-function provider(...answers: Array<{ choice: string; confidence?: number } | "error">) {
+function provider(
+  ...answers: Array<{ choice: string; confidence?: number; probability?: number } | "error">
+) {
   const requests: Array<{ state: unknown; ids: string[] }> = [];
   const fetchImpl: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
@@ -51,6 +53,7 @@ function provider(...answers: Array<{ choice: string; confidence?: number } | "e
     if (answer === "error") throw new Error("private provider details");
     assert.ok(ids.includes(answer.choice));
     const confidence = answer.confidence ?? 0.95;
+    const probability = answer.probability ?? confidence;
     return Response.json({
       model: "jev-1.13.0",
       answers: {
@@ -61,7 +64,7 @@ function provider(...answers: Array<{ choice: string; confidence?: number } | "e
           probabilities: Object.fromEntries(
             ids.map((id) => [
               id,
-              id === answer.choice ? confidence : (1 - confidence) / (ids.length - 1),
+              id === answer.choice ? probability : (1 - probability) / (ids.length - 1),
             ]),
           ),
         },
@@ -153,11 +156,8 @@ test("a low-confidence action requires Jev assistance consent before invoking pi
   assert.equal(replayDecision(result.log).valid, true);
 });
 
-test("waiting for evidence or uncertain assistance persists a deferral without accepting an action", async () => {
-  for (const answer of [
-    { choice: "wait_for_evidence", confidence: 0.95 },
-    { choice: "request_pi", confidence: 0.6 },
-  ]) {
+test("a confident external evidence wait persists without accepting an action", async () => {
+  for (const answer of [{ choice: "wait_for_evidence", confidence: 0.95 }]) {
     const store = new Store(":memory:");
     try {
       const p = provider({ choice: "review", confidence: 0.6 }, answer);
@@ -179,6 +179,55 @@ test("waiting for evidence or uncertain assistance persists a deferral without a
       store.close();
     }
   }
+});
+
+test("uncertain assistance recovers through one restricted pi selection, never a user evidence wait", async () => {
+  for (const choice of ["wait_for_evidence", "request_pi"]) {
+    const p = provider(
+      { choice: "review", confidence: 0.65 },
+      { choice, confidence: 0.45, probability: 0.73 },
+    );
+    const internal = pi();
+    const result = await selectWorkflowCandidate({
+      ...input,
+      engine: internal.engine,
+      fetch: p.fetch,
+    });
+    assert.equal(result.source, "pi");
+    assert.equal(result.deferred, undefined);
+    assert.equal(result.log.assistance?.reason, "jev_assistance_uncertain_recovery");
+    assert.equal(result.log.assistance?.requestedBy, "recovery");
+    assert.equal(result.log.policyVersion, "workflow-selection-v3");
+    assert.equal(internal.calls(), 1);
+    assert.equal(p.requests.length, 2);
+    assert.equal(replayDecision(result.log).valid, true);
+    const forgedLegacy = { ...result.log, policyVersion: "workflow-selection-v2" as const };
+    assert.ok(replayDecision(forgedLegacy).errors.includes("invalid_assistance_request"));
+  }
+});
+
+test("failed uncertainty recovery never fabricates a selected action or retries the model in one step", async () => {
+  const p = provider(
+    { choice: "review", confidence: 0.65 },
+    { choice: "wait_for_evidence", confidence: 0.45, probability: 0.73 },
+  );
+  let calls = 0;
+  const result = await selectWorkflowCandidate({
+    ...input,
+    fetch: p.fetch,
+    engine: {
+      ...unused,
+      run: async () => {
+        calls++;
+        throw new Error("offline");
+      },
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.log.state, "failed");
+  assert.equal(result.deferred, undefined);
+  assert.equal(result.candidateId, undefined);
+  assert.equal(replayDecision(result.log).valid, true);
 });
 
 test("provider failures have explicit recovery evidence and invoke pi only once", async () => {
@@ -278,7 +327,7 @@ test("planning assistance uses a suitable template without an unconditional pi p
   assert.equal(p.requests.length, 1);
 });
 
-test("planning records explicit pi requests, uncertainty deferrals, and provider recovery", async () => {
+test("planning records explicit requests, confident waits, and uncertainty or provider recovery", async () => {
   const cases = [
     { answers: [{ choice: "request_pi" }], decision: "request_pi", requestedBy: "jev-control" },
     {
@@ -287,6 +336,14 @@ test("planning records explicit pi requests, uncertainty deferrals, and provider
       requestedBy: "jev-assistance",
     },
     { answers: ["error" as const], decision: "request_pi", requestedBy: "recovery" },
+    {
+      answers: [
+        { choice: "use_template", confidence: 0.6 },
+        { choice: "wait_for_evidence", confidence: 0.45, probability: 0.73 },
+      ],
+      decision: "request_pi",
+      requestedBy: "recovery",
+    },
   ];
   for (const scenario of cases) {
     const p = provider(...scenario.answers);
