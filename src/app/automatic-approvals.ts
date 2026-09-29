@@ -94,6 +94,9 @@ export class AutomaticApprovals {
     return {
       source: task.userRequest ? "user_request" : "legacy_requirements",
       request: task.userRequest?.text ?? task.requirements,
+      ...(task.requestContext?.length
+        ? { context: task.requestContext.map(({ messageId, text }) => ({ messageId, text })) }
+        : {}),
       kind: task.kind,
       participantIds: task.participantIds,
       authorizedDirectories: task.directories,

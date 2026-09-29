@@ -19,6 +19,8 @@ export interface StatusBlock {
   evidence: Array<{ description: string; command?: string; result: WorkflowEvidence["result"] }>;
   blockers: string[];
   reportSections?: Record<string, string>;
+  responses?: Array<{ outputId: string; comment: string }>;
+  consensus?: { approved: boolean; documents: Array<{ path: string; hash: string }> };
 }
 
 const blockPattern = /```myrix-status\s*\n([\s\S]*?)\n```/g;
@@ -69,6 +71,34 @@ export function parseStatusBlock(
   )
     fail("workflow_status", "状态块版本、委派归属或字段无效，不能据此推进任务。");
   const ids = new Set<string>();
+  if (
+    value.responses !== undefined &&
+    (!Array.isArray(value.responses) ||
+      value.responses.some(
+        (entry) =>
+          !entry ||
+          typeof entry.outputId !== "string" ||
+          !entry.outputId ||
+          typeof entry.comment !== "string" ||
+          !entry.comment.trim(),
+      ))
+  )
+    fail("workflow_response", "回应须填写实际前序输出编号和具体意见。");
+  if (
+    value.consensus !== undefined &&
+    (!value.consensus ||
+      typeof value.consensus.approved !== "boolean" ||
+      !Array.isArray(value.consensus.documents) ||
+      value.consensus.documents.some(
+        (entry) =>
+          !entry ||
+          typeof entry.path !== "string" ||
+          !entry.path ||
+          typeof entry.hash !== "string" ||
+          !/^[a-f0-9]{64}$/.test(entry.hash),
+      ))
+  )
+    fail("workflow_consensus", "共同认可记录须包含批准结论和实际文件哈希。");
   for (const issue of value.issues) {
     if (
       !issue ||

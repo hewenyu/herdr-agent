@@ -19,6 +19,7 @@ import {
 import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { assertCodeDelivery } from "./code-delivery.js";
+import { assertConsensusDocuments } from "./consensus.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
@@ -200,6 +201,7 @@ export class WorkflowOrchestrator {
       this.configRevision(task),
     );
     if (missing.length) fail("workflow_report", missing.join("；"));
+    await assertConsensusDocuments(task, state, artifactRevision);
     for (const artifact of latestArtifacts(state, artifactRevision)) {
       const current = await inspectArtifact(task, artifact.path);
       if (current.hash !== artifact.hash) fail("workflow_artifact", "交付产物已变化或失效。");
@@ -252,7 +254,12 @@ export class WorkflowOrchestrator {
         } catch (error) {
           const safe = safeError(error);
           if (
-            !["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code)
+            ![
+              "workflow_report",
+              "workflow_artifact",
+              "workflow_document_scope",
+              "workflow_consensus",
+            ].includes(safe.code)
           )
             throw error;
           // An old frozen delivery may fail the repaired evidence contract on restart.
@@ -949,7 +956,9 @@ export class WorkflowOrchestrator {
         "workflow_document_scope",
         "workflow_document_roles",
         "workflow_report",
+        "workflow_consensus",
         "workflow_artifact",
+        "workflow_plan_no_progress",
       ].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")

@@ -1,6 +1,8 @@
 import { fail } from "../core/errors.js";
 import type { Task } from "../core/types.js";
 import type { CodeDeliveryEvidence } from "./code-delivery.js";
+import { validateConsensusPlan } from "./consensus.js";
+import type { WorkflowContractChange } from "./contract-change.js";
 import { validateDocumentDelivery } from "./document-delivery.js";
 
 export type WorkflowTemplate = "discussion" | "development" | "bugfix";
@@ -26,6 +28,8 @@ export interface WorkflowNode {
   participantId?: string;
   /** Exact document-only paths, authorized in documentDelivery. */
   documentPaths?: string[];
+  /** Program-generated confirmation of the same final document revision. */
+  consensus?: boolean;
 }
 
 export interface WorkflowPlan {
@@ -38,6 +42,8 @@ export interface WorkflowPlan {
   deliveryRequirements: string[];
   requiredArtifacts?: string[];
   documentDelivery?: { paths: string[]; userRequest: string };
+  consensus?: { participantIds: string[] };
+  contractChange?: WorkflowContractChange;
   validation?: { mode: "execute" | "not_run"; reason: string; userConstraint?: string };
 }
 
@@ -100,6 +106,12 @@ export interface WorkflowState {
     artifactRevision: string;
   }>;
   consumedOutputs: string[];
+  consensusApprovals?: Array<{
+    participantId: string;
+    outputId: string;
+    artifactRevision: string;
+    documents: Array<{ path: string; hash: string }>;
+  }>;
   batches: string[];
   stall: { open: string[]; unchanged: number; awaitingUser: boolean };
   planning?: "needed" | "ready";
@@ -258,6 +270,7 @@ export function validatePlan(plan: WorkflowPlan, task: Task, userMessages: strin
     )
       fail("workflow_plan", "验证须在实现之后，最终评审须依赖验证，不能提前证明后续工作。");
   }
+  validateConsensusPlan(plan, task, ancestors);
   if (
     task.kind === "discussion" &&
     task.participantIds.some(

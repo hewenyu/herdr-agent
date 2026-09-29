@@ -91,11 +91,21 @@ test("approval authorization uses bound user text rather than requirements inven
       eventId: "e1",
       text: "请在项目中完成这项功能。",
     };
+    h.task.requestContext = [
+      {
+        ...h.task.userRequest,
+        messageId: "earlier-user",
+        text: "沿用之前要求：只设计，不开发业务代码。",
+      },
+    ];
     h.app.tasks.records.save(h.task);
     assert.equal(await h.handle(), "handled");
     const state = h.requests[0]?.state as { userInput: Record<string, unknown> };
     assert.equal(state.userInput.source, "user_request");
     assert.equal(state.userInput.request, h.task.userRequest.text);
+    assert.deepEqual(state.userInput.context, [
+      { messageId: "earlier-user", text: "沿用之前要求：只设计，不开发业务代码。" },
+    ]);
     assert.equal(JSON.stringify(state).includes("模型错误摘要"), false);
   } finally {
     await h.close();

@@ -10,6 +10,21 @@ import type {
   TranscriptPage,
 } from "./types.js";
 
+export interface InputProgress {
+  phase: "write_started" | "acknowledged" | "readback_completed";
+  at: string;
+  verified?: boolean;
+}
+
+export interface NativeSendOptions {
+  receipt?: string;
+  signal?: AbortSignal;
+  /** Synchronous admission guard, checked again immediately before socket.write. */
+  assertCurrent?: () => void;
+  /** Metadata only: never include prompt text or receipt contents. */
+  onProgress?: (progress: InputProgress) => void;
+}
+
 export interface HerdrPort {
   ping(signal?: AbortSignal): Promise<{ version: string; protocol: number }>;
   list(signal?: AbortSignal): Promise<AgentSnapshot[]>;
@@ -29,14 +44,7 @@ export interface HerdrPort {
     name: string,
     options: { directories: string[]; bypass: boolean; signal?: AbortSignal },
   ): Promise<AgentSnapshot>;
-  send(
-    ref: ExecutionRef,
-    text: string,
-    options?: {
-      receipt?: string;
-      signal?: AbortSignal;
-    },
-  ): Promise<Delivery>;
+  send(ref: ExecutionRef, text: string, options?: NativeSendOptions): Promise<Delivery>;
   interrupt(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
   screen(ref: ExecutionRef, signal?: AbortSignal): Promise<AgentScreen>;
   answer(

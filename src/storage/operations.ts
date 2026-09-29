@@ -7,6 +7,8 @@ export interface OperationReceipt {
   id: string;
   fingerprint: string;
   state: "pending" | "done" | "failed" | "uncertain";
+  /** Closed execution explicitly replaced; original outcome remains unchanged. */
+  retiredByRestart?: string;
   result?: unknown;
   error?: ReturnType<typeof safeError>;
   updatedAt: string;
@@ -52,10 +54,10 @@ export class Operations {
     });
   }
 
-  resetFailed(prefix: string): void {
+  resetFailed(prefix: string, include?: (id: string, receipt: OperationReceipt) => boolean): void {
     const rows = this.store
       .entries<OperationReceipt>("operations")
-      .filter(([id]) => id.startsWith(prefix));
+      .filter(([id, receipt]) => id.startsWith(prefix) && (!include || include(id, receipt)));
     if (
       rows.some(([, operation]) => operation.state === "pending" || operation.state === "uncertain")
     ) {

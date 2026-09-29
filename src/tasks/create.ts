@@ -4,7 +4,7 @@ import { fail } from "../core/errors.js";
 import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { ActorContext, Participant, Task, TaskCreateInput } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
-import { currentUserRequest } from "./user-request.js";
+import { currentUserRequest, requestContext } from "./user-request.js";
 
 export async function createTask(
   context: TaskContext,
@@ -76,6 +76,8 @@ export async function createTask(
       `任务类型 ${input.kind} 与工作流模板 ${orchestration.template} 不兼容；discussion 任务只能使用 discussion 模板，development/review/test 任务只能使用 development 或 bugfix 模板。`,
     );
   if (input.newProject && !input.project) fail("project_name", "新建项目需要明确名称。");
+  // Validate references before creating an external project or other resources.
+  const sources = requestContext(store, actor, input.contextMessageIds);
   if (input.newProject && input.project) {
     await context.operations.run(`${id}:project`, { name: input.project }, () =>
       catalog.create(input.project as string, input.participants[0]?.kind),
@@ -171,10 +173,21 @@ export async function createTask(
   };
   if (task.orchestration?.mode === "workflow") {
     task.promptVersion = 3;
+    if (userRequest) {
+      task.requestContext = sources;
+      task.requirements = [...sources.map((source) => source.text), userRequest.text].join("\n\n");
+    }
     task.boardDirectory = join(config.stateDir, "tasks", task.id, "board");
     await mkdir(task.boardDirectory, { recursive: true, mode: 0o700 });
   }
   store.transaction(() => {
+    if (task.promptVersion === 3 && userRequest)
+      store.set("task_creation_summaries", task.id, {
+        requirements: input.requirements,
+        sourceMessageId: userRequest.messageId,
+        contextMessageIds: sources.map((source) => source.messageId),
+        at: timestamp,
+      });
     records.save(task);
     for (const participant of participants) records.saveParticipant(participant);
   });

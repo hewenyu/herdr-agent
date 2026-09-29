@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
-import { OperationError } from "../core/errors.js";
+import { OperationError, safeError } from "../core/errors.js";
 import { object, parseExactJson, string } from "./protocol.js";
 
 const methods = new Set([
@@ -52,6 +52,7 @@ export class HerdrTransport {
     params: Record<string, unknown> = {},
     signal?: AbortSignal,
     readTimeoutMs = this.timeoutMs,
+    beforeWrite?: () => void,
   ): Promise<unknown> {
     if (!methods.has(method)) throw new OperationError("forbidden_method", "不支持此 herdr 操作。");
     if (method === "agent.read" && !["visible", "detection"].includes(String(params.source))) {
@@ -127,6 +128,15 @@ export class HerdrTransport {
       arm(this.timeoutMs);
       signal?.addEventListener("abort", abort, { once: true });
       socket.once("connect", () => {
+        if (finished) return;
+        try {
+          if (signal?.aborted) throw new OperationError("cancelled", "操作已取消。");
+          beforeWrite?.();
+        } catch (error) {
+          const safe = safeError(error);
+          finish(new OperationError(safe.code, safe.message, "not_executed", { cause: error }));
+          return;
+        }
         arm(5_000);
         attempted = true;
         socket.write(request, (error) => {

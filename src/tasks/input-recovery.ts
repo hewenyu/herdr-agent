@@ -4,7 +4,7 @@ import type { OperationReceipt } from "../storage/operations.js";
 import { nativeInputCandidates } from "../transcripts/input.js";
 import { assertActive, type TaskContext } from "./context.js";
 import type { InputDelivery } from "./input-delivery.js";
-import { ownsTaskOperation } from "./operation-scope.js";
+import { activeTaskOperation } from "./operation-scope.js";
 import { participantPromptCandidates } from "./prompts.js";
 
 /** Resolve only a unique initial delivery proved by native user input; never send again. */
@@ -105,7 +105,8 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
         .entries<OperationReceipt>("operations")
         .some(
           ([key, entry]) =>
-            ownsTaskOperation(task, key) && ["pending", "uncertain"].includes(entry.state),
+            activeTaskOperation(context.store, task, key, entry) &&
+            ["pending", "uncertain"].includes(entry.state),
         );
       if (!unknown) task.pending = undefined;
       context.records.save(task);
@@ -155,7 +156,7 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
         .some(
           ([key, candidate]) =>
             key !== id &&
-            ownsTaskOperation(task, key) &&
+            activeTaskOperation(context.store, task, key, candidate) &&
             ["pending", "uncertain"].includes(candidate.state) &&
             candidate.fingerprint === delivery.fingerprint,
         )
@@ -228,7 +229,8 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
         .entries<OperationReceipt>("operations")
         .some(
           ([key, entry]) =>
-            ownsTaskOperation(task, key) && ["pending", "uncertain"].includes(entry.state),
+            activeTaskOperation(context.store, task, key, entry) &&
+            ["pending", "uncertain"].includes(entry.state),
         );
       if (!unknown) {
         task.pending = undefined;

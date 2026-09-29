@@ -5,7 +5,7 @@ import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { queueFinalDescription } from "./description.js";
 import { observeTask } from "./observe.js";
-import { ownsTaskOperation, taskOperationPrefixes } from "./operation-scope.js";
+import { activeTaskOperation, taskOperationPrefixes } from "./operation-scope.js";
 import { taskDescription } from "./prompts.js";
 import { resolveGroupRetention } from "./retention.js";
 
@@ -141,7 +141,10 @@ export function requestAction(
       if (task.status === "completed" || task.closeRequested)
         fail("task_completed", "请先重开已完成任务。");
       context.store.transaction(() => {
-        for (const prefix of taskOperationPrefixes(task)) context.operations.resetFailed(prefix);
+        for (const prefix of taskOperationPrefixes(task))
+          context.operations.resetFailed(prefix, (id, receipt) =>
+            activeTaskOperation(context.store, task, id, receipt),
+          );
       });
       task.error = undefined;
       task.pending = undefined;
@@ -218,7 +221,12 @@ function confirmGroupDeletion(context: TaskContext, task: Task): void {
     fail("operation_conflict", "删群回执与当前绑定群不匹配，未确认该操作。");
   const otherUnresolved = context.store
     .entries<OperationReceipt>("operations")
-    .some(([key, value]) => key !== id && ownsTaskOperation(task, key) && value.state !== "done");
+    .some(
+      ([key, value]) =>
+        key !== id &&
+        activeTaskOperation(context.store, task, key, value) &&
+        value.state !== "done",
+    );
   const pendingDelivery = context.store
     .list<{ chatId: string; state: string }>("outbox")
     .some((value) => value.chatId === task.chatId && value.state !== "delivered");

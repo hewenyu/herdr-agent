@@ -9,7 +9,6 @@ import type {
   Task,
   TaskMutationRevision,
   TranscriptEntry,
-  UserRequestSource,
 } from "../core/types.js";
 import type { WorkflowCandidate } from "../orchestration/candidates.js";
 import {
@@ -19,13 +18,14 @@ import {
 import { validatedReport } from "../orchestration/report-validation.js";
 import { type RevisionInputs, revisionHash, revisionInputs } from "../orchestration/revision.js";
 import { WorkflowOrchestrator } from "../orchestration/runner.js";
+import { orchestrationUserMessages } from "../orchestration/user-messages.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
-import type { InboxRecord } from "./inbox.js";
+import { assertTaskIngress, taskIngress } from "./task-ingress.js";
 
 export interface SettledTaskOutput {
   taskId: string;
@@ -76,6 +76,7 @@ export interface OrchestrationEvent {
   };
   error?: ReturnType<typeof safeError>;
   retiredBudgetRecovery?: { at: string; error: ReturnType<typeof safeError> };
+  retiredByRestart?: string;
   notified?: boolean;
   notificationState?: "sending" | "sent" | "retryable" | "uncertain";
   notificationAttempts?: number;
@@ -121,6 +122,7 @@ taskMutations 记录已提交的任务配置变更，不是新的聊天指令；
 /** The worker runs outside TaskService's reconciliation mutex; native work stays in herdr. */
 export class TaskOrchestrator {
   private readonly active = new Map<string, Promise<void>>();
+  private readonly ingressRevisions = new Map<string, string>();
   private readonly clock: () => number;
   private admissionCursor = 0;
   private readonly workflow: WorkflowOrchestrator;
@@ -166,7 +168,10 @@ export class TaskOrchestrator {
             code: safeError(error).code,
           });
         })
-        .finally(() => this.active.delete(task.id));
+        .finally(() => {
+          this.active.delete(task.id);
+          this.ingressRevisions.delete(task.id);
+        });
       this.active.set(task.id, run);
       added.push(run);
     }
@@ -176,7 +181,7 @@ export class TaskOrchestrator {
   private events(taskId: string): OrchestrationEvent[] {
     return this.options.store
       .list<OrchestrationEvent>(TABLE)
-      .filter((event) => event.taskId === taskId)
+      .filter((event) => event.taskId === taskId && !event.retiredByRestart)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
 
@@ -193,40 +198,7 @@ export class TaskOrchestrator {
   }
 
   private userMessages(task: Task): StoredMessage[] {
-    const messages = this.options.store
-      .list<StoredMessage>("messages")
-      .filter(
-        (message) =>
-          message.taskId === task.id && message.role === "user" && message.source === "user",
-      )
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-    for (const [id, revision] of this.options.store.entries<{
-      taskId: string;
-      source: UserRequestSource;
-      at: string;
-    }>("task_user_revisions")) {
-      if (
-        revision.taskId !== task.id ||
-        revision.source.ownerId !== task.ownerId ||
-        messages.some((message) => message.deliveryIds?.includes(revision.source.messageId))
-      )
-        continue;
-      messages.push({
-        id,
-        sessionId: revision.source.sessionId,
-        taskId: task.id,
-        role: "user",
-        source: "user",
-        text: revision.source.text,
-        createdAt: revision.at,
-        delivery: "delivered",
-        deliveryIds: [revision.source.messageId],
-        generation: 0,
-      });
-    }
-    return messages.sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-    );
+    return orchestrationUserMessages(this.options.store, task);
   }
 
   private revision(task: Task, includeWorkflow = true): string {
@@ -236,21 +208,8 @@ export class TaskOrchestrator {
   }
 
   private foregroundPending(task: Task): boolean {
-    return this.options.store.list<InboxRecord>("inbox").some((record) => {
-      if (record.type !== "message" || !["queued", "processing"].includes(record.state))
-        return false;
-      const payload = record.payload;
-      const ownerId = record.actor?.ownerId ?? ("ownerId" in payload ? payload.ownerId : undefined);
-      if (ownerId !== task.ownerId || ("ownerId" in payload && payload.ownerId !== task.ownerId))
-        return false;
-      // Entry-chat instructions have no task binding until foreground routing
-      // interprets them. Give that owner's accepted instructions priority too.
-      return (
-        record.actor?.taskId === task.id ||
-        ("chatId" in payload &&
-          (payload.chatId === task.chatId || payload.chatId === task.entryChatId))
-      );
-    });
+    const ingress = taskIngress(this.options.store, task);
+    return ingress.pending || ingress.unverifiedLifecycle;
   }
 
   private current(taskId: string, reportDelivery = false): Task | undefined {
@@ -258,6 +217,11 @@ export class TaskOrchestrator {
   }
 
   private save(event: OrchestrationEvent): void {
+    const retired = this.options.store.get<OrchestrationEvent>(TABLE, event.id)?.retiredByRestart;
+    if (retired) {
+      event.retiredByRestart = retired;
+      event.state = "superseded";
+    }
     event.updatedAt = new Date(this.clock()).toISOString();
     this.options.store.set(TABLE, event.id, event);
   }
@@ -303,6 +267,8 @@ export class TaskOrchestrator {
 
   private async processTask(taskId: string): Promise<void> {
     const persisted = this.options.store.get<Task>("tasks", taskId);
+    if (persisted)
+      this.ingressRevisions.set(taskId, taskIngress(this.options.store, persisted).revision);
     if (persisted) await this.finishReportNotifications(persisted);
     let task = this.current(taskId);
     if (!task) return;
@@ -467,8 +433,13 @@ export class TaskOrchestrator {
     );
     if (!task || event.userRevision !== this.revision(task))
       fail("orchestration_superseded", "任务已暂停、结束或收到新的用户要求，请重新核对。");
-    if (this.foregroundPending(task))
-      fail("orchestration_deferred", "用户消息正在处理，暂缓后台调度。");
+    // Frozen reports retain their own input/artifact contract across acceptance.
+    // Pending ingress still wins; processed completion cannot veto an existing delivery.
+    assertTaskIngress(
+      this.options.store,
+      task,
+      reportDelivery ? undefined : this.ingressRevisions.get(task.id),
+    );
     return task;
   }
 
@@ -956,7 +927,12 @@ export class TaskOrchestrator {
       const safe = safeError(error);
       if (
         event.decision.reportId &&
-        ["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code)
+        [
+          "workflow_report",
+          "workflow_artifact",
+          "workflow_document_scope",
+          "workflow_consensus",
+        ].includes(safe.code)
       )
         throw error;
       event.notificationCause = safe.code;

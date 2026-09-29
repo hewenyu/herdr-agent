@@ -7,6 +7,7 @@ import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { boardDirectory } from "./board.js";
+import { consensusDocuments, responseOutputs } from "./consensus.js";
 import { parseStatusBlock, type StatusBlock, statusInstructions } from "./status-block.js";
 import type { WorkflowNode, WorkflowState } from "./workflow.js";
 
@@ -61,6 +62,12 @@ export async function prepareHandoff(
     artifactRefs: [],
     evidence: [],
     blockers: [],
+    ...(state.plan.consensus
+      ? { responses: responseOutputs(state, node).map((outputId) => ({ outputId, comment: "" })) }
+      : {}),
+    ...(node.consensus
+      ? { consensus: { approved: false, documents: await consensusDocuments(task, state) } }
+      : {}),
   };
   const brief = [
     `# ${task.title} · ${node.purpose}`,
@@ -87,6 +94,16 @@ export async function prepareHandoff(
     `读取 ${join(directory, "request.json")}，复制为 ${join(directory, "result.json")} 并填写真实结果；保留三个归属字段。只在全部工作结束后保存回执，再发自然语言交接。`,
     "status 只用 completed/needs_work/blocked；summary 写简短结论；artifactRefs 列出实际交付文件；issues 每项填写 id、description、status(open/resolved/deferred)、blocking(布尔)、evidenceRefs(字符串数组)。保留稳定问题编号，不得遗漏未决分歧。",
     "evidence 每项包含 description、result(passed/failed/not_run)，实际运行命令才填 command。问题引用 evidenceRefs 只用看板已有 outputId、evidence.id 或 artifactRefs 中的路径。blockers 仅列真实阻塞。",
+    ...(state.plan.consensus
+      ? [
+          "responses 逐项填写 request.json 所列前序 outputId 与你的具体回应 comment，必须读取对应 outputs/<outputId>.notes.md；不能只声明轮到自己。",
+        ]
+      : []),
+    ...(node.consensus
+      ? [
+          "共同认可：读取最终项目文档并核对 request.json 的文件哈希。认可全部结论时将 consensus.approved 设为 true；有异议时保留 false，status=needs_work，填写具体 issues。该确认只代表你本人意见，不等于用户验收。",
+        ]
+      : []),
     ...(node.phase === "reporting"
       ? [
           `另写 ${join(directory, "report.md")}，用下列精确二级标题覆盖各交付项：\n${state.plan.deliveryRequirements.map((title) => `## ${title}`).join("\n")}\n报告写完整内容，result.json 不重复报告正文。实际文档未落盘或对方未复核时，不能标记完成。`,

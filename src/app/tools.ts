@@ -7,7 +7,7 @@ import type { RuntimeTool, SessionService } from "../runtime/index.js";
 import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { TaskService } from "../tasks/service.js";
-import { associateTaskUserRequest } from "../tasks/user-request.js";
+import { associateTaskUserRequest, requestHistory } from "../tasks/user-request.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
 import { taskProgress } from "./workflow-progress.js";
 
@@ -235,9 +235,31 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         return { accepted: true };
       },
     ),
+    tool(
+      "participants_restart",
+      "用户明确要求重新拉起并继续时替换指定旧执行器，保留未知投递审计和历史材料，再交自动调度续接。先task_get选准确参与者编号，不用participant_add加出重复成员或用resume冒充重启。返回只证明替换已登记，需后续initialSent验证续接要求送达。仅活跃model/workflow任务支持。",
+      false,
+      { taskId, participantIds: { type: "array", items: { type: "string" }, minItems: 1 } },
+      ["participantIds"],
+      async (args, ctx, signal) =>
+        services.tasks.restartParticipants(
+          ctx,
+          id(args, ctx),
+          strings(args.participantIds),
+          mutationGuard(signal),
+        ),
+    ),
   ];
   if (actor.taskId) return tools;
   tools.push(
+    tool(
+      "request_history",
+      "读取当前主入口会话最近已处理的真实用户原文及消息编号。创建新任务且用户明确指代/沿用此前要求时，使用这些编号传contextMessageIds；不能引用助手承诺或擅自沿用其他任务约束。",
+      true,
+      {},
+      [],
+      async (_args, ctx) => requestHistory(services.store, ctx),
+    ),
     tool(
       "project_save",
       "按用户要求登记已有项目目录与默认agent；目录列表首项为主目录。",
@@ -304,8 +326,15 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },
         title: text("任务名称"),
         requirements: text(
-          "本任务的完整要求，不能只传标题；历史其他任务的限制、旧助手承诺不是本任务授权，不得自动沿用",
+          "本任务的分派摘要，仅留作审计；新版workflow执行以服务端用户原文及显式contextMessageIds为准，历史其他任务的限制和助手承诺不得沿用",
         ),
+        contextMessageIds: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 20,
+          description:
+            "仅当本轮用户明确引用此前要求时，从request_history选择同会话用户消息编号；新项目不默认继承旧任务限制。",
+        },
         project: text("已配置项目名称"),
         newProject: { type: "boolean" },
         parentTaskId: text("先前讨论任务编号，关联已确认结论"),

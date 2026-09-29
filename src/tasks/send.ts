@@ -5,6 +5,8 @@ import type { OperationReceipt } from "../storage/operations.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
+import { inputGuard } from "./input-guard.js";
+import { inputTiming } from "./input-timing.js";
 import { participantPrompt } from "./prompts.js";
 import { requestPrompt } from "./user-request.js";
 
@@ -33,7 +35,15 @@ export async function sendParticipant(
       fail("participant_busy", "同一执行任务按参与者串行工作，请等待当前参与者结束。");
   }
   const initial = !participant.initialSent;
-  const arrangement = source ? requestPrompt(source, text) : text;
+  const assertCurrent = inputGuard(context, task, participant, beforeSend);
+  const arrangement = [
+    source ? requestPrompt(source, text) : text,
+    ...(initial && task.recovery
+      ? [
+          `恢复材料：${task.recovery.materialPath}\n先核对现有文件和历史记录；旧执行器未知投递保留为未知，不重放旧未知命令。按用户当前要求从已有成果继续。`,
+        ]
+      : []),
+  ].join("\n\n");
   const prompt = initial ? participantPrompt(task, participant, arrangement) : arrangement;
   const legacyParameters = { participant: participant.id, text };
   const previous = context.store.get<OperationReceipt>("operations", operationId);
@@ -47,8 +57,7 @@ export async function sendParticipant(
     await captureInputBaseline(context, participant);
     // Baseline reads yield while the task lock is held. A new foreground
     // request or cancellation can arrive before the actual native input.
-    assertActive(context);
-    beforeSend?.();
+    assertCurrent();
     const prepared = prepareInputDelivery(
       context,
       task,
@@ -60,7 +69,12 @@ export async function sendParticipant(
     const result = await context.herdr.send(
       participant.execution as NonNullable<Participant["execution"]>,
       prepared.prompt,
-      { receipt: prepared.receipt },
+      {
+        receipt: prepared.receipt,
+        signal: context.signal,
+        assertCurrent,
+        onProgress: inputTiming(context, task, participant, operationId),
+      },
     );
     if (result.status === "not_executed")
       throw new OperationError("delivery_not_executed", "本次未发送；可核对参数后重试。");

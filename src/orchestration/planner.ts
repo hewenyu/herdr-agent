@@ -1,7 +1,11 @@
-import { fail } from "../core/errors.js";
+import { fail, OperationError, safeError } from "../core/errors.js";
 import type { ActorContext, Task } from "../core/types.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
-import { addDocumentDelivery, validateDocumentDelivery } from "./document-delivery.js";
+import { compileWorkflowContract } from "./contract-change.js";
+import { validateDocumentDelivery } from "./document-delivery.js";
+import { type PlanningAudit, PlanningDiagnostics } from "./planning-diagnostics.js";
+import { type PlanningSource, planningSources, sourceText } from "./planning-sources.js";
+import { planningFailureLocation } from "./planning-validation.js";
 import { templatePlan } from "./templates.js";
 import {
   phases,
@@ -18,10 +22,20 @@ export async function planWorkflow(input: {
   engine: ConversationEngine;
   actor: ActorContext;
   userMessages: string[];
+  sources?: PlanningSource[];
+  contractSource?: PlanningSource;
+  /** Initial ordinary discussions only fill the compiled template, never replace its graph. */
+  simpleDiscussion?: boolean;
+  audit?: PlanningAudit;
   signal: AbortSignal;
   assertCurrent(): void;
 }): Promise<WorkflowPlan> {
   let selected: WorkflowPlan | undefined;
+  const sources = planningSources(input.task, input.userMessages, input.sources);
+  const constraintSources = sources.filter((source) => !source.legacy);
+  const diagnostics = new PlanningDiagnostics(input.audit);
+  const stopped = new AbortController();
+  const signal = AbortSignal.any([input.signal, stopped.signal]);
   const templates: WorkflowTemplate[] = input.task.orchestration?.template
     ? [input.task.orchestration.template]
     : input.task.kind === "discussion"
@@ -60,12 +74,37 @@ export async function planWorkflow(input: {
             "仅新版讨论任务：用户明确要求沉淀/保存文档时，引用其完整肯定要求并列出文档路径。只读分析或用户禁止写入时不得填写；不把写文档升级为业务开发，也不重复索取已给出的授权。未指定名称可用 docs/DESIGN.md。",
           properties: {
             paths: { type: "array", items: { type: "string" } },
-            userRequest: {
+            requireConsensus: {
+              type: "boolean",
+              description:
+                "仅用户明确要求双方或全体指定参与者认可同版最终文档时为 true；程序生成逐一确认节点，普通评审不自动要求全体认可。",
+            },
+            sourceMessageId: {
               type: "string",
-              description: "用户要求写文档的原文，必须保留否定、条件与限定词，不能摘取反向子串。",
+              enum: sources.map((source) => source.id),
+              description: "引用所列真实用户消息的 ID；程序保留完整原文，无需复制。",
             },
           },
-          required: ["paths", "userRequest"],
+          required: ["paths", "sourceMessageId"],
+          additionalProperties: false,
+        },
+        contractChange: {
+          type: "object",
+          description:
+            "仅重规划：最新用户明确取消已接受的共同认可或项目文档要求时列出撤销项。省略即继承；取消文档时若绑定共同认可，须明确同时撤销该门槛。程序另用 Jev 核验，不接受模型自行降级。",
+          properties: {
+            sourceMessageId: {
+              type: "string",
+              enum: input.contractSource
+                ? [input.contractSource.id]
+                : sources.map((source) => source.id),
+              description:
+                "只能引用 contractChangeSource 所列最新真实任务输入，不能引用创建原文或查询。",
+            },
+            removeConsensus: { type: "boolean", enum: [true] },
+            removeDocumentDelivery: { type: "boolean", enum: [true] },
+          },
+          required: ["sourceMessageId"],
           additionalProperties: false,
         },
         validation: {
@@ -75,9 +114,12 @@ export async function planWorkflow(input: {
           properties: {
             mode: { type: "string", enum: ["execute", "not_run"] },
             reason: { type: "string" },
-            userConstraint: {
+            sourceMessageId: {
               type: "string",
-              description: "要求不运行验证的用户原文片段，不得引用参与者意见。",
+              ...(constraintSources.length
+                ? { enum: constraintSources.map((source) => source.id) }
+                : {}),
+              description: "not_run 必须引用明确禁止验证的真实用户消息 ID；任务概括不是授权。",
             },
           },
           required: ["mode", "reason"],
@@ -86,7 +128,7 @@ export async function planWorkflow(input: {
         nodes: {
           type: "array",
           description:
-            "仅复杂任务或重规划需要：替换节点图。简单任务省略，沿用模板。报告必须依赖所有工作节点；新版讨论按顺序互相回应。",
+            "仅复杂任务或重规划需要：替换节点图。简单任务省略，沿用模板。报告必须依赖所有工作节点；新版讨论按顺序互相回应。confirm-* 认可节点由程序重新编译，不复制或手工填写。",
           items: {
             type: "object",
             properties: {
@@ -112,90 +154,185 @@ export async function planWorkflow(input: {
       additionalProperties: false,
     },
     execute: async (args) => {
-      input.assertCurrent();
-      if (selected) fail("workflow_plan", "本轮已有计划。");
-      if (!templates.includes(args.template as WorkflowTemplate))
-        fail("workflow_scope", "规划器只能使用本任务允许的模板，不能改换显式指定的模板。");
-      if (
-        !args.instructions ||
-        typeof args.instructions !== "object" ||
-        Array.isArray(args.instructions) ||
-        Object.values(args.instructions).some(
-          (value) => typeof value !== "string" || !value.trim(),
-        ) ||
-        !Array.isArray(args.deliveryRequirements) ||
-        args.deliveryRequirements.some((value) => typeof value !== "string" || !value.trim())
-      )
-        fail("workflow_plan", "规划参数无效。");
-      const plan = templatePlan(input.task, args.template as WorkflowTemplate);
-      if (args.nodes !== undefined) {
-        if (!Array.isArray(args.nodes)) fail("workflow_plan", "节点图必须为数组。");
-        plan.nodes = structuredClone(args.nodes) as WorkflowNode[];
-      }
-      plan.version = input.state.plan.version;
-      plan.goal = input.task.requirements;
-      if (args.requiredArtifacts !== undefined)
-        plan.requiredArtifacts = args.requiredArtifacts as string[];
-      if (args.documentDelivery !== undefined) {
-        plan.documentDelivery = args.documentDelivery as WorkflowPlan["documentDelivery"];
-        validateDocumentDelivery(plan, input.task, input.userMessages);
-      }
-      if (args.validation !== undefined) {
-        plan.validation = args.validation as WorkflowPlan["validation"];
-        const constraint = plan.validation?.userConstraint;
+      if (diagnostics.stopped) throw diagnostics.stopped;
+      const startedAt = Date.now();
+      let field = "template";
+      let nodeId: string | undefined;
+      try {
+        input.assertCurrent();
+        if (selected) fail("workflow_plan", "本轮已有计划。");
+        if (!templates.includes(args.template as WorkflowTemplate))
+          fail("workflow_scope", "规划器只能使用本任务允许的模板，不能改换显式指定的模板。");
+        field = "instructions/deliveryRequirements";
         if (
-          plan.validation?.mode === "not_run" &&
-          (!constraint?.trim() ||
-            ![
-              input.task.requirements,
-              input.task.userRequest?.text ?? "",
-              ...input.userMessages,
-            ].some((text) => text.includes(constraint)))
+          !args.instructions ||
+          typeof args.instructions !== "object" ||
+          Array.isArray(args.instructions) ||
+          Object.values(args.instructions).some(
+            (value) => typeof value !== "string" || !value.trim(),
+          ) ||
+          !Array.isArray(args.deliveryRequirements) ||
+          args.deliveryRequirements.some((value) => typeof value !== "string" || !value.trim())
         )
-          fail("workflow_scope", "不运行验证的约束必须引用本任务用户原文。");
-      }
-      for (const [id, instruction] of Object.entries(args.instructions)) {
-        const node = plan.nodes.find((entry) => entry.id === id);
-        if (!node) fail("workflow_plan", "任务书引用了不存在的模板节点。");
-        node.instruction = instruction as string;
-      }
-      if (plan.validation?.mode === "not_run")
-        for (const node of plan.nodes.filter((entry) => entry.phase === "validating")) {
-          node.access = "read";
-          node.instruction = `仅作独立只读复核，不运行验证命令；记录 not_run 及原因：${plan.validation.reason}`;
+          fail("workflow_plan", "规划参数无效。");
+        const plan = templatePlan(input.task, args.template as WorkflowTemplate);
+        if (args.nodes !== undefined) {
+          field = "nodes";
+          if (input.simpleDiscussion)
+            fail(
+              "workflow_plan",
+              "普通讨论首轮使用固定节点，只填写文档路径、任务书和验收项；不能替换节点图。",
+            );
+          if (!Array.isArray(args.nodes)) fail("workflow_plan", "节点图必须为数组。");
+          plan.nodes = structuredClone(args.nodes) as WorkflowNode[];
         }
-      plan.deliveryRequirements = [
-        ...new Set([...plan.deliveryRequirements, ...(args.deliveryRequirements as string[])]),
-      ];
-      addDocumentDelivery(plan);
-      validatePlan(plan, input.task, input.userMessages);
-      selected = plan;
-      return { planned: true, version: plan.version };
+        plan.version = input.state.plan.version;
+        plan.goal = input.task.requirements;
+        if (args.requiredArtifacts !== undefined)
+          plan.requiredArtifacts = args.requiredArtifacts as string[];
+        let requireConsensus: unknown;
+        let consensusSourceId: unknown;
+        if (args.documentDelivery !== undefined) {
+          field = "documentDelivery";
+          const delivery = args.documentDelivery as {
+            paths: string[];
+            requireConsensus?: boolean;
+            sourceMessageId?: string;
+            userRequest?: string;
+          };
+          requireConsensus = delivery.requireConsensus;
+          consensusSourceId = delivery.sourceMessageId;
+          // Old tool transcripts remain replayable; new schemas only expose source IDs.
+          plan.documentDelivery = {
+            paths: delivery.paths,
+            userRequest:
+              delivery.sourceMessageId !== undefined
+                ? sourceText(sources, delivery.sourceMessageId)
+                : (delivery.userRequest ?? ""),
+          };
+          validateDocumentDelivery(plan, input.task, input.userMessages);
+        }
+        if (args.validation !== undefined && input.task.kind !== "discussion") {
+          field = "validation.sourceMessageId";
+          const validation = args.validation as NonNullable<WorkflowPlan["validation"]> & {
+            sourceMessageId?: string;
+          };
+          plan.validation = { mode: validation.mode, reason: validation.reason };
+          if (validation.mode === "not_run") {
+            const legacy =
+              input.task.promptVersion !== 3 &&
+              !input.task.userRequest &&
+              !constraintSources.length;
+            const permittedSources = legacy
+              ? [{ id: "legacy-requirements", text: input.task.requirements }]
+              : constraintSources;
+            const constraint =
+              validation.sourceMessageId !== undefined
+                ? sourceText(constraintSources, validation.sourceMessageId)
+                : permittedSources.find((source) =>
+                    legacy
+                      ? !!validation.userConstraint?.trim() &&
+                        source.text.includes(validation.userConstraint)
+                      : source.text.trim() === validation.userConstraint?.trim(),
+                  )?.text;
+            if (
+              !constraint?.trim() ||
+              !permittedSources.some((source) => source.text === constraint)
+            )
+              fail(
+                "workflow_scope",
+                "不运行验证的约束必须引用本任务用户原文并保留整条原文，任务概括不能授予约束。",
+              );
+            plan.validation.userConstraint = constraint;
+          }
+        }
+        field = "contractChange";
+        compileWorkflowContract({
+          plan,
+          previous: input.state.plan,
+          participantIds: input.task.participantIds,
+          sources,
+          change: args.contractChange,
+          requireConsensus,
+          consensusSourceId,
+        });
+        for (const [id, instruction] of Object.entries(args.instructions)) {
+          field = "instructions";
+          nodeId = id;
+          const node = plan.nodes.find((entry) => entry.id === id);
+          if (!node) fail("workflow_plan", "任务书引用了不存在的模板节点。");
+          node.instruction = instruction as string;
+        }
+        nodeId = undefined;
+        if (plan.validation?.mode === "not_run")
+          for (const node of plan.nodes.filter((entry) => entry.phase === "validating")) {
+            node.access = "read";
+            node.instruction = `仅作独立只读复核，不运行验证命令；记录 not_run 及原因：${plan.validation.reason}`;
+          }
+        plan.deliveryRequirements = [
+          ...new Set([...plan.deliveryRequirements, ...(args.deliveryRequirements as string[])]),
+        ];
+        field = "plan.nodes";
+        try {
+          validatePlan(plan, input.task, input.userMessages);
+        } catch (error) {
+          ({ field, nodeId } = planningFailureLocation(plan, input.task, error));
+          throw error;
+        }
+        selected = plan;
+        diagnostics.record(args, startedAt);
+        return { planned: true, version: plan.version };
+      } catch (error) {
+        const noProgress = diagnostics.record(args, startedAt, error, field, nodeId);
+        if (noProgress) stopped.abort(noProgress);
+        if (noProgress) throw noProgress;
+        const safe = safeError(error);
+        if (safe.code.startsWith("workflow_"))
+          throw new OperationError(
+            safe.code,
+            `${safe.message} 字段：${field}${nodeId ? `；节点：${nodeId}` : ""}。`,
+            safe.outcome,
+          );
+        throw error;
+      }
     },
   };
-  await input.engine.run({
-    actor: input.actor,
-    sessionId: `workflow-plan:${input.task.id}:${input.state.plan.version}`,
-    messages: [],
-    signal: input.signal,
-    tools: [tool],
-    enforceClaims: false,
-    // Tool execution is mandatory via the selected-plan guard below. Let the
-    // provider use auto: some compatible Responses gateways reject "required".
-    systemPrompt:
-      "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从允许的模板选择适用流程并细化具体任务书；调用 orchestration_plan。任务显式指定的模板必须保留，重规划可调整节点但不能改换模板。保留用户硬约束，不能把参与者意见当授权。用户明确禁止测试或执行验证时，必须设置 validation.mode=not_run，引用准确用户原文并记录原因；独立只读评审仍保留。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。",
-    prompt: JSON.stringify({
-      task: {
-        kind: input.task.kind,
-        template: input.task.orchestration?.template,
-        requirements: input.task.requirements,
-        userRequest: input.task.userRequest,
-      },
-      userMessages: input.userMessages,
-      template: input.state.plan,
-      previous: { issues: input.state.issues, nodes: input.state.nodes },
-    }),
-  });
+  const properties = tool.parameters.properties as Record<string, unknown>;
+  if (input.simpleDiscussion) delete properties.nodes;
+  if (input.task.kind === "discussion") delete properties.validation;
+  try {
+    await input.engine.run({
+      actor: input.actor,
+      sessionId: `workflow-plan:${input.task.id}:${input.state.plan.version}`,
+      messages: [],
+      signal,
+      tools: [tool],
+      enforceClaims: false,
+      // Tool execution is mandatory via the selected-plan guard below. Let the
+      // provider use auto: some compatible Responses gateways reject "required".
+      systemPrompt:
+        "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从允许的模板选择适用流程并细化具体任务书；调用 orchestration_plan。任务显式指定的模板必须保留，重规划可调整节点但不能改换模板。保留用户硬约束，不能把参与者意见当授权。" +
+        "已有文档交付与共同认可默认继承；只有 contractChangeSource 中最新真实用户输入明确撤销时，用 contractChange 列出撤销项及来源编号，取消文档要用 removeDocumentDelivery，不能靠省略字段取消。程序会另行核验撤销授权。" +
+        "讨论模板没有验证步骤，不设置 validation。执行任务仅在真实用户原文明令禁止验证时设置 validation.mode=not_run，通过 sourceMessageId 引用；任务 requirements 概括不授予新约束，独立只读评审仍保留。" +
+        "普通讨论首轮不替换节点图；文档写入会由程序生成 document 节点，可通过 instructions.document 补充任务书。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。",
+      prompt: JSON.stringify({
+        task: {
+          kind: input.task.kind,
+          template: input.task.orchestration?.template,
+          requirements: input.task.requirements,
+          userRequest: input.task.userRequest,
+        },
+        userMessages: input.userMessages,
+        sources,
+        contractChangeSource: input.contractSource,
+        template: input.state.plan,
+        previous: { issues: input.state.issues, nodes: input.state.nodes },
+      }),
+    });
+  } catch (error) {
+    throw diagnostics.stopped ?? error;
+  }
+  if (diagnostics.stopped) throw diagnostics.stopped;
   input.assertCurrent();
   if (!selected) fail("workflow_plan", "规划器未返回有效计划，未开始派发。");
   return selected;

@@ -30,9 +30,11 @@ export function validateDocumentDelivery(
     new Set(delivery.paths).size !== delivery.paths.length ||
     typeof delivery.userRequest !== "string" ||
     !delivery.userRequest.trim() ||
-    ![task.userRequest?.text ?? task.requirements, ...userMessages].some(
-      (text) => text.trim() === delivery.userRequest.trim(),
-    )
+    ![
+      task.userRequest?.text ?? task.requirements,
+      ...(task.requestContext ?? []).map((source) => source.text),
+      ...userMessages,
+    ].some((text) => text.trim() === delivery.userRequest.trim())
   )
     fail("workflow_scope", "文档落盘须引用本任务用户明确要求，不能从参与者意见取得授权。");
   for (const path of delivery.paths)
@@ -72,6 +74,7 @@ export async function authorizeDocumentDelivery(input: {
     {
       state: {
         original: input.task.userRequest?.text ?? input.task.requirements,
+        context: input.task.requestContext?.map(({ messageId, text }) => ({ messageId, text })),
         revisions: input.userMessages,
         proposed: input.plan.documentDelivery,
       },

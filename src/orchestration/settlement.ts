@@ -3,6 +3,7 @@ import type { Participant, Task } from "../core/types.js";
 import type { InputDelivery } from "../tasks/input-delivery.js";
 import { rememberImplementer } from "./authorship.js";
 import { inspectArtifact, publishBoard, publishNotes, publishOutput } from "./board.js";
+import { captureConsensus } from "./consensus.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource } from "./document-source.js";
 import { readHandoff } from "./handoff.js";
@@ -145,6 +146,15 @@ export async function settleWorkflow(
           artifactRevision,
         });
       }
+      await captureConsensus(
+        task,
+        state,
+        node,
+        block,
+        participant.id,
+        output.entry.id,
+        artifactRevision,
+      );
       mergeStatus(state, node, block, output.entry.id, artifactRevision);
       if (
         node.phase === "validating" &&

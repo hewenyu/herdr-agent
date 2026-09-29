@@ -55,6 +55,9 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
     kind: kind as TaskKind,
     title: string(input, "title"),
     requirements: string(input, "requirements"),
+    ...(input.contextMessageIds === undefined
+      ? {}
+      : { contextMessageIds: strings(input.contextMessageIds) }),
     project: optionalString(input, "project"),
     newProject: boolean(input, "newProject"),
     participants: input.participants.map((entry) => {

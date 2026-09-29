@@ -151,7 +151,7 @@ export interface OrchestrationPolicy {
 /** A committed task mutation, independent of whether it came through chat ingress. */
 export interface TaskMutationRevision {
   taskId: string;
-  action: "participant_add";
+  action: "participant_add" | "participant_restart";
   participantId: string;
   at: string;
 }
@@ -166,6 +166,10 @@ export interface Task {
   title: string;
   requirements: string;
   userRequest?: UserRequestSource;
+  /** Explicitly referenced, authenticated user messages; never assistant summaries. */
+  requestContext?: UserRequestSource[];
+  /** A user-authorized replacement; old effects remain in the operation audit. */
+  recovery?: { id: string; sourceMessageId: string; materialPath: string };
   directories: string[];
   directoryMode: DirectoryMode;
   /** Original task-authorized directories, frozen before worktree substitution. */
@@ -261,6 +265,7 @@ export interface TaskCreateInput {
   kind: TaskKind;
   title: string;
   requirements: string;
+  contextMessageIds?: string[];
   project?: string;
   newProject?: boolean;
   participants: Array<{ kind: AgentKind; name?: string; role?: string }>;
