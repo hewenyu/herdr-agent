@@ -9,6 +9,7 @@ import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
 import { boardDirectory, inspectArtifact } from "./board.js";
 import { codeDeliveryEvidence, codeDeliveryRevision, codeDeliveryText } from "./code-delivery.js";
+import { assertConsensusDocuments, consensusMissing } from "./consensus.js";
 import { missingDocumentReviewer } from "./document-delivery.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
@@ -27,6 +28,9 @@ export function reportContract(
   configRevision?: string,
 ): string[] {
   const missing: string[] = [];
+  missing.push(...consensusMissing(state, artifactRevision));
+  if (state.plan.consensus && state.issues.some((issue) => issue.status === "open"))
+    missing.push("共同认可仍有未处理分歧");
   if (state.stall.awaitingUser) missing.push("僵局需要用户裁决");
   if (state.issues.some((issue) => issue.status === "open" && issue.blocking))
     missing.push("仍有未处理阻塞问题");
@@ -112,6 +116,7 @@ export async function publishReport(
   const sections = block.reportSections;
   if (!sections || state.plan.deliveryRequirements.some((name) => !sections[name]?.trim()))
     fail("workflow_report", "报告没有覆盖全部必需章节与验收项。");
+  const approvedDocuments = await assertConsensusDocuments(task, state, artifactRevision);
   const deliveryEvidence =
     task.promptVersion === 3 && task.kind === "development"
       ? await codeDeliveryEvidence(task)
@@ -120,6 +125,11 @@ export async function publishReport(
   const documents: string[] = [];
   for (const path of state.plan.documentDelivery?.paths ?? []) {
     const artifact = await inspectArtifact(task, path);
+    if (
+      state.plan.consensus &&
+      !approvedDocuments.some((entry) => entry.path === path && entry.hash === artifact.hash)
+    )
+      fail("workflow_consensus", "报告读取到的文档与共同认可版本不一致，不能冻结。");
     const text = await readFile(artifact.path, "utf8");
     if (
       Buffer.byteLength(text) > 1024 * 1024 ||

@@ -77,6 +77,7 @@ export class HerdrClient {
     text: string,
     queued: boolean,
     signal?: AbortSignal,
+    beforeWrite?: () => void,
   ): Promise<AgentSnapshot> {
     const wait = queued
       ? undefined
@@ -87,6 +88,7 @@ export class HerdrClient {
         { target: paneId, text, ...(wait ? { wait } : {}) },
         signal,
         queued ? this.transport.timeoutMs : Math.max(this.transport.timeoutMs, 10_000),
+        beforeWrite,
       ),
     );
     return snapshot(result.agent);

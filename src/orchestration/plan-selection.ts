@@ -3,8 +3,15 @@ import { fail } from "../core/errors.js";
 import { newId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { assessPlanningAssistance } from "./assistance.js";
-import { authorizeDocumentDelivery } from "./document-delivery.js";
+import { compileConsensus } from "./consensus.js";
+import {
+  authorizeContractChange,
+  compileWorkflowContract,
+  latestContractInput,
+} from "./contract-change.js";
+import { addDocumentDelivery, authorizeDocumentDelivery } from "./document-delivery.js";
 import { planWorkflow } from "./planner.js";
+import { planningSources } from "./planning-sources.js";
 import type { WorkflowPorts } from "./runner.js";
 import { templatePlan } from "./templates.js";
 import type { WorkflowPlan, WorkflowState } from "./workflow.js";
@@ -30,14 +37,37 @@ export async function choosePlan(
     ...templatePlan(task, task.orchestration?.template),
     version: state.plan.version,
   };
+  const userMessages = ports.userMessages(task);
+  const sources = planningSources(
+    task,
+    [],
+    userMessages.map(({ id, text }) => ({ id, text })),
+  );
+  const contractSource = latestContractInput(ports.store, task, userMessages);
+  // Selection sees the inherited obligations, so use_template cannot silently revoke them.
+  compileWorkflowContract({
+    plan: template,
+    previous: state.plan,
+    participantIds: task.participantIds,
+    sources,
+  });
+  const simpleDiscussion =
+    task.promptVersion === 3 && task.kind === "discussion" && state.plan.version === 1;
   let useTemplate = false;
+  let useDocumentTemplate = false;
+  let useConsensusTemplate = false;
   if (task.promptVersion === 3) {
     const assessment = await assessPlanningAssistance({
       jev: ports.config?.jev,
+      simpleDiscussion,
       snapshot: {
         userRequest: task.userRequest?.text ?? task.requirements,
         requirements: task.requirements,
-        userMessages: ports.userMessages(task).map((entry) => entry.text),
+        userMessages: userMessages.map((entry) => entry.text),
+        sources,
+        contractChangeSource: contractSource,
+        contractChangePolicy:
+          "已有文档和共同认可默认继承。最新真实输入明确撤销时必须 request_pi，由 pi 提交 contractChange 并另行核验；use_template 始终保留已有合同。",
         template,
         previousPlan: state.plan,
         reason: state.planningReason,
@@ -55,7 +85,17 @@ export async function choosePlan(
     if (assessment.decision === "cancelled") fail("cancelled", "规划判断已取消。");
     if (assessment.decision === "deferred")
       fail("workflow_assistance_deferred", "Jev 需要更多依据判断计划，也未请求 pi 协助。");
-    useTemplate = assessment.decision === "use_template";
+    useConsensusTemplate = assessment.decision === "use_consensus_document_template";
+    useDocumentTemplate = assessment.decision === "use_document_template" || useConsensusTemplate;
+    useTemplate = assessment.decision === "use_template" || useDocumentTemplate;
+  }
+  if (useDocumentTemplate) {
+    const source = sources.at(-1);
+    if (!source) fail("workflow_scope", "默认文档模式缺少可核对的真实用户原文。");
+    template.documentDelivery = { paths: ["docs/DESIGN.md"], userRequest: source.text };
+    addDocumentDelivery(template);
+    if (useConsensusTemplate && !template.consensus)
+      compileConsensus(template, task.participantIds);
   }
   const plan = useTemplate
     ? template
@@ -78,12 +118,30 @@ export async function choosePlan(
           taskId: task.id,
           messageId: event.id,
         },
-        userMessages: ports.userMessages(task).map((entry) => entry.text),
+        userMessages: userMessages.map((entry) => entry.text),
+        sources,
+        contractSource,
+        simpleDiscussion,
+        audit: { store: ports.store, id: logId, taskId: task.id, planVersion: state.plan.version },
         signal: ports.signal,
         assertCurrent: () => {
           ports.assertCurrent(event);
         },
       });
+  await authorizeContractChange({
+    store: ports.store,
+    id: logId,
+    task,
+    previous: state.plan,
+    plan,
+    userMessages,
+    jev: ports.config?.jev,
+    signal: ports.signal,
+    fetch: ports.fetch,
+    assertCurrent: () => {
+      ports.assertCurrent(event);
+    },
+  });
   await authorizeDocumentDelivery({
     task,
     plan,

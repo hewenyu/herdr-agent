@@ -1,0 +1,160 @@
+{
+  "at": "2026-09-29T03:05:53.758Z",
+  "kind": "real_jev_planning_selection_only",
+  "limits": "Only three synthetic/user-provided planning classifications. No pi execution, native agents, Feishu messages, task database writes or service changes.",
+  "results": [
+    {
+      "id": "novel-design-consensus",
+      "expected": "use_consensus_document_template",
+      "actual": "request_pi",
+      "matches": false,
+      "jev": {
+        "status": "low-confidence",
+        "reason": "below_threshold",
+        "adapterVersion": "typesafe-choice-v1",
+        "requestedModel": "jev-1.13.0",
+        "threshold": 0.8,
+        "model": "jev-1.13.0",
+        "candidateId": "use_document_template",
+        "confidence": 0.54,
+        "probabilities": {
+          "request_pi": 0.01,
+          "use_consensus_document_template": 0.18,
+          "use_document_template": 0.66,
+          "use_template": 0.15
+        },
+        "usage": {
+          "inputTokens": 3046,
+          "outputTokens": 56
+        },
+        "durationMs": 2874
+      },
+      "assistance": {
+        "status": "requested",
+        "requestedBy": "jev-assistance",
+        "reason": "jev_requested_pi_after_assistance_check",
+        "candidates": [
+          {
+            "id": "request_pi",
+            "description": "已有证据足以分析，但合法动作难以区分；请 pi 综合证据并从原合法候选中选择。"
+          },
+          {
+            "id": "wait_for_evidence",
+            "description": "缺少关键证据或用户裁决，pi 也不能补足；保留当前状态，等待新证据或用户处理。"
+          }
+        ],
+        "jev": {
+          "status": "success",
+          "reason": "accepted",
+          "adapterVersion": "typesafe-choice-v1",
+          "requestedModel": "jev-1.13.0",
+          "threshold": 0.8,
+          "model": "jev-1.13.0",
+          "candidateId": "request_pi",
+          "confidence": 0.89,
+          "probabilities": {
+            "wait_for_evidence": 0.05,
+            "request_pi": 0.95
+          },
+          "usage": {
+            "inputTokens": 2994,
+            "outputTokens": 37
+          },
+          "durationMs": 298
+        }
+      }
+    },
+    {
+      "id": "discussion-only",
+      "expected": "use_template",
+      "actual": "use_template",
+      "matches": true,
+      "jev": {
+        "status": "success",
+        "reason": "accepted",
+        "adapterVersion": "typesafe-choice-v1",
+        "requestedModel": "jev-1.13.0",
+        "threshold": 0.8,
+        "model": "jev-1.13.0",
+        "candidateId": "use_template",
+        "confidence": 1,
+        "probabilities": {
+          "request_pi": 0,
+          "use_template": 1,
+          "use_consensus_document_template": 0,
+          "use_document_template": 0
+        },
+        "usage": {
+          "inputTokens": 2926,
+          "outputTokens": 55
+        },
+        "durationMs": 1289
+      },
+      "assistance": {
+        "status": "skipped",
+        "reason": "not_needed"
+      }
+    },
+    {
+      "id": "custom-document-path",
+      "expected": "request_pi",
+      "actual": "request_pi",
+      "matches": true,
+      "jev": {
+        "status": "low-confidence",
+        "reason": "below_threshold",
+        "adapterVersion": "typesafe-choice-v1",
+        "requestedModel": "jev-1.13.0",
+        "threshold": 0.8,
+        "model": "jev-1.13.0",
+        "candidateId": "use_consensus_document_template",
+        "confidence": 0.52,
+        "probabilities": {
+          "request_pi": 0.19,
+          "use_document_template": 0.16,
+          "use_consensus_document_template": 0.63,
+          "use_template": 0.02
+        },
+        "usage": {
+          "inputTokens": 2866,
+          "outputTokens": 59
+        },
+        "durationMs": 942
+      },
+      "assistance": {
+        "status": "requested",
+        "requestedBy": "jev-assistance",
+        "reason": "jev_requested_pi_after_assistance_check",
+        "candidates": [
+          {
+            "id": "request_pi",
+            "description": "已有证据足以分析，但合法动作难以区分；请 pi 综合证据并从原合法候选中选择。"
+          },
+          {
+            "id": "wait_for_evidence",
+            "description": "缺少关键证据或用户裁决，pi 也不能补足；保留当前状态，等待新证据或用户处理。"
+          }
+        ],
+        "jev": {
+          "status": "success",
+          "reason": "accepted",
+          "adapterVersion": "typesafe-choice-v1",
+          "requestedModel": "jev-1.13.0",
+          "threshold": 0.8,
+          "model": "jev-1.13.0",
+          "candidateId": "request_pi",
+          "confidence": 0.95,
+          "probabilities": {
+            "request_pi": 0.97,
+            "wait_for_evidence": 0.03
+          },
+          "usage": {
+            "inputTokens": 2816,
+            "outputTokens": 37
+          },
+          "durationMs": 267
+        }
+      }
+    }
+  ]
+}

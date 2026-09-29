@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config/types.js";
 import { OperationError } from "../core/errors.js";
-import type { HerdrPort, PlatformPort } from "../core/ports.js";
+import type { HerdrPort, Logger, PlatformPort } from "../core/ports.js";
 import type { Participant, Task, TranscriptEntry } from "../core/types.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
 import type { Operations } from "../storage/operations.js";
@@ -42,6 +42,7 @@ export interface TaskContext {
   herdr: HerdrPort;
   platform?: PlatformPort;
   hooks: TaskHooks;
+  logger?: Logger;
 }
 
 export function assertActive(context: Pick<TaskContext, "signal">): void {

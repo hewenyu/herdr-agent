@@ -142,10 +142,12 @@ test("both template and pi planning filter removed participants before generatin
                 type: "choice",
                 choice,
                 confidence: 0.95,
-                probabilities: {
-                  use_template: choice === "use_template" ? 0.95 : 0.05,
-                  request_pi: choice === "request_pi" ? 0.95 : 0.05,
-                },
+                probabilities: Object.fromEntries(
+                  Object.keys(body.questions.action.criteria).map((id, _, ids) => [
+                    id,
+                    id === choice ? 0.95 : 0.05 / (ids.length - 1),
+                  ]),
+                ),
               },
             },
             usage: { input_tokens: 20, output_tokens: 5 },

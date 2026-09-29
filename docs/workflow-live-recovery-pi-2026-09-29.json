@@ -1,0 +1,95 @@
+{
+  "at": "2026-09-29T03:22:01.718Z",
+  "kind": "real_pi_limited_planning_only",
+  "model": "kimi-k2.5",
+  "limits": "Read-only planning tool with a synthetic temporary task. No native agents, Feishu connection, task execution, production database or service changes.",
+  "events": [
+    {
+      "event": "pi.tool_started",
+      "tool": "orchestration_plan"
+    },
+    {
+      "event": "pi.tool_completed",
+      "tool": "orchestration_plan",
+      "durationMs": 1
+    }
+  ],
+  "accepted": true,
+  "documentPaths": [
+    "docs/DESIGN.md"
+  ],
+  "consensusParticipants": 2,
+  "nodes": [
+    {
+      "id": "opening-1",
+      "phase": "discussing",
+      "role": "analyst",
+      "access": "read",
+      "dependsOn": []
+    },
+    {
+      "id": "opening-2",
+      "phase": "discussing",
+      "role": "analyst",
+      "access": "read",
+      "dependsOn": [
+        "opening-1"
+      ]
+    },
+    {
+      "id": "document",
+      "phase": "discussing",
+      "role": "analyst",
+      "access": "write",
+      "dependsOn": [
+        "opening-1",
+        "opening-2"
+      ]
+    },
+    {
+      "id": "cross-review",
+      "phase": "reviewing",
+      "role": "reviewer",
+      "access": "read",
+      "dependsOn": [
+        "opening-1",
+        "opening-2",
+        "document"
+      ]
+    },
+    {
+      "id": "confirm-1",
+      "phase": "discussing",
+      "role": "analyst",
+      "access": "read",
+      "dependsOn": [
+        "cross-review"
+      ]
+    },
+    {
+      "id": "confirm-2",
+      "phase": "discussing",
+      "role": "analyst",
+      "access": "read",
+      "dependsOn": [
+        "confirm-1"
+      ]
+    },
+    {
+      "id": "report",
+      "phase": "reporting",
+      "role": "reporter",
+      "access": "read",
+      "dependsOn": [
+        "confirm-2"
+      ]
+    }
+  ],
+  "durationMs": 51082,
+  "attempts": [
+    {
+      "attempt": 1,
+      "outcome": "accepted"
+    }
+  ]
+}

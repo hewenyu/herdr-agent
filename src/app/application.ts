@@ -491,6 +491,7 @@ export class Application implements ApplicationContext {
   private taskService(): TaskService {
     const service = new TaskService({
       config: this.config,
+      logger: this.logger,
       store: this.store,
       catalog: this.projects,
       herdr: this.herdr,

@@ -8,7 +8,7 @@ import { OperationError } from "../core/errors.js";
 import type { Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
-import { ownsTaskOperation } from "../tasks/operation-scope.js";
+import { activeTaskOperation } from "../tasks/operation-scope.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 
 const execute = promisify(execFile);
@@ -189,7 +189,9 @@ export async function workspaceAvailable(
         (["working", "unknown"].includes(participant.status) ||
           !!store.get("participant_awaiting_output", participant.id)),
     );
-    const unknown = operations.filter(([id]) => ownsTaskOperation(other, id));
+    const unknown = operations.filter(([id, receipt]) =>
+      activeTaskOperation(store, other, id, receipt),
+    );
     if (!active.length && !unknown.length) continue;
     let writer = active.some(
       (participant) => participantAccess(other, participant.id, workflow) === "write",

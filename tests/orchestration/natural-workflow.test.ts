@@ -8,6 +8,7 @@ import type { Task } from "../../src/core/types.js";
 import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
 import { assertDocumentSource } from "../../src/orchestration/document-source.js";
 import { handoffDirectory } from "../../src/orchestration/handoff.js";
+import { workflowState } from "../../src/orchestration/state.js";
 import { templatePlan } from "../../src/orchestration/templates.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
@@ -579,7 +580,10 @@ test("frozen document dispatch retains its narrower scope across restart", async
   const save = h.store.set.bind(h.store);
   let frozen: OrchestrationEvent | undefined;
   try {
+    // This custom two-writer graph is an existing task's replan, not the fixed initial discussion.
+    workflowState(h.store, h.task, "earlier-user-revision");
     await worker.tick();
+    assert.equal(h.state().plan.version, 2);
     await worker.tick();
     await h.finish("opening-1");
     await worker.tick();

@@ -1,4 +1,5 @@
 import type { InboxRecord } from "../app/inbox.js";
+import { fail } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
 import type { ActorContext, Task, UserRequestSource } from "../core/types.js";
 import type { Store } from "../storage/store.js";
@@ -66,6 +67,46 @@ export function currentUserRequest(
     eventId: payload.eventId,
     text: payload.text,
   };
+}
+
+/** Context is opt-in and limited to authenticated user messages in this session. */
+export function requestHistory(store: Store, actor: ActorContext): UserRequestSource[] {
+  return store
+    .list<InboxRecord>("inbox")
+    .filter(
+      (record) =>
+        record.type === "message" &&
+        record.actor?.ownerId === actor.ownerId &&
+        record.actor.sessionId === actor.sessionId &&
+        record.actor.chatId === actor.chatId &&
+        record.state === "done" &&
+        record.actor.taskId === actor.taskId,
+    )
+    .sort((a, b) => a.sequence - b.sequence)
+    .flatMap((record) => {
+      const source = record.actor && currentUserRequest(store, record.actor);
+      return source ? [source] : [];
+    })
+    .slice(-20);
+}
+
+export function requestContext(
+  store: Store,
+  actor: ActorContext,
+  ids: string[] = [],
+): UserRequestSource[] {
+  if (ids.length > 20 || new Set(ids).size !== ids.length)
+    fail("request_source", "上下文引用必须是最多 20 条不同的用户消息。");
+  const history = requestHistory(store, actor);
+  for (const id of ids) {
+    const source = history.find((entry) => entry.messageId === id && id !== actor.messageId);
+    if (!source)
+      fail(
+        "request_source",
+        "上下文必须引用本会话已处理的真实用户消息，不能引用助手答复或其他会话。",
+      );
+  }
+  return history.filter((source) => ids.includes(source.messageId));
 }
 
 export function requestPrompt(

@@ -1,5 +1,6 @@
 import { basename, isAbsolute, resolve } from "node:path";
 import { OperationError } from "../core/errors.js";
+import type { NativeSendOptions } from "../core/ports.js";
 import type { AgentSnapshot, Delivery, ExecutionRef } from "../core/types.js";
 import { taskWorktreeRoot } from "../projects/worktree-trust.js";
 import { ApprovalEffectError } from "./approval-error.js";
@@ -14,6 +15,7 @@ import {
   showsDialog,
   trustKeys,
 } from "./screen.js";
+import { sendProgress } from "./send-progress.js";
 import { pause } from "./timing.js";
 
 const keys = new Set([
@@ -87,13 +89,10 @@ export class AgentControl {
     return agent;
   }
 
-  async send(
-    ref: ExecutionRef,
-    text: string,
-    options: { receipt?: string; signal?: AbortSignal } = {},
-  ): Promise<Delivery> {
+  async send(ref: ExecutionRef, text: string, options: NativeSendOptions = {}): Promise<Delivery> {
     if (!text.trim()) throw new OperationError("empty_prompt", "不能发送空消息。");
     return this.serial(ref.paneId, async () => {
+      options.assertCurrent?.();
       await this.settle(ref, options.signal);
       // An unreadable/truncated screen cannot rule out a permission menu.
       const before = await this.client.read(ref.paneId, "visible", options.signal);
@@ -110,8 +109,13 @@ export class AgentControl {
       const body = composerOccupied(before.text) ? `\n${text}` : text;
       let acked = false;
       try {
-        await this.client.prompt(ref.paneId, body, queued, options.signal);
+        options.assertCurrent?.();
+        await this.client.prompt(ref.paneId, body, queued, options.signal, () => {
+          options.assertCurrent?.();
+          sendProgress(options, "write_started");
+        });
         acked = true;
+        sendProgress(options, "acknowledged");
       } catch (error) {
         if (error instanceof OperationError && error.outcome === "not_executed") throw error;
         return {
@@ -136,6 +140,7 @@ export class AgentControl {
       const verified =
         verifyEcho(before.text, after, text, queued) ||
         verifyReceipt(before.text, after, text, options.receipt, queued);
+      sendProgress(options, "readback_completed", verified);
       return {
         status: verified ? (queued ? "queued" : "delivered") : "unconfirmed",
         acked,

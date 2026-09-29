@@ -23,12 +23,13 @@ import {
   type TaskActionOptions,
 } from "./lifecycle.js";
 import { observeTask } from "./observe.js";
-import { ownsTaskOperation } from "./operation-scope.js";
+import { activeTaskOperation } from "./operation-scope.js";
 import { TaskOperations } from "./operations.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
 import { TaskRecords } from "./records.js";
 import { RemotePolls } from "./remote-poll.js";
+import { restartParticipants } from "./restart.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
 import { associateTaskUserRequest, currentUserRequest } from "./user-request.js";
@@ -329,6 +330,18 @@ export class TaskService {
     });
   }
 
+  async restartParticipants(
+    actor: ActorContext,
+    id: string,
+    participantIds: string[],
+    beforeMutation?: () => void,
+  ) {
+    return this.controlLock(actor, id, async () => {
+      beforeMutation?.();
+      return restartParticipants(this.context, actor, this.records.get(actor, id), participantIds);
+    });
+  }
+
   async removeParticipant(
     actor: ActorContext,
     id: string,
@@ -541,7 +554,8 @@ export class TaskService {
           .entries<OperationReceipt>("operations")
           .some(
             ([key, receipt]) =>
-              ownsTaskOperation(task, key) && ["pending", "uncertain"].includes(receipt.state),
+              activeTaskOperation(this.context.store, task, key, receipt) &&
+              ["pending", "uncertain"].includes(receipt.state),
           );
         if (
           uncertain ||

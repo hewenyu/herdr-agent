@@ -1,10 +1,13 @@
+import { dirname } from "node:path";
 import { fail, OperationError } from "../core/errors.js";
 import { now } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
+import { inputGuard } from "./input-guard.js";
 import { recoverInitialInputs } from "./input-recovery.js";
+import { inputTiming } from "./input-timing.js";
 import { participantPrompt, taskDescription } from "./prompts.js";
 
 export async function provision(context: TaskContext, task: Task): Promise<void> {
@@ -95,9 +98,13 @@ export async function provisionParticipant(
   const ref = participant.execution;
   ref.transcriptReceipt = participant.initialReceipt;
   if (!participant.started) {
-    const directories = task.boardDirectory
-      ? [...task.directories, task.boardDirectory]
-      : task.directories;
+    const directories = [
+      ...new Set([
+        ...task.directories,
+        ...(task.boardDirectory ? [task.boardDirectory] : []),
+        ...(task.recovery ? [dirname(task.recovery.materialPath)] : []),
+      ]),
+    ];
     const agent = await operations.run(
       `${participant.id}:start`,
       {
@@ -134,12 +141,13 @@ export async function provisionParticipant(
     return;
   }
   retryUnsentInput(context, `${participant.id}:initial`, { receipt: participant.initialReceipt });
+  const assertCurrent = inputGuard(context, task, participant);
   const delivery = await operations.run(
     `${participant.id}:initial`,
     { receipt: participant.initialReceipt },
     async () => {
       await captureInputBaseline(context, participant);
-      assertActive(context);
+      assertCurrent();
       const prepared = prepareInputDelivery(
         context,
         task,
@@ -148,7 +156,12 @@ export async function provisionParticipant(
         { receipt: participant.initialReceipt },
         participantPrompt(task, participant),
       );
-      const result = await herdr.send(ref, prepared.prompt, { receipt: prepared.receipt });
+      const result = await herdr.send(ref, prepared.prompt, {
+        receipt: prepared.receipt,
+        signal: context.signal,
+        assertCurrent,
+        onProgress: inputTiming(context, task, participant, `${participant.id}:initial`),
+      });
       if (result.status === "not_executed")
         throw new OperationError("delivery_not_executed", "初始要求未投递，请核对启动状态后重试。");
       if (!result.verified)
