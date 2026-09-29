@@ -81,7 +81,12 @@ export function parseStatusBlock(
   for (const field of ["nodeId", "operationId", "inputRevision"] as const)
     check(value[field] === expected[field], field, expected[field], value[field]);
   if (details.length)
-    rejectReceipt("workflow_status", "回执归属不匹配，不能作为当前委派的结果。", details, false);
+    rejectReceipt(
+      "workflow_status",
+      "状态块回执归属不匹配，不能作为当前委派的结果。",
+      details,
+      false,
+    );
   const hasText = (item: unknown): item is string => typeof item === "string" && !!item.trim();
   const strings = (items: unknown): items is string[] =>
     Array.isArray(items) && items.every((item) => typeof item === "string");
