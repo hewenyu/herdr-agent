@@ -277,7 +277,7 @@ export async function readHandoff(
     localEvidenceAliases: true,
   });
   if (node.phase === "reporting" && block.status === "completed") {
-    const report = await readHandoffFile(stateDir, directory, "report.md");
+    const report = await required("report.md");
     block.reportSections = reportSections(report, state.plan.deliveryRequirements);
   }
   return Object.assign(block, {
@@ -290,13 +290,29 @@ export function reportSections(text: string, required: string[]): Record<string,
   const headings = [...text.matchAll(/^## ([^\n]+)\r?$/gm)];
   for (const [index, match] of headings.entries()) {
     const title = match[1]?.trim() ?? "";
-    if (Object.hasOwn(sections, title)) fail("workflow_report", "报告章节重复。");
+    if (Object.hasOwn(sections, title))
+      rejectReceipt("workflow_report", "报告章节重复。", [
+        {
+          field: `report.md.sections[${JSON.stringify(title)}]`,
+          reason: "duplicate_heading",
+          expected: `仅保留一个 ## ${title} 章节，并合并真实内容。`,
+        },
+      ]);
     sections[title] = text
       .slice((match.index ?? 0) + match[0].length, headings[index + 1]?.index ?? text.length)
       .trim();
   }
-  if (required.some((title) => !sections[title]))
-    fail("workflow_report", "报告文件缺少必需章节正文。");
+  const missing = required.filter((title) => !sections[title]);
+  if (missing.length)
+    rejectReceipt(
+      "workflow_report",
+      "报告文件缺少必需章节正文。",
+      missing.map((title) => ({
+        field: `report.md.sections[${JSON.stringify(title)}]`,
+        reason: Object.hasOwn(sections, title) ? "empty_section" : "missing_heading",
+        expected: `## ${title} 下填写真实交付内容，未完成项明确说明；不能省略必需章节。`,
+      })),
+    );
   return sections;
 }
 

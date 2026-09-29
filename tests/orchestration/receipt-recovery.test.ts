@@ -5,6 +5,7 @@ import test from "node:test";
 import type { OrchestrationEvent, SettledTaskOutput } from "../../src/app/task-orchestrator.js";
 import { stableId } from "../../src/core/ids.js";
 import { boardDirectory } from "../../src/orchestration/board.js";
+import { workflowCandidates } from "../../src/orchestration/candidates.js";
 import { handoffDirectory, prepareHandoff } from "../../src/orchestration/handoff.js";
 import { ReceiptError } from "../../src/orchestration/receipt-diagnostics.js";
 import {
@@ -12,15 +13,17 @@ import {
   type WorkflowRecoveryMaterial,
 } from "../../src/orchestration/receipt-recovery.js";
 import type { WorkflowPorts } from "../../src/orchestration/runner.js";
+import { receiptRepairRule } from "../../src/orchestration/selection-context.js";
 import { backfillReceiptRecovery, settleWorkflow } from "../../src/orchestration/settlement.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { bindEvidenceReferences, parseStatusBlock } from "../../src/orchestration/status-block.js";
+import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import type { InputDelivery } from "../../src/tasks/input-delivery.js";
 import { logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-async function fixture() {
+async function fixture(nodeId?: string) {
   const h = setup();
   const repo = join(h.directory, "repo");
   await mkdir(repo);
@@ -33,7 +36,7 @@ async function fixture() {
     boardDirectory: boardDirectory(h.directory, created.id),
   };
   const state = workflowState(h.store, task, "base-revision");
-  const node = state.plan.nodes[0];
+  const node = nodeId ? state.plan.nodes.find((entry) => entry.id === nodeId) : state.plan.nodes[0];
   assert.ok(node);
   const registered = h.service.records.participants(task)[0];
   assert.ok(registered);
@@ -147,6 +150,129 @@ async function fixture() {
     dispatch,
     settle,
   };
+}
+
+for (const defect of ["missing_file", "missing_heading", "empty_section", "duplicate_heading"]) {
+  test(`a reporting ${defect} is repaired by the same participant without weakening required sections`, async () => {
+    const h = await fixture("report");
+    try {
+      const required = [...h.state.plan.deliveryRequirements];
+      const title = required[0];
+      assert.ok(title);
+      const report = required.map((heading) => `## ${heading}\n已核对的实际结论。`).join("\n\n");
+      const first = await h.dispatch("report-original");
+      if (defect !== "missing_file") {
+        const malformed =
+          defect === "missing_heading"
+            ? required
+                .slice(1)
+                .map((heading) => `## ${heading}\n已核对的实际结论。`)
+                .join("\n\n")
+            : defect === "empty_section"
+              ? report.replace(`## ${title}\n已核对的实际结论。`, `## ${title}\n`)
+              : `${report}\n\n## ${title}\n重复结论。`;
+        await writeFile(join(first.directory, "report.md"), malformed);
+      }
+      await h.settle();
+      const progress = h.state.nodes[h.node.id];
+      assert.ok(progress);
+      const repair = progress.repair;
+      assert.ok(repair?.recoverable && repair.notes);
+      assert.equal(progress.status, "blocked");
+      assert.equal(repair.details[0]?.reason, defect);
+      assert.equal(
+        repair.details[0]?.field,
+        defect === "missing_file" ? "report.md" : `report.md.sections[${JSON.stringify(title)}]`,
+      );
+      assert.equal(h.state.report, undefined);
+      assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
+      assert.equal(h.store.get("workflow_conversation_evidence", first.outputId), undefined);
+      const available = {
+        ...h.participant,
+        started: true,
+        execution: {
+          cwd: h.repo,
+          kind: h.participant.kind,
+          paneId: "pane",
+          workspaceId: "workspace",
+        },
+      };
+      const candidates = workflowCandidates(h.task, h.state, [available], [], false);
+      const rule = receiptRepairRule(
+        h.state,
+        candidates,
+        "revision",
+        await workspaceRevision(h.task.directories),
+      );
+      assert.ok(rule);
+      assert.equal(rule.reason, "receipt_repair");
+      assert.equal(rule.noProgress, false);
+      assert.deepEqual(candidates.find((entry) => entry.id === rule.candidateId)?.assignments, [
+        { nodeId: h.node.id, participantId: h.participant.id },
+      ]);
+      const next = await h.dispatch("report-repaired");
+      const brief = await readFile(join(next.directory, "brief.md"), "utf8");
+      assert.match(brief, /本次仅修复交接与回执/);
+      assert.ok(brief.includes(defect));
+      assert.equal(
+        await readFile(join(next.directory, "prior-notes.md"), "utf8"),
+        await readFile(join(first.directory, "notes.md"), "utf8"),
+      );
+      await writeFile(join(next.directory, "report.md"), report);
+      await h.settle();
+      assert.equal(h.state.nodes[h.node.id]?.status, "completed");
+      assert.equal(h.state.nodes[h.node.id]?.repair, undefined);
+      assert.equal(
+        h.store.get<WorkflowState>(WORKFLOWS, h.task.id)?.report?.outputId,
+        next.outputId,
+      );
+      assert.deepEqual(h.state.plan.deliveryRequirements, required);
+      const block = h.store.get<{ block: { reportSections: Record<string, string> } }>(
+        "workflow_status_blocks",
+        next.outputId,
+      );
+      assert.deepEqual(Object.keys(block?.block.reportSections ?? {}), required);
+    } finally {
+      h.close();
+    }
+  });
+}
+
+for (const defect of ["symlink", "oversized_file"]) {
+  test(`an unsafe ${defect} report is never eligible for receipt-only reuse`, async () => {
+    const h = await fixture("report");
+    try {
+      const first = await h.dispatch("unsafe-report");
+      const report = join(first.directory, "report.md");
+      if (defect === "symlink") await symlink(join(h.repo, "source.txt"), report);
+      else await writeFile(report, "x".repeat(1024 * 1024 + 1));
+      await h.settle();
+      const repair = h.state.nodes[h.node.id]?.repair;
+      assert.equal(repair?.recoverable, false);
+      assert.equal(repair?.notes, undefined);
+      assert.equal(repair?.details[0]?.field, "report.md");
+      assert.equal(h.state.report, undefined);
+      assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
+      assert.equal(
+        receiptRepairRule(
+          h.state,
+          [
+            {
+              id: "repair-report",
+              kind: "rework",
+              description: "same participant",
+              assignments: [{ nodeId: h.node.id, participantId: h.participant.id }],
+            },
+          ],
+          "revision",
+          await workspaceRevision(h.task.directories),
+        ),
+        undefined,
+      );
+    } finally {
+      h.close();
+    }
+  });
 }
 
 test("missing natural path preserves a bounded unverified snapshot and repairs only the handoff", async () => {

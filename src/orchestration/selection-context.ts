@@ -4,7 +4,9 @@ import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { WorkflowCandidate } from "./candidates.js";
 import { WORKFLOW_RECOVERY, type WorkflowRecoveryMaterial } from "./receipt-recovery.js";
+import { roleConflictQuestions } from "./role-conflicts.js";
 import type { WorkflowPorts } from "./runner.js";
+import { observedDocumentScopeDecision } from "./scope-decision.js";
 import type { StatusBlock } from "./status-block.js";
 import { ensureUserDecision, renderUserDecision } from "./user-decision.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
@@ -153,6 +155,14 @@ export async function prepareUserDecision(
     ports.assertCurrent(event);
   };
   await assertWorkspace();
+  const scopeQuestion = await observedDocumentScopeDecision({
+    store: ports.store,
+    task,
+    state,
+    revision: event.userRevision,
+    artifactRevision,
+  });
+  await assertWorkspace();
   const decision = await ensureUserDecision({
     task,
     state,
@@ -169,6 +179,10 @@ export async function prepareUserDecision(
       messageId: event.id,
     },
     sources: ports.userMessages(task).map(({ id, text }) => ({ id, text })),
+    programQuestions: [
+      ...(scopeQuestion ? [scopeQuestion] : []),
+      ...roleConflictQuestions(task, state, ports.tasks().records.participants(task)),
+    ],
     blockers: Object.entries(state.nodes).flatMap(([id, node]) => {
       if (
         node.status !== "blocked" ||

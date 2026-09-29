@@ -20,10 +20,20 @@ export interface UserDecisionQuestion {
 
 export interface UserDecisionSource {
   id: string;
-  kind: "user" | "issue" | "blocker";
+  kind: "user" | "issue" | "blocker" | "role_conflict" | "document_scope";
   text: string;
   participantId?: string;
   outputIds?: string[];
+  runtimeFacts?: object;
+}
+
+/** Questions compiled from observed runtime invariants, never arbitrary selector descriptions. */
+export interface ProgramUserDecision {
+  id: string;
+  kind: "role_conflict" | "document_scope";
+  text: string;
+  facts: object;
+  question: UserDecisionQuestion;
 }
 
 export interface WorkflowUserDecision {
@@ -54,6 +64,8 @@ export interface UserDecisionInput {
   sources?: PlanningSource[];
   /** Actual externally missing facts, never low confidence or protocol validation errors. */
   blockers?: Array<{ id: string; text: string; participantId?: string; outputIds?: string[] }>;
+  /** Runtime-observed role constraints, not a selector's description of a possible blocker. */
+  programQuestions?: ProgramUserDecision[];
   /** Internal failures are diagnostic data, not new user obligations. */
   diagnostics?: string[];
   signal?: AbortSignal;
@@ -200,6 +212,12 @@ function decisionSources(input: UserDecisionInput): UserDecisionSource[] {
       id: `blocker:${blocker.id}`,
       kind: "blocker" as const,
     })),
+    ...(input.programQuestions ?? []).map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      text: entry.text,
+      runtimeFacts: entry.facts,
+    })),
   ];
 }
 
@@ -214,6 +232,8 @@ function stateFingerprint(state: WorkflowState): string {
           planVersion: state.plan.version,
           issues: state.issues,
           nodes: state.nodes,
+          bindings: state.plan.nodes.map(({ id, participantId }) => ({ id, participantId })),
+          implementationParticipants: state.implementationParticipants,
         }),
       ),
     ),
@@ -265,6 +285,16 @@ export async function ensureUserDecision(input: UserDecisionInput): Promise<Work
   };
   if (!sources.some((source) => source.kind !== "user")) {
     decision.reason = "no_grounded_user_question";
+    return save();
+  }
+  if (input.programQuestions?.length) {
+    // These choices are fully determined by observed constraints; do not ask pi
+    // to invent remedies or reinterpret a binding as an instruction to change it.
+    decision.questions = parseUserDecisionQuestions(
+      input.programQuestions.slice(0, 3).map((entry) => entry.question),
+      sources,
+    );
+    decision.status = "ready";
     return save();
   }
   let selected = false;

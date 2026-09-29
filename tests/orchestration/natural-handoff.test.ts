@@ -210,7 +210,13 @@ test("reporting reads its complete report file separately from the concise recei
     await h.complete();
     await writeFile(join(h.directory, "result.json"), JSON.stringify({ ...h.result, ...identity }));
     const read = () => readHandoff(h.stateDir, h.task, h.state, node, identity, h.output);
-    await assert.rejects(read(), { code: "ENOENT" });
+    await assert.rejects(read(), {
+      code: "workflow_handoff",
+      recoverable: true,
+      details: [
+        { field: "report.md", reason: "missing_file", expected: join(h.directory, "report.md") },
+      ],
+    });
     const report = h.state.plan.deliveryRequirements
       .map((title) => `## ${title}\n真实的${title}内容。`)
       .join("\n\n");
