@@ -298,12 +298,14 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_create",
-      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；多参与者任务默认由模型自主调度。newProject仅用于用户明确新建项目。",
+      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；默认省略orchestration和discussion，由服务配置选择自动调度。轮流讨论属于workflow正常协作，不等于选择旧round_robin模式。newProject仅用于用户明确新建项目。",
       false,
       {
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },
         title: text("任务名称"),
-        requirements: text("完整用户要求，不能只传标题"),
+        requirements: text(
+          "本任务的完整要求，不能只传标题；历史其他任务的限制、旧助手承诺不是本任务授权，不得自动沿用",
+        ),
         project: text("已配置项目名称"),
         newProject: { type: "boolean" },
         parentTaskId: text("先前讨论任务编号，关联已确认结论"),
@@ -333,9 +335,14 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         orchestration: {
           type: "object",
           description:
-            "model让pi根据执行结果自主分工、继续、返工和委托汇总；manual仅按用户逐次安排。配置 Jev key 时默认 workflow，否则 model；明确指定discussion.mode时沿用该策略。",
+            "默认省略，由服务配置选择自动调度：有 Jev key 使用 workflow，无 key 使用 model。配置 Jev 时旧 model 参数也会归一为 workflow。manual 仅用于用户明确要求逐次手动安排；旧任务模式保持不变。",
           properties: {
-            mode: { type: "string", enum: ["model", "manual", "workflow"] },
+            mode: {
+              type: "string",
+              enum: services.config?.jev?.apiKey
+                ? ["manual", "workflow"]
+                : ["model", "manual", "workflow"],
+            },
             template: { type: "string", enum: ["discussion", "development", "bugfix"] },
           },
           required: ["mode"],
@@ -343,6 +350,8 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         },
         discussion: {
           type: "object",
+          description:
+            "仅用户明确选择旧 manual/round_robin 控制模式时填写；普通轮流协作省略此字段，由workflow处理。",
           properties: {
             mode: { type: "string", enum: ["manual", "round_robin"] },
           },

@@ -43,15 +43,6 @@ export async function createTask(
     !["discussion", "development", "bugfix"].includes(input.orchestration.template)
   )
     fail("workflow_template", "工作流模板无效。");
-  if (
-    input.orchestration?.mode === "workflow" &&
-    input.orchestration.template !== undefined &&
-    (input.kind === "discussion") !== (input.orchestration.template === "discussion")
-  )
-    fail(
-      "workflow_template",
-      `任务类型 ${input.kind} 与工作流模板 ${input.orchestration.template} 不兼容；discussion 任务只能使用 discussion 模板，development/review/test 任务只能使用 development 或 bugfix 模板。`,
-    );
   const parent = input.parentTaskId ? records.get(actor, input.parentTaskId) : undefined;
   // A message identity is only unique inside its bound pi session.  Keeping
   // the session in the durable task key prevents two independently selected
@@ -68,6 +59,22 @@ export async function createTask(
   const legacyId = `task_${stableId(actor.ownerId, actor.messageId, canonical(input))}`;
   const legacy = store.get<Task>("tasks", legacyId);
   if (legacy?.sessionId === actor.sessionId) return records.get(actor, legacyId);
+  // Automatic scheduling is selected by the current service configuration, not
+  // a model's copy of an old task_create call. Keep the original input above for
+  // durable task identity; a retry of an existing model task must not migrate it.
+  const orchestration =
+    config.ai.enabled && config.jev?.apiKey && input.orchestration?.mode === "model"
+      ? { ...input.orchestration, mode: "workflow" as const }
+      : input.orchestration;
+  if (
+    orchestration?.mode === "workflow" &&
+    orchestration.template !== undefined &&
+    (input.kind === "discussion") !== (orchestration.template === "discussion")
+  )
+    fail(
+      "workflow_template",
+      `任务类型 ${input.kind} 与工作流模板 ${orchestration.template} 不兼容；discussion 任务只能使用 discussion 模板，development/review/test 任务只能使用 development 或 bugfix 模板。`,
+    );
   if (input.newProject && !input.project) fail("project_name", "新建项目需要明确名称。");
   if (input.newProject && input.project) {
     await context.operations.run(`${id}:project`, { name: input.project }, () =>
@@ -147,11 +154,11 @@ export async function createTask(
       paused: false,
       activeParticipant: participants[0]?.id,
     },
-    orchestration: input.orchestration
+    orchestration: orchestration
       ? {
-          mode: input.orchestration.mode,
-          ...(input.orchestration.mode === "workflow" && input.orchestration.template
-            ? { template: input.orchestration.template }
+          mode: orchestration.mode,
+          ...(orchestration.mode === "workflow" && orchestration.template
+            ? { template: orchestration.template }
             : {}),
         }
       : config.ai.enabled && config.jev?.apiKey && !input.discussion?.mode

@@ -11,6 +11,13 @@ import type {
   Task,
   UserRequestSource,
 } from "../core/types.js";
+import { approvalFailureEvidence } from "../herdr/approval-error.js";
+import {
+  menuAction,
+  type NativeMenu,
+  type NativeMenuAction,
+  nativeMenu,
+} from "../herdr/native-menu.js";
 import { screenFingerprint } from "../herdr/screen.js";
 import type { ChoiceCandidate, JevOptions } from "../orchestration/jev.js";
 import type { ConversationEngine } from "../runtime/types.js";
@@ -48,8 +55,11 @@ interface Decision {
   attempts: number;
   retryAt?: string;
   candidates: ChoiceCandidate[];
-  observation: { screen: AgentScreen; userInput: unknown };
+  observation: { screen: AgentScreen; userInput: unknown; menu?: NativeMenu };
   selection?: ApprovalChoice;
+  action?: NativeMenuAction;
+  effect?: { status: string; selectedOptionId?: string };
+  failure?: ReturnType<typeof approvalFailureEvidence>;
   key?: string;
   error?: string;
   createdAt: string;
@@ -82,8 +92,8 @@ export class AutomaticApprovals {
       .filter((m) => m.taskId === task.id && m.role === "user" && m.source === "user")
       .map((m) => ({ text: m.text, at: m.createdAt }));
     return {
+      source: task.userRequest ? "user_request" : "legacy_requirements",
       request: task.userRequest?.text ?? task.requirements,
-      requirements: task.requirements,
       kind: task.kind,
       participantIds: task.participantIds,
       authorizedDirectories: task.directories,
@@ -93,10 +103,22 @@ export class AutomaticApprovals {
     };
   }
 
+  private revisionInput(task: Task, userInput = this.userInput(task)) {
+    // Keep v1 retry/waiting-user identities across upgrades. The historical
+    // requirements field participates only in freshness, never model authority.
+    return canonical({
+      ...Object.fromEntries(Object.entries(userInput).filter(([key]) => key !== "source")),
+      requirements: task.requirements,
+    });
+  }
+
   private inputRevision(task: Task, userInput = this.userInput(task)) {
     // Every accepted event invalidates a pending choice, even if processing
     // proves it harmless. It is execution freshness, not renewed retry credit.
-    return stableId(canonical(userInput), approvalIngress(this.ports.store, task).revision);
+    return stableId(
+      this.revisionInput(task, userInput),
+      approvalIngress(this.ports.store, task).revision,
+    );
   }
 
   private scope(
@@ -204,7 +226,7 @@ export class AutomaticApprovals {
     if (!current || !config) return "manual";
     const ref = participant.execution as NonNullable<Participant["execution"]>;
     const userInput = this.userInput(current);
-    const userRevision = stableId(canonical(userInput));
+    const userRevision = stableId(this.revisionInput(current, userInput));
     const inputRevision = this.inputRevision(current, userInput);
     const fingerprint = screenFingerprint(screen.text);
     const directoryIdentity = await realpath(ref.cwd).catch(() => undefined);
@@ -219,10 +241,12 @@ export class AutomaticApprovals {
       );
     // A lost effect ACK freezes this execution, even if its menu/stateSeq changes.
     if (history.some((d) => ["executing", "uncertain"].includes(d.state))) return "manual";
+    const menu = nativeMenu(screen.text);
+    if (!menu) return "manual";
     const chatId = task.chatId ?? actor.chatId;
     const approval = this.ports.approvals.create(task.ownerId, chatId, ref, screen);
     if (approval.consumed || approval.screenFingerprint !== fingerprint) return "manual";
-    const id = stableId("native-approval-v1", approval.nonce, inputRevision);
+    const id = stableId("native-approval-v2", approval.nonce, inputRevision);
     const previous = this.ports.store.get<Decision>(namespace, id);
     // Nonces bind writes to full snapshots, but dynamic text (even inside an
     // option) must not replenish the selection budget. Only confirmed progress
@@ -264,8 +288,7 @@ export class AutomaticApprovals {
       ).length >= 2
     )
       return "manual";
-    const candidates = approvalCandidates(screen.options);
-    if (!candidates.length) return "manual";
+    const candidates = approvalCandidates(menu);
     const at = new Date().toISOString();
     const decision: Decision = {
       id,
@@ -283,7 +306,7 @@ export class AutomaticApprovals {
       state: "selecting",
       attempts: (retry?.attempts ?? 0) + 1,
       candidates,
-      observation: { screen, userInput },
+      observation: { screen, userInput, menu },
       createdAt: previous?.createdAt ?? at,
       updatedAt: at,
     };
@@ -307,13 +330,14 @@ export class AutomaticApprovals {
         kind: ref.kind,
         directory: ref.cwd,
         screen: screen.text,
-        options: screen.options,
+        menu,
       },
       candidates,
       signal,
       fetch: this.ports.fetch,
     });
     decision.selection = selection;
+    decision.action = selection.candidateId ? menuAction(menu, selection.candidateId) : undefined;
     decision.state = "selected";
     save();
     this.ports.logger.info("原生菜单选择已记录", {
@@ -322,8 +346,12 @@ export class AutomaticApprovals {
       participantId: participant.id,
       source: selection.source,
       candidateId: selection.candidateId,
-      confidence: selection.jev.confidence,
-      reason: selection.jev.reason,
+      jevStatus: selection.jev.status,
+      jevConfidence: selection.jev.confidence,
+      jevReason: selection.jev.reason,
+      pressed: decision.action?.key,
+      beforeOptionId: decision.action?.beforeOptionId,
+      targetOptionId: decision.action?.targetOptionId,
     });
     if (!selection.candidateId) {
       decision.state = decision.attempts < 3 ? "selecting" : "waiting_user";
@@ -353,12 +381,12 @@ export class AutomaticApprovals {
       if (!latest || this.inputRevision(latest) !== inputRevision)
         fail("approval_scope_changed", "任务或用户要求已变化，未发送按键。");
     };
-    const key = selection.candidateId.slice(4);
-    if (
-      !selection.candidateId.startsWith("key:") ||
-      !candidates.some((c) => c.id === selection.candidateId)
-    )
-      return "manual";
+    const action = decision.action;
+    if (!action || !candidates.some((c) => c.id === selection.candidateId)) return "manual";
+    // The compiler sees the actual cursor; a selector's prose cannot make Enter
+    // confirm a different row. The existing full-screen guard revalidates this
+    // exact observation immediately before the single key is written.
+    const key = action.key;
     decision.key = key;
     decision.state = "executing";
     save();
@@ -373,18 +401,37 @@ export class AutomaticApprovals {
       decision.state = "executed";
       decision.retryAt = undefined;
       save();
+      const after = await this.ports.herdr.screen(ref, signal).catch(() => undefined);
+      if (
+        after &&
+        after.agent.terminalId === screen.agent.terminalId &&
+        after.agent.cwd === ref.cwd
+      ) {
+        const afterMenu = !after.truncated ? nativeMenu(after.text) : undefined;
+        decision.effect = {
+          status: after.agent.status,
+          selectedOptionId: afterMenu?.options[afterMenu.selected]?.id,
+        };
+        save();
+      }
       this.ports.logger.info("原生菜单选择已执行并回读", {
         event: "approval.automatic_completed",
         taskId: task.id,
         participantId: participant.id,
         source: selection.source,
         candidateId: selection.candidateId,
-        confidence: selection.jev.confidence,
+        jevConfidence: selection.jev.confidence,
+        pressed: decision.action?.key,
+        beforeOptionId: decision.action?.beforeOptionId,
+        targetOptionId: decision.action?.targetOptionId,
+        afterOptionId: decision.effect?.selectedOptionId,
+        afterStatus: decision.effect?.status,
       });
       return "handled";
     } catch (error) {
       decision.state = isNotExecuted(error) ? "failed" : "uncertain";
       decision.error = safeError(error).code;
+      decision.failure = approvalFailureEvidence(error);
       decision.retryAt =
         decision.state === "failed" &&
         ["stale_guard", "approval_scope_changed"].includes(decision.error) &&
@@ -398,6 +445,12 @@ export class AutomaticApprovals {
         participantId: participant.id,
         code: decision.error,
         outcome: decision.state,
+        failurePhase: decision.failure?.phase,
+        causeCode: decision.failure?.causeCode,
+        readbackReason: decision.failure?.reason,
+        pressed: decision.action?.key,
+        beforeOptionId: decision.action?.beforeOptionId,
+        targetOptionId: decision.action?.targetOptionId,
       });
       return "manual";
     }

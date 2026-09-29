@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -147,6 +147,7 @@ test("help/version/invalid flags do not initialize state or network", async () =
     assert.equal(await runCLI(["version", "--json"], h.deps), 0);
     assert.equal(await runCLI(["serve", "--reregister"], h.deps), 2);
     assert.deepEqual(h.events, []);
+    assert.equal(existsSync(join(h.dir, "log")), false);
     assert.throws(() => parseArguments(["setup", "--reregister"]));
     assert.equal(
       parseArguments(["--state-dir", h.dir, "configure", "--listen=127.0.0.1:0"]).listen,
@@ -172,6 +173,15 @@ test("serve starts Web before authorization and missing app never connects or ru
       "unlock",
     ]);
     assert.equal(h.output[0], "http://127.0.0.1:12345");
+    assert.ok(h.output.includes(`日志：${join(h.dir, "log", "myrix.log")}`));
+    const entries = readFileSync(join(h.dir, "log", "myrix.log"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(entries[0].event, "service.started");
+    assert.equal(entries[0].pid, process.pid);
+    assert.equal(typeof entries[0].version, "string");
+    assert.equal(entries.at(-1).event, "service.stopped");
   } finally {
     h.cleanup();
   }
@@ -250,6 +260,7 @@ test("failed task subscription stops that connection and retries the same app be
     };
     h.platform.subscribeTasks = async () => {
       h.events.push("subscribe-tasks");
+      assert.equal(h.output.includes("飞书连接已就绪。"), false);
       if (++attempts === 1) throw new OperationError("feishu_subscription", "订阅未成功。");
     };
     h.deps.sleep = async () => {
@@ -264,6 +275,7 @@ test("failed task subscription stops that connection and retries the same app be
     };
     assert.equal(await runCLI(["serve"], h.deps), 0);
     assert.equal(attempts, 2);
+    assert.equal(h.output.filter((line) => line === "飞书连接已就绪。").length, 1);
     assert.equal(h.config.feishu.appId, "cli_test");
     assert.deepEqual(
       h.events.filter((event) =>
@@ -493,7 +505,80 @@ test("doctor is read-only and never opens a platform connection", async () => {
     };
     assert.equal(await runCLI(["doctor", "--json"], h.deps), 0);
     assert.deepEqual(h.events, ["check-auth"]);
+    assert.equal(existsSync(join(h.dir, "log")), false);
     assert.ok(!h.output.join("").includes("secret"));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("a held state lock never creates or rotates service logs", async () => {
+  const h = harness();
+  try {
+    h.deps.acquireLock = () => {
+      throw new OperationError("already_running", "已有实例。");
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 1);
+    assert.equal(existsSync(join(h.dir, "log")), false);
+    assert.deepEqual(h.events, []);
+    assert.deepEqual(h.errors, ["已有实例。"]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("serve advertises its default log path even without the Web UI", async () => {
+  const h = harness();
+  try {
+    assert.equal(await runCLI(["serve", "--no-config-ui", "--json"], h.deps), 0);
+    assert.deepEqual(
+      h.output.map((line) => JSON.parse(line)),
+      [{ event: "log_ready", path: join(h.dir, "log", "myrix.log") }],
+    );
+    assert.deepEqual(h.errors, []);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("service logs startup failure without raw errors and releases its lock", async () => {
+  const h = harness();
+  try {
+    h.deps.openStore = () => {
+      throw new Error("private-key private-prompt https://api.test/?token=secret");
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 1);
+    assert.deepEqual(h.output, [`日志：${join(h.dir, "log", "myrix.log")}`]);
+    const raw = readFileSync(join(h.dir, "log", "myrix.log"), "utf8");
+    const entries = raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      entries.map((entry) => entry.event),
+      ["service.started", "service.failed", "service.stopped"],
+    );
+    assert.equal(entries[1].code, "internal_error");
+    assert.doesNotMatch(raw + h.errors.join("\n"), /private-key|private-prompt|api\.test/);
+    assert.equal(h.events.at(-1), "unlock");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("serve keeps running with console diagnostics when file logging is unavailable", async () => {
+  const h = harness();
+  try {
+    writeFileSync(join(h.dir, "log"), "blocked");
+    assert.equal(await runCLI(["serve", "--json"], h.deps), 0);
+    assert.equal(
+      h.output.some((line) => JSON.parse(line).event === "log_ready"),
+      false,
+    );
+    assert.match(h.errors[0] ?? "", /日志文件不可用/);
+    assert.equal(h.errors.filter((line) => line.includes('"event":"service.started"')).length, 1);
+    assert.ok(h.events.includes("app"));
+    assert.equal(h.events.at(-1), "unlock");
   } finally {
     h.cleanup();
   }

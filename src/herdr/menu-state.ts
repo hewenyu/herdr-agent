@@ -1,8 +1,15 @@
 import { canonical, stableId } from "../core/ids.js";
+import { nativeMenu } from "./native-menu.js";
 import { cleanScreen, parseOptions } from "./screen.js";
 
 /** Choice rows and their selection only; surrounding logs/spinners are not effect evidence. */
 export function menuState(raw: string): string | undefined {
+  const native = nativeMenu(raw);
+  if (native?.confirmation === "shortcut") {
+    // Question text, countdowns and a changed default on the same y/n control
+    // cannot prove a key's effect. A distinct control or resumed agent can.
+    return stableId("native-shortcut-menu-v1", canonical(native.shortcuts?.toSorted()));
+  }
   const lines = cleanScreen(raw).split("\n");
   const selected = lines.findLastIndex((line) => /^\s*[❯›▶>]\s+\S/.test(line));
   const row = lines[selected];

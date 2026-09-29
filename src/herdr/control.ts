@@ -2,9 +2,11 @@ import { basename, isAbsolute, resolve } from "node:path";
 import { OperationError } from "../core/errors.js";
 import type { AgentSnapshot, Delivery, ExecutionRef } from "../core/types.js";
 import { taskWorktreeRoot } from "../projects/worktree-trust.js";
+import { ApprovalEffectError } from "./approval-error.js";
 import type { HerdrClient } from "./client.js";
 import { composerOccupied, verifyEcho, verifyReceipt } from "./echo.js";
 import { menuState } from "./menu-state.js";
+import { type NativeMenu, nativeMenu } from "./native-menu.js";
 import {
   cleanScreen,
   directoryTrustKeys,
@@ -145,16 +147,20 @@ export class AgentControl {
   }
 
   private async writeKeys(ref: ExecutionRef, input: string[], signal?: AbortSignal): Promise<void> {
+    let phase: "send_keys" | "settle" | "identity" = "send_keys";
     try {
       await this.client.keys(ref.paneId, input, signal);
+      phase = "settle";
       await pause(3_000, signal);
+      phase = "identity";
       await this.current(ref, signal);
     } catch (cause) {
-      throw new OperationError(
+      throw new ApprovalEffectError(
         "input_unconfirmed",
         "按键已尝试，结果未确认；不要重复操作。",
-        "unknown",
-        { cause },
+        phase,
+        "input_effect_unknown",
+        cause,
       );
     }
   }
@@ -204,12 +210,14 @@ export class AgentControl {
     return this.serial(ref.paneId, async () => {
       await validate();
       let beforeMenu: string | undefined;
+      let beforeChoices: NativeMenu | undefined;
       const checkScreen = async () => {
         if (!guard.screenFingerprint) return;
         const read = await this.client.read(ref.paneId, "visible", guard.signal);
         if (read.truncated || screenFingerprint(read.text) !== guard.screenFingerprint)
           throw new OperationError("stale_guard", "审批屏幕已变化或不完整，未发送按键。");
         beforeMenu = menuState(read.text);
+        beforeChoices = nativeMenu(read.text);
       };
       await checkScreen();
       let input = [key];
@@ -228,26 +236,44 @@ export class AgentControl {
       if (guard.signal?.aborted) throw new OperationError("cancelled", "审批已取消，未发送按键。");
       await this.writeKeys(ref, input, guard.signal);
       if (guard.screenFingerprint) {
+        let reason = "readback_failed";
         try {
           const after = await this.current(ref, guard.signal);
           const readback = await this.client.read(ref.paneId, "visible", guard.signal);
+          const afterChoices = nativeMenu(readback.text);
+          const expectedNavigation =
+            guard.literalKey && beforeChoices && ["up", "down"].includes(key)
+              ? beforeChoices.options[beforeChoices.selected + (key === "up" ? -1 : 1)]?.id
+              : undefined;
           if (
             after.cwd !== guard.cwd ||
             after.terminalId !== guard.terminalId ||
-            (guard.sessionId && after.sessionId !== guard.sessionId) ||
-            !["idle", "done", "blocked", "working"].includes(after.status) ||
-            readback.truncated ||
-            !cleanScreen(readback.text).trim() ||
-            (after.status === "blocked" &&
-              (!beforeMenu || !menuState(readback.text) || menuState(readback.text) === beforeMenu))
+            (guard.sessionId && after.sessionId !== guard.sessionId)
           )
-            throw new Error("approval readback unconfirmed");
+            reason = "identity_changed";
+          else if (!["idle", "done", "blocked", "working"].includes(after.status))
+            reason = "agent_not_available";
+          else if (readback.truncated || !cleanScreen(readback.text).trim())
+            reason = "screen_incomplete";
+          else if (
+            expectedNavigation &&
+            (after.status !== "blocked" ||
+              afterChoices?.options[afterChoices.selected]?.id !== expectedNavigation)
+          )
+            reason = "navigation_target_unconfirmed";
+          else if (after.status === "blocked" && (!beforeMenu || !menuState(readback.text)))
+            reason = "menu_unrecognized";
+          else if (after.status === "blocked" && menuState(readback.text) === beforeMenu)
+            reason = "menu_unchanged";
+          else reason = "confirmed";
+          if (reason !== "confirmed") throw new Error("approval readback unconfirmed");
         } catch (cause) {
-          throw new OperationError(
+          throw new ApprovalEffectError(
             "approval_unconfirmed",
             "按键已尝试，但现场变化尚未确认，不能自动重发。",
-            "unknown",
-            { cause },
+            "readback",
+            reason,
+            cause,
           );
         }
       }
