@@ -114,8 +114,13 @@ export function compileWorkflowContract(input: {
       fail("workflow_contract", "已请求取消的文档不能仍作为必需交付产物。");
     plan.contractChange = change;
   }
-  if (!change?.removeDocumentDelivery)
+  if (!change?.removeDocumentDelivery) {
     plan.documentDelivery ??= structuredClone(previous.documentDelivery);
+    if (plan.documentDelivery && previous.documentDelivery)
+      plan.documentDelivery.paths = [
+        ...new Set([...previous.documentDelivery.paths, ...plan.documentDelivery.paths]),
+      ];
+  }
   addDocumentDelivery(plan);
   if (
     !change?.removeConsensus &&
@@ -147,6 +152,13 @@ export async function authorizeContractChange(input: {
   fetch?: typeof fetch;
   assertCurrent(): void;
 }): Promise<void> {
+  if (
+    input.plan.documentDelivery &&
+    input.previous.documentDelivery?.paths.some(
+      (path) => !input.plan.documentDelivery?.paths.includes(path),
+    )
+  )
+    fail("workflow_contract", "已有文档交付路径不能因新提案省略而撤销，须保留全部路径与对应分工。");
   const change = input.plan.contractChange;
   const removedConsensus = !!input.previous.consensus && !input.plan.consensus;
   const removedDocuments = !!input.previous.documentDelivery && !input.plan.documentDelivery;

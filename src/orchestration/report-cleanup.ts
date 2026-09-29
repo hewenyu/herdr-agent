@@ -87,7 +87,14 @@ export async function finishReportNotifications(
         await ports.notify(task, event);
     } catch (error) {
       const safe = safeError(error);
-      if (!["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code))
+      if (
+        ![
+          "workflow_report",
+          "workflow_artifact",
+          "workflow_document_scope",
+          "workflow_consensus",
+        ].includes(safe.code)
+      )
         throw error;
       event.state = "attention";
       event.error = safe;

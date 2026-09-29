@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import type { InboxRecord } from "../../src/app/inbox.js";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { stableId } from "../../src/core/ids.js";
 import type { ActorContext } from "../../src/core/types.js";
-import { compileConsensus } from "../../src/orchestration/consensus.js";
-import type { ContractChangeDecision } from "../../src/orchestration/contract-change.js";
+import { compileConsensus, consensusDocuments } from "../../src/orchestration/consensus.js";
+import {
+  authorizeContractChange,
+  type ContractChangeDecision,
+} from "../../src/orchestration/contract-change.js";
 import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
 import { choosePlan } from "../../src/orchestration/plan-selection.js";
 import type { WorkflowPorts } from "../../src/orchestration/runner.js";
 import { workflowState } from "../../src/orchestration/state.js";
+import { templatePlan } from "../../src/orchestration/templates.js";
 import { orchestrationUserMessages } from "../../src/orchestration/user-messages.js";
 import { WORKFLOWS } from "../../src/orchestration/workflow.js";
 import { associateTaskUserRequest, type TaskUserRevision } from "../../src/tasks/user-request.js";
@@ -374,6 +380,133 @@ test("latest revocation authority follows inbox order rather than a timestamp or
     });
     assert.equal(plan.consensus, undefined);
     assert.equal(h.decisions()[0]?.change.sourceMessageId, latest);
+  } finally {
+    h.close();
+  }
+});
+
+for (const consensus of [false, true])
+  test(`adding another document preserves every existing path, artifact and writer until authorized total withdrawal (consensus=${consensus})`, async () => {
+    const h = await fixture({ consensus });
+    try {
+      const sourceMessageId = h.input("在原有设计文档之外，再增加 docs/B.md 说明部署方案。");
+      const plan = await h.choose({ documentDelivery: { paths: ["docs/B.md"], sourceMessageId } });
+      const paths = ["docs/DESIGN.md", "docs/B.md"];
+      assert.deepEqual(plan.documentDelivery?.paths, paths);
+      assert.deepEqual(plan.requiredArtifacts, paths);
+      assert.deepEqual(
+        plan.nodes.flatMap((node) => node.documentPaths ?? []),
+        paths,
+      );
+      assert.deepEqual(plan.consensus, h.previous.consensus);
+      assert.equal(plan.nodes.filter((node) => node.consensus).length, consensus ? 2 : 0);
+      const authorization = h.snapshots.find((snapshot) => "proposed" in snapshot);
+      assert.deepEqual(
+        (authorization?.proposed as { paths: string[] }).paths,
+        paths,
+        "document authorization checks the entire inherited and added scope",
+      );
+      assert.deepEqual(h.state.plan, h.previous);
+      const directory = h.task.directories[0];
+      assert.ok(directory);
+      mkdirSync(join(directory, "docs"), { recursive: true });
+      for (const path of paths) writeFileSync(join(directory, path), `# ${path}\n`);
+      const observed = await consensusDocuments(h.task, { ...h.state, plan });
+      assert.deepEqual(
+        observed.map((document) => document.path),
+        paths,
+        "participant confirmations bind both current files after the expansion",
+      );
+      assert.ok(observed.every((document) => document.hash.length === 64));
+
+      // Exercise a later accepted plan, rather than cancelling only the original one-file contract.
+      h.state.plan = plan;
+      h.state.plan.version++;
+      const cancellationSource = h.input(
+        "取消所有项目文档交付和双方认可要求，只保留只读讨论报告。",
+      );
+      const cancelled = await h.choose({
+        contractChange: {
+          sourceMessageId: cancellationSource,
+          removeDocumentDelivery: true,
+          ...(consensus ? { removeConsensus: true } : {}),
+        },
+      });
+      assert.equal(cancelled.documentDelivery, undefined);
+      assert.equal(cancelled.consensus, undefined);
+      assert.equal(
+        cancelled.nodes.some((node) => node.access === "write" || node.documentPaths?.length),
+        false,
+      );
+      assert.equal(
+        cancelled.requiredArtifacts?.some((path) => paths.includes(path)) ?? false,
+        false,
+      );
+      assert.equal(h.decisions().at(-1)?.decision, "authorized");
+    } finally {
+      h.close();
+    }
+  });
+
+test("custom document nodes must retain responsibility for inherited paths without silently gaining write scope", async () => {
+  const h = await fixture();
+  try {
+    const sourceMessageId = h.input("在现有设计文档之外，再增加 docs/B.md。");
+    const custom = templatePlan(h.task);
+    custom.documentDelivery = { paths: ["docs/B.md"], userRequest: "新增文档" };
+    addDocumentDelivery(custom);
+    const writer = custom.nodes.find((node) => node.documentPaths?.length);
+    assert.ok(writer);
+    const proposal = {
+      documentDelivery: { paths: ["docs/B.md"], sourceMessageId },
+      nodes: custom.nodes,
+    };
+    await assert.rejects(h.choose(proposal), { code: "workflow_plan" });
+    assert.deepEqual(
+      writer.documentPaths,
+      ["docs/B.md"],
+      "a custom node is not granted the omitted path automatically",
+    );
+    assert.deepEqual(h.state.plan, h.previous);
+
+    writer.documentPaths = ["docs/DESIGN.md", "docs/B.md"];
+    writer.instruction = "维护原有 docs/DESIGN.md，并补充 docs/B.md。";
+    const corrected = await h.choose(proposal);
+    assert.deepEqual(corrected.documentDelivery?.paths, writer.documentPaths);
+    assert.deepEqual(corrected.requiredArtifacts, writer.documentPaths);
+    assert.deepEqual(
+      corrected.nodes.find((node) => node.id === writer.id)?.documentPaths,
+      writer.documentPaths,
+    );
+    assert.deepEqual(corrected.consensus, h.previous.consensus);
+  } finally {
+    h.close();
+  }
+});
+
+test("the centralized acceptance boundary rejects a partial path drop even if contract compilation was bypassed", async () => {
+  const h = await fixture();
+  try {
+    const draft = structuredClone(h.previous);
+    assert.ok(draft.documentDelivery);
+    draft.documentDelivery.paths = ["docs/B.md"];
+    await assert.rejects(
+      authorizeContractChange({
+        store: h.store,
+        id: "bypassed-plan",
+        task: h.task,
+        previous: h.previous,
+        plan: draft,
+        userMessages: [],
+        jev: h.config.jev,
+        fetch: async () => {
+          throw new Error("a missing path must be rejected before Jev");
+        },
+        assertCurrent() {},
+      }),
+      { code: "workflow_contract" },
+    );
+    assert.deepEqual(h.state.plan, h.previous);
   } finally {
     h.close();
   }
