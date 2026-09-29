@@ -26,6 +26,7 @@ import { assertDocumentSource, prepareDocumentSource } from "./document-source.j
 import { legacyAssignment, prepareHandoff } from "./handoff.js";
 import { choosePlan } from "./plan-selection.js";
 import { selectWorkflowCandidate } from "./policy.js";
+import { selectedReceiptRepair } from "./receipt-dispatch.js";
 import { reportContract } from "./report.js";
 import {
   assistanceFingerprint,
@@ -442,7 +443,7 @@ export class WorkflowOrchestrator {
     try {
       const repair =
         task.promptVersion === 3
-          ? receiptRepairRule(state, candidates, event.userRevision, artifactRevision)
+          ? receiptRepairRule(ports.store, state, candidates, event.userRevision, artifactRevision)
           : undefined;
       if (repair?.noProgress) fail("workflow_receipt_no_progress", repair.diagnostic);
       const previous = event.selectionLogId
@@ -646,7 +647,17 @@ export class WorkflowOrchestrator {
             if (node.documentPaths?.length) {
               await validateDocumentPaths(task, node.documentPaths);
             }
+            const repair = await selectedReceiptRepair(
+              ports.store,
+              task,
+              state,
+              event,
+              assignment,
+              artifactRevision,
+            );
             if (candidate.kind === "rework") invalidateFrom(state, node.id);
+            const progress = state.nodes[node.id];
+            if (progress) progress.repair = repair;
             const operationId = `${task.id}:workflow:${stableId(event.id, node.id, assignment.participantId)}`;
             const identity = { nodeId: node.id, operationId, inputRevision: event.userRevision };
             const userMessages = ports.userMessages(task).map((entry) => entry.text);
@@ -664,6 +675,7 @@ export class WorkflowOrchestrator {
                       : node,
                     identity,
                     userMessages,
+                    repair,
                   )
                 : legacyAssignment(task, state, node, identity, userMessages);
             const sourceRevision = node.documentPaths?.length
@@ -799,6 +811,14 @@ export class WorkflowOrchestrator {
       fail("workflow_review_author", "该评审委派属于历史实现者，请重新安排独立评审。");
     if (node && implementationNode(node)) rememberImplementer(state, dispatch.participantId);
     const old = state.nodes[dispatch.nodeId];
+    const repair = await selectedReceiptRepair(
+      this.ports.store,
+      task,
+      state,
+      event,
+      { nodeId: dispatch.nodeId, participantId: dispatch.participantId },
+      dispatch.artifactRevision,
+    );
     state.nodes[dispatch.nodeId] = {
       status: "dispatched",
       attempt: (old?.attempt ?? 0) + 1,
@@ -807,7 +827,7 @@ export class WorkflowOrchestrator {
       inputRevision: dispatch.inputRevision,
       artifactRevision: dispatch.artifactRevision,
       sourceRevision: dispatch.sourceRevision,
-      ...(old?.repair ? { repair: old.repair } : {}),
+      ...(repair ? { repair } : {}),
     };
     this.save(state);
     dispatch.state = "pending";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -7,13 +7,19 @@ import {
   type SettledTaskOutput,
   TaskOrchestrator,
 } from "../../src/app/task-orchestrator.js";
+import { OperationError } from "../../src/core/errors.js";
+import { workflowCandidates } from "../../src/orchestration/candidates.js";
 import type { DecisionLog } from "../../src/orchestration/decision-log.js";
 import { handoffDirectory } from "../../src/orchestration/handoff.js";
 import {
   WORKFLOW_RECOVERY,
   type WorkflowRecoveryMaterial,
 } from "../../src/orchestration/receipt-recovery.js";
+import type { WorkflowPorts } from "../../src/orchestration/runner.js";
+import { receiptRepairRule } from "../../src/orchestration/selection-context.js";
+import { settleWorkflow } from "../../src/orchestration/settlement.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
+import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
@@ -205,6 +211,163 @@ test("an old blocked receipt and assistance wait are recovered after upgrade wit
     assert.equal(h.store.get("workflow_status_blocks", output.entry.id), undefined);
     assert.ok(h.state().consumedOutputs.includes(output.entry.id));
     assert.equal(h.state().assistanceWait, undefined);
+  } finally {
+    h.close();
+  }
+});
+
+async function rejectedCrossReview(h: Awaited<ReturnType<typeof harness>>) {
+  await h.finish("opening-2");
+  await h.worker.tick();
+  const progress = h.state().nodes["cross-review"];
+  assert.ok(progress?.operationId && progress.participantId);
+  const event = h
+    .events()
+    .find((entry) =>
+      entry.dispatches.some((dispatch) => dispatch.operationId === progress.operationId),
+    );
+  assert.ok(event);
+  await h.finish("cross-review", true);
+  await settleWorkflow(
+    {
+      ...h.options,
+      events: () => h.events(),
+      outputs: () => h.store.list<SettledTaskOutput>("task_settled_outputs"),
+      revision: () => event.userRevision,
+    } as unknown as WorkflowPorts,
+    h.task,
+    h.state(),
+    h.service.records.participants(h.task),
+    [],
+  );
+  const rejected = h.state().nodes["cross-review"];
+  assert.equal(rejected?.status, "blocked");
+  assert.ok(rejected?.repair?.recoverable);
+  return { progress: rejected, event };
+}
+
+for (const reassigned of [false, true]) {
+  test(`ordinary rework at the same revision ${reassigned ? "changes" : "retains"} the participant without inheriting receipt-only work`, async () => {
+    const h = await harness();
+    try {
+      const rejected = await rejectedCrossReview(h);
+      const participants = h.service.records.participants(h.task);
+      const target = participants.find(
+        (participant) => (participant.id !== rejected.progress.participantId) === reassigned,
+      );
+      assert.ok(target);
+      const state = h.state();
+      const artifactRevision = await workspaceRevision(h.task.directories);
+      const candidate = workflowCandidates(h.task, state, participants, [], false).find(
+        (entry) =>
+          entry.kind === "rework" &&
+          entry.assignments?.[0]?.nodeId === "cross-review" &&
+          entry.assignments[0].participantId === target.id,
+      );
+      assert.ok(candidate);
+      const event: OrchestrationEvent = {
+        ...rejected.event,
+        id: `ordinary-rework-${target.id}`,
+        state: "pending",
+        attempts: 0,
+        dispatches: [],
+        decision: { action: "continue", source: "pi", reason: "按当前材料重新进行实质评审" },
+        workflow: { candidate, planVersion: state.plan.version, artifactRevision },
+      };
+      h.store.set("task_orchestration_events", event.id, event);
+      await new TaskOrchestrator(h.options).tick();
+      const dispatched = h.state().nodes["cross-review"];
+      assert.ok(dispatched?.operationId);
+      assert.equal(dispatched.status, "dispatched");
+      assert.equal(dispatched.participantId, target.id);
+      assert.equal(dispatched.repair, undefined);
+      assert.equal(dispatched.artifactRevision, artifactRevision);
+      const directory = handoffDirectory(h.config.stateDir, h.task.id, dispatched.operationId);
+      assert.doesNotMatch(
+        readFileSync(join(directory, "brief.md"), "utf8"),
+        /本次仅修复交接与回执|prior-notes/,
+      );
+      assert.equal(existsSync(join(directory, "prior-notes.md")), false);
+      await h.finish("cross-review", true);
+      await new TaskOrchestrator(h.options).tick();
+      const next = h.state().nodes["cross-review"];
+      assert.equal(next?.repair?.repeated, 1, "a new business review begins a new repair streak");
+      assert.equal(next?.participantId, target.id);
+      assert.equal(
+        next?.status,
+        "dispatched",
+        "the new rejected output can be repaired by its own author",
+      );
+      assert.equal(h.replies.length, 0);
+    } finally {
+      h.close();
+    }
+  });
+}
+
+test("legacy inherited repair cannot select another participant as the original receipt author", async () => {
+  const h = await harness();
+  try {
+    const { progress, event } = await rejectedCrossReview(h);
+    const state = h.state();
+    const other = h.service.records
+      .participants(h.task)
+      .find((participant) => participant.id !== progress.participantId);
+    assert.ok(other);
+    const node = state.nodes["cross-review"];
+    assert.ok(node);
+    node.participantId = other.id;
+    const candidates = workflowCandidates(
+      h.task,
+      state,
+      h.service.records.participants(h.task),
+      [],
+      false,
+    );
+    assert.equal(
+      receiptRepairRule(
+        h.store,
+        state,
+        candidates,
+        event.userRevision,
+        await workspaceRevision(h.task.directories),
+      ),
+      undefined,
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a rule-selected receipt repair survives an unexecuted send and restart without losing its original author", async () => {
+  const h = await harness();
+  try {
+    await h.finish("opening-2", true);
+    const send = h.service.send.bind(h.service);
+    h.service.send = async () => {
+      throw new OperationError("fixture_send_failed", "crashed before entering task send");
+    };
+    await h.worker.tick();
+    const failed = h.state().nodes["opening-2"];
+    assert.ok(failed?.repair && failed.operationId);
+    const original = failed.repair;
+    h.service.send = send;
+    await new TaskOrchestrator(h.options).tick();
+    const retried = h.state().nodes["opening-2"];
+    assert.equal(retried?.operationId, failed.operationId);
+    assert.equal(retried?.repair?.snapshotId, original.snapshotId);
+    assert.equal(retried?.repair?.repeated, 1);
+    const event = h
+      .events()
+      .find((entry) =>
+        entry.dispatches.some((dispatch) => dispatch.operationId === failed.operationId),
+      );
+    assert.equal(event?.dispatches[0]?.state, "sent");
+    const directory = handoffDirectory(h.config.stateDir, h.task.id, failed.operationId);
+    assert.ok(existsSync(join(directory, "prior-notes.md")));
+    await h.finish("opening-2");
+    await h.worker.tick();
+    assert.equal(h.state().nodes["opening-2"]?.status, "completed");
   } finally {
     h.close();
   }

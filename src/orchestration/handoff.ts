@@ -9,7 +9,7 @@ import { atomicWrite } from "../storage/atomic.js";
 import { boardDirectory } from "./board.js";
 import { consensusDocuments, responseOutputs } from "./consensus.js";
 import { rejectReceipt } from "./receipt-diagnostics.js";
-import { receiptRepairRevision } from "./receipt-recovery.js";
+import { receiptRepairRevision, type WorkflowRepair } from "./receipt-recovery.js";
 import { parseStatusBlock, type StatusBlock, statusInstructions } from "./status-block.js";
 import type { WorkflowNode, WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
@@ -53,6 +53,7 @@ export async function prepareHandoff(
   node: WorkflowNode,
   identity: HandoffIdentity,
   userMessages: string[],
+  repair?: WorkflowRepair,
 ): Promise<string> {
   const directory = handoffDirectory(stateDir, task.id, identity.operationId);
   await checkedHandoffDirectory(stateDir, directory, true);
@@ -113,7 +114,6 @@ export async function prepareHandoff(
         ]
       : []),
   ].join("\n\n");
-  const repair = state.nodes[node.id]?.repair;
   const repairCurrent =
     repair?.recoverable &&
     repair.inputRevision === identity.inputRevision &&

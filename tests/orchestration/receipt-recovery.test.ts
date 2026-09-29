@@ -76,13 +76,14 @@ async function fixture(nodeId?: string, mode?: "development" | "document") {
     operationId: string,
     patch: Record<string, unknown> = {},
     cite = true,
-    receiptOnly = false,
+    receiptOnly = state.nodes[node.id]?.repair?.recoverable === true,
   ) => {
     const identity = { nodeId: node.id, operationId, inputRevision: "revision" };
     const artifactRevision = await workspaceRevision(task.directories);
     const sourceRevision = node.documentPaths?.length
       ? await workspaceRevision(task.directories, node.documentPaths)
       : undefined;
+    const repair = receiptOnly ? state.nodes[node.id]?.repair : undefined;
     state.nodes[node.id] = {
       status: "dispatched",
       attempt: (state.nodes[node.id]?.attempt ?? 0) + 1,
@@ -90,9 +91,9 @@ async function fixture(nodeId?: string, mode?: "development" | "document") {
       participantId: participant.id,
       artifactRevision,
       sourceRevision,
-      repair: state.nodes[node.id]?.repair,
+      repair,
     };
-    await prepareHandoff(h.directory, task, state, node, identity, []);
+    await prepareHandoff(h.directory, task, state, node, identity, [], repair);
     const directory = handoffDirectory(h.directory, task.id, operationId);
     const request = JSON.parse(await readFile(join(directory, "request.json"), "utf8"));
     await writeFile(
@@ -237,6 +238,7 @@ for (const defect of ["missing_file", "missing_heading", "empty_section", "dupli
       };
       const candidates = workflowCandidates(h.task, h.state, [available], [], false);
       const rule = receiptRepairRule(
+        h.store,
         h.state,
         candidates,
         "revision",
@@ -293,6 +295,7 @@ for (const defect of ["symlink", "oversized_file"]) {
       assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
       assert.equal(
         receiptRepairRule(
+          h.store,
           h.state,
           [
             {
@@ -348,7 +351,7 @@ for (const mode of ["development", "document"] as const) {
       assert.equal(repair.observedArtifactRevision, after);
       assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
       const candidates = repairCandidates(h);
-      const rule = receiptRepairRule(h.state, candidates, "revision", after);
+      const rule = receiptRepairRule(h.store, h.state, candidates, "revision", after);
       assert.ok(rule);
       assert.equal(rule.reason, "receipt_repair");
       assert.deepEqual(
@@ -395,6 +398,7 @@ test("the same failed receipt after a legitimate write counts consecutive errors
     assert.equal(repeated.repeated, 2);
     assert.equal(
       receiptRepairRule(
+        h.store,
         h.state,
         repairCandidates(h),
         "revision",
@@ -417,6 +421,7 @@ test("a new source change after rejected write prevents both rule selection and 
     await writeFile(join(h.repo, "source.txt"), "subsequent unrelated modification\n");
     assert.equal(
       receiptRepairRule(
+        h.store,
         h.state,
         repairCandidates(h),
         "revision",
@@ -424,7 +429,7 @@ test("a new source change after rejected write prevents both rule selection and 
       ),
       undefined,
     );
-    const next = await h.dispatch("normal-rework-after-change");
+    const next = await h.dispatch("normal-rework-after-change", {}, true, false);
     assert.doesNotMatch(
       await readFile(join(next.directory, "brief.md"), "utf8"),
       /本次仅修复交接与回执/,
@@ -681,6 +686,25 @@ test("a successful repair resets the same defect counter before a later business
     await h.settle();
     assert.equal(h.state.nodes[h.node.id]?.repair?.repeated, 1);
     assert.equal(h.store.list(WORKFLOW_RECOVERY).length, 2);
+  } finally {
+    h.close();
+  }
+});
+
+test("an ordinary in-flight rework from an older runtime cannot continue an inherited repair streak", async () => {
+  const h = await fixture();
+  try {
+    await h.dispatch("original-rejection", {}, false);
+    await h.settle();
+    const inherited = h.state.nodes[h.node.id]?.repair;
+    assert.ok(inherited?.recoverable);
+    await h.dispatch("legacy-ordinary-rework", {}, false, false);
+    const progress = h.state.nodes[h.node.id];
+    assert.ok(progress);
+    progress.repair = inherited;
+    await h.settle();
+    assert.equal(progress.repair?.repeated, 1);
+    assert.notEqual(progress.repair?.snapshotId, inherited.snapshotId);
   } finally {
     h.close();
   }

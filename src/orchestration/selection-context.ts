@@ -2,8 +2,10 @@ import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
+import type { Store } from "../storage/store.js";
 import type { WorkflowCandidate } from "./candidates.js";
 import {
+  receiptRepairOwner,
   receiptRepairRevision,
   WORKFLOW_RECOVERY,
   type WorkflowRecoveryMaterial,
@@ -107,6 +109,7 @@ export function recoveryContext(ports: WorkflowPorts, task: Task, state: Workflo
 }
 
 export function receiptRepairRule(
+  store: Store,
   state: WorkflowState,
   candidates: WorkflowCandidate[],
   inputRevision: string,
@@ -122,6 +125,7 @@ export function receiptRepairRule(
       repair.planVersion !== state.plan.version
     )
       continue;
+    if (receiptRepairOwner(store, state.taskId, nodeId, repair) !== node.participantId) continue;
     const candidate = candidates.find(
       (candidate) =>
         candidate.kind === "rework" &&

@@ -52,6 +52,29 @@ export interface WorkflowRecoveryMaterial {
   createdAt: string;
 }
 
+/** Recovery authorship comes from the immutable rejected output, not the latest assignment. */
+export function receiptRepairOwner(
+  store: Store,
+  taskId: string,
+  nodeId: string,
+  repair: WorkflowRepair,
+): string | undefined {
+  const material = store.get<WorkflowRecoveryMaterial>(WORKFLOW_RECOVERY, repair.snapshotId);
+  if (
+    material?.validation !== "unverified" ||
+    material.taskId !== taskId ||
+    material.nodeId !== nodeId ||
+    material.outputId !== repair.outputId ||
+    material.repair.operationId !== repair.operationId ||
+    material.repair.fingerprint !== repair.fingerprint ||
+    material.repair.inputRevision !== repair.inputRevision ||
+    material.repair.planVersion !== repair.planVersion ||
+    receiptRepairRevision(material.repair) !== receiptRepairRevision(repair)
+  )
+    return undefined;
+  return material.participantId;
+}
+
 /** Capture untrusted recovery context without granting it accepted-evidence status. */
 export async function recordWorkflowRejection(input: {
   store: Store;
@@ -65,6 +88,8 @@ export async function recordWorkflowRejection(input: {
   error: unknown;
   /** Set only after the post-output source has passed the original node/scope guards. */
   observedArtifactRevision?: string;
+  /** Only a persisted rule-selected receipt-only dispatch can continue the repair streak. */
+  continuingReceiptRepair?: boolean;
 }): Promise<WorkflowRepair> {
   const { store, stateDir, task, state, node, progress, participantId, output, error } = input;
   const observedArtifactRevision = input.observedArtifactRevision;
@@ -93,8 +118,10 @@ export async function recordWorkflowRejection(input: {
   );
   const existing = store.get<WorkflowRecoveryMaterial>(WORKFLOW_RECOVERY, snapshotId);
   if (existing) return existing.repair;
-  const previous = progress.repair;
+  const previous = input.continuingReceiptRepair ? progress.repair : undefined;
   const repeating =
+    !!previous &&
+    receiptRepairOwner(store, task.id, node.id, previous) === participantId &&
     previous?.fingerprint === fingerprint &&
     previous.inputRevision === progress.inputRevision &&
     receiptRepairRevision(previous) === (observedArtifactRevision ?? progress.artifactRevision) &&

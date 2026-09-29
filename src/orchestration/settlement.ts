@@ -106,6 +106,7 @@ export async function settleWorkflow(
     if (!output) continue;
     await publishOutput(ports.config?.stateDir ?? "", task.id, output.entry.id, output.entry.text);
     let observedArtifactRevision: string | undefined;
+    let continuingReceiptRepair = false;
     try {
       const artifactRevision = await workspaceRevision(task.directories);
       if (progress.artifactRevision !== artifactRevision) {
@@ -129,6 +130,7 @@ export async function settleWorkflow(
                 dispatch.state === "sent",
             ),
         );
+      continuingReceiptRepair = receiptOnly;
       if (
         receiptOnly &&
         (!progress.repair ||
@@ -302,6 +304,7 @@ export async function settleWorkflow(
         output: output.entry,
         error,
         observedArtifactRevision,
+        continuingReceiptRepair,
       });
       ports.logger.warn("工作流交接回执未通过校验", {
         event: "workflow.receipt_rejected",
