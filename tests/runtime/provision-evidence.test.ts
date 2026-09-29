@@ -32,6 +32,7 @@ function tools(
   return [
     ["task_create", false, async () => ({ accepted: true, task: queued })],
     ["task_get", true, get],
+    ["task_progress", true, get],
     ["tasks_list", true, async () => [provisioned(), { ...queued, id: "task_pending" }]],
     ["task_action", false, async () => ({ ...provisioned(), status: "completed" })],
   ].map(([name, readOnly, execute]) => ({
@@ -613,3 +614,34 @@ for (const text of [
     );
   });
 }
+
+test("task_progress supports only queried resource and initial-delivery facts, not assistant claims", async () => {
+  const claim = "群已就绪，Claude 和 Codex 已收到要求。";
+  const result = await run(
+    [call("task_progress", "progress"), response(claim)],
+    tools(async () => provisioned()),
+  );
+  assert.equal(result.text, claim);
+  assert.equal(result.toolEvidence?.provisioning?.tasks[0]?.group, true);
+  await assert.rejects(
+    run(
+      [
+        call("task_progress", "first"),
+        response(claim),
+        call("task_progress", "second"),
+        response(claim),
+      ],
+      tools(async () => ({
+        ...queued,
+        participants: [
+          {
+            id: "claude-1",
+            kind: "claude",
+            initialSent: false,
+            conversation: [{ role: "assistant", text: claim }],
+          },
+        ],
+      })),
+    ),
+  );
+});

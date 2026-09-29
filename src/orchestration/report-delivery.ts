@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Outbox } from "../app/outbox.js";
+import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { OperationError, safeError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { PlatformPort } from "../core/ports.js";
-import type { StoredMessage } from "../core/types.js";
+import type { StoredMessage, Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import type { ReportRevisionEvidence } from "./revision.js";
+import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 
 export interface ReportEnvelope {
   taskId: string;
@@ -16,10 +19,21 @@ export interface ReportEnvelope {
   text: string;
   card: Record<string, unknown>;
   channel: "platform" | "web";
+  presentation?: "attachment";
 }
 
 export interface ReportDelivery extends ReportEnvelope {
-  version: 1;
+  version: 1 | 2;
+  fileState?:
+    | "prepared"
+    | "uploading"
+    | "uploaded"
+    | "sending"
+    | "delivered"
+    | "uncertain"
+    | "retryable";
+  fileKey?: string;
+  fileMessageId?: string;
   fingerprint: string;
   bodyId: string;
   cardId: string;
@@ -28,6 +42,8 @@ export interface ReportDelivery extends ReportEnvelope {
   webBodyId?: string;
   webCardId?: string;
   error?: ReturnType<typeof safeError>;
+  retired?: { reason: "superseded" | "stale_report"; at: string };
+  revisionEvidence?: ReportRevisionEvidence;
   updatedAt: string;
 }
 
@@ -36,10 +52,15 @@ const namespace = "workflow_report_deliveries";
 /** Two independently recoverable notification components, never a dispatch authority. */
 export class ReportDeliveries {
   private readonly mutex = new KeyedMutex();
+  private readonly sending = new Set<string>();
   constructor(
     private readonly store: Store,
     private readonly outbox: Outbox,
     private readonly platform: () => PlatformPort | undefined,
+    private readonly staleReport?: (event: OrchestrationEvent, record: ReportDelivery) => boolean,
+    private readonly captureRevision?: (
+      event: OrchestrationEvent,
+    ) => ReportRevisionEvidence | undefined,
   ) {}
 
   prepare(input: ReportEnvelope): ReportDelivery {
@@ -54,62 +75,92 @@ export class ReportDeliveries {
         previous.reportHash !== input.reportHash ||
         previous.text !== input.text ||
         previous.chatId !== input.chatId ||
-        previous.channel !== input.channel
+        previous.channel !== input.channel ||
+        previous.presentation !== input.presentation
       )
         throw new OperationError("report_delivery_conflict", "报告送达回执与原报告不匹配。");
+      if (this.retireObsolete(previous))
+        throw new OperationError("report_delivery_retired", "旧报告已终止发送，保留原传输记录。");
       return previous;
     }
     const prefix = `workflow-report:${input.taskId}:${input.eventId}:${input.reportId}`;
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", input.eventId);
+    const revisionEvidence =
+      event?.id === input.eventId &&
+      event.taskId === input.taskId &&
+      event.decision?.action === "deliver" &&
+      event.decision?.reportId === input.reportId
+        ? this.captureRevision?.(event)
+        : undefined;
     const record: ReportDelivery = {
       ...structuredClone(input),
-      version: 1,
+      version: input.presentation === "attachment" ? 2 : 1,
+      ...(input.presentation === "attachment" ? { fileState: "prepared" as const } : {}),
       fingerprint: fingerprint(input),
       bodyId: `${prefix}:body`,
       cardId: `${prefix}:card`,
       cardState: "prepared",
+      ...(revisionEvidence ? { revisionEvidence } : {}),
       updatedAt: new Date().toISOString(),
     };
     this.save(record);
     return record;
   }
 
-  async send(input: ReportEnvelope): Promise<ReportDelivery> {
+  async send(input: ReportEnvelope, beforeSend?: () => Promise<void>): Promise<ReportDelivery> {
     return this.mutex.run(input.eventId, async () => {
       const record = this.prepare(input);
-      if (record.channel !== "platform")
-        throw new OperationError("report_channel", "网页报告需页面确认展示。");
-      // Outbox freezes text and resumes only confirmed-unsent parts.
-      await this.outbox.send(record.chatId, record.text, record.bodyId);
-      if (record.cardState === "delivered") return record;
-      if (["sending", "uncertain"].includes(record.cardState))
-        throw new OperationError(
-          "delivery_uncertain",
-          "报告摘要卡片送达未知，不能自动重发。",
-          "unknown",
-        );
-      const platform = this.platform();
-      if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
-      record.cardState = "sending";
-      this.save(record);
+      this.sending.add(record.eventId);
       try {
-        const id = await platform.sendCard(record.chatId, record.card, stableId(record.cardId));
-        if (!id)
-          throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
-        record.cardMessageId = id;
-        record.cardState = "delivered";
-        record.error = undefined;
-        this.save(record);
-      } catch (error) {
-        record.error = safeError(error);
-        record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
-        this.save(record);
-        throw error;
+        return await this.sendPrepared(record, beforeSend);
+      } finally {
+        this.sending.delete(record.eventId);
       }
-      return record;
     });
   }
 
-  bindWeb(record: ReportDelivery, bodyId: string, cardId: string): void {
+  private async sendPrepared(
+    record: ReportDelivery,
+    beforeSend?: () => Promise<void>,
+  ): Promise<ReportDelivery> {
+    if (record.channel !== "platform")
+      throw new OperationError("report_channel", "网页报告需页面确认展示。");
+    // Outbox freezes text and resumes only confirmed-unsent parts.
+    if (record.presentation === "attachment") await this.sendAttachment(record, beforeSend);
+    else {
+      const bodyState = this.outbox.receipt(record.bodyId)?.state;
+      if (!["delivered", "sending", "uncertain"].includes(bodyState ?? "")) await beforeSend?.();
+      await this.outbox.send(record.chatId, record.text, record.bodyId);
+    }
+    if (record.cardState === "delivered") return record;
+    if (["sending", "uncertain"].includes(record.cardState))
+      throw new OperationError(
+        "delivery_uncertain",
+        "报告摘要卡片送达未知，不能自动重发。",
+        "unknown",
+      );
+    const platform = this.platform();
+    if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
+    await beforeSend?.();
+    record.cardState = "sending";
+    this.save(record);
+    try {
+      const id = await platform.sendCard(record.chatId, record.card, stableId(record.cardId));
+      if (!id) throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
+      record.cardMessageId = id;
+      record.cardState = "delivered";
+      record.error = undefined;
+      this.save(record);
+    } catch (error) {
+      record.error = safeError(error);
+      record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      this.save(record);
+      throw error;
+    }
+    return record;
+  }
+
+  bindWeb(record: ReportDelivery, bodyId: string | undefined, cardId: string): void {
     if (
       record.channel !== "web" ||
       !valid(record) ||
@@ -120,9 +171,29 @@ export class ReportDeliveries {
     this.save({ ...record, webBodyId: bodyId, webCardId: cardId });
   }
 
+  /** Only exact messages bound to a valid frozen Web envelope can acknowledge rendering. */
+  acceptsWebAcknowledgement(taskId: string, message: StoredMessage): boolean {
+    return this.store
+      .list<ReportDelivery>(namespace)
+      .some(
+        (record) =>
+          record.channel === "web" &&
+          record.taskId === taskId &&
+          message.taskId === taskId &&
+          valid(record) &&
+          ((record.webCardId === message.id &&
+            message.source === "workflow_report_summary" &&
+            message.text === reportSummaryText(record.card)) ||
+            (record.presentation !== "attachment" &&
+              record.webBodyId === message.id &&
+              message.source === "workflow_report" &&
+              message.text === record.text)),
+      );
+  }
+
   async confirmed(taskId: string, eventId: string, reportId: string): Promise<boolean> {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
-    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireObsolete(record)) return false;
     if (record.channel === "web") {
       const body = record.webBodyId
         ? this.store.get<StoredMessage>("messages", record.webBodyId)
@@ -131,23 +202,21 @@ export class ReportDeliveries {
         ? this.store.get<StoredMessage>("messages", record.webCardId)
         : undefined;
       return (
-        body?.taskId === taskId &&
+        (record.presentation === "attachment" ||
+          (body?.taskId === taskId &&
+            body.delivery === "delivered" &&
+            body.text === record.text)) &&
         card?.taskId === taskId &&
-        body.delivery === "delivered" &&
         card.delivery === "delivered" &&
-        body.text === record.text &&
         card.text === reportSummaryText(record.card)
       );
     }
-    if (
-      this.outbox.receipt(record.bodyId)?.state !== "delivered" ||
-      record.cardState !== "delivered" ||
-      !record.cardMessageId
-    )
+    if (!this.bodyConfirmed(record) || record.cardState !== "delivered" || !record.cardMessageId)
       return false;
     try {
       // This delivered-only call validates the complete existing envelope without sending.
-      await this.outbox.send(record.chatId, record.text, record.bodyId);
+      if (record.presentation !== "attachment")
+        await this.outbox.send(record.chatId, record.text, record.bodyId);
       return true;
     } catch {
       return false;
@@ -157,30 +226,185 @@ export class ReportDeliveries {
   retryable(taskId: string, eventId: string, reportId: string): boolean {
     const record = this.store.get<ReportDelivery>(namespace, eventId);
     if (!record) return true;
-    if (!matches(record, taskId, eventId, reportId)) return false;
+    if (!matches(record, taskId, eventId, reportId) || this.retireObsolete(record)) return false;
     if (record.channel === "web") return true;
     const body = this.outbox.receipt(record.bodyId);
     return (
-      (!body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
+      (record.presentation === "attachment"
+        ? ["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? "")
+        : !body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
       ["prepared", "retryable", "delivered"].includes(record.cardState)
     );
+  }
+
+  /** Frozen content only: no caller-supplied filesystem path is ever opened. */
+  download(taskId: string, messageId: string): { name: string; content: string } {
+    const record = this.store
+      .list<ReportDelivery>(namespace)
+      .find(
+        (entry) =>
+          entry.taskId === taskId && (entry.cardId === messageId || entry.webCardId === messageId),
+      );
+    if (!record || !valid(record))
+      throw new OperationError("report_missing", "报告不存在或版本校验失败。");
+    return { name: "report.md", content: record.text };
+  }
+
+  private bodyConfirmed(record: ReportDelivery): boolean {
+    return record.presentation === "attachment"
+      ? record.fileState === "delivered" && !!record.fileKey && !!record.fileMessageId
+      : this.outbox.receipt(record.bodyId)?.state === "delivered";
+  }
+
+  private async sendAttachment(
+    record: ReportDelivery,
+    beforeSend?: () => Promise<void>,
+  ): Promise<void> {
+    if (record.fileState === "delivered") return;
+    if (["uploading", "sending", "uncertain"].includes(record.fileState ?? ""))
+      throw new OperationError(
+        "delivery_uncertain",
+        "报告附件传输结果未知，不能自动重复上传或发送。",
+        "unknown",
+      );
+    const platform = this.platform();
+    if (!platform?.uploadFile || !platform.sendFile)
+      throw new OperationError("platform_unavailable", "当前平台未提供报告附件能力。");
+    try {
+      if (!record.fileKey) {
+        await beforeSend?.();
+        record.fileState = "uploading";
+        this.save(record);
+        const fileKey = await platform.uploadFile("report.md", record.text);
+        if (!fileKey)
+          throw new OperationError("delivery_uncertain", "报告上传缺少文件编号。", "unknown");
+        record.fileKey = fileKey;
+        record.fileState = "uploaded";
+        this.save(record);
+      }
+      await beforeSend?.();
+      record.fileState = "sending";
+      this.save(record);
+      const messageId = await platform.sendFile(
+        record.chatId,
+        record.fileKey,
+        stableId(record.bodyId),
+      );
+      if (!messageId)
+        throw new OperationError("delivery_uncertain", "附件发送缺少消息编号。", "unknown");
+      record.fileMessageId = messageId;
+      record.fileState = "delivered";
+      record.error = undefined;
+      this.save(record);
+    } catch (error) {
+      record.error = safeError(error);
+      record.fileState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      this.save(record);
+      throw error;
+    }
   }
 
   private save(record: ReportDelivery): void {
     this.store.set(namespace, record.eventId, { ...record, updatedAt: new Date().toISOString() });
   }
 
+  /** End obsolete, known-settled sends without rewriting any transport receipt. */
+  private retireObsolete(record: ReportDelivery): boolean {
+    if (record.retired) return true;
+    if (
+      this.sending.has(record.eventId) ||
+      record.channel !== "platform" ||
+      !valid(record) ||
+      !["prepared", "retryable", "delivered"].includes(record.cardState) ||
+      (record.cardState === "delivered" && !record.cardMessageId) ||
+      (this.bodyConfirmed(record) && record.cardState === "delivered")
+    )
+      return false;
+    if (record.presentation === "attachment") {
+      if (
+        !["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? "") ||
+        (record.fileState === "uploaded" && !record.fileKey) ||
+        (record.fileState === "delivered" && !this.bodyConfirmed(record))
+      )
+        return false;
+    } else {
+      // A partial legacy text has its own outbox barrier and recovery authority.
+      const body = this.outbox.receipt(record.bodyId);
+      if (body && body.state !== "delivered") return false;
+    }
+    const event = this.store.get<OrchestrationEvent>("task_orchestration_events", record.eventId);
+    if (
+      event?.id !== record.eventId ||
+      event.taskId !== record.taskId ||
+      event.decision?.action !== "deliver" ||
+      event.decision.reportId !== record.reportId
+    )
+      return false;
+    const superseded = event.state === "superseded";
+    if (
+      !superseded &&
+      !(
+        event.state === "done" &&
+        !event.notified &&
+        ["retryable", "sending", "uncertain"].includes(event.notificationState ?? "") &&
+        !event.dispatches.some((dispatch) => ["pending", "uncertain"].includes(dispatch.state)) &&
+        this.staleReport?.(event, record) === true
+      )
+    )
+      return false;
+    record.retired = {
+      reason: superseded ? "superseded" : "stale_report",
+      at: new Date().toISOString(),
+    };
+    this.save(record);
+    return true;
+  }
+
   pendingInChat(chatId: string): boolean {
-    return this.store
-      .list<ReportDelivery>(namespace)
-      .some(
-        (record) =>
-          record.chatId === chatId &&
-          record.channel === "platform" &&
-          (!valid(record) ||
-            record.cardState !== "delivered" ||
-            this.outbox.receipt(record.bodyId)?.state !== "delivered"),
-      );
+    return (
+      this.store
+        .list<ReportDelivery>(namespace)
+        .some(
+          (record) =>
+            record.chatId === chatId &&
+            record.channel === "platform" &&
+            (this.sending.has(record.eventId) ||
+              !valid(record) ||
+              (!this.retireObsolete(record) &&
+                (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
+        ) || this.pendingWithoutReceipt(chatId)
+    );
+  }
+
+  /** The persisted deliver intent also guards the crash window before prepare(). */
+  private pendingWithoutReceipt(chatId: string): boolean {
+    const tasks = new Map(
+      this.store
+        .list<Task>("tasks")
+        .filter(
+          (task) =>
+            task.chatId === chatId &&
+            task.promptVersion === 3 &&
+            task.orchestration?.mode === "workflow",
+        )
+        .map((task) => [task.id, task]),
+    );
+    return this.store.list<OrchestrationEvent>("task_orchestration_events").some((event) => {
+      const task = tasks.get(event.taskId);
+      const reportId = event.decision?.action === "deliver" ? event.decision.reportId : undefined;
+      if (!task || !reportId || !["done", "attention"].includes(event.state) || event.notified)
+        return false;
+      const record = this.store.get<ReportDelivery>(namespace, event.id);
+      if (record)
+        return (
+          !matches(record, task.id, event.id, reportId) ||
+          record.channel !== "platform" ||
+          record.chatId !== chatId
+        );
+      const state = this.store.get<WorkflowState>(WORKFLOWS, task.id);
+      // No frozen revision evidence exists yet. Only an actual replacement proves staleness.
+      return !(state?.taskId === task.id && state.report?.id && state.report.id !== reportId);
+    });
   }
 }
 
@@ -206,13 +430,15 @@ function fingerprint(input: ReportEnvelope): string {
       text: input.text,
       card: input.card,
       channel: input.channel,
+      ...(input.presentation ? { presentation: input.presentation } : {}),
     }),
   );
 }
 function valid(record: ReportDelivery): boolean {
   const prefix = `workflow-report:${record.taskId}:${record.eventId}:${record.reportId}`;
   return (
-    record.version === 1 &&
+    ((record.version === 1 && !record.presentation) ||
+      (record.version === 2 && record.presentation === "attachment")) &&
     record.bodyId === `${prefix}:body` &&
     record.cardId === `${prefix}:card` &&
     record.fingerprint === fingerprint(record) &&

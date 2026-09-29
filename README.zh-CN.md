@@ -6,11 +6,13 @@
 
 **pi 管理本工具的项目、任务、参与者和会话；herdr 托管 Claude/Codex 及其原生 session。** 用户项目的需求讨论、设计、开发、测试和评审交给 Claude/Codex；myrix 另可运行项目显式配置的本机验证命令。可以让它们进入同一个任务群，也可以启动同类模型的多个参与者，为不同项目分别创建任务。
 
-AI 入口采用 **规则 → Jev → LLM**：程序先执行身份、作用域、去重和 exact `/clear` 等确定性协议。私聊 Jev 分类独立开关、默认关闭，普通文本仍进入原 pi 对话及工具路径；开启后 Jev 只选择 intent 和已登记 project，只有高置信度且参数完整的请求才用用户完整原文与固定模板默认值创建任务，其余交给 pi。业务完成性声称仍须真实操作证据，文本确认不能算明确执行请求完成。生命周期通知继续依据当前任务事实，只开放只读工具。
+AI 入口采用 **规则 → Jev → LLM**：程序先执行身份、作用域、去重和 exact `/clear` 等确定性协议。私聊 Jev 分类独立开关、默认关闭，普通文本仍进入原 pi 对话及工具路径；开启后 Jev 只选择 intent 和已登记 project，只有高置信度且参数完整的请求才用用户完整原文与固定模板默认值创建任务，其余交给 pi。业务完成性声称仍须真实操作证据，文本确认不能算明确执行请求完成。新 workflow 的生命周期通知直接依据当前任务事实，不在后台调用 pi。
 
 前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。独立二进制、版本输出、运行提示和服务名称统一使用 `myrix`。GitHub 仓库地址保持不变。全新安装使用 `~/.myrix`；检测到已有 `~/.herdr-agent` 时原地沿用，保留配置和对话。
 
-任务和 AI 已启用且配置 Jev key 时，新任务默认保存 `orchestration.mode = "workflow"`；显式指定的模式优先。pi 规划任务，规则和 Jev 从合法候选中选择动作；Jev 失败或低置信度时，本步交给只提供 `orchestration_decide` 的 pi，在同一候选集内选择，并记录规则结论、Jev 分布和最终来源。已有 `model`、`manual`、`round_robin` 任务保留模式；无 key 时沿用既有创建默认。工作流报告汇总参与者结果与验证来源，交付仍等待用户验收。见[当前编排设计](docs/myrix-jev-llm-orchestration-design.md)和[历史调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
+任务和 AI 已启用且配置 Jev key 时，新任务默认保存 `orchestration.mode = "workflow"` 和 v3 参与者协议；显式指定的模式优先。Jev 先判断实际模板是否足够、是否需要 pi 规划，随后规则和 Jev 从合法候选选择下一步。Jev 明确请求时，pi 才协助综合；低置信度会再做一次“请求 pi / 等待证据”的选择，不直接调用 pi。Jev 服务失败则进入明确记录的故障恢复策略，允许 pi 在原合法候选集内选择。日志记录规则结论、Jev 分布、协助原因和最终来源。已有 v2 workflow、`model`、`manual`、`round_robin` 任务保留原协议和行为；无 key 时沿用既有创建默认。
+
+v3 讨论由参与者按序回应，详细材料及独立回执保存在任务状态目录，原生聊天只作简短自然交接。用户已明确要求的讨论文档可以在批准的路径落盘并由另一位参与者复核，无需再次询问，也不会自动开始业务代码开发。中间输出保留在内部；飞书只接收必要的开始、真实阻塞通知和最终摘要及 `report.md` 附件，本机记录页可下载冻结报告。用户要求的讨论文档会连同哈希收录在报告附件中，可直接在飞书阅读。开发交付展示实际采集的分支、commit 和可核验的对应 PR。用户主动问进度时，pi 用 `task_progress` 读取该任务绑定的原生 session 及当前证据后自然总结。交付仍等待用户验收。见[v3 行为和验收记录](docs/workflow-natural-collaboration-2026-09-28.md)、[初版编排设计](docs/myrix-jev-llm-orchestration-design.md)和[历史调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
 
 ## 安装
 
@@ -164,9 +166,9 @@ myrix serve --state-dir /absolute/state
 
 [Jev/LLM 编排设计 v1.1](docs/myrix-jev-llm-orchestration-design.md) 对应 PR #54 已合并的 S3/S4，用户已确认验收通过。[真实 Jev Choice 记录](docs/jev-choice-live-evidence-2026-09-27.json) 使用合成输入；开发者实际执行的链路与未取得的具体证据分别记账，见[合并后补齐记录](docs/workflow-completion-2026-09-27.md)。
 
-讨论、新需求和 Bug 修复三套隔离本地工作流已使用真实 Jev、pi、Claude 与 Codex 跑通。可运行 `node --import tsx scripts/live/jev-ingress-probe.ts` 复测合成入口分类，或 `node --import tsx scripts/live/workflow-acceptance.ts --template all` 复测隔离本地工作流。这两个手工脚本使用本机模型凭据，保留失败与回退记录，不发送飞书消息或修改常驻配置。
+前述 v2 讨论、新需求和 Bug 修复三套隔离本地工作流已使用真实 Jev、pi、Claude 与 Codex 跑通；该历史证据不代替本次 v3 验收。可运行 `node --import tsx scripts/live/jev-ingress-probe.ts` 复测合成入口分类，或 `node --import tsx scripts/live/workflow-acceptance.ts --template all` 复测隔离本地工作流。这两个手工脚本使用本机模型凭据，保留失败与回退记录，不发送飞书消息或修改常驻配置。
 
-自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、文件制品托管不在首版范围。
+自动化覆盖真实 pi 循环、协议替身、SQLite/flock/Git、迁移与独立二进制，业务验收必须有真实飞书用户入站、群内交互和实际回读，并关联模型工具回执及 herdr 现场；直接 Web/API 操作不能替代该链路。Web 配置写入与历史浏览另行验收。当前支持文字和富文本中的文字；图片理解、语音转写、通用文件制品托管不在首版范围；v3 支持报告附件和限定任务的本机报告下载。
 
 [当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。B/N 场景的早期离线证据见 [acceptance.md](docs/acceptance.md)，当前尚待核对项目和部署证据见[现场验收矩阵](docs/live-validation.md)。
 

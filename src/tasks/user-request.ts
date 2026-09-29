@@ -1,6 +1,34 @@
 import type { InboxRecord } from "../app/inbox.js";
-import type { ActorContext, UserRequestSource } from "../core/types.js";
+import { now, stableId } from "../core/ids.js";
+import type { ActorContext, Task, UserRequestSource } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+
+export interface TaskUserRevision {
+  taskId: string;
+  source: UserRequestSource;
+  at: string;
+  /** Only a task input operation may mark a message as a report-relevant revision. */
+  usage?: "control" | "read" | "input";
+}
+
+/** Record the operation actually executed, never infer intent from message wording. */
+export function associateTaskUserRequest(
+  store: Store,
+  actor: ActorContext,
+  task: Task,
+  usage: NonNullable<TaskUserRevision["usage"]>,
+): void {
+  if (usage === "read" && !(task.promptVersion === 3 && task.orchestration?.mode === "workflow"))
+    return;
+  const source = currentUserRequest(store, actor);
+  if (!source || task.ownerId !== source.ownerId) return;
+  const id = stableId(task.id, source.messageId);
+  const existing = store.get<TaskUserRevision>("task_user_revisions", id);
+  if (!existing)
+    store.set("task_user_revisions", id, { taskId: task.id, source, at: now(), usage });
+  else if (usage === "input" && existing.usage !== "input")
+    store.set("task_user_revisions", id, { ...existing, usage });
+}
 
 /** Only the bound ingress record is authoritative; never search owner history. */
 export function currentUserRequest(

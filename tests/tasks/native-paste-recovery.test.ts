@@ -78,7 +78,14 @@ for (const evidence of [
         );
       if (evidence === "multiple_blocks") nativeText += wrap("another paste");
       if (evidence === "nested_block") nativeText = wrap(nativeText);
-      if (evidence === "wrong_payload") nativeText = wrap(`${expected}changed`);
+      if (evidence === "wrong_payload") {
+        const changed = expected.replace(
+          "独立分析任务，并给出简短结论。",
+          "独立分析任务，但正文已变更。",
+        );
+        assert.notEqual(changed, expected);
+        nativeText = wrap(changed);
+      }
       if (evidence === "wrong_receipt")
         nativeText = wrap(expected.replaceAll(delivery.receipt, `HERDR_RECEIPT_${"0".repeat(32)}`));
       if (evidence === "wrong_fingerprint") {

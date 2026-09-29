@@ -2,6 +2,7 @@ import type { WebState } from "../contracts.js";
 import { type Action, dispatch, state as fetchState } from "./api.js";
 import { button, el, select, time } from "./dom.js";
 import { renderProjects, renderSettings } from "./projects.js";
+import { observeRenderedReports } from "./report-receipts.js";
 import { type RecordTab, renderSessions, type SessionFilter } from "./sessions.js";
 
 type Page = "sessions" | "projects" | "settings";
@@ -17,6 +18,7 @@ let refreshing = false;
 let refreshPending = false;
 let rendered = false;
 let identityOptions = "";
+let reportObserver: ReturnType<typeof observeRenderedReports> | undefined;
 
 function node<T extends HTMLElement>(selector: string): T {
   const found = document.querySelector<T>(selector);
@@ -116,6 +118,8 @@ const configAction: Action = async (name, input) => {
 };
 
 function render(): void {
+  reportObserver?.disconnect();
+  reportObserver = undefined;
   const oldHistory = document.querySelector<HTMLElement>(".history");
   const previousSession = oldHistory?.dataset.sessionId;
   const scroll = oldHistory?.scrollTop ?? 0;
@@ -160,6 +164,8 @@ function render(): void {
     if (openRecords.has(entry.dataset.recordId)) entry.open = true;
   const history = document.querySelector<HTMLElement>(".history");
   if (history && previousSession === selectedSession) history.scrollTop = scroll;
+  if (tab === "messages")
+    reportObserver = observeRenderedReports(node("#content"), current, () => void refresh());
 }
 
 async function refresh(): Promise<void> {
@@ -182,6 +188,7 @@ async function refresh(): Promise<void> {
     node("#connection").textContent = `已更新 ${time(new Date().toISOString())}`;
     node("#feedback").replaceChildren();
     if (changed) render();
+    else reportObserver?.retry();
   } catch (error) {
     if (version === requestVersion) {
       node("#connection").textContent = "连接暂不可用";
@@ -208,6 +215,7 @@ events.onerror = () => {
 };
 const poll = setInterval(() => void refresh(), 15_000);
 window.addEventListener("pagehide", () => {
+  reportObserver?.disconnect();
   clearInterval(poll);
   events.close();
 });

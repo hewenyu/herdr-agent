@@ -27,8 +27,9 @@ config_listen = "127.0.0.1:18790"
 # Display clipping only; original screen/Guard/detection remain unchanged.
 max_cols = 56
 tail_lines = 18
-# Task progress notifications coalesce to latest state during cooldown.
-# Approval cards, final results and before-close notifications are not delayed.
+# Legacy task progress notices coalesce during cooldown. v3 workflow keeps
+# intermediate conversation internal; only necessary start/blocker/final notices
+# are sent. Query progress in Feishu to read the bound native sessions.
 notify_cooldown = "30s"
 
 [mirror]
@@ -77,8 +78,16 @@ context_tokens = 50000 # integer 16384..1048576; older context is summarized
 [jev]
 # A key defaults NEW AI tasks to workflow unless a mode was explicitly selected.
 # Existing model/manual/round_robin tasks retain their mode. Missing key preserves
-# existing creation defaults. Failed/low-confidence workflow choices use pi's
-# restricted orchestration_decide on the same candidates and record the source.
+# existing creation defaults. New workflow tasks use participant protocol v3;
+# existing v2 workflow tasks keep their original prompts and recovery receipts.
+# Jev selects template use or requests pi planning. For action selection, pi is
+# used when Jev requests help; low confidence gets one assistance assessment.
+# Provider failure permits explicit, logged recovery via restricted pi selection
+# over the same legal candidates. Missing evidence never means task completion.
+# v3 uses natural sequential handoffs plus files under stateDir/tasks/<id>/board;
+# it sends a final report attachment/summary, not every participant response.
+# User-requested discussion documents are separately scoped to approved paths.
+# This does not grant code edits, verification commands, or user acceptance.
 api_key = "" # TOML only; never commit a real key or expose it in logs/reports/Web
 base_url = "https://api.typesafe.ai"
 model = "jev-1.13.0"

@@ -1,6 +1,7 @@
 import { EventDispatcher, LoggerLevel, WSClient } from "@larksuiteoapi/node-sdk";
 import { OperationError } from "../core/errors.js";
 import type { Logger, PlatformHandlers, PlatformPort, RemoteTask } from "../core/ports.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../core/report-limits.js";
 import { FeishuAPI, object, type Requester, sdkLogger, string } from "./api.js";
 import { FetchHttpClient } from "./http.js";
 import { normalizeAction, normalizeMessage } from "./normalize.js";
@@ -224,6 +225,26 @@ export class FeishuPlatform implements PlatformPort {
   }
   async sendCard(chatId: string, card: Record<string, unknown>, key: string): Promise<string> {
     return this.send(chatId, "interactive", JSON.stringify(card), key);
+  }
+  async uploadFile(name: string, content: string): Promise<string> {
+    if (
+      name !== "report.md" ||
+      !content ||
+      Buffer.byteLength(content) > REPORT_ATTACHMENT_MAX_BYTES
+    )
+      throw new OperationError("report_file", "报告附件名称或大小无效。");
+    const body = await this.api.call({
+      method: "POST",
+      url: "/open-apis/im/v1/files",
+      headers: { "Content-Type": "multipart/form-data" },
+      data: { file_type: "stream", file_name: name, file: new Blob([content]) },
+    });
+    const key = string(object(body.data).file_key);
+    if (!key) throw new OperationError("file_upload_unknown", "报告上传结果未确认。", "unknown");
+    return key;
+  }
+  async sendFile(chatId: string, fileKey: string, key: string): Promise<string> {
+    return this.send(chatId, "file", JSON.stringify({ file_key: fileKey }), key);
   }
   private async send(
     chatId: string,

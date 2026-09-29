@@ -37,16 +37,31 @@ export function workflowCandidates(
   const blocked = Object.entries(state.nodes).filter(([, entry]) => entry.status === "blocked");
   const ready = readyNodes(state);
   const candidates: WorkflowCandidate[] = [];
-  const eligible = (nodeId: string) => {
+  const active = participants.filter((entry) => entry.status !== "removed");
+  const fixedReviewers = new Set(
+    state.plan.nodes
+      .filter((node) => node.role === "reviewer")
+      .flatMap((node) => node.participantId ?? []),
+  );
+  const compatible = (nodeId: string, participantId: string) => {
     const node = state.plan.nodes.find((entry) => entry.id === nodeId);
-    return available.filter(
-      (entry) =>
-        (!node?.participantId || node.participantId === entry.id) &&
-        (node?.role !== "reviewer" || independentReviewer(state, entry.id)),
+    return (
+      (!node?.participantId || node.participantId === participantId) &&
+      (!node?.documentPaths?.length || !fixedReviewers.has(participantId)) &&
+      (node?.role !== "reviewer" || independentReviewer(state, participantId))
     );
   };
+  const eligible = (nodeId: string) => available.filter((entry) => compatible(nodeId, entry.id));
+  const roleConflicts = state.plan.nodes.filter(
+    (node) =>
+      (ready.includes(node) || blocked.some(([id]) => id === node.id)) &&
+      (node.documentPaths?.length || node.role === "reviewer") &&
+      !active.some((entry) => compatible(node.id, entry.id)) &&
+      (node.documentPaths?.length || node.participantId || active.length >= 8),
+  );
   if (
     task.kind === "discussion" &&
+    task.promptVersion !== 3 &&
     ready.length > 1 &&
     ready.every((node) => node.role === "analyst" && !node.dependsOn.length && node.participantId)
   ) {
@@ -86,14 +101,30 @@ export function workflowCandidates(
       verification: command,
     });
   if (
-    ready.some((node) => node.role === "reviewer" && !eligible(node.id).length) &&
-    participants.filter((entry) => entry.status !== "removed").length < 8
+    ready.some(
+      (node) => node.role === "reviewer" && !node.participantId && !eligible(node.id).length,
+    ) &&
+    active.length < 8
   )
     candidates.push({
       id: "add:reviewer",
       kind: "add_reviewer",
       description: "增加独立评审参与者，在当前授权范围内复核，不能由实现者自行证明评审通过。",
     });
+  if (roleConflicts.length)
+    candidates.push(
+      {
+        id: "replan:roles",
+        kind: "replan",
+        description: `节点 ${roleConflicts.map((node) => node.id).join("、")} 没有兼容的作者或独立评审者。请在保留固定参与者约束下重规划；新增评审不能满足固定绑定。`,
+      },
+      {
+        id: "user:roles",
+        kind: "user",
+        description:
+          "参与者分工与独立评审约束冲突，或已达参与者上限；无法在原约束内解决时请用户裁决，不擅自改换固定评审者。",
+      },
+    );
   for (const [nodeId, progress] of blocked) {
     for (const participant of eligible(nodeId))
       candidates.push({
@@ -105,7 +136,9 @@ export function workflowCandidates(
   }
   if (state.issues.some((issue) => issue.status === "open")) {
     const target =
-      [...state.plan.nodes].reverse().find((node) => node.role === "implementer") ??
+      [...state.plan.nodes]
+        .reverse()
+        .find((node) => node.role === "implementer" || node.documentPaths?.length) ??
       state.plan.nodes.find((node) => node.phase === "reviewing");
     if (target)
       for (const participant of eligible(target.id))

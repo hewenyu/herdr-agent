@@ -7,7 +7,9 @@ import type { RuntimeTool, SessionService } from "../runtime/index.js";
 import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { TaskService } from "../tasks/service.js";
+import { associateTaskUserRequest } from "../tasks/user-request.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
+import { taskProgress } from "./workflow-progress.js";
 
 interface Services {
   config?: AppConfig;
@@ -49,7 +51,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       true,
       { all: { type: "boolean" } },
       [],
-      async (args, ctx) => services.tasks.list(ctx, boolean(args, "all")),
+      async (args, ctx) => {
+        const tasks = services.tasks.list(ctx, boolean(args, "all"));
+        for (const task of tasks) associateTaskUserRequest(services.store, ctx, task, "read");
+        return tasks;
+      },
     ),
     tool(
       "task_get",
@@ -60,6 +66,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       [],
       async (args, ctx) => {
         const task = services.tasks.get(ctx, id(args, ctx));
+        associateTaskUserRequest(services.store, ctx, task, "read");
         const participants = await Promise.all(
           task.participants.map(async (participant) => {
             if (!participant.execution) return participant;
@@ -96,13 +103,34 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       },
     ),
     tool(
+      "task_progress",
+      "用户询问进度时读取当前任务参与者绑定的 Claude/Codex 实际会话、工作流状态及产物。只读，不影响调度读取位置。返回 recent conversation 是参与者自述；不得把原生空闲或一轮回复说成已完成。分页 cursor 只能配合原参与者使用。",
+      true,
+      { taskId, participantId, cursor: text("上次本工具返回的参与者分页游标；省略读取最近对话") },
+      [],
+      async (args, ctx) => {
+        const target = id(args, ctx);
+        associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, target), "read");
+        return taskProgress(
+          services,
+          ctx,
+          target,
+          optionalString(args, "participantId"),
+          optionalString(args, "cursor"),
+        );
+      },
+    ),
+    tool(
       "participant_screen",
       "读取指定参与者的真实屏幕与权限问题，只读，不选择审批选项。",
       true,
       { taskId, participantId },
       [],
-      async (args, ctx) =>
-        services.tasks.screen(ctx, id(args, ctx), optionalString(args, "participantId")),
+      async (args, ctx) => {
+        const target = id(args, ctx);
+        associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, target), "read");
+        return services.tasks.screen(ctx, target, optionalString(args, "participantId"));
+      },
     ),
     tool(
       "participant_send",

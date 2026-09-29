@@ -7,9 +7,8 @@ import type {
 import { fail, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
-import type { ActorContext, Participant, StoredMessage, Task } from "../core/types.js";
+import type { ActorContext, StoredMessage, Task } from "../core/types.js";
 import { verificationConfigRevision } from "../projects/verification-config.js";
-import type { InputDelivery } from "../tasks/input-delivery.js";
 import {
   implementationNode,
   independentReviewer,
@@ -17,26 +16,23 @@ import {
   rememberImplementer,
   restoreImplementationParticipants,
 } from "./authorship.js";
-import { inspectArtifact, latestArtifacts, publishBoard, publishOutput } from "./board.js";
+import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
+import { assertCodeDelivery } from "./code-delivery.js";
 import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
-import { selectWorkflowOutput } from "./output-selection.js";
-import { planWorkflow } from "./planner.js";
+import { validateDocumentPaths } from "./document-delivery.js";
+import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
+import { legacyAssignment, prepareHandoff } from "./handoff.js";
+import { choosePlan } from "./plan-selection.js";
 import { selectWorkflowCandidate } from "./policy.js";
-import { publishReport, reportContract } from "./report.js";
-import {
-  countSettledBatch,
-  invalidateFrom,
-  mergeStatus,
-  readyNodes,
-  workflowState,
-} from "./state.js";
-import { parseStatusBlock, statusInstructions } from "./status-block.js";
+import { reportContract } from "./report.js";
+import { settleWorkflow } from "./settlement.js";
+import { invalidateFrom, readyNodes, workflowState } from "./state.js";
 import { VerificationRunner } from "./verify.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 import { workspaceAvailable, workspaceRevision } from "./workspace.js";
 
-interface WorkflowPorts extends TaskOrchestratorOptions {
+export interface WorkflowPorts extends TaskOrchestratorOptions {
   current(id: string): Task | undefined;
   foregroundPending(task: Task): boolean;
   revision(task: Task): string;
@@ -50,6 +46,18 @@ interface WorkflowPorts extends TaskOrchestratorOptions {
   notify(task: Task, event: OrchestrationEvent): Promise<void>;
   attention(task: Task, event: OrchestrationEvent): Promise<void>;
   recoverNotification(task: Task, event: OrchestrationEvent): Promise<void>;
+}
+
+function workspaceReady(task: Task): boolean {
+  return task.directoryMode !== "worktree" || task.worktreeReady;
+}
+
+function sameWorkspace(left: Task, right: Task): boolean {
+  return (
+    left.directoryMode === right.directoryMode &&
+    left.worktreeReady === right.worktreeReady &&
+    JSON.stringify(left.directories) === JSON.stringify(right.directories)
+  );
 }
 
 /** A workflow policy over the existing events/dispatches, not another execution queue. */
@@ -67,6 +75,13 @@ export class WorkflowOrchestrator {
 
   private save(state: WorkflowState): void {
     this.ports.store.set(WORKFLOWS, state.taskId, state);
+  }
+
+  private assertWorkspace(task: Task, event: OrchestrationEvent): Task {
+    const current = this.ports.assertCurrent(event);
+    if (!workspaceReady(current) || !sameWorkspace(task, current))
+      fail("orchestration_deferred", "任务工作目录尚未就绪或已变化，等待最新目录状态后继续。");
+    return current;
   }
   private actor(task: Task, eventId: string): ActorContext {
     return {
@@ -112,6 +127,53 @@ export class WorkflowOrchestrator {
       : undefined;
   }
 
+  private async assistanceFingerprint(
+    task: Task,
+    state: WorkflowState,
+    event: OrchestrationEvent,
+    candidates?: WorkflowCandidate[],
+  ): Promise<string> {
+    return stableId(
+      event.id,
+      await workspaceRevision(task.directories),
+      this.configRevision(task) ?? "",
+      JSON.stringify(state.issues),
+      JSON.stringify(candidates ?? state.plan),
+      JSON.stringify(this.ports.outputs(task.id).map((output) => output.entry.id)),
+    );
+  }
+
+  private deferAssistance(
+    state: WorkflowState,
+    event: OrchestrationEvent,
+    fingerprint: string,
+    reason: string,
+  ): void {
+    // An evidence wait is not a failed model attempt and survives worker restarts.
+    event.state = "pending";
+    event.attempts = Math.max(0, event.attempts - 1);
+    event.nextAttemptAt = undefined;
+    event.error = {
+      code: "workflow_assistance_deferred",
+      message: reason,
+      outcome: "not_executed",
+    };
+    state.assistanceWait = { eventId: event.id, fingerprint, reason };
+    this.ports.store.transaction(() => {
+      this.save(state);
+      this.ports.save(event);
+    });
+  }
+
+  private awaitingEvidence(state: WorkflowState, fingerprint: string): boolean {
+    if (state.assistanceWait?.fingerprint === fingerprint) return true;
+    if (state.assistanceWait) {
+      state.assistanceWait = undefined;
+      this.save(state);
+    }
+    return false;
+  }
+
   async admit<T>(task: Task, access: "read" | "write", run: () => Promise<T>): Promise<T> {
     return this.admission.run("directories", async () => {
       if (
@@ -128,6 +190,7 @@ export class WorkflowOrchestrator {
   }
 
   async assertDelivery(task: Task, state: WorkflowState): Promise<void> {
+    await assertDocumentSource(this.ports.store, task, state);
     restoreImplementationParticipants(this.ports.store, state);
     const artifactRevision = await workspaceRevision(task.directories);
     const missing = reportContract(
@@ -141,11 +204,15 @@ export class WorkflowOrchestrator {
       const current = await inspectArtifact(task, artifact.path);
       if (current.hash !== artifact.hash) fail("workflow_artifact", "交付产物已变化或失效。");
     }
+    await assertCodeDelivery(task, state);
   }
 
   async process(task: Task): Promise<void> {
     const { ports } = this;
     if (!ports.config) fail("workflow_config", "工作流缺少本地配置。");
+    const current = ports.current(task.id);
+    if (!current || !workspaceReady(current)) return;
+    task = current;
     const participants = ports
       .tasks()
       .records.participants(task)
@@ -184,7 +251,10 @@ export class WorkflowOrchestrator {
           await ports.notify(task, event);
         } catch (error) {
           const safe = safeError(error);
-          if (!["workflow_report", "workflow_artifact"].includes(safe.code)) throw error;
+          if (
+            !["workflow_report", "workflow_artifact", "workflow_document_scope"].includes(safe.code)
+          )
+            throw error;
           // An old frozen delivery may fail the repaired evidence contract on restart.
           // Make that visible instead of retrying the same invalid report every tick.
           event.state = "attention";
@@ -220,6 +290,7 @@ export class WorkflowOrchestrator {
       state.planningReason = "用户要求或任务配置修订，旧计划输入已失效。";
       state.phase = "planning";
       state.report = undefined;
+      state.assistanceWait = undefined;
       state.stall = { open: [], unchanged: 0, awaitingUser: false };
       state.nodes = Object.fromEntries(
         state.plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
@@ -254,7 +325,7 @@ export class WorkflowOrchestrator {
       state.phase = activePhase;
       this.save(state);
     }
-    await this.settle(task, state, participants);
+    await settleWorkflow(ports, task, state, participants, this.commands(task));
     if (Object.values(state.nodes).some((entry) => entry.status === "dispatched")) return;
     if (
       events.some(
@@ -362,11 +433,16 @@ export class WorkflowOrchestrator {
     const event = this.event(
       task,
       state.consumedOutputs,
-      `decision:${stableId(JSON.stringify(state.nodes), JSON.stringify(state.evidence), artifactRevision, this.configRevision(task) ?? "")}`,
+      `decision:${stableId(JSON.stringify(state.nodes), JSON.stringify(state.evidence), artifactRevision, this.configRevision(task) ?? "", ...verify.flatMap((candidate) => (candidate.retryOf ? [candidate.retryOf] : [])))}`,
     );
     if (event.state === "done" || event.state === "superseded" || event.state === "attention")
       return;
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
+    const assistanceFingerprint =
+      task.promptVersion === 3
+        ? await this.assistanceFingerprint(task, state, event, candidates)
+        : "";
+    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
     event.attempts++;
     event.state = "processing";
     ports.save(event);
@@ -394,6 +470,25 @@ export class WorkflowOrchestrator {
                 issues: state.issues,
                 nodes: state.nodes,
                 evidence: state.evidence,
+                recentConversation:
+                  task.promptVersion === 3
+                    ? state.consumedOutputs
+                        .slice(-4)
+                        .map((id) =>
+                          ports.store.get<{
+                            text: string;
+                            notes: string;
+                            hash: string;
+                            participantId: string;
+                          }>("workflow_conversation_evidence", id),
+                        )
+                        .filter((entry) => !!entry)
+                        .map((entry) => ({
+                          ...entry,
+                          notes: entry.notes.slice(0, 12000),
+                          truncated: entry.notes.length > 12000,
+                        }))
+                    : undefined,
                 reportMissing: reportContract(
                   state,
                   artifactRevision,
@@ -404,6 +499,7 @@ export class WorkflowOrchestrator {
               candidates,
               jev: ports.config.jev,
               piModel: ports.config.ai.model,
+              ...(task.promptVersion === 3 ? { assistancePolicy: "jev-requested" as const } : {}),
               engine: ports.engine,
               actor: this.actor(task, event.id),
               signal: ports.signal,
@@ -414,6 +510,15 @@ export class WorkflowOrchestrator {
               onLog: (log) => saveDecisionLog(ports.store, log),
             });
       ports.assertCurrent(event);
+      if ("deferred" in selection && selection.deferred) {
+        this.deferAssistance(
+          state,
+          event,
+          assistanceFingerprint,
+          "Jev 正在等待新的判断依据，尚未请求 pi 协助。",
+        );
+        return;
+      }
       const candidate = candidates.find((entry) => entry.id === selection.candidateId);
       if (!candidate) fail("workflow_selection", "本步没有得到合法选择，保留原候选等待恢复。");
       event.workflow = { candidate, planVersion: state.plan.version, artifactRevision };
@@ -439,42 +544,39 @@ export class WorkflowOrchestrator {
   }
 
   private async plan(task: Task, state: WorkflowState): Promise<void> {
+    const current = this.ports.current(task.id);
+    if (!current || !workspaceReady(current) || !sameWorkspace(task, current)) return;
     const event = this.event(task, [], `plan:${state.plan.version}`);
     if (event.state === "attention") {
       await this.ports.attention(task, event);
       return;
     }
     if (event.nextAttemptAt && Date.parse(event.nextAttemptAt) > Date.now()) return;
+    const assistanceFingerprint =
+      task.promptVersion === 3 ? await this.assistanceFingerprint(task, state, event) : "";
+    if (this.awaitingEvidence(state, assistanceFingerprint)) return;
     event.attempts++;
     this.ports.save(event);
     try {
-      const plan = await planWorkflow({
-        task: {
-          ...task,
-          participantIds: this.ports
-            .tasks()
-            .records.participants(task)
-            .filter((entry) => entry.status !== "removed")
-            .map((entry) => entry.id),
-        },
+      const plan = await choosePlan(
+        { ...this.ports, assertCurrent: (selected) => this.assertWorkspace(task, selected) },
+        task,
         state,
-        engine: this.ports.engine,
-        actor: this.actor(task, event.id),
-        userMessages: this.ports.userMessages(task).map((entry) => entry.text),
-        signal: this.ports.signal,
-        assertCurrent: () => {
-          this.ports.assertCurrent(event);
-        },
-      });
-      state.plan = plan;
-      state.phase = plan.nodes[0]?.phase ?? "planning";
-      state.nodes = Object.fromEntries(
+        event,
+      );
+      task = this.assertWorkspace(task, event);
+      const next: WorkflowState = { ...state, plan };
+      if (task.promptVersion === 3 && task.kind === "discussion")
+        next.documentSource = await prepareDocumentSource(this.ports.store, task, next);
+      else if (next.documentSource) await assertDocumentSource(this.ports.store, task, next);
+      this.assertWorkspace(task, event);
+      next.phase = plan.nodes[0]?.phase ?? "planning";
+      next.nodes = Object.fromEntries(
         plan.nodes.map((node) => [node.id, { status: "pending", attempt: 0 }]),
       );
-      state.planning = "ready";
-      state.error = undefined;
-      event.state = "done";
-      event.notified = true;
+      next.planning = "ready";
+      next.error = undefined;
+      const acceptedEvent = { ...event, state: "done" as const, notified: true };
       this.ports.store.transaction(() => {
         const key = `${task.id}:${plan.version}`;
         if (this.ports.store.get("workflow_plans", key))
@@ -486,156 +588,17 @@ export class WorkflowOrchestrator {
           reason: state.planningReason ?? "首次根据用户要求实例化计划。",
           at: now(),
         });
-        this.save(state);
-        this.ports.save(event);
+        this.save(next);
+        this.ports.save(acceptedEvent);
       });
+      Object.assign(state, next);
+      Object.assign(event, acceptedEvent);
       await publishBoard(this.ports.config?.stateDir ?? "", task, state);
     } catch (error) {
-      await this.failed(task, event, error);
-    }
-  }
-
-  private async settle(
-    task: Task,
-    state: WorkflowState,
-    participants: Participant[],
-  ): Promise<void> {
-    let changed = false;
-    for (const node of state.plan.nodes) {
-      const progress = state.nodes[node.id];
-      if (progress?.status !== "dispatched" || !progress.operationId || !progress.inputRevision)
-        continue;
-      const participant = participants.find((entry) => entry.id === progress.participantId);
-      if (
-        !participant ||
-        !["idle", "done"].includes(participant.status) ||
-        participant.error ||
-        this.ports.store.get("participant_awaiting_output", participant.id)
-      )
-        continue;
-      const delivery = this.ports.store.get<InputDelivery>(
-        "input_deliveries",
-        progress.operationId,
-      );
-      if (!delivery) continue;
-      const eligibleOutputs = this.ports
-        .outputs(task.id)
-        .filter(
-          (entry) =>
-            entry.participantId === participant.id &&
-            !state.consumedOutputs.includes(entry.entry.id) &&
-            (entry.sequence ?? 0) > delivery.outputSequence,
-        );
-      const output = selectWorkflowOutput(
-        eligibleOutputs,
-        delivery,
-        this.ports.events(task.id).flatMap((event) => event.dispatches),
-        this.ports.store,
-      );
-      if (!output) continue;
-      await publishOutput(
-        this.ports.config?.stateDir ?? "",
-        task.id,
-        output.entry.id,
-        output.entry.text,
-      );
-      try {
-        const artifactRevision = await workspaceRevision(task.directories);
-        if (progress.artifactRevision !== artifactRevision) {
-          // Attribute observed writes conservatively, even if the status block is invalid.
-          rememberImplementer(state, participant.id);
-          this.save(state);
-        }
-        const block = parseStatusBlock(output.entry.text, {
-          nodeId: node.id,
-          operationId: progress.operationId,
-          inputRevision: progress.inputRevision,
-        });
-        if (
-          (node.access === "read" || node.role === "reviewer") &&
-          progress.artifactRevision !== artifactRevision
-        )
-          fail(
-            "workflow_artifact_changed",
-            "执行期间代码版本变化，原评审/读取结果不能证明新版本，需重新核对。",
-          );
-        const validReferences = new Set([
-          ...state.consumedOutputs,
-          output.entry.id,
-          ...state.evidence.map((entry) => entry.id),
-          ...state.artifacts.map((entry) => entry.path),
-          ...block.artifactRefs,
-        ]);
-        if (
-          block.issues.some((issue) => issue.evidenceRefs.some((ref) => !validReferences.has(ref)))
-        )
-          fail("workflow_evidence", "问题引用了不存在或不属于本任务的证据。");
-        for (const path of block.artifactRefs) {
-          const artifact = await inspectArtifact(task, path);
-          state.artifacts.push({
-            ...artifact,
-            reference: path,
-            outputId: output.entry.id,
-            artifactRevision,
-          });
-        }
-        mergeStatus(state, node, block, output.entry.id, artifactRevision);
-        if (
-          node.phase === "validating" &&
-          state.plan.validation?.mode !== "not_run" &&
-          !this.commands(task).length &&
-          !state.evidence.some(
-            (entry) =>
-              entry.outputId === output.entry.id &&
-              entry.source === "agent_review" &&
-              entry.result === "passed",
-          )
-        ) {
-          progress.status = "blocked";
-          progress.error =
-            "未取得独立 agent 实际重跑的证据，请补充检查结果或说明需用户处理的环境阻塞。";
-        }
-        if (node.phase === "reporting" && state.nodes[node.id]?.status === "completed")
-          await publishReport(
-            this.ports.config?.stateDir ?? "",
-            task,
-            state,
-            block,
-            output.entry.id,
-            artifactRevision,
-          );
-        this.ports.store.set("workflow_status_blocks", output.entry.id, { taskId: task.id, block });
-      } catch (error) {
-        progress.status = "blocked";
-        progress.outputId = output.entry.id;
-        progress.error = safeError(error).message;
-        if (!state.consumedOutputs.includes(output.entry.id))
-          state.consumedOutputs.push(output.entry.id);
-      }
-      changed = true;
-    }
-    if (changed) {
-      for (const batch of this.ports.events(task.id)) {
-        if (
-          !batch.workflow?.applied ||
-          !batch.dispatches.length ||
-          state.batches.includes(batch.id)
-        )
-          continue;
-        if (
-          batch.dispatches.every((dispatch) => {
-            const progress = dispatch.nodeId ? state.nodes[dispatch.nodeId] : undefined;
-            return (
-              progress?.operationId === dispatch.operationId &&
-              progress.outputId &&
-              this.ports.store.get("workflow_status_blocks", progress.outputId)
-            );
-          })
-        )
-          countSettledBatch(state, batch.id, this.ports.config?.jev?.stallRounds ?? 3);
-      }
-      this.save(state);
-      await publishBoard(this.ports.config?.stateDir ?? "", task, state);
+      const safe = safeError(error);
+      if (safe.code === "workflow_assistance_deferred")
+        this.deferAssistance(state, event, assistanceFingerprint, safe.message);
+      else await this.failed(task, event, error);
     }
   }
 
@@ -657,7 +620,7 @@ export class WorkflowOrchestrator {
     event: OrchestrationEvent,
   ): Promise<void> {
     const { ports } = this;
-    ports.assertCurrent(event);
+    this.assertWorkspace(task, event);
     const candidate = event.workflow?.candidate;
     if (!candidate || !event.workflow || event.workflow.applied) return;
     if (
@@ -687,37 +650,38 @@ export class WorkflowOrchestrator {
           ports.save(event);
           return;
         }
-        ports.assertCurrent(event);
+        this.assertWorkspace(task, event);
         if (!event.dispatches.length) {
           const artifactRevision = await workspaceRevision(task.directories);
           for (const assignment of candidate.assignments ?? []) {
             const node = state.plan.nodes.find((entry) => entry.id === assignment.nodeId);
             if (!node) fail("workflow_node", "派发节点不存在。");
+            if (node.documentPaths?.length) {
+              await validateDocumentPaths(task, node.documentPaths);
+            }
             if (candidate.kind === "rework") invalidateFrom(state, node.id);
             const operationId = `${task.id}:workflow:${stableId(event.id, node.id, assignment.participantId)}`;
-            const text = [
-              "本次工作流任务书（原始要求和后续修订优先）：",
-              task.requirements,
-              ...ports.userMessages(task).map((entry) => entry.text),
-              `节点：${node.id}；阶段：${node.phase}`,
-              node.instruction,
-              `必需交付文件：${JSON.stringify(state.plan.requiredArtifacts ?? [])}。相关节点须在 artifactRefs 中引用准确路径；报告不能以文字替代缺失文件。`,
-              ...(state.plan.validation?.mode === "not_run"
-                ? [
-                    `用户已明确限制验证：${state.plan.validation.userConstraint}。不得执行验证命令；实现节点仍按授权实现，评审节点只作只读复核并将验证证据标记 not_run、说明原因。`,
-                  ]
-                : []),
-              `共享看板：${task.boardDirectory}。完整参与者原文位于 outputs/，请阅读与本节点相关的输入，不能仅依据摘要。`,
-              `当前问题与已完成节点：${JSON.stringify({ issues: state.issues, nodes: state.nodes })}`,
-              ...(node.phase === "reporting"
-                ? [`报告必需章节：${JSON.stringify(state.plan.deliveryRequirements)}`]
-                : []),
-              statusInstructions({
-                nodeId: node.id,
-                operationId,
-                inputRevision: event.userRevision,
-              }),
-            ].join("\n\n");
+            const identity = { nodeId: node.id, operationId, inputRevision: event.userRevision };
+            const userMessages = ports.userMessages(task).map((entry) => entry.text);
+            const text =
+              task.promptVersion === 3
+                ? await prepareHandoff(
+                    ports.config?.stateDir ?? "",
+                    task,
+                    state,
+                    candidate.kind === "rework"
+                      ? {
+                          ...node,
+                          instruction: `${node.instruction}\n\n本次需修正：${candidate.description}`,
+                        }
+                      : node,
+                    identity,
+                    userMessages,
+                  )
+                : legacyAssignment(task, state, node, identity, userMessages);
+            const sourceRevision = node.documentPaths?.length
+              ? await workspaceRevision(task.directories, node.documentPaths)
+              : undefined;
             event.dispatches.push({
               operationId,
               participantId: assignment.participantId,
@@ -725,6 +689,7 @@ export class WorkflowOrchestrator {
               text,
               inputRevision: event.userRevision,
               artifactRevision,
+              sourceRevision,
               state: "pending",
             });
           }
@@ -742,7 +707,7 @@ export class WorkflowOrchestrator {
       if (!this.verification || !candidate.verification)
         fail("workflow_verify", "验证执行器不可用。");
       const admitted = await this.admission.run("directories", async () => {
-        ports.assertCurrent(event);
+        this.assertWorkspace(task, event);
         if (
           !(await workspaceAvailable(
             ports.store,
@@ -752,6 +717,7 @@ export class WorkflowOrchestrator {
           ))
         )
           return;
+        this.assertWorkspace(task, event);
         // run() synchronously reserves its durable record before spawning the configured command.
         return { running: this.runVerification(task, state, event) };
       });
@@ -797,6 +763,10 @@ export class WorkflowOrchestrator {
     ports.save(event);
     linkDecisionDispatches(ports.store, event.selectionLogId ?? event.id, event.dispatches);
     await ports.notify(task, event);
+    if (task.promptVersion === 3 && event.decision?.action === "deliver" && event.notified) {
+      state.phase = "awaiting_acceptance";
+      this.save(state);
+    }
   }
 
   private async dispatch(
@@ -808,8 +778,29 @@ export class WorkflowOrchestrator {
     if (dispatch.state === "sent") return;
     if (!dispatch.nodeId || !dispatch.text || !dispatch.inputRevision)
       fail("workflow_dispatch", "派发缺少已保存任务书。");
-    this.ports.assertCurrent(event);
+    this.assertWorkspace(task, event);
     const node = state.plan.nodes.find((entry) => entry.id === dispatch.nodeId);
+    if (
+      node?.documentPaths?.length &&
+      state.plan.nodes.some(
+        (entry) => entry.role === "reviewer" && entry.participantId === dispatch.participantId,
+      )
+    )
+      fail("workflow_document_roles", "文档委派与固定评审者冲突，请核对参与者分工后重规划。");
+    if (
+      state.documentSource ||
+      state.plan.documentDelivery ||
+      (task.promptVersion === 3 && task.kind === "discussion")
+    )
+      await assertDocumentSource(this.ports.store, task, state);
+    if (
+      node?.documentPaths?.length &&
+      dispatch.sourceRevision !== (await workspaceRevision(task.directories, node.documentPaths))
+    )
+      fail(
+        "workflow_document_scope",
+        "文档委派等待期间授权范围之外的文件已变化，需核对后重新派发。",
+      );
     if (node?.role === "reviewer" && !independentReviewer(state, dispatch.participantId))
       fail("workflow_review_author", "该评审委派属于历史实现者，请重新安排独立评审。");
     if (node && implementationNode(node)) rememberImplementer(state, dispatch.participantId);
@@ -821,6 +812,7 @@ export class WorkflowOrchestrator {
       participantId: dispatch.participantId,
       inputRevision: dispatch.inputRevision,
       artifactRevision: dispatch.artifactRevision,
+      sourceRevision: dispatch.sourceRevision,
     };
     this.save(state);
     dispatch.state = "pending";
@@ -832,7 +824,7 @@ export class WorkflowOrchestrator {
         dispatch.participantId,
         dispatch.text,
         () => {
-          this.ports.assertCurrent(event);
+          this.assertWorkspace(task, event);
         },
         dispatch.operationId,
       );
@@ -852,18 +844,57 @@ export class WorkflowOrchestrator {
     const candidate = event.workflow?.candidate.verification;
     if (!candidate || !this.verification) fail("workflow_verify", "缺少验证候选。");
     const cancellation = new AbortController();
-    const timer = setInterval(() => {
-      if (!this.ports.current(task.id) || this.ports.baseRevision(task) !== state.userRevision)
+    let interrupted: unknown;
+    let invalidated = false;
+    const inputsCurrent = () => {
+      // Pause and shutdown prevent new effects, but still permit unchanged-input failure audit.
+      const current = this.ports.store.get<Task>("tasks", task.id);
+      return (
+        !!current &&
+        workspaceReady(current) &&
+        sameWorkspace(task, current) &&
+        this.ports.revision(current) === event.userRevision
+      );
+    };
+    const monitor = () => {
+      try {
+        if (!inputsCurrent()) {
+          invalidated = true;
+          cancellation.abort();
+        }
+        this.assertWorkspace(task, event);
+      } catch (error) {
+        interrupted ??= error;
         cancellation.abort();
-    }, 100);
+      }
+    };
+    const timer = setInterval(monitor, 100);
     timer.unref();
     try {
       const run = await this.verification.run(
         task,
         candidate,
         AbortSignal.any([this.ports.signal, cancellation.signal]),
+        monitor,
       );
+      if (run.status === "unknown")
+        fail("workflow_verify_unknown", "验证执行状态尚未确认；保留目录阻塞，不能自动重跑。");
+      const cancelled = run.status === "cancelled" && run.exitConfirmed;
+      // Lifecycle cancellation keeps failed evidence; workspace/revision invalidation does not.
+      // Either cancelled run may be selected again through its existing retryOf identity.
+      if (cancelled) {
+        if (invalidated || !inputsCurrent()) return;
+      } else {
+        if (interrupted) throw interrupted;
+        this.assertWorkspace(task, event);
+      }
       const after = await workspaceRevision(task.directories);
+      if (cancelled) {
+        if (invalidated || !inputsCurrent()) return;
+      } else {
+        if (interrupted) throw interrupted;
+        this.assertWorkspace(task, event);
+      }
       const result =
         run.status === "passed" && after === candidate.artifactRevision ? "passed" : "failed";
       if (!state.evidence.some((entry) => entry.verificationId === run.id))
@@ -904,8 +935,6 @@ export class WorkflowOrchestrator {
         else state.issues.push(issue);
       }
       this.save(state);
-      if (run.status === "unknown")
-        fail("workflow_verify_unknown", "验证执行状态尚未确认；保留目录阻塞，不能自动重跑。");
     } finally {
       clearInterval(timer);
     }
@@ -915,7 +944,13 @@ export class WorkflowOrchestrator {
     const safe = safeError(error);
     event.error = safe;
     if (
-      safe.code === "workflow_verify_unknown" ||
+      [
+        "workflow_verify_unknown",
+        "workflow_document_scope",
+        "workflow_document_roles",
+        "workflow_report",
+        "workflow_artifact",
+      ].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")
     )

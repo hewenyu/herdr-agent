@@ -1,6 +1,7 @@
 import { fail } from "../core/errors.js";
 import type { ActorContext, Task } from "../core/types.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
+import { addDocumentDelivery, validateDocumentDelivery } from "./document-delivery.js";
 import { templatePlan } from "./templates.js";
 import {
   phases,
@@ -53,6 +54,20 @@ export async function planWorkflow(input: {
           description:
             "用户明确要求交付的文件路径；相对任务主目录或指定的看板绝对路径。必须存在并有当前版本哈希才能交付。没有要求文件则省略。",
         },
+        documentDelivery: {
+          type: "object",
+          description:
+            "仅新版讨论任务：用户明确要求沉淀/保存文档时，引用其完整肯定要求并列出文档路径。只读分析或用户禁止写入时不得填写；不把写文档升级为业务开发，也不重复索取已给出的授权。未指定名称可用 docs/DESIGN.md。",
+          properties: {
+            paths: { type: "array", items: { type: "string" } },
+            userRequest: {
+              type: "string",
+              description: "用户要求写文档的原文，必须保留否定、条件与限定词，不能摘取反向子串。",
+            },
+          },
+          required: ["paths", "userRequest"],
+          additionalProperties: false,
+        },
         validation: {
           type: "object",
           description:
@@ -71,7 +86,7 @@ export async function planWorkflow(input: {
         nodes: {
           type: "array",
           description:
-            "仅复杂任务或重规划需要：替换节点图。简单任务省略，沿用模板。报告必须依赖所有工作节点；讨论保持独立开场。",
+            "仅复杂任务或重规划需要：替换节点图。简单任务省略，沿用模板。报告必须依赖所有工作节点；新版讨论按顺序互相回应。",
           items: {
             type: "object",
             properties: {
@@ -86,6 +101,7 @@ export async function planWorkflow(input: {
               dependsOn: { type: "array", items: { type: "string" } },
               access: { type: "string", enum: ["read", "write"] },
               participantId: { type: "string" },
+              documentPaths: { type: "array", items: { type: "string" } },
             },
             required: ["id", "phase", "role", "purpose", "instruction", "dependsOn", "access"],
             additionalProperties: false,
@@ -120,6 +136,10 @@ export async function planWorkflow(input: {
       plan.goal = input.task.requirements;
       if (args.requiredArtifacts !== undefined)
         plan.requiredArtifacts = args.requiredArtifacts as string[];
+      if (args.documentDelivery !== undefined) {
+        plan.documentDelivery = args.documentDelivery as WorkflowPlan["documentDelivery"];
+        validateDocumentDelivery(plan, input.task, input.userMessages);
+      }
       if (args.validation !== undefined) {
         plan.validation = args.validation as WorkflowPlan["validation"];
         const constraint = plan.validation?.userConstraint;
@@ -147,7 +167,8 @@ export async function planWorkflow(input: {
       plan.deliveryRequirements = [
         ...new Set([...plan.deliveryRequirements, ...(args.deliveryRequirements as string[])]),
       ];
-      validatePlan(plan, input.task);
+      addDocumentDelivery(plan);
+      validatePlan(plan, input.task, input.userMessages);
       selected = plan;
       return { planned: true, version: plan.version };
     },

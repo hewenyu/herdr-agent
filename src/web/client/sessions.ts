@@ -30,6 +30,12 @@ function messageView(message: StoredMessage, state: WebState): HTMLElement {
   const header = el("div", "message-header");
   header.append(el("strong", "", author), el("span", "subtle", time(message.createdAt)));
   node.append(header, el("div", "message-text", message.text));
+  if (message.source === "workflow_report_summary" && state.activeOwnerId) {
+    const download = el("a", "", "下载完整报告 report.md");
+    download.href = `/api/reports?${new URLSearchParams({ ownerId: state.activeOwnerId, messageId: message.id })}`;
+    download.download = "report.md";
+    node.append(download);
+  }
   node.append(
     detail(
       `${deliveryLabels[message.delivery] ?? message.delivery} · 查看消息记录`,

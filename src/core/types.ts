@@ -195,7 +195,7 @@ export interface Task {
   /** Missing on historical tasks: keep their existing manual/round-robin policy. */
   orchestration?: OrchestrationPolicy;
   /** Frozen for workflow tasks; absent preserves exact historical prompt rendering. */
-  promptVersion?: 2;
+  promptVersion?: 2 | 3;
   boardDirectory?: string;
   result: string;
   error?: string;

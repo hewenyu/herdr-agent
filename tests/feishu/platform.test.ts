@@ -3,6 +3,7 @@ import test from "node:test";
 import type { EventDispatcher } from "@larksuiteoapi/node-sdk";
 import { OperationError } from "../../src/core/errors.js";
 import type { PlatformHandlers } from "../../src/core/ports.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
 import type { APIRequest } from "../../src/feishu/api.js";
 import { FetchHttpClient } from "../../src/feishu/http.js";
 import { FeishuPlatform, type PlatformDependencies } from "../../src/feishu/platform.js";
@@ -350,4 +351,77 @@ test("stopping during handshake settles start and stale dispatchers cannot enque
     { needCheck: false },
   );
   assert.equal(arrived, 0);
+});
+
+test("report attachments upload frozen content and send a file message with an idempotency key", async () => {
+  const calls: APIRequest[] = [];
+  const platform = new FeishuPlatform(credentials, {
+    request: async (input) => {
+      calls.push(input);
+      return { code: 0, data: { file_key: "file", message_id: "message" } };
+    },
+  });
+  assert.equal(await platform.uploadFile("report.md", "# 报告"), "file");
+  assert.equal(await platform.sendFile("chat", "file", "stable-key"), "message");
+  assert.equal(calls[0]?.url, "/open-apis/im/v1/files");
+  assert.equal(calls[0]?.headers?.["Content-Type"], "multipart/form-data");
+  assert.ok(calls[0]?.data?.file instanceof Blob);
+  assert.equal(await calls[0].data.file.text(), "# 报告");
+  assert.equal(calls[1]?.data?.msg_type, "file");
+  assert.equal(calls[1]?.data?.uuid, "stable-key");
+  await assert.rejects(platform.uploadFile("/etc/passwd", "content"));
+});
+
+test("report upload shares the frozen report's UTF-8 byte boundary before making a request", async () => {
+  let requests = 0;
+  const platform = new FeishuPlatform(credentials, {
+    request: async (input) => {
+      requests++;
+      assert.ok(input.data?.file instanceof Blob);
+      assert.equal(input.data.file.size, REPORT_ATTACHMENT_MAX_BYTES);
+      return { code: 0, data: { file_key: "exact-boundary-file" } };
+    },
+  });
+  const content =
+    "界".repeat(Math.floor(REPORT_ATTACHMENT_MAX_BYTES / 3)) +
+    "x".repeat(REPORT_ATTACHMENT_MAX_BYTES % 3);
+  assert.equal(await platform.uploadFile("report.md", content), "exact-boundary-file");
+  await assert.rejects(platform.uploadFile("report.md", `${content}x`), { code: "report_file" });
+  assert.equal(requests, 1);
+});
+
+test("multipart report bytes reach fetch intact with its generated boundary", async () => {
+  const client = new FetchHttpClient(async (_url, init) => {
+    assert.ok(init?.body instanceof FormData);
+    assert.equal(new Headers(init.headers).has("Content-Type"), false);
+    const file = init.body.get("file");
+    assert.ok(file instanceof File);
+    assert.equal(file.name, "report.md");
+    assert.equal(await file.text(), "# 完整报告\n正文");
+    return new Response(JSON.stringify({ code: 0, data: { file_key: "key" } }));
+  });
+  await client.request({
+    method: "POST",
+    url: "https://open.feishu.cn/open-apis/im/v1/files",
+    headers: { "Content-Type": "multipart/form-data" },
+    data: { file_type: "stream", file_name: "report.md", file: new Blob(["# 完整报告\n正文"]) },
+  });
+});
+
+test("SDK request formatting preserves report multipart content through authentication", async (t) => {
+  let upload = false;
+  t.mock.method(globalThis, "fetch", async (url: string | URL, init?: RequestInit) => {
+    if (String(url).includes("tenant_access_token"))
+      return Response.json({ code: 0, tenant_access_token: "fixture-token", expire: 7200 });
+    assert.match(String(url), /\/im\/v1\/files$/);
+    assert.ok(init?.body instanceof FormData);
+    const blob = init.body.get("file");
+    assert.ok(blob instanceof Blob);
+    assert.equal(await blob.text(), "# 冻结的报告");
+    upload = true;
+    return Response.json({ code: 0, data: { file_key: "file-from-sdk" } });
+  });
+  const platform = new FeishuPlatform({ ...credentials, appId: "multipart-fixture" });
+  assert.equal(await platform.uploadFile("report.md", "# 冻结的报告"), "file-from-sdk");
+  assert.equal(upload, true);
 });

@@ -28,6 +28,9 @@ async function harness(settings: { writableAnalysis?: boolean } = {}) {
     requirements: "实现改动，完成独立验证与评审。",
     orchestration: { mode: "workflow" },
   });
+  // Exercise persisted v2 workflows; v3 integration has its own end-to-end suite.
+  task.promptVersion = 2;
+  h.service.records.save(task);
   await h.service.reconcile(task.id);
   const [first, second] = task.participantIds;
   assert.ok(first && second);

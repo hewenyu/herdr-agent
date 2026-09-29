@@ -6,11 +6,13 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DirectoryTrust } from "../../src/app/directory-trust.js";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
+import { compactReportCard } from "../../src/app/workflow-report.js";
 import { loadConfig } from "../../src/config/load.js";
 import type { AppConfig } from "../../src/config/types.js";
 import { OperationError, safeError } from "../../src/core/errors.js";
 import type { Logger } from "../../src/core/ports.js";
 import type { ActorContext, Participant, Task } from "../../src/core/types.js";
+import type { PlanningAssistanceLog } from "../../src/orchestration/assistance.js";
 import type { DecisionLog } from "../../src/orchestration/decision-log.js";
 import { reportCard, reportContract, reportText } from "../../src/orchestration/report.js";
 import type { VerificationRun } from "../../src/orchestration/verify.js";
@@ -251,7 +253,10 @@ async function runTemplate(
       if (report && state?.report?.id === report)
         await writeJson(join(directory, "local-summary-card.json"), {
           kind: "local_card_snapshot_not_platform_delivery",
-          card: reportCard(task, state),
+          card:
+            task.promptVersion === 3
+              ? compactReportCard(task, state, false)
+              : reportCard(task, state),
         });
       replies.push({
         eventId,
@@ -366,6 +371,7 @@ async function runTemplate(
     if (!state) throw new OperationError("acceptance_no_state", "没有工作流状态。");
     const artifactRevision = await workspaceRevision([projectDir]);
     const logs = store.list<DecisionLog>("workflow_decisions");
+    const planning = store.list<PlanningAssistanceLog>("workflow_planning_decisions");
     const events = store.list<OrchestrationEvent>("task_orchestration_events");
     const verification = store.list<VerificationRun>("verification_runs");
     const beforeReplay = {
@@ -384,11 +390,26 @@ async function runTemplate(
     const participants = participantEvidence(store, task, runtime.owned);
     checks = {
       requestedTemplate: state.plan.template === selected,
-      realPlanner: modelCalls.some(
-        (call) =>
-          (call.tools as string[]).includes("orchestration_plan") && call.state === "finished",
-      ),
-      realJevDistribution: logs.some(
+      planningEvidence:
+        task.promptVersion === 3
+          ? planning.some(
+              (log) =>
+                (log.decision === "use_template" && log.jev.status === "success") ||
+                (log.decision === "request_pi" &&
+                  log.assistance.status === "requested" &&
+                  modelCalls.some(
+                    (call) =>
+                      (call.tools as string[]).includes("orchestration_plan") &&
+                      call.state === "finished",
+                  )),
+            )
+          : modelCalls.some(
+              (call) =>
+                (call.tools as string[]).includes("orchestration_plan") &&
+                call.state === "finished",
+            ),
+      naturalProtocol: task.promptVersion === 3,
+      realJevDistribution: [...logs, ...planning].some(
         (log) => ["success", "low-confidence"].includes(log.jev.status) && !!log.jev.probabilities,
       ),
       twoRealAgentKinds:
@@ -467,6 +488,18 @@ async function runTemplate(
       operations: store.entries("operations"),
     });
     await writeJson(join(directory, "decision-log.json"), store.list("workflow_decisions"));
+    await writeJson(
+      join(directory, "planning-decisions.json"),
+      store.list("workflow_planning_decisions"),
+    );
+    await writeJson(
+      join(directory, "document-decisions.json"),
+      store.list("workflow_document_decisions"),
+    );
+    await writeJson(
+      join(directory, "conversation-evidence.json"),
+      store.list("workflow_conversation_evidence"),
+    );
     await writeJson(
       join(directory, "directory-trust.json"),
       store.list("directory_trust_decisions"),

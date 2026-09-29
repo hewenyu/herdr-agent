@@ -38,7 +38,7 @@ test("only new eligible tasks default to workflow and explicit historical modes 
         { ...discussion, ...scenario.input },
       );
       assert.equal(task.orchestration?.mode, scenario.expected);
-      assert.equal(task.promptVersion, scenario.expected === "workflow" ? 2 : undefined);
+      assert.equal(task.promptVersion, scenario.expected === "workflow" ? 3 : undefined);
     }
     h.config.ai.enabled = false;
     const disabled = await h.service.create({ ...actor, messageId: "ai-disabled" }, discussion);

@@ -48,6 +48,9 @@ async function harness() {
     project: "retries",
     orchestration: { mode: "workflow" },
   });
+  // Exercise persisted v2 workflows; v3 integration has its own end-to-end suite.
+  task.promptVersion = 2;
+  h.service.records.save(task);
   await h.service.reconcile(task.id);
   const control = new AbortController();
   const options = {

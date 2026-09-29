@@ -7,6 +7,7 @@ import type {
   CardAction,
   IncomingMessage,
   Participant,
+  StoredMessage,
   Task,
   TranscriptEntry,
 } from "../core/types.js";
@@ -14,8 +15,10 @@ import { isLegacyReplay } from "../migration/index.js";
 import { ingressRouteFor } from "../orchestration/ingress.js";
 import { reportCard } from "../orchestration/report.js";
 import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
+import { reportInputsChanged, revisionHash } from "../orchestration/revision.js";
 import { visibleOutput } from "../orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
+import { workspaceRevision } from "../orchestration/workspace.js";
 import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
@@ -23,6 +26,7 @@ import { transientTurnFailure } from "../runtime/recovery.js";
 import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
+import type { WebReportReceipt } from "../web/contracts.js";
 import { dispatch, snapshot } from "./actions.js";
 import { approvalIngress } from "./approval-priority.js";
 import { APPROVAL_OPTIONS_VERSION, Approvals } from "./approvals.js";
@@ -41,6 +45,8 @@ import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
 import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
+import { quietWorkflow, workflowNotice } from "./workflow-notifications.js";
+import { compactReportCard } from "./workflow-report.js";
 
 interface ApplicationOptions {
   config: AppConfig;
@@ -104,7 +110,33 @@ export class Application implements ApplicationContext {
       tools: (actor) => applicationTools(this, actor),
     });
     this.outbox = new Outbox(this.store, () => this.platform);
-    this.reportDeliveries = new ReportDeliveries(this.store, this.outbox, () => this.platform);
+    this.reportDeliveries = new ReportDeliveries(
+      this.store,
+      this.outbox,
+      () => this.platform,
+      (event, record) => {
+        const task = this.store.get<Task>("tasks", event.taskId);
+        const state = this.store.get<WorkflowState>(WORKFLOWS, event.taskId);
+        return (
+          task?.id === event.taskId &&
+          task.orchestration?.mode === "workflow" &&
+          state?.taskId === task.id &&
+          (reportInputsChanged(
+            record.revisionEvidence,
+            event.userRevision,
+            this.taskOrchestrator.notificationInputs(task),
+          ) ||
+            (!!state.report && state.report.id !== event.decision?.reportId))
+        );
+      },
+      (event) => {
+        const task = this.store.get<Task>("tasks", event.taskId);
+        if (!task || task.orchestration?.mode !== "workflow") return;
+        const inputs = this.taskOrchestrator.notificationInputs(task);
+        if (revisionHash(inputs) !== event.userRevision) return;
+        return { version: 1, revision: event.userRevision, inputs };
+      },
+    );
     this.approvals = new Approvals(this.store, this.herdr, () => this.platform, this.config.ui);
     this.directoryTrust = new DirectoryTrust(
       this.store,
@@ -143,7 +175,10 @@ export class Application implements ApplicationContext {
           decision?.action === "deliver" &&
           decision.reportId
         )
-          return this.reportDeliveries.confirmed(task.id, eventId, decision.reportId);
+          return (
+            this.store.get<WorkflowState>(WORKFLOWS, task.id)?.report?.id === decision.reportId &&
+            this.reportDeliveries.confirmed(task.id, eventId, decision.reportId)
+          );
         return (
           decision?.action === "deliver" &&
           !!decision.participantId &&
@@ -247,6 +282,46 @@ export class Application implements ApplicationContext {
   }
   changed(): void {
     for (const listener of this.listeners) listener();
+  }
+
+  reportDownload(ownerId: string, messageId: string): { name: string; content: string } {
+    const message = this.store.get<import("../core/types.js").StoredMessage>("messages", messageId);
+    if (!message?.taskId || message.source !== "workflow_report_summary")
+      throw new OperationError("report_missing", "报告消息不存在。");
+    this.tasks.get(
+      { source: "web", ownerId, chatId: `web:${ownerId}`, sessionId: message.sessionId, messageId },
+      message.taskId,
+    );
+    this.sessions.get(ownerId, message.sessionId);
+    return this.reportDeliveries.download(message.taskId, message.deliveryIds[0] ?? messageId);
+  }
+
+  acknowledgeReport(receipt: WebReportReceipt): void {
+    const { ownerId, sessionId, taskId, messageId } = receipt;
+    const task = this.tasks.get(
+      { source: "web", ownerId, chatId: `web:${ownerId}`, taskId, sessionId, messageId },
+      taskId,
+    );
+    const session = this.sessions.get(ownerId, sessionId);
+    const message = this.store.get<StoredMessage>("messages", messageId);
+    if (
+      session.taskId !== task.id ||
+      !message ||
+      message.sessionId !== session.id ||
+      message.taskId !== task.id ||
+      message.role === "user" ||
+      !this.reportDeliveries.acceptsWebAcknowledgement(task.id, message)
+    )
+      throw new OperationError("receipt_scope", "回执不属于当前身份、任务及会话的网页报告。");
+    if (message.delivery === "delivered" && message.deliveryIds[0] === message.id) return;
+    if (message.delivery !== "prepared" || message.deliveryIds.length)
+      throw new OperationError("receipt_scope", "仅可确认尚未送达的网页报告消息。");
+    this.store.transaction(() => {
+      if (!this.sessions.beginDelivery(ownerId, messageId))
+        throw new OperationError("receipt_scope", "网页报告消息已失效，请刷新后核对。");
+      this.sessions.recordDelivery(ownerId, messageId, { complete: true, ids: [messageId] });
+    });
+    this.changed();
   }
 
   async tick(): Promise<void> {
@@ -544,32 +619,88 @@ export class Application implements ApplicationContext {
         reportHash: state.report.hash,
         chatId: chatId ?? `web:${task.ownerId}`,
         text,
-        card: reportCard(task, state),
+        card: quietWorkflow(task)
+          ? compactReportCard(task, state, delivered)
+          : reportCard(task, state),
+        ...(quietWorkflow(task) ? { presentation: "attachment" as const } : {}),
         channel: delivered ? ("platform" as const) : ("web" as const),
       };
+      const report = state.report;
+      const beforeSend =
+        task.promptVersion === 3
+          ? async () => {
+              const current = () => {
+                const selected = this.store.get<OrchestrationEvent>(
+                  "task_orchestration_events",
+                  eventId,
+                );
+                const currentState = this.store.get<WorkflowState>(WORKFLOWS, task.id);
+                if (
+                  !selected ||
+                  selected.state === "superseded" ||
+                  selected.taskId !== task.id ||
+                  selected.userRevision !== event?.userRevision ||
+                  selected.decision?.action !== "deliver" ||
+                  selected.decision.reportId !== report.id ||
+                  currentState?.report?.id !== report.id ||
+                  currentState.report.hash !== report.hash ||
+                  currentState.report.deliveryRevision !== report.deliveryRevision
+                )
+                  throw new OperationError("workflow_report", "发送前报告引用已失效。");
+                const currentTask = this.taskOrchestrator.assertNotificationCurrent(selected);
+                if (
+                  currentTask.ownerId !== task.ownerId ||
+                  currentTask.kind !== task.kind ||
+                  currentTask.promptVersion !== task.promptVersion ||
+                  currentTask.orchestration?.mode !== "workflow" ||
+                  currentTask.pending ||
+                  currentTask.directoryMode !== task.directoryMode ||
+                  currentTask.worktreeReady !== task.worktreeReady ||
+                  JSON.stringify(currentTask.directories) !== JSON.stringify(task.directories) ||
+                  (currentTask.directoryMode === "worktree" && !currentTask.worktreeReady) ||
+                  (this.outputChat(currentTask) ?? `web:${currentTask.ownerId}`) !== envelope.chatId
+                )
+                  throw new OperationError("workflow_report", "发送前任务或工作目录已变化。");
+                return { task: currentTask, state: currentState };
+              };
+              const snapshot = current();
+              const assertArtifact = async () => {
+                if (
+                  (await workspaceRevision(snapshot.task.directories)) !== report.artifactRevision
+                )
+                  throw new OperationError("workflow_report", "发送前报告对应的文件版本已变化。");
+              };
+              await assertArtifact();
+              current();
+              await this.taskOrchestrator.assertNotificationDelivery(snapshot.task, snapshot.state);
+              await assertArtifact();
+              current();
+            }
+          : undefined;
+      if (!delivered) await beforeSend?.();
       const receipt = delivered
-        ? await this.reportDeliveries.send(envelope)
+        ? await this.reportDeliveries.send(envelope, beforeSend)
         : this.reportDeliveries.prepare(envelope);
       const actor = this.actor(task, receipt.bodyId);
-      const body = this.sessions.recordExternal(actor, {
-        id: receipt.bodyId,
-        text: receipt.text,
-        source: "workflow_report",
-        pendingDelivery: !delivered,
-      });
+      const body =
+        receipt.presentation === "attachment"
+          ? undefined
+          : this.sessions.recordExternal(actor, {
+              id: receipt.bodyId,
+              text: receipt.text,
+              source: "workflow_report",
+              pendingDelivery: !delivered,
+            });
       const summary = this.sessions.recordExternal(actor, {
         id: receipt.cardId,
         text: reportSummaryText(receipt.card),
         source: "workflow_report_summary",
         pendingDelivery: !delivered,
       });
-      if (!delivered) this.reportDeliveries.bindWeb(receipt, body.id, summary.id);
+      if (!delivered) this.reportDeliveries.bindWeb(receipt, body?.id, summary.id);
       this.changed();
       if (!(await this.reportDeliveries.confirmed(task.id, eventId, final.reportId)))
-        throw new OperationError(
-          "report_delivery_pending",
-          "报告正文和摘要已准备，等待页面确认展示。",
-        );
+        throw new OperationError("report_delivery_pending", "报告及摘要已准备，等待页面确认展示。");
       return;
     }
     if (delivered) await this.outbox.send(chatId, text, outputId);
@@ -592,6 +723,17 @@ export class Application implements ApplicationContext {
     participant: Participant,
     entry: TranscriptEntry,
   ): Promise<void> {
+    if (quietWorkflow(task)) {
+      this.store.set("workflow_outputs", `${task.id}:${participant.id}:${entry.id}`, {
+        taskId: task.id,
+        participantId: participant.id,
+        sessionId: participant.execution?.sessionId,
+        entry,
+        recordedAt: new Date().toISOString(),
+      });
+      this.changed();
+      return;
+    }
     const content =
       task.orchestration?.mode === "workflow" ? visibleOutput(entry.text) : entry.text;
     const text = `${participant.name} (${participant.kind})：\n${content}`;
@@ -618,16 +760,23 @@ export class Application implements ApplicationContext {
     task: Task,
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
   ): Promise<NoticeUnavailable | undefined> {
-    const signature = stableId(
-      task.id,
-      kind,
-      task.status,
-      task.error ?? "",
-      task.closeRequested ? "close" : "",
-    );
+    const workflow = quietWorkflow(task)
+      ? workflowNotice(task, kind, this.tasks.records.participants(task), this.store)
+      : undefined;
+    const signature =
+      workflow?.evidenceFingerprint !== undefined
+        ? stableId(task.id, kind, "evidence-wait", workflow.evidenceFingerprint)
+        : stableId(
+            task.id,
+            kind,
+            task.status,
+            task.error ?? "",
+            task.closeRequested ? "close" : "",
+          );
     if (this.store.get("notices_done", signature)) return;
     if (
       kind === "progress" &&
+      workflow?.evidenceFingerprint === undefined &&
       progressCooling(this.store, task.id, this.config.ui.notifyCooldownMs)
     )
       return;
@@ -635,7 +784,9 @@ export class Application implements ApplicationContext {
     const actor = this.actor(task, `notice:${signature}`);
     let decision = this.store.get<{ notify: boolean; text: string }>("notice_decisions", signature);
     if (!decision) {
-      if (this.config.ai.enabled) {
+      if (workflow) {
+        decision = workflow;
+      } else if (this.config.ai.enabled) {
         try {
           const participants = this.tasks.records.participants(task);
           const runId = newId("notice_run");

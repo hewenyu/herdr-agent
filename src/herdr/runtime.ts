@@ -101,6 +101,23 @@ export class HerdrRuntime implements HerdrPort {
     return this.transcripts.sampleLastReply(await this.liveRef(ref));
   }
 
+  async conversation(ref: ExecutionRef, receipt: string, cursor?: string) {
+    const before = await this.inputIdentity(ref);
+    if (before && (before.cwd !== ref.cwd || (ref.sessionId && before.sessionId !== ref.sessionId)))
+      throw new OperationError("target_changed", "参与者会话已变化。");
+    // Bind this read to the observed live session without changing the stored ref.
+    const target = { ...ref, sessionId: before?.sessionId ?? ref.sessionId };
+    const result = await this.transcripts.conversation(target, receipt, cursor);
+    const after = await this.inputIdentity(target);
+    if (
+      before?.sessionId !== after?.sessionId ||
+      before?.terminalId !== after?.terminalId ||
+      before?.cwd !== after?.cwd
+    )
+      throw new OperationError("target_changed", "读取进度期间执行目标已变化。");
+    return result;
+  }
+
   async initialInput(ref: ExecutionRef, receipt: string): Promise<string | undefined> {
     const before = await this.inputIdentity(ref);
     if (before && (before.cwd !== ref.cwd || (ref.sessionId && ref.sessionId !== before.sessionId)))

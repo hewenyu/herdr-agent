@@ -31,7 +31,7 @@ import { TaskRecords } from "./records.js";
 import { RemotePolls } from "./remote-poll.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
 import { relayDiscussion, sendParticipant } from "./send.js";
-import { currentUserRequest } from "./user-request.js";
+import { associateTaskUserRequest, currentUserRequest } from "./user-request.js";
 
 export type TaskServiceOptions = Omit<TaskContext, "records" | "operations" | "signal">;
 
@@ -127,7 +127,11 @@ export class TaskService {
           return false;
         }
         requestAction(this.context, task, action, options);
-        this.associateUserRequest(actor, task);
+        this.associateUserRequest(
+          actor,
+          task,
+          ["pause", "complete", "close", "destroy"].includes(action) ? "control" : "input",
+        );
         this.context.store.set("task_actions", actionId, {
           action,
           keepGroup: options.keepGroup,
@@ -586,13 +590,12 @@ export class TaskService {
     return remote;
   }
 
-  private associateUserRequest(actor: ActorContext, task: Task): void {
-    const source = currentUserRequest(this.context.store, actor);
-    if (!source) return;
-    const id = stableId(task.id, source.messageId);
-    const existing = this.context.store.get("task_user_revisions", id);
-    if (!existing)
-      this.context.store.set("task_user_revisions", id, { taskId: task.id, source, at: now() });
+  private associateUserRequest(
+    actor: ActorContext,
+    task: Task,
+    usage: "control" | "input" = "input",
+  ): void {
+    associateTaskUserRequest(this.context.store, actor, task, usage);
   }
 
   private recordParticipantAddition(task: Task, participant: Participant): void {

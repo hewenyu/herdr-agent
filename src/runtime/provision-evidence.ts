@@ -26,7 +26,7 @@ export function recordProvisionEvidence(
   boundTaskId?: string,
 ): void {
   const value = object(result);
-  if (["task_create", "task_get", "tasks_list", "task_action"].includes(name)) {
+  if (["task_create", "task_get", "task_progress", "tasks_list", "task_action"].includes(name)) {
     const records = name === "tasks_list" && Array.isArray(result) ? result : [value.task ?? value];
     for (const item of records) {
       const task = object(item);

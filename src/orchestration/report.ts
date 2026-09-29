@@ -3,10 +3,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
+import { REPORT_ATTACHMENT_MAX_BYTES } from "../core/report-limits.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
 import { independentReviewer } from "./authorship.js";
-import { boardDirectory } from "./board.js";
+import { boardDirectory, inspectArtifact } from "./board.js";
+import { codeDeliveryEvidence, codeDeliveryRevision, codeDeliveryText } from "./code-delivery.js";
+import { missingDocumentReviewer } from "./document-delivery.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -29,6 +32,7 @@ export function reportContract(
     missing.push("仍有未处理阻塞问题");
   if (state.plan.nodes.some((node) => state.nodes[node.id]?.status !== "completed"))
     missing.push("计划节点尚未完成");
+  if (missingDocumentReviewer(state.plan)) missing.push("讨论文档缺少独立评审节点");
   if (
     state.plan.nodes.some(
       (node) =>
@@ -108,6 +112,31 @@ export async function publishReport(
   const sections = block.reportSections;
   if (!sections || state.plan.deliveryRequirements.some((name) => !sections[name]?.trim()))
     fail("workflow_report", "报告没有覆盖全部必需章节与验收项。");
+  const deliveryEvidence =
+    task.promptVersion === 3 && task.kind === "development"
+      ? await codeDeliveryEvidence(task)
+      : undefined;
+  const deliveryRevision = deliveryEvidence && codeDeliveryRevision(deliveryEvidence);
+  const documents: string[] = [];
+  for (const path of state.plan.documentDelivery?.paths ?? []) {
+    const artifact = await inspectArtifact(task, path);
+    const text = await readFile(artifact.path, "utf8");
+    if (
+      Buffer.byteLength(text) > 1024 * 1024 ||
+      createHash("sha256").update(text).digest("hex") !== artifact.hash
+    )
+      fail("workflow_report", "交付文档过大或读取期间变化，不能冻结报告。");
+    const fence = "`".repeat(
+      Math.max(3, ...[...text.matchAll(/`+/g)].map((match) => match[0].length + 1)),
+    );
+    documents.push(
+      `## 交付文档：${path}`,
+      `SHA-256：${artifact.hash}`,
+      "",
+      `${fence}markdown\n${text}\n${fence}`,
+      "",
+    );
+  }
   const evidence = state.evidence.map(
     (entry) =>
       `- ${evidenceLabels[entry.source]} · ${entry.result}${entry.artifactRevision !== artifactRevision ? "（对应旧版本，当前无效）" : ""}：${entry.description}${entry.command ? `；命令：${entry.command}` : ""}`,
@@ -121,6 +150,7 @@ export async function publishReport(
       sections[name] ?? "",
       "",
     ]),
+    ...(deliveryEvidence ? ["## 代码交付位置", "", ...codeDeliveryText(deliveryEvidence), ""] : []),
     "## 验证来源与记录",
     "",
     ...(state.plan.validation?.mode === "not_run"
@@ -135,16 +165,30 @@ export async function publishReport(
     "",
     ...state.issues.map((issue) => `- ${issue.id} · ${issue.status}：${issue.description}`),
     "",
+    ...documents,
     "报告交付不等于用户验收。",
     "",
   ].join("\n");
+  if (task.promptVersion === 3 && Buffer.byteLength(text) > REPORT_ATTACHMENT_MAX_BYTES)
+    fail(
+      "workflow_report",
+      "完整报告（含章节、文档正文和附录）的 UTF-8 总大小超过 10 MiB 附件上限，尚未冻结；请精简报告内容，若交付文档需要修改则交回获授权的文档节点处理，再重新提交。",
+    );
   const hash = createHash("sha256").update(text).digest("hex");
-  const id = stableId(task.id, String(state.plan.version), artifactRevision, outputId, hash);
+  const id = stableId(
+    task.id,
+    String(state.plan.version),
+    artifactRevision,
+    outputId,
+    hash,
+    ...(deliveryRevision ? [deliveryRevision] : []),
+  );
   const directory = boardDirectory(stateDir, task.id);
   const path = join(directory, "reports", id, "report.md");
   await atomicWrite(path, text);
   await atomicWrite(join(directory, "report.md"), text);
-  state.report = { id, path, hash, outputId, artifactRevision };
+  state.deliveryEvidence = deliveryEvidence;
+  state.report = { id, path, hash, outputId, artifactRevision, deliveryRevision };
 }
 
 export async function reportText(state: WorkflowState): Promise<string> {
