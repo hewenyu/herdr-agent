@@ -20,12 +20,14 @@ import type { InputDelivery } from "../../src/tasks/input-delivery.js";
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-async function rejectedScope(expanded = false) {
+async function rejectedScope(expanded = false, local = false) {
   const h = setup();
   const repo = join(h.directory, "repo");
   await mkdir(repo);
   const sourcePath = join(repo, "app.ts");
   await writeFile(sourcePath, "original source\n");
+  const otherDocument = join(repo, "OTHER.md");
+  if (local) await writeFile(otherDocument, "original other document\n");
   const directories = [repo];
   if (expanded)
     for (let index = 0; index < 3; index++) {
@@ -40,22 +42,32 @@ async function rejectedScope(expanded = false) {
   state.plan.documentDelivery = {
     paths: expanded
       ? Array.from({ length: 4 }, (_, index) => `${index}-${"design-details".repeat(10)}.md`)
-      : ["DESIGN.md"],
+      : local
+        ? ["DESIGN.md", "OTHER.md"]
+        : ["DESIGN.md"],
     userRequest: task.requirements,
   };
   state.documentSource = await prepareDocumentSource(h.store, task, state);
   const node = state.plan.nodes[0];
   const registered = h.service.records.participants(task)[0];
   assert.ok(node && registered);
+  if (local) {
+    node.access = "write";
+    node.documentPaths = ["DESIGN.md"];
+  }
   const participant = { ...registered, status: "idle" as const };
   const identity = { nodeId: node.id, operationId: "scope-operation", inputRevision: "revision" };
   const oldArtifact = await workspaceRevision(task.directories);
+  const sourceRevision = local
+    ? await workspaceRevision(task.directories, node.documentPaths)
+    : undefined;
   state.nodes[node.id] = {
     status: "dispatched",
     attempt: 1,
     ...identity,
     participantId: participant.id,
     artifactRevision: oldArtifact,
+    sourceRevision,
   };
   await prepareHandoff(h.directory, task, state, node, identity, []);
   const directory = handoffDirectory(h.directory, task.id, identity.operationId);
@@ -99,7 +111,13 @@ async function rejectedScope(expanded = false) {
     state: "done",
     attempts: 1,
     dispatches: [
-      { ...identity, artifactRevision: oldArtifact, participantId: participant.id, state: "sent" },
+      {
+        ...identity,
+        artifactRevision: oldArtifact,
+        sourceRevision,
+        participantId: participant.id,
+        state: "sent",
+      },
     ],
     workflow: {
       candidate: {
@@ -122,11 +140,28 @@ async function rejectedScope(expanded = false) {
     revision: () => "revision",
     logger,
   } as unknown as WorkflowPorts;
-  await writeFile(sourcePath, "unexpected source change\n");
+  await writeFile(
+    local ? otherDocument : sourcePath,
+    local ? "change outside this node's document grant\n" : "unexpected source change\n",
+  );
   await settleWorkflow(ports, task, state, [participant], []);
   const artifactRevision = await workspaceRevision(task.directories);
   const input = { store: h.store, task, state, revision: "revision", artifactRevision };
-  return { ...h, task, state, node, output, oldArtifact, sourcePath, repo, input, ports, event };
+  return {
+    ...h,
+    task,
+    state,
+    node,
+    output,
+    oldArtifact,
+    sourcePath,
+    otherDocument,
+    sourceRevision,
+    repo,
+    input,
+    ports,
+    event,
+  };
 }
 
 test("a real rejected source change becomes an actionable scope question without pi or relaxing the baseline", async () => {
@@ -290,6 +325,91 @@ test("long directory and document lists remain valid questions with complete sou
       assert.ok(question.text.includes(path), "full paths remain in the observed source");
       assert.ok(JSON.stringify(question.facts).includes(path), "full paths remain in audit facts");
     }
+  } finally {
+    h.close();
+  }
+});
+
+test("a node-local document violation remains actionable when the global document baseline passes", async () => {
+  const h = await rejectedScope(false, true);
+  try {
+    await assertDocumentSource(h.store, h.task, h.state);
+    assert.equal(h.state.nodes[h.node.id]?.repair?.code, "workflow_document_scope");
+    const before = JSON.stringify(h.state);
+    const question = await observedDocumentScopeDecision(h.input);
+    assert.ok(question);
+    assert.match(question.question.why, /本节点授权文档.*DESIGN\.md/);
+    assert.match(question.question.why, /本节点授权文档之外.*派发前快照/);
+    assert.match(question.question.why, /其他节点.*不代表本节点/);
+    assert.doesNotMatch(question.question.why, /OTHER\.md/);
+    assert.match(question.question.replyExample, /恢复节点.*授权外变更.*派发前快照/);
+    assert.match(
+      question.question.options?.[0]?.impact ?? "",
+      /同时核验任务原基线.*本节点派发前快照/,
+    );
+    assert.deepEqual(question.facts, {
+      nodeId: h.node.id,
+      participantId: h.state.nodes[h.node.id]?.participantId,
+      outputId: h.output.entry.id,
+      artifactRevision: h.input.artifactRevision,
+      directories: [...h.task.directories],
+      scope: "node",
+      authorizedDocuments: ["DESIGN.md"],
+      taskAuthorizedDocuments: ["DESIGN.md", "OTHER.md"],
+      sourceBoundary: h.state.documentSource,
+      nodeBoundary: {
+        paths: ["DESIGN.md"],
+        sourceRevision: h.sourceRevision,
+        currentOutsideNodeRevision: await workspaceRevision(h.task.directories, ["DESIGN.md"]),
+        reason:
+          "本节点授权文档之外的文件相对派发前快照已变化；任务允许其他节点修改的文档，不代表本节点也获授权。",
+      },
+    });
+    assert.doesNotThrow(() =>
+      parseUserDecisionQuestions(
+        [question.question],
+        [{ id: question.id, kind: question.kind, text: question.text }],
+      ),
+    );
+    assert.equal(JSON.stringify(h.state), before);
+    assert.equal(h.store.get("workflow_status_blocks", h.output.entry.id), undefined);
+    assert.equal(
+      await readFile(h.otherDocument, "utf8"),
+      "change outside this node's document grant\n",
+    );
+
+    await writeFile(h.otherDocument, "original other document\n");
+    assert.equal(
+      await observedDocumentScopeDecision({
+        ...h.input,
+        artifactRevision: await workspaceRevision(h.task.directories),
+      }),
+      undefined,
+      "a restored node boundary removes the question without accepting the old output",
+    );
+    assert.equal(h.state.nodes[h.node.id]?.sourceRevision, h.sourceRevision);
+    assert.equal(h.store.get("workflow_status_blocks", h.output.entry.id), undefined);
+  } finally {
+    h.close();
+  }
+});
+
+test("a missing node source snapshot is reported explicitly and is never initialized from current files", async () => {
+  const h = await rejectedScope(false, true);
+  try {
+    const progress = h.state.nodes[h.node.id];
+    assert.ok(progress);
+    delete progress.sourceRevision;
+    const question = await observedDocumentScopeDecision(h.input);
+    assert.ok(question);
+    assert.match(question.question.why, /缺少派发前.*不能从当前现场补造/);
+    assert.match(
+      question.question.options?.[0]?.impact ?? "",
+      /当前节点缺少可信派发前快照.*新建任务/,
+    );
+    assert.match(question.question.replyExample, /新建任务/);
+    assert.equal(progress.sourceRevision, undefined);
+    assert.equal(h.store.get("workflow_status_blocks", h.output.entry.id), undefined);
   } finally {
     h.close();
   }

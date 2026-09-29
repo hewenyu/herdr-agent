@@ -9,6 +9,7 @@ import { atomicWrite } from "../storage/atomic.js";
 import { boardDirectory } from "./board.js";
 import { consensusDocuments, responseOutputs } from "./consensus.js";
 import { rejectReceipt } from "./receipt-diagnostics.js";
+import { receiptRepairRevision } from "./receipt-recovery.js";
 import { parseStatusBlock, type StatusBlock, statusInstructions } from "./status-block.js";
 import type { WorkflowNode, WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
@@ -117,7 +118,7 @@ export async function prepareHandoff(
     repair?.recoverable &&
     repair.inputRevision === identity.inputRevision &&
     repair.planVersion === state.plan.version &&
-    repair.artifactRevision === (await workspaceRevision(task.directories));
+    receiptRepairRevision(repair) === (await workspaceRevision(task.directories));
   let priorNotes: string | undefined;
   if (repairCurrent && repair.notes) {
     const expected = join(boardDirectory(stateDir, task.id), "recovery", repair.snapshotId);

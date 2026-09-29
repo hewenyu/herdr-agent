@@ -9,6 +9,7 @@ import { boardDirectory } from "./board.js";
 import { checkedHandoffDirectory, handoffDirectory, readHandoffFile } from "./handoff.js";
 import { type ReceiptDiagnostic, ReceiptError } from "./receipt-diagnostics.js";
 import type { NodeProgress, WorkflowNode, WorkflowState } from "./workflow.js";
+import { workspaceRevision } from "./workspace.js";
 
 export const WORKFLOW_RECOVERY = "workflow_recovery_materials";
 
@@ -22,12 +23,19 @@ export interface WorkflowRepair {
   outputId: string;
   operationId: string;
   inputRevision: string;
+  /** Original dispatch source; retained for read-only and scope attribution. */
   artifactRevision?: string;
+  /** Source observed after this output and validated against the node's write boundary. */
+  observedArtifactRevision?: string;
   planVersion: number;
   snapshotId: string;
   /** Present only after receipt identity and safe, immutable notes capture were checked. */
   notes?: { path: string; hash: string };
 }
+
+/** Older rejected read-only receipts were bound directly to the dispatch source. */
+export const receiptRepairRevision = (repair: WorkflowRepair): string | undefined =>
+  repair.observedArtifactRevision ?? repair.artifactRevision;
 
 export interface WorkflowRecoveryMaterial {
   id: string;
@@ -55,8 +63,11 @@ export async function recordWorkflowRejection(input: {
   participantId: string;
   output: { id: string; text: string };
   error: unknown;
+  /** Set only after the post-output source has passed the original node/scope guards. */
+  observedArtifactRevision?: string;
 }): Promise<WorkflowRepair> {
   const { store, stateDir, task, state, node, progress, participantId, output, error } = input;
+  const observedArtifactRevision = input.observedArtifactRevision;
   const failure = safeError(error);
   const details =
     error instanceof ReceiptError
@@ -77,7 +88,7 @@ export async function recordWorkflowRejection(input: {
     output.id,
     String(state.plan.version),
     progress.inputRevision ?? "",
-    progress.artifactRevision ?? "",
+    observedArtifactRevision ?? progress.artifactRevision ?? "",
     fingerprint,
   );
   const existing = store.get<WorkflowRecoveryMaterial>(WORKFLOW_RECOVERY, snapshotId);
@@ -86,21 +97,30 @@ export async function recordWorkflowRejection(input: {
   const repeating =
     previous?.fingerprint === fingerprint &&
     previous.inputRevision === progress.inputRevision &&
-    previous.artifactRevision === progress.artifactRevision &&
+    receiptRepairRevision(previous) === (observedArtifactRevision ?? progress.artifactRevision) &&
     previous.planVersion === state.plan.version;
   const repair: WorkflowRepair = {
     code: failure.code,
     details,
     fingerprint,
     repeated: repeating ? previous.repeated + 1 : 1,
-    recoverable: error instanceof ReceiptError && error.recoverable,
+    recoverable: error instanceof ReceiptError && error.recoverable && !!observedArtifactRevision,
     outputId: output.id,
     operationId: progress.operationId ?? "",
     inputRevision: progress.inputRevision ?? "",
     artifactRevision: progress.artifactRevision,
+    observedArtifactRevision,
     planVersion: state.plan.version,
     snapshotId,
   };
+  if (repair.recoverable)
+    try {
+      if (observedArtifactRevision !== (await workspaceRevision(task.directories)))
+        repair.recoverable = false;
+    } catch {
+      // A source that became unreadable after validation cannot authorize notes reuse.
+      repair.recoverable = false;
+    }
   const material: WorkflowRecoveryMaterial = {
     id: snapshotId,
     validation: "unverified",

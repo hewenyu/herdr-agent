@@ -9,7 +9,7 @@ import { assertDocumentSource } from "./document-source.js";
 import { handoffDirectory, readHandoff } from "./handoff.js";
 import { selectWorkflowOutput } from "./output-selection.js";
 import { rejectReceipt } from "./receipt-diagnostics.js";
-import { recordWorkflowRejection } from "./receipt-recovery.js";
+import { receiptRepairRevision, recordWorkflowRejection } from "./receipt-recovery.js";
 import { publishReport } from "./report.js";
 import type { WorkflowPorts } from "./runner.js";
 import { countSettledBatch, mergeStatus } from "./state.js";
@@ -105,6 +105,7 @@ export async function settleWorkflow(
     );
     if (!output) continue;
     await publishOutput(ports.config?.stateDir ?? "", task.id, output.entry.id, output.entry.text);
+    let observedArtifactRevision: string | undefined;
     try {
       const artifactRevision = await workspaceRevision(task.directories);
       if (progress.artifactRevision !== artifactRevision) {
@@ -114,22 +115,31 @@ export async function settleWorkflow(
       }
       if (state.documentSource || node.documentPaths?.length)
         await assertDocumentSource(ports.store, task, state);
-      const identity = {
-        nodeId: node.id,
-        operationId: progress.operationId,
-        inputRevision: progress.inputRevision,
-      };
-      const block =
-        task.promptVersion === 3
-          ? await readHandoff(
-              ports.config?.stateDir ?? "",
-              task,
-              state,
-              node,
-              identity,
-              output.entry.text,
-            )
-          : parseStatusBlock(output.entry.text, identity);
+      const receiptOnly = ports
+        .events(task.id)
+        .some(
+          (event) =>
+            event.decision?.source === "rule" &&
+            event.decision.reason === "receipt_repair" &&
+            event.dispatches.some(
+              (dispatch) =>
+                dispatch.operationId === progress.operationId &&
+                dispatch.nodeId === node.id &&
+                dispatch.participantId === participant.id &&
+                dispatch.state === "sent",
+            ),
+        );
+      if (
+        receiptOnly &&
+        (!progress.repair ||
+          receiptRepairRevision(progress.repair) !== progress.artifactRevision ||
+          receiptRepairRevision(progress.repair) !== artifactRevision)
+      )
+        fail(
+          "workflow_artifact_changed",
+          "仅修复交接回执期间项目文件再次变化，不能复用原材料，需按新版本重新核对。",
+        );
+      // Validate original permissions before parsing: malformed receipts cannot hide writes.
       if (node.documentPaths?.length) await validateDocumentPaths(task, node.documentPaths);
       if (
         node.documentPaths?.length &&
@@ -149,6 +159,23 @@ export async function settleWorkflow(
           "workflow_artifact_changed",
           "执行期间代码版本变化，原评审/读取结果不能证明新版本，需重新核对。",
         );
+      observedArtifactRevision = artifactRevision;
+      const identity = {
+        nodeId: node.id,
+        operationId: progress.operationId,
+        inputRevision: progress.inputRevision,
+      };
+      const block =
+        task.promptVersion === 3
+          ? await readHandoff(
+              ports.config?.stateDir ?? "",
+              task,
+              state,
+              node,
+              identity,
+              output.entry.text,
+            )
+          : parseStatusBlock(output.entry.text, identity);
       bindEvidenceReferences(state, block, output.entry.id, {
         localEvidenceAliases: task.promptVersion === 3,
       });
@@ -274,6 +301,7 @@ export async function settleWorkflow(
         participantId: participant.id,
         output: output.entry,
         error,
+        observedArtifactRevision,
       });
       ports.logger.warn("工作流交接回执未通过校验", {
         event: "workflow.receipt_rejected",
@@ -365,6 +393,7 @@ export async function backfillReceiptRecovery(
     )
       continue;
     let failure: unknown;
+    let observedArtifactRevision: string | undefined;
     try {
       const events = ports.events(task.id);
       const event = events.find((entry) =>
@@ -394,7 +423,8 @@ export async function backfillReceiptRecovery(
         )
       )
         fail("workflow_superseded", "历史输出属于其他委派，不能用于当前恢复。");
-      if ((await workspaceRevision(task.directories)) !== progress.artifactRevision)
+      const artifactRevision = await workspaceRevision(task.directories);
+      if (artifactRevision !== progress.artifactRevision)
         fail("workflow_artifact_changed", "历史回执对应的源码版本已变化，不能只修回执。");
       if (state.documentSource || node.documentPaths?.length)
         await assertDocumentSource(ports.store, task, state);
@@ -405,6 +435,7 @@ export async function backfillReceiptRecovery(
             (await workspaceRevision(task.directories, node.documentPaths)))
       )
         fail("workflow_document_scope", "历史文档回执的源码边界已变化。");
+      observedArtifactRevision = artifactRevision;
       const block = await readHandoff(
         ports.config?.stateDir ?? "",
         task,
@@ -447,6 +478,7 @@ export async function backfillReceiptRecovery(
       participantId: progress.participantId,
       output: output.entry,
       error: failure,
+      observedArtifactRevision,
     });
     ports.logger.info("历史拒收回执已建立恢复记录", {
       event: "workflow.receipt_recovery_backfilled",

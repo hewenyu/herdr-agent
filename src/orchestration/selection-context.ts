@@ -3,7 +3,11 @@ import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { WorkflowCandidate } from "./candidates.js";
-import { WORKFLOW_RECOVERY, type WorkflowRecoveryMaterial } from "./receipt-recovery.js";
+import {
+  receiptRepairRevision,
+  WORKFLOW_RECOVERY,
+  type WorkflowRecoveryMaterial,
+} from "./receipt-recovery.js";
 import { roleConflictQuestions } from "./role-conflicts.js";
 import type { WorkflowPorts } from "./runner.js";
 import { observedDocumentScopeDecision } from "./scope-decision.js";
@@ -114,7 +118,7 @@ export function receiptRepairRule(
       node.status !== "blocked" ||
       !repair?.recoverable ||
       repair.inputRevision !== inputRevision ||
-      repair.artifactRevision !== artifactRevision ||
+      receiptRepairRevision(repair) !== artifactRevision ||
       repair.planVersion !== state.plan.version
     )
       continue;

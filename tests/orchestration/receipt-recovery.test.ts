@@ -6,6 +6,8 @@ import type { OrchestrationEvent, SettledTaskOutput } from "../../src/app/task-o
 import { stableId } from "../../src/core/ids.js";
 import { boardDirectory } from "../../src/orchestration/board.js";
 import { workflowCandidates } from "../../src/orchestration/candidates.js";
+import { addDocumentDelivery } from "../../src/orchestration/document-delivery.js";
+import { prepareDocumentSource } from "../../src/orchestration/document-source.js";
 import { handoffDirectory, prepareHandoff } from "../../src/orchestration/handoff.js";
 import { ReceiptError } from "../../src/orchestration/receipt-diagnostics.js";
 import {
@@ -23,19 +25,33 @@ import type { InputDelivery } from "../../src/tasks/input-delivery.js";
 import { logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
-async function fixture(nodeId?: string) {
+async function fixture(nodeId?: string, mode?: "development" | "document") {
   const h = setup();
   const repo = join(h.directory, "repo");
   await mkdir(repo);
   await writeFile(join(repo, "source.txt"), "unchanged source");
   await h.catalog.save({ name: "recovery", directories: [repo], agent: "codex" });
-  const created = await h.service.create(actor, { ...discussion, project: "recovery" });
+  const created = await h.service.create(actor, {
+    ...discussion,
+    project: "recovery",
+    ...(mode
+      ? {
+          kind: mode === "development" ? ("development" as const) : ("discussion" as const),
+          requirements: mode === "development" ? "实现 source.txt 修改" : "讨论后保存 DESIGN.md。",
+        }
+      : {}),
+  });
   const task = {
     ...created,
     promptVersion: 3 as const,
     boardDirectory: boardDirectory(h.directory, created.id),
   };
   const state = workflowState(h.store, task, "base-revision");
+  if (mode === "document") {
+    state.plan.documentDelivery = { paths: ["DESIGN.md"], userRequest: task.requirements };
+    addDocumentDelivery(state.plan);
+    state.documentSource = await prepareDocumentSource(h.store, task, state);
+  }
   const node = nodeId ? state.plan.nodes.find((entry) => entry.id === nodeId) : state.plan.nodes[0];
   assert.ok(node);
   const registered = h.service.records.participants(task)[0];
@@ -60,15 +76,20 @@ async function fixture(nodeId?: string) {
     operationId: string,
     patch: Record<string, unknown> = {},
     cite = true,
+    receiptOnly = false,
   ) => {
     const identity = { nodeId: node.id, operationId, inputRevision: "revision" };
     const artifactRevision = await workspaceRevision(task.directories);
+    const sourceRevision = node.documentPaths?.length
+      ? await workspaceRevision(task.directories, node.documentPaths)
+      : undefined;
     state.nodes[node.id] = {
       status: "dispatched",
       attempt: (state.nodes[node.id]?.attempt ?? 0) + 1,
       ...identity,
       participantId: participant.id,
       artifactRevision,
+      sourceRevision,
       repair: state.nodes[node.id]?.repair,
     };
     await prepareHandoff(h.directory, task, state, node, identity, []);
@@ -118,7 +139,24 @@ async function fixture(nodeId?: string) {
       userRevision: "revision",
       state: "done",
       attempts: 1,
-      dispatches: [{ ...identity, artifactRevision, participantId: participant.id, state: "sent" }],
+      ...(receiptOnly
+        ? {
+            decision: {
+              action: "continue" as const,
+              source: "rule" as const,
+              reason: "receipt_repair",
+            },
+          }
+        : {}),
+      dispatches: [
+        {
+          ...identity,
+          artifactRevision,
+          sourceRevision,
+          participantId: participant.id,
+          state: "sent",
+        },
+      ],
       workflow: {
         candidate: {
           id: "dispatch",
@@ -274,6 +312,209 @@ for (const defect of ["symlink", "oversized_file"]) {
     }
   });
 }
+
+function repairCandidates(h: Awaited<ReturnType<typeof fixture>>) {
+  const participant = {
+    ...h.participant,
+    started: true,
+    execution: {
+      cwd: h.repo,
+      kind: h.participant.kind,
+      paneId: "pane",
+      workspaceId: "workspace",
+    },
+  };
+  return workflowCandidates(h.task, h.state, [participant], [], false);
+}
+
+for (const mode of ["development", "document"] as const) {
+  test(`a legitimate ${mode} write binds receipt repair to its output revision and reuses the same author's notes`, async () => {
+    const h = await fixture(mode === "development" ? "implement" : "document", mode);
+    try {
+      const first = await h.dispatch("write-with-bad-receipt", {
+        evidence: [{ result: "not_run" }],
+      });
+      const before = h.state.nodes[h.node.id]?.artifactRevision;
+      const path = join(h.repo, mode === "development" ? "source.txt" : "DESIGN.md");
+      await writeFile(path, "legitimate completed work\n");
+      const after = await workspaceRevision(h.task.directories);
+      assert.notEqual(before, after);
+      await h.settle();
+      const progress = h.state.nodes[h.node.id];
+      const repair = progress?.repair;
+      assert.ok(repair?.recoverable && repair.notes);
+      assert.equal(progress?.artifactRevision, before, "dispatch source attribution is retained");
+      assert.equal(repair.artifactRevision, before);
+      assert.equal(repair.observedArtifactRevision, after);
+      assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
+      const candidates = repairCandidates(h);
+      const rule = receiptRepairRule(h.state, candidates, "revision", after);
+      assert.ok(rule);
+      assert.equal(rule.reason, "receipt_repair");
+      assert.deepEqual(
+        candidates.find((candidate) => candidate.id === rule.candidateId)?.assignments,
+        [{ nodeId: h.node.id, participantId: h.participant.id }],
+      );
+      const next = await h.dispatch("only-fix-receipt", {}, true, true);
+      assert.match(
+        await readFile(join(next.directory, "brief.md"), "utf8"),
+        /本次仅修复交接与回执/,
+      );
+      assert.equal(
+        await readFile(join(next.directory, "prior-notes.md"), "utf8"),
+        await readFile(join(first.directory, "notes.md"), "utf8"),
+      );
+      await h.settle();
+      assert.equal(h.state.nodes[h.node.id]?.status, "completed");
+      assert.equal(h.state.nodes[h.node.id]?.repair, undefined);
+      assert.equal(h.state.nodes[h.node.id]?.artifactRevision, after);
+      assert.equal(await readFile(path, "utf8"), "legitimate completed work\n");
+      assert.ok(h.store.get("workflow_status_blocks", next.outputId));
+    } finally {
+      h.close();
+    }
+  });
+}
+
+test("the same failed receipt after a legitimate write counts consecutive errors using the output revision", async () => {
+  const h = await fixture("implement", "development");
+  try {
+    const malformed = { evidence: [{ result: "not_run" }] };
+    await h.dispatch("write-first", malformed);
+    await writeFile(join(h.repo, "source.txt"), "implemented source\n");
+    await h.settle();
+    const initial = h.state.nodes[h.node.id]?.repair;
+    assert.ok(initial?.recoverable);
+    assert.equal(initial.repeated, 1);
+    await h.dispatch("repair-second", malformed, true, true);
+    await h.settle();
+    const repeated = h.state.nodes[h.node.id]?.repair;
+    assert.ok(repeated?.recoverable);
+    assert.notEqual(repeated.artifactRevision, initial.artifactRevision);
+    assert.equal(repeated.observedArtifactRevision, initial.observedArtifactRevision);
+    assert.equal(repeated.repeated, 2);
+    assert.equal(
+      receiptRepairRule(
+        h.state,
+        repairCandidates(h),
+        "revision",
+        await workspaceRevision(h.task.directories),
+      )?.noProgress,
+      true,
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a new source change after rejected write prevents both rule selection and prior-notes reuse", async () => {
+  const h = await fixture("implement", "development");
+  try {
+    await h.dispatch("write-first", { evidence: [{ result: "not_run" }] });
+    await writeFile(join(h.repo, "source.txt"), "implemented source\n");
+    await h.settle();
+    assert.equal(h.state.nodes[h.node.id]?.repair?.recoverable, true);
+    await writeFile(join(h.repo, "source.txt"), "subsequent unrelated modification\n");
+    assert.equal(
+      receiptRepairRule(
+        h.state,
+        repairCandidates(h),
+        "revision",
+        await workspaceRevision(h.task.directories),
+      ),
+      undefined,
+    );
+    const next = await h.dispatch("normal-rework-after-change");
+    assert.doesNotMatch(
+      await readFile(join(next.directory, "brief.md"), "utf8"),
+      /本次仅修复交接与回执/,
+    );
+    await assert.rejects(readFile(join(next.directory, "prior-notes.md")), { code: "ENOENT" });
+    assert.deepEqual(h.state.evidence, []);
+    await writeFile(join(h.repo, "source.txt"), "legitimate new business rework\n");
+    await h.settle();
+    assert.equal(h.state.nodes[h.node.id]?.status, "completed");
+    assert.ok(h.store.get("workflow_status_blocks", next.outputId));
+  } finally {
+    h.close();
+  }
+});
+
+test("a rule-selected receipt-only repair cannot accept a second source write", async () => {
+  const h = await fixture("implement", "development");
+  try {
+    await h.dispatch("write-first", { evidence: [{ result: "not_run" }] });
+    await writeFile(join(h.repo, "source.txt"), "initial implementation\n");
+    await h.settle();
+    assert.equal(h.state.nodes[h.node.id]?.repair?.recoverable, true);
+    const second = await h.dispatch("receipt-only-repair", {}, true, true);
+    await writeFile(join(h.repo, "source.txt"), "unexpected write during receipt repair\n");
+    await h.settle();
+    const repair = h.state.nodes[h.node.id]?.repair;
+    assert.equal(repair?.code, "workflow_artifact_changed");
+    assert.equal(repair?.recoverable, false);
+    assert.equal(repair?.observedArtifactRevision, undefined);
+    assert.equal(repair?.notes, undefined);
+    assert.equal(h.store.get("workflow_status_blocks", second.outputId), undefined);
+    assert.equal(h.store.get("workflow_conversation_evidence", second.outputId), undefined);
+  } finally {
+    h.close();
+  }
+});
+
+for (const mode of ["readonly", "document-scope", "document-node-scope"] as const) {
+  test(`a malformed receipt cannot hide a ${mode} source violation`, async () => {
+    const h = await fixture(
+      mode === "readonly" ? undefined : "document",
+      mode === "readonly" ? undefined : "document",
+    );
+    try {
+      const first = await h.dispatch("source-violation", { evidence: [{ result: "not_run" }] });
+      if (mode === "document-node-scope") {
+        // Globally authorized documents can still be outside this node's narrower grant.
+        assert.ok(h.state.plan.documentDelivery && h.state.documentSource);
+        h.state.plan.documentDelivery.paths.push("OTHER.md");
+        h.state.documentSource.paths.push("OTHER.md");
+        await writeFile(join(h.repo, "OTHER.md"), "outside the current node's grant\n");
+      } else await writeFile(join(h.repo, "source.txt"), "unauthorized change\n");
+      await h.settle();
+      const repair = h.state.nodes[h.node.id]?.repair;
+      assert.equal(
+        repair?.code,
+        mode === "readonly" ? "workflow_artifact_changed" : "workflow_document_scope",
+      );
+      assert.equal(repair?.recoverable, false);
+      assert.equal(repair?.observedArtifactRevision, undefined);
+      assert.equal(repair?.notes, undefined);
+      assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
+      assert.deepEqual(h.state.evidence, []);
+    } finally {
+      h.close();
+    }
+  });
+}
+
+test("historical writes without a frozen output revision cannot borrow the current source for receipt-only recovery", async () => {
+  const h = await fixture("implement", "development");
+  try {
+    const first = await h.dispatch("historical-write", { evidence: [{ result: "not_run" }] });
+    await writeFile(join(h.repo, "source.txt"), "historical source or later modification\n");
+    const progress = h.state.nodes[h.node.id];
+    assert.ok(progress);
+    progress.status = "blocked";
+    progress.outputId = first.outputId;
+    progress.error = "旧版只记录回执错误";
+    h.state.consumedOutputs.push(first.outputId);
+    assert.equal(await backfillReceiptRecovery(h.ports, h.task, h.state), true);
+    assert.equal(progress.repair?.code, "workflow_artifact_changed");
+    assert.equal(progress.repair?.recoverable, false);
+    assert.equal(progress.repair?.observedArtifactRevision, undefined);
+    assert.equal(progress.repair?.notes, undefined);
+    assert.equal(h.store.get("workflow_status_blocks", first.outputId), undefined);
+  } finally {
+    h.close();
+  }
+});
 
 test("missing natural path preserves a bounded unverified snapshot and repairs only the handoff", async () => {
   const h = await fixture();
