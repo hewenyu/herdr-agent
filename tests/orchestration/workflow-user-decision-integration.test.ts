@@ -31,9 +31,26 @@ async function harness(mode: "user" | "defer" = "user") {
     createGroup: true,
   });
   await h.app.tasks.reconcile(task.id);
-  let jevCalls = 0;
+  let piCalls = 0;
   let questions = 0;
   h.engine.handler = async (input) => {
+    if (input.tools[0]?.name === "orchestration_choice") {
+      piCalls++;
+      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+        (candidate: { id: string }) => candidate.id,
+      );
+      const planning = ids.includes("use_template");
+      if (mode === "defer" && !planning) return { text: "no valid choice", messages: [] };
+      await input.tools[0].execute(
+        {
+          candidateId: planning
+            ? "use_template"
+            : (ids.find((id) => id === "user:blocked") ?? ids[0]),
+        },
+        input.actor,
+      );
+      return { text: "", messages: [] };
+    }
     assert.equal(input.tools[0]?.name, "workflow_user_decision");
     questions++;
     const source = JSON.parse(input.prompt).sources.find(
@@ -72,33 +89,7 @@ async function harness(mode: "user" | "defer" = "user") {
     logger,
     signal: new AbortController().signal,
     retryDelayMs: 0,
-    fetch: (async (_url, init) => {
-      jevCalls++;
-      const body = JSON.parse(String(init?.body));
-      const ids: string[] = Object.keys(body.questions.action.criteria);
-      const planning = ids.includes("use_template");
-      const assistance = ids.includes("wait_for_evidence");
-      const choice = planning
-        ? "use_template"
-        : assistance
-          ? "wait_for_evidence"
-          : (ids.find((id) => id === "user:blocked") ?? ids[0]);
-      assert.ok(choice);
-      return new Response(
-        JSON.stringify({
-          model: "jev-fixture",
-          answers: {
-            action: {
-              type: "choice",
-              choice,
-              confidence: mode === "defer" && !planning && !assistance ? 0.45 : 0.99,
-              probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-            },
-          },
-          usage: { input_tokens: 10, output_tokens: 1 },
-        }),
-      );
-    }) as typeof fetch,
+
     onReply: async (_task: Task, text: string, eventId: string) => {
       await h.platform.sendText(task.chatId ?? task.entryChatId, text, eventId);
     },
@@ -146,7 +137,7 @@ async function harness(mode: "user" | "defer" = "user") {
     state,
     block,
     notices,
-    counts: () => ({ jevCalls, questions }),
+    counts: () => ({ piCalls, questions }),
   };
 }
 
@@ -188,7 +179,7 @@ test("an accepted status-block blocker produces a concrete user wait with no iss
   }
 });
 
-test("a high-confidence evidence defer sends one grounded lifecycle question and survives worker restart", async () => {
+test("an invalid pi choice defer sends one grounded lifecycle question and survives worker restart", async () => {
   const h = await harness("defer");
   try {
     await h.block();
@@ -252,10 +243,11 @@ test("source changes while pi organizes a question cannot persist or notify that
     assert.ok(generate);
     h.engine.handler = async (input) => {
       const result = await generate(input);
-      writeFileSync(
-        join(h.task.directories[0] ?? "", "README.md"),
-        "# Changed during question generation\n",
-      );
+      if (input.tools[0]?.name === "workflow_user_decision")
+        writeFileSync(
+          join(h.task.directories[0] ?? "", "README.md"),
+          "# Changed during question generation\n",
+        );
       return result;
     };
     await h.block();
@@ -273,8 +265,12 @@ test("source changes while pi organizes a question cannot persist or notify that
 test("a question-generation failure sends a system recovery diagnosis instead of a vague user obligation", async () => {
   const h = await harness();
   try {
-    h.engine.handler = async () => {
-      throw new Error("fixture provider failure");
+    const generate = h.engine.handler;
+    assert.ok(generate);
+    h.engine.handler = async (input) => {
+      if (input.tools[0]?.name === "workflow_user_decision")
+        throw new Error("fixture provider failure");
+      return generate(input);
     };
     await h.block();
     assert.equal(h.state().userDecision?.status, "failed");

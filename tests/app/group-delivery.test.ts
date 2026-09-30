@@ -39,6 +39,7 @@ test("external group dissolution delivers the last unpolled result to the entry 
       messageId: "new",
     };
     const task = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "群清理后结果",
       requirements: "只讨论",

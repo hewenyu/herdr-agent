@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Task, TranscriptEntry } from "../../src/core/types.js";
 import { TaskService } from "../../src/tasks/service.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 test("automatic handoff waits for a native turn to settle and uses its latest final record", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first?.execution && second?.execution);
@@ -38,7 +38,7 @@ test("automatic handoff waits for a native turn to settle and uses its latest fi
 test("multiple final records in one native transcript page cause only the latest handoff", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -57,7 +57,9 @@ for (const state of ["blocked", "working", "launching"] as const) {
   test(`pending handoff survives restart while next participant is ${state}, then resumes once ready`, async () => {
     const f = setup();
     try {
-      const task = await f.service.create(actor, discussion);
+      const task = await createPersistedTask(f, actor, discussion, {
+        discussionMode: "round_robin",
+      });
       await f.service.tick();
       const [first, second] = f.service.get(actor, task.id).participants;
       assert.ok(first?.execution && second?.execution);
@@ -88,7 +90,7 @@ for (const state of ["blocked", "working", "launching"] as const) {
 test("explicit user pause retains the settled handoff until resume", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -117,7 +119,7 @@ test("explicit user pause retains the settled handoff until resume", async () =>
 test("explicit completion blocks automatic handoffs even when execution is retained", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -141,7 +143,9 @@ test("model orchestration provisions all agents and leaves participant choice to
   const f = setup();
   f.config.ai.enabled = true;
   try {
-    const task = await f.service.create(actor, { ...discussion, orchestration: { mode: "model" } });
+    const task = await createPersistedTask(f, actor, discussion, {
+      orchestration: { mode: "model" },
+    });
     await f.service.tick();
     assert.equal(f.herdr.starts, 2);
     assert.equal(f.herdr.sends.length, 0);
@@ -180,7 +184,7 @@ test("model orchestration provisions all agents and leaves participant choice to
 test("native idle without a final reply does not turn an acknowledged input into review", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -222,11 +226,15 @@ test("a local model worker can access only its exact owner, task and entry chat"
   const f = setup();
   f.config.ai.enabled = true;
   try {
-    const task = await f.service.create(actor, {
-      ...discussion,
-      orchestration: { mode: "model" },
-      createGroup: false,
-    });
+    const task = await createPersistedTask(
+      f,
+      actor,
+      {
+        ...discussion,
+        createGroup: false,
+      },
+      { orchestration: { mode: "model" } },
+    );
     await f.service.tick();
     const system = {
       ...actor,
@@ -252,7 +260,9 @@ test("a model dispatch rechecks its event after waiting for the task mutation lo
   const f = setup();
   f.config.ai.enabled = true;
   try {
-    const task = await f.service.create(actor, { ...discussion, orchestration: { mode: "model" } });
+    const task = await createPersistedTask(f, actor, discussion, {
+      orchestration: { mode: "model" },
+    });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first && second);

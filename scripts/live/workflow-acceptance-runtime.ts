@@ -96,6 +96,11 @@ export function ownedRuntime(config: AppConfig, root: string, signal: AbortSigna
         throw new OperationError("acceptance_not_owned", "不能读取其他参与者。");
       return native.get(paneId, signal);
     },
+    paneExists: (paneId) => {
+      if (!owned.has(paneId))
+        throw new OperationError("acceptance_not_owned", "不能读取其他参与者。");
+      return native.paneExists(paneId, signal);
+    },
     createWorkspace: async (cwd, label) => {
       await within(cwd);
       if (owned.size >= 2) limit("workspace_capacity_reached");

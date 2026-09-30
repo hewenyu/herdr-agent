@@ -7,7 +7,7 @@ import type { ActorContext, Task } from "../../src/core/types.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { activeTaskOperation } from "../../src/tasks/operation-scope.js";
 import { Engine, logger } from "../app/helpers.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 function request(h: ReturnType<typeof setup>, id = "restart"): ActorContext {
   const who: ActorContext = { ...actor, source: "feishu", chatType: "private", messageId: id };
@@ -33,7 +33,9 @@ function request(h: ReturnType<typeof setup>, id = "restart"): ActorContext {
 
 async function prepare(h: ReturnType<typeof setup>) {
   h.config.ai.enabled = true;
-  const task = await h.service.create(actor, { ...discussion, orchestration: { mode: "model" } });
+  const task = await createPersistedTask(h, actor, discussion, {
+    orchestration: { mode: "model" },
+  });
   await h.service.reconcile(task.id);
   return task;
 }

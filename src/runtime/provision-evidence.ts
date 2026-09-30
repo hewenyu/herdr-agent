@@ -1,3 +1,5 @@
+import { assertionClauses } from "./claims.js";
+
 /** Current-turn provisioning facts, separate from a successful local enqueue. */
 export interface ProvisionEvidence {
   created: string[];
@@ -41,7 +43,10 @@ export function recordProvisionEvidence(
                 id: String(participant.id ?? ""),
                 name: String(participant.name ?? ""),
                 kind: String(participant.kind ?? ""),
-                sent: participant.initialSent === true,
+                sent:
+                  participant.initialDelivery === undefined
+                    ? participant.initialSent === true
+                    : participant.initialDelivery === "confirmed",
               };
             })
         : (previous?.participants ?? []).filter(
@@ -81,16 +86,25 @@ export function recordProvisionEvidence(
 
 /** Guard assertions only; questions, pending stages and negations remain model-written. */
 export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvidence): boolean {
-  const clauses = text.split(/(?<=[。！？!?；;\n])/u).flatMap(taskClauses);
+  const clauses = text
+    .split(/(?<=[。！？!?；;\n])/u)
+    .flatMap((sentence) =>
+      /[?？]\s*$/u.test(sentence) && !/^\s*(?:是否|Has |Have |Is )/iu.test(sentence)
+        ? assertionClauses(sentence)
+        : [sentence],
+    )
+    .flatMap(taskClauses);
   return clauses.some((sentence) => {
     if (/[?？]\s*$/u.test(sentence)) return false;
     const clause = sentence.replace(/[。！？!?；;\n]+$/u, "");
     if (/(?:吗|么)\s*$/u.test(clause) || /^\s*(?:是否|Has |Have |Is )/iu.test(clause)) return false;
     // Remove only a negated/pending segment so a later contradictory assertion is still checked.
-    const value = clause.replace(
-      /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
-      "",
-    );
+    const value = clause
+      .replace(/(?:已)?按决策视为送达/gu, "")
+      .replace(
+        /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
+        "",
+      );
     const asserted =
       /(?:已|成功|建好|建成|\b(?:created|established|sent|received|delivered|forwarded|dispatched|ready)\b)/iu;
     if (!asserted.test(value)) return false;
@@ -116,7 +130,11 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
             value,
           ),
       );
-    if (!group && !remote && !sent) return false;
+    const local =
+      /(?:任务|\btask\b|task_[a-zA-Z0-9]+).{0,24}(?:创建|登记|created|registered)|(?:创建|登记|created|registered).{0,24}(?:任务|\btask\b|task_[a-zA-Z0-9]+)/iu.test(
+        value,
+      );
+    if (!group && !remote && !sent && !local) return false;
     const explicitIds = clause.match(/task_[a-zA-Z0-9]+/gu) ?? [];
     const ids = explicitIds.length ? explicitIds : evidence.created;
     const tasks = ids.length

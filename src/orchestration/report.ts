@@ -11,6 +11,7 @@ import { boardDirectory, inspectArtifact } from "./board.js";
 import { codeDeliveryEvidence, codeDeliveryRevision, codeDeliveryText } from "./code-delivery.js";
 import { assertConsensusDocuments, consensusMissing } from "./consensus.js";
 import { missingDocumentReviewer } from "./document-delivery.js";
+import { currentOpenIssues } from "./state.js";
 import type { StatusBlock } from "./status-block.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -29,11 +30,10 @@ export function reportContract(
 ): string[] {
   const missing: string[] = [];
   missing.push(...consensusMissing(state, artifactRevision));
-  if (state.plan.consensus && state.issues.some((issue) => issue.status === "open"))
-    missing.push("共同认可仍有未处理分歧");
+  const open = currentOpenIssues(state);
+  if (state.plan.consensus && open.length) missing.push("共同认可仍有未处理分歧");
   if (state.stall.awaitingUser) missing.push("僵局需要用户裁决");
-  if (state.issues.some((issue) => issue.status === "open" && issue.blocking))
-    missing.push("仍有未处理阻塞问题");
+  if (open.some((issue) => issue.blocking)) missing.push("仍有未处理阻塞问题");
   if (state.plan.nodes.some((node) => state.nodes[node.id]?.status !== "completed"))
     missing.push("计划节点尚未完成");
   if (missingDocumentReviewer(state.plan)) missing.push("讨论文档缺少独立评审节点");
@@ -151,6 +151,9 @@ export async function publishReport(
     (entry) =>
       `- ${evidenceLabels[entry.source]} · ${entry.result}${entry.artifactRevision !== artifactRevision ? "（对应旧版本，当前无效）" : ""}：${entry.description}${entry.command ? `；命令：${entry.command}` : ""}`,
   );
+  const stale = state.issues.filter(
+    (issue) => issue.status === "open" && issue.needsRevalidation === true,
+  );
   const text = [
     `# ${task.title}`,
     "",
@@ -173,8 +176,18 @@ export async function publishReport(
     "",
     "## 保留问题",
     "",
-    ...state.issues.map((issue) => `- ${issue.id} · ${issue.status}：${issue.description}`),
+    ...state.issues
+      .filter((issue) => issue.status !== "open" || issue.needsRevalidation !== true)
+      .map((issue) => `- ${issue.id} · ${issue.status}：${issue.description}`),
     "",
+    ...(stale.length
+      ? [
+          "## 旧版本遗留问题（待重新验证）",
+          "",
+          ...stale.map((issue) => `- ${issue.id} · ${issue.status}：${issue.description}`),
+          "",
+        ]
+      : []),
     ...documents,
     "报告交付不等于用户验收。",
     "",
@@ -209,8 +222,20 @@ export async function reportText(state: WorkflowState): Promise<string> {
   return text;
 }
 
-export function reportCard(task: Task, state: WorkflowState): Record<string, unknown> {
-  const open = state.issues.filter((issue) => issue.status === "open");
+export function reportCard(
+  task: Task,
+  state: WorkflowState,
+  delivery: "body" | "attachment" | "web" = "body",
+): Record<string, unknown> {
+  const deliveryText = {
+    body: "完整报告已在本会话正文中发送。",
+    attachment: "完整报告已作为 report.md 附件发送，也可在本机 Web 下载。",
+    web: "完整报告可在本机 Web 下载（report.md）。",
+  }[delivery];
+  const open = currentOpenIssues(state);
+  const stale = state.issues.filter(
+    (issue) => issue.status === "open" && issue.needsRevalidation === true,
+  );
   const summary = state.plan.nodes
     .filter((node) => node.phase === "reporting")
     .map((node) => state.nodes[node.id]?.summary)
@@ -228,7 +253,12 @@ export function reportCard(task: Task, state: WorkflowState): Record<string, unk
             `验收项：${state.plan.deliveryRequirements.join("、")}`,
             `验证来源：${[...new Set(state.evidence.map((item) => evidenceLabels[item.source]))].join("、") || "无命令验证"}`,
             `未决事项：${open.map((issue) => issue.description).join("；") || "无"}`,
-            "完整报告已在本会话正文中发送。交付不代表已验收。",
+            ...(stale.length
+              ? [
+                  `旧版本遗留问题（待重新验证）：${stale.map((issue) => issue.description).join("；")}`,
+                ]
+              : []),
+            `${deliveryText}交付不代表已验收。`,
           ].join("\n\n"),
         },
       ],

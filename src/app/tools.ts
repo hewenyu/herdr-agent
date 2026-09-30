@@ -59,7 +59,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_get",
-      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialSent才证明初始要求投递已确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
+      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialDelivery=confirmed才证明初始要求投递已确认；initialDelivery=decided只能说已按决策视为送达、未经确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
         "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。",
       true,
       { taskId },
@@ -237,7 +237,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "participants_restart",
-      "用户明确要求重新拉起并继续时替换指定旧执行器，保留未知投递审计和历史材料，再交自动调度续接。先task_get选准确参与者编号，不用participant_add加出重复成员或用resume冒充重启。返回只证明替换已登记，需后续initialSent验证续接要求送达。仅活跃model/workflow任务支持。",
+      "用户明确要求重新拉起并继续时替换指定旧执行器，保留未知投递审计和历史材料，再交自动调度续接。先task_get选准确参与者编号，不用participant_add加出重复成员或用resume冒充重启。返回只证明替换已登记，需后续initialDelivery=confirmed确认续接要求送达；initialDelivery=decided只能说已按决策视为送达、未经确认。仅活跃model/workflow任务支持。",
       false,
       { taskId, participantIds: { type: "array", items: { type: "string" }, minItems: 1 } },
       ["participantIds"],
@@ -320,7 +320,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_create",
-      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialSent。讨论可无项目；默认省略orchestration和discussion，由服务配置选择自动调度。轮流讨论属于workflow正常协作，不等于选择旧round_robin模式。newProject仅用于用户明确新建项目。",
+      "登记讨论/开发/评审/测试任务，实际项目业务全交Claude/Codex。新任务默认在completed确认后解散群；明确保留群须传keepGroup:true，review不触发解散。返回accepted:true/status:queued只证明本地登记；飞书任务、群、执行器启动与初始投递由后续异步provision完成，不可立即声称这些资源已创建或已转交。要报告外部创建成功，先task_get核验remoteTaskId/chatId；要报告要求已转交，核验参与者initialDelivery=confirmed；initialDelivery=decided只能说已按决策视为送达、未经确认。讨论可无项目；默认省略orchestration和discussion，由服务配置选择自动调度。轮流讨论属于workflow正常协作；round_robin已弃用，新任务不再支持，存量任务仍按原协议运行。newProject仅用于用户明确新建项目。",
       false,
       {
         kind: { type: "string", enum: ["discussion", "development", "review", "test"] },
@@ -337,7 +337,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         },
         project: text("已配置项目名称"),
         newProject: { type: "boolean" },
-        parentTaskId: text("先前讨论任务编号，关联已确认结论"),
+        parentTaskId: text("同 owner 的先前讨论任务编号，继承父任务冻结报告与已确认文档的校验快照"),
         participants: {
           type: "array",
           minItems: 1,
@@ -364,13 +364,11 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         orchestration: {
           type: "object",
           description:
-            "默认省略，由服务配置选择自动调度：有 Jev key 使用 workflow，无 key 使用 model。配置 Jev 时旧 model 参数也会归一为 workflow。manual 仅用于用户明确要求逐次手动安排；旧任务模式保持不变。",
+            "默认省略，由服务配置选择自动调度：AI 启用时新任务使用 workflow，与是否配置 Jev key 无关；旧 model 参数也会归一为 workflow。manual 仅用于用户明确要求逐次手动安排；旧任务模式保持不变。",
           properties: {
             mode: {
               type: "string",
-              enum: services.config?.jev?.apiKey
-                ? ["manual", "workflow"]
-                : ["model", "manual", "workflow"],
+              enum: ["manual", "workflow"],
             },
             template: { type: "string", enum: ["discussion", "development", "bugfix"] },
           },
@@ -380,9 +378,9 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
         discussion: {
           type: "object",
           description:
-            "仅用户明确选择旧 manual/round_robin 控制模式时填写；普通轮流协作省略此字段，由workflow处理。",
+            "仅用户明确选择 manual 控制模式时填写；普通轮流协作省略此字段，由workflow处理。round_robin已弃用，新任务不再支持，存量任务仍按原协议运行。",
           properties: {
-            mode: { type: "string", enum: ["manual", "round_robin"] },
+            mode: { type: "string", enum: ["manual"] },
           },
           additionalProperties: false,
         },
@@ -398,7 +396,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
               args.orchestration ??
               (args.discussion && typeof args.discussion === "object" && "mode" in args.discussion
                 ? undefined
-                : { mode: services.config?.jev?.apiKey ? "workflow" : "model" }),
+                : { mode: "workflow" }),
           }),
           mutationGuard(signal),
         ),

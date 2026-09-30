@@ -5,11 +5,10 @@ import { isNotExecuted, OperationError } from "../core/errors.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { ActorContext, Session, StoredMessage } from "../core/types.js";
 import type { Store } from "../storage/store.js";
-import { hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
+import { evaluateClaimPolicy } from "./claim-policy.js";
 import { estimateTokens } from "./engine.js";
 import { type MemoryProvider, MemoryService, memoryEntry } from "./memory.js";
 import { NOTIFICATION_PROMPT, ORCHESTRATOR_PROMPT } from "./prompts.js";
-import { unsupportedProvisionClaim } from "./provision-evidence.js";
 import { recoverMessages, type TurnEffect } from "./recovery.js";
 import type {
   ConversationEngine,
@@ -466,23 +465,18 @@ export class SessionService {
       // with no tools there is no possible fact at all. Real PiEngine runs also
       // expose outcome-aware evidence so read-only calls and unknown effects
       // cannot be mistaken for a successful write.
-      const claim = hasUnverifiedToolClaim(result.text);
       const evidence = result.toolEvidence;
-      const needsWrite = requiresWriteEvidence(result.text);
-      const hasCredibleEvidence =
-        tools.length > 0 &&
-        (result.toolCalls ?? 0) > 0 &&
-        (evidence
-          ? evidence.unknown === 0 &&
-            (evidence.unresolvedNotExecuted ?? evidence.notExecuted) === 0 &&
-            (needsWrite ? (evidence.successfulWrites ?? 0) > 0 : evidence.successful > 0)
-          : needsWrite
-            ? (result.writeCalls ?? 0) > 0
-            : (result.toolCalls ?? 0) > 0);
-      if (
-        (claim && !hasCredibleEvidence) ||
-        (evidence?.provisioning && unsupportedProvisionClaim(result.text, evidence.provisioning))
-      )
+      const calledTool = tools.length > 0 && (result.toolCalls ?? 0) > 0;
+      const policy = evaluateClaimPolicy(result.text, {
+        ...(evidence ?? { unknown: 0, notExecuted: 0 }),
+        successful: calledTool ? (evidence?.successful ?? result.toolCalls ?? 0) : 0,
+        successfulWrites: calledTool
+          ? evidence
+            ? (evidence.successfulWrites ?? 0)
+            : (result.writeCalls ?? 0)
+          : 0,
+      });
+      if (policy.rejected)
         throw new OperationError(
           "model_failed",
           evidence?.unknown

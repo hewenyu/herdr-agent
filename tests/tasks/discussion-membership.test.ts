@@ -1,19 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 for (const count of [2, 3]) {
   test(`resume after removing the paused last speaker advances among ${count - 1} remaining participants`, async () => {
     const f = setup();
     try {
-      const task = await f.service.create(actor, {
-        ...discussion,
-        participants: [
-          { kind: "claude", name: "A" },
-          { kind: "codex", name: "B" },
-          ...(count === 3 ? [{ kind: "claude" as const, name: "C" }] : []),
-        ],
-      });
+      const task = await createPersistedTask(
+        f,
+        actor,
+        {
+          ...discussion,
+          participants: [
+            { kind: "claude", name: "A" },
+            { kind: "codex", name: "B" },
+            ...(count === 3 ? [{ kind: "claude" as const, name: "C" }] : []),
+          ],
+        },
+        { discussionMode: "round_robin" },
+      );
       await f.service.tick();
       const [first, second] = f.service.get(actor, task.id).participants;
       assert.ok(first?.execution && second?.execution);
@@ -41,14 +46,19 @@ for (const count of [2, 3]) {
 test("resume skips a removed active participant without attributing the last speaker's output to it", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, {
-      ...discussion,
-      participants: [
-        { kind: "claude", name: "A" },
-        { kind: "codex", name: "B" },
-        { kind: "claude", name: "C" },
-      ],
-    });
+    const task = await createPersistedTask(
+      f,
+      actor,
+      {
+        ...discussion,
+        participants: [
+          { kind: "claude", name: "A" },
+          { kind: "codex", name: "B" },
+          { kind: "claude", name: "C" },
+        ],
+      },
+      { discussionMode: "round_robin" },
+    );
     await f.service.tick();
     const [first, second, third] = f.service.get(actor, task.id).participants;
     assert.ok(first?.execution && second?.execution && third?.execution);
@@ -72,7 +82,7 @@ test("resume skips a removed active participant without attributing the last spe
 test("resume can start a remaining participant when the removed first speaker produced no output", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first && second?.execution);

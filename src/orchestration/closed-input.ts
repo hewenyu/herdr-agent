@@ -18,6 +18,21 @@ export function inputExecutionClosed(
     receipt.id !== operationId
   )
     return false;
+  // The preserved uncertain close receipt itself must not reserve the workspace
+  // after trusted target-state proof. pi-only resolutions remain a barrier.
+  const closingId = task.participantIds.find((id) => operationId === `${id}:close`);
+  if (closingId) {
+    const participant = store.get<Participant>("participants", closingId);
+    return (
+      participant?.taskId === task.id &&
+      !!participant.execution &&
+      ["gone", "removed"].includes(participant.status) &&
+      receipt.fingerprint === stableId(canonical(participant.execution)) &&
+      receipt.resolution?.choice === "treat_done" &&
+      ["evidence", "user"].includes(receipt.resolution.decidedBy) &&
+      Number.isFinite(Date.parse(receipt.resolution.at))
+    );
+  }
   const delivery = store.get<InputDelivery>("input_deliveries", operationId);
   if (
     !delivery ||
@@ -43,10 +58,17 @@ export function inputExecutionClosed(
   const closeId = `${participant.id}:close`;
   const close = store.get<OperationReceipt>("operations", closeId);
   const inputAt = Date.parse(receipt.updatedAt);
-  const closedAt = Date.parse(close?.updatedAt ?? "");
+  // A pi judgment alone cannot release shared workspace ownership. Require
+  // read-only pane absence proof or an explicit human acceptance of that risk.
+  const resolvedClose =
+    close?.resolution?.choice === "treat_done" &&
+    ["evidence", "user"].includes(close.resolution.decidedBy);
+  const closedAt = Date.parse(
+    resolvedClose ? (close.resolution?.at ?? "") : (close?.updatedAt ?? ""),
+  );
   return (
     close?.id === closeId &&
-    close.state === "done" &&
+    (close.state === "done" || (close.state === "uncertain" && resolvedClose)) &&
     close.fingerprint === stableId(canonical(delivery.execution)) &&
     Number.isFinite(inputAt) &&
     Number.isFinite(closedAt) &&

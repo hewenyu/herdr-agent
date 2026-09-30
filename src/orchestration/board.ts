@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fail, OperationError } from "../core/errors.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
@@ -111,7 +111,7 @@ export async function inspectArtifact(
     if (
       !allowed.some((root) => {
         const rel = relative(root, actual);
-        return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+        return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
       })
     )
       fail("workflow_artifact", "产物引用超出当前任务目录。");

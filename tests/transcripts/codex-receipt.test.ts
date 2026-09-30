@@ -271,6 +271,9 @@ test("TaskService restores unknown missing-ID Codex input and existing output wi
         operationId,
       ),
     );
+    const original = f.store.get<OperationReceipt>("operations", operationId);
+    assert.ok(original);
+    assert.equal(original.state, "uncertain");
     const delivery = f.store.get<InputDelivery>("input_deliveries", operationId);
     assert.ok(delivery);
     const directory = join(f.directory, ".codex/sessions/2026/09/27");
@@ -293,7 +296,14 @@ test("TaskService restores unknown missing-ID Codex input and existing output wi
     f.service.records.saveParticipant(participant);
     const restored = new TaskService(f.options);
     await restored.reconcile(task.id);
-    assert.equal(f.store.get<OperationReceipt>("operations", operationId)?.state, "done");
+    const recovered = f.store.get<OperationReceipt>("operations", operationId);
+    assert.ok(recovered);
+    assert.equal(recovered.state, "uncertain");
+    assert.deepEqual(recovered.error, original.error);
+    assert.equal(recovered.updatedAt, original.updatedAt);
+    assert.equal(recovered.resolution?.choice, "treat_done");
+    assert.equal(recovered.resolution?.decidedBy, "evidence");
+    assert.equal((recovered.resolution?.result as { verified?: boolean })?.verified, true);
     assert.equal(restored.get(actor, task.id).participants[0]?.initialSent, true);
     assert.deepEqual(outputs, ["recovered Codex output"]);
     assert.equal(f.herdr.sends.length, 1);

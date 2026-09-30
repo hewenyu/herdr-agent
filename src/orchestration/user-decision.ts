@@ -3,6 +3,7 @@ import { canonical, stableId } from "../core/ids.js";
 import type { ActorContext, Task } from "../core/types.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import { type PlanningSource, planningSources } from "./planning-sources.js";
+import { currentOpenIssues } from "./state.js";
 import type { WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
 
@@ -197,8 +198,8 @@ function decisionSources(input: UserDecisionInput): UserDecisionSource[] {
       kind: "user" as const,
       text: source.text,
     })),
-    ...input.state.issues
-      .filter((issue) => issue.status === "open" && issue.blocking)
+    ...currentOpenIssues(input.state)
+      .filter((issue) => issue.blocking)
       .filter((issue) => !input.artifactRevision || currentOutput(issue.responses.at(-1)?.outputId))
       .map((issue) => ({
         id: `issue:${issue.id}`,

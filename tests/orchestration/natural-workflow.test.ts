@@ -37,6 +37,22 @@ async function harness(documents = false, twoDocuments = false) {
   const engine = new Engine();
   let plans = 0;
   engine.handler = async (input) => {
+    if (input.tools[0]?.name === "orchestration_choice") {
+      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+        (candidate: { id: string }) => candidate.id,
+      );
+      const choice = ids.includes("use_template")
+        ? documents
+          ? "request_pi"
+          : "use_template"
+        : ids.includes("authorized")
+          ? "authorized"
+          : (ids.find((id) => id.startsWith("deliver:")) ??
+            ids.find((id) => id.startsWith("dispatch:")) ??
+            ids[0]);
+      await input.tools[0].execute({ candidateId: choice }, input.actor);
+      return { text: "", messages: [] };
+    }
     plans++;
     assert.equal(input.tools[0]?.name, "orchestration_plan");
     const documentDelivery = {
@@ -71,33 +87,6 @@ async function harness(documents = false, twoDocuments = false) {
     );
     return { text: "", messages: [] };
   };
-  const fetch: typeof globalThis.fetch = async (_url, init) => {
-    const body = JSON.parse(String(init?.body));
-    const ids = Object.keys(body.questions.action.criteria);
-    const choice = ids.includes("use_template")
-      ? documents
-        ? "request_pi"
-        : "use_template"
-      : ids.includes("authorized")
-        ? "authorized"
-        : (ids.find((id) => id.startsWith("deliver:")) ??
-          ids.find((id) => id.startsWith("dispatch:")) ??
-          ids[0]);
-    return new Response(
-      JSON.stringify({
-        model: "jev-fixture",
-        answers: {
-          action: {
-            type: "choice",
-            choice,
-            confidence: 0.99,
-            probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-          },
-        },
-        usage: { input_tokens: 10, output_tokens: 1 },
-      }),
-    );
-  };
   const replies: string[] = [];
   const options = {
     store: h.store,
@@ -109,7 +98,6 @@ async function harness(documents = false, twoDocuments = false) {
     logger,
     signal: new AbortController().signal,
     retryDelayMs: 0,
-    fetch,
     onReply: async (_task: unknown, text: string) => {
       replies.push(text);
     },
@@ -158,7 +146,11 @@ for (const documents of [false, true])
     const h = await harness(documents);
     try {
       await h.worker.tick();
-      assert.equal(h.plans(), documents ? 1 : 0, "pi only plans when Jev requests help");
+      assert.equal(
+        h.plans(),
+        documents ? 1 : 0,
+        "pi only creates a plan when its restricted choice requests customization",
+      );
       assert.deepEqual(
         h.state().documentSource?.paths,
         documents ? ["docs/DESIGN.md"] : [],
@@ -277,6 +269,18 @@ for (const documents of [false, true])
       const current = h.service.get(actor, h.task.id);
       h.service.records.save({ ...current, requirements });
       h.options.engine.handler = async (input) => {
+        if (input.tools[0]?.name === "orchestration_choice") {
+          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+            (candidate: { id: string }) => candidate.id,
+          );
+          const candidateId = ids.includes("use_template")
+            ? "request_pi"
+            : ids.includes("authorized")
+              ? "authorized"
+              : (ids.find((id) => id.startsWith("dispatch:")) ?? ids[0]);
+          await input.tools[0].execute({ candidateId }, input.actor);
+          return { text: "", messages: [] };
+        }
         await input.tools[0]?.execute(
           {
             template: "discussion",
@@ -290,15 +294,6 @@ for (const documents of [false, true])
       };
       const resumed = new TaskOrchestrator({
         ...h.options,
-        fetch: async (url, init) => {
-          const response = await h.options.fetch(url, init);
-          const body = JSON.parse(String(init?.body));
-          if (!Object.hasOwn(body.questions.action.criteria, "use_template")) return response;
-          const selected = await response.json();
-          selected.answers.action.choice = "request_pi";
-          selected.answers.action.probabilities = { use_template: 0, request_pi: 1 };
-          return Response.json(selected);
-        },
       });
       await h.service.action(
         { ...actor, messageId: "resume-early-contamination" },
@@ -759,29 +754,20 @@ for (const stage of ["planning", "selection"] as const)
     let release = false;
     const options = {
       ...h.options,
-      fetch: (async (url, init) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        const ids = Object.keys(body.questions.action.criteria);
-        const planning = ids.includes("use_template");
-        if (release || (stage === "selection" && planning)) return h.options.fetch(url, init);
-        const assistance = ids.includes("wait_for_evidence");
-        const choice = assistance ? "wait_for_evidence" : ids[0];
-        return new Response(
-          JSON.stringify({
-            model: "jev-fixture",
-            answers: {
-              action: {
-                type: "choice",
-                choice,
-                confidence: assistance ? 0.99 : 0.5,
-                probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-              },
-            },
-            usage: { input_tokens: 10, output_tokens: 1 },
-          }),
-        );
-      }) as typeof globalThis.fetch,
+      engine: {
+        contextTokens: h.options.engine.contextTokens,
+        summarize: () => h.options.engine.summarize(),
+        run: async (input: Parameters<Engine["run"]>[0]) => {
+          if (input.tools[0]?.name !== "orchestration_choice") return h.options.engine.run(input);
+          calls++;
+          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+            (candidate: { id: string }) => candidate.id,
+          );
+          const planning = ids.includes("use_template");
+          if (release || (stage === "selection" && planning)) return h.options.engine.run(input);
+          return { text: "no valid choice", messages: [] };
+        },
+      },
     };
     const worker = new TaskOrchestrator(options);
     try {
@@ -803,7 +789,7 @@ for (const stage of ["planning", "selection"] as const)
       assert.equal(event()?.state, "pending");
       for (let tick = 0; tick < 5; tick++) await worker.tick();
       await new TaskOrchestrator(options).tick();
-      assert.equal(calls, firstCalls, "unchanged evidence must never repeat Jev calls");
+      assert.equal(calls, firstCalls, "unchanged evidence must never repeat pi calls");
       assert.equal(event()?.attempts, 0);
       assert.equal(h.herdr.sends.length, 0);
       assert.equal(h.replies.length, 0);
@@ -811,7 +797,7 @@ for (const stage of ["planning", "selection"] as const)
 
       writeFileSync(join(h.repo, "new-evidence.md"), "New external evidence\n");
       await worker.tick();
-      assert.equal(calls, firstCalls + 2, "changed evidence permits one fresh assessment");
+      assert.equal(calls, firstCalls + 1, "changed evidence permits one fresh assessment");
       assert.notEqual(h.state().assistanceWait?.fingerprint, waiting.fingerprint);
       if (stage === "planning")
         assert.equal(
@@ -820,7 +806,7 @@ for (const stage of ["planning", "selection"] as const)
           "wait audits are retained",
         );
       await worker.tick();
-      assert.equal(calls, firstCalls + 2);
+      assert.equal(calls, firstCalls + 1);
 
       release = true;
       if (stage === "selection") unlinkSync(join(h.repo, "new-evidence.md"));

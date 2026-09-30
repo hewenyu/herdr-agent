@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { HerdrPort } from "../../src/core/ports.js";
-import type { OperationReceipt } from "../../src/storage/operations.js";
+import { type OperationReceipt, Operations } from "../../src/storage/operations.js";
 import { participantPrompt } from "../../src/tasks/prompts.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
@@ -51,7 +51,12 @@ for (const [state, oldTemplate] of [
       f.store.delete("input_deliveries", key);
       const restored = new TaskService(f.options);
       await restored.tick();
-      assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");
+      const resolved = f.store.get<OperationReceipt>("operations", key);
+      assert.equal(resolved?.state, state);
+      assert.deepEqual(resolved?.error, op.error);
+      assert.equal(resolved?.updatedAt, op.updatedAt);
+      assert.equal(resolved?.resolution?.choice, "treat_done");
+      assert.equal(resolved?.resolution?.decidedBy, "evidence");
       assert.equal(restored.get(actor, task.id).participants[0]?.initialSent, true);
       assert.equal(restored.get(actor, task.id).discussion.paused, true);
       assert.equal(restored.get(actor, task.id).pending, undefined);
@@ -81,6 +86,9 @@ for (const [legacy, oldTemplate] of [
     });
     try {
       const task = await f.service.create(actor, discussion);
+      // Exercise imported round-robin tasks; newly created tasks now default to manual.
+      task.discussion.mode = "round_robin";
+      f.service.records.save(task);
       await f.service.tick();
       const [first, second] = f.service.get(actor, task.id).participants;
       assert.ok(first?.execution && second?.execution);
@@ -106,7 +114,15 @@ for (const [legacy, oldTemplate] of [
       f.store.delete("input_deliveries", key);
       const restored = new TaskService(f.options);
       await restored.tick();
-      assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "done");
+      assert.equal(f.store.get<OperationReceipt>("operations", key)?.state, "uncertain");
+      assert.equal(
+        f.store.get<OperationReceipt>("operations", key)?.resolution?.choice,
+        "treat_done",
+      );
+      assert.equal(
+        f.store.get<OperationReceipt>("operations", key)?.resolution?.decidedBy,
+        "evidence",
+      );
       assert.equal(restored.get(actor, task.id).participants[1]?.initialSent, true);
       assert.equal(restored.get(actor, task.id).discussion.activeParticipant, second.id);
       assert.equal(restored.get(actor, task.id).discussion.nextParticipant, 1);
@@ -129,6 +145,9 @@ for (const [failure, oldTemplate] of (
     const f = setup();
     try {
       const task = await f.service.create(actor, discussion);
+      // Exercise imported round-robin tasks; newly created tasks now default to manual.
+      task.discussion.mode = "round_robin";
+      f.service.records.save(task);
       await f.service.tick();
       const [first, second] = f.service.get(actor, task.id).participants;
       assert.ok(first?.execution && second?.execution);
@@ -165,6 +184,52 @@ for (const [failure, oldTemplate] of (
     }
   });
 }
+
+test("an evidence resolution survives restart before input state is applied", async () => {
+  const f = setup();
+  try {
+    f.herdr.delivery = { status: "unconfirmed", verified: false, acked: true, attempts: 1 };
+    const task = await f.service.create(actor, {
+      ...discussion,
+      participants: [{ kind: "claude", name: "Claude" }],
+    });
+    await f.service.tick();
+    const participant = f.service.get(actor, task.id).participants[0];
+    assert.ok(participant?.execution);
+    const id = `${participant.id}:initial`;
+    const original = f.store.get<OperationReceipt>("operations", id);
+    assert.ok(original);
+    const result = { status: "delivered", verified: true, acked: false, attempts: 1 };
+    const operations = new Operations(f.store);
+    operations.resolve(id, {
+      choice: "treat_done",
+      decidedBy: "evidence",
+      reason: "Native input exactly matched before restart.",
+      at: new Date().toISOString(),
+      result,
+    });
+    (f.herdr as HerdrPort).initialInput = async () => {
+      assert.fail("already proved inputs do not require another native read");
+    };
+    await new TaskService(f.options).tick();
+    const receipt = f.store.get<OperationReceipt>("operations", id);
+    assert.equal(receipt?.state, original.state);
+    assert.deepEqual(receipt?.error, original.error);
+    assert.equal(receipt?.updatedAt, original.updatedAt);
+    assert.equal(f.service.get(actor, task.id).participants[0]?.initialSent, true);
+    assert.equal(f.service.get(actor, task.id).pending, undefined);
+    assert.ok(f.store.get("task_input_applied", id));
+    assert.deepEqual(
+      await operations.run(id, { receipt: participant.initialReceipt }, async () => {
+        assert.fail("a resolved receipt must never replay input");
+      }),
+      result,
+    );
+    assert.equal(f.herdr.sends.length, 1);
+  } finally {
+    f.close();
+  }
+});
 
 test("shutdown during initial input readback leaves the uncertain receipt for a later restart", async () => {
   const f = setup();

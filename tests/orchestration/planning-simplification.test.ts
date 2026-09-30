@@ -33,7 +33,20 @@ function portsFor(
   const calls: string[] = [];
   const ports: WorkflowPorts = {
     store: h.store,
-    engine,
+    engine: {
+      contextTokens: engine.contextTokens,
+      summarize: () => engine.summarize(),
+      run: async (request) => {
+        if (request.tools[0]?.name !== "orchestration_choice") return engine.run(request);
+        const body = JSON.parse(request.prompt);
+        const candidates = body.candidates.map((candidate: { id: string }) => candidate.id);
+        const selected = candidates.includes("authorized") ? authorization : choice;
+        calls.push(selected);
+        assert.ok(candidates.includes(selected));
+        await request.tools[0].execute({ candidateId: selected }, request.actor);
+        return { text: "", messages: [] };
+      },
+    },
     config: h.config,
     tasks: () => h.service,
     tools: () => [],
@@ -52,39 +65,6 @@ function portsFor(
     notify: async () => {},
     attention: async () => {},
     recoverNotification: async () => {},
-    fetch: async (_url, init) => {
-      const body = JSON.parse(String(init?.body));
-      const candidates = Object.keys(body.questions.action.criteria);
-      const selected = candidates.includes("authorized") ? authorization : choice;
-      calls.push(selected);
-      assert.ok(candidates.includes(selected));
-      if (!candidates.includes("authorized"))
-        assert.deepEqual(
-          candidates,
-          body.state.template.version === 1
-            ? [
-                "use_template",
-                "use_document_template",
-                "use_consensus_document_template",
-                "request_pi",
-              ]
-            : ["use_template", "request_pi"],
-        );
-      return Response.json({
-        model: "jev-1.13.0",
-        answers: {
-          action: {
-            type: "choice",
-            choice: selected,
-            confidence: 0.98,
-            probabilities: Object.fromEntries(
-              candidates.map((id) => [id, id === selected ? 0.98 : 0.02 / (candidates.length - 1)]),
-            ),
-          },
-        },
-        usage: { input_tokens: 20, output_tokens: 5 },
-      });
-    },
   };
   return { ports, calls };
 }
@@ -104,7 +84,7 @@ function eventFor(task: Task): OrchestrationEvent {
   };
 }
 
-test("Jev selects the fixed document mode once, then authorization checks the actual original", async () => {
+test("pi selects the fixed document mode once, then authorization checks the actual original", async () => {
   const h = setup();
   try {
     const original = "请讨论方案并保存设计文档。";

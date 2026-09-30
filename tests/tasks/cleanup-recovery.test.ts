@@ -125,6 +125,21 @@ test("unknown pane deletion remains unconfirmed on explicit destroy retries and 
     assert.equal(h.herdr.closes, 1);
     assert.equal(h.platform.deletions, 0);
     assert.equal(h.herdr.starts, 2);
+    // Only pane.get absence is proof; agent disappearance may leave an owned shell.
+    h.herdr.paneExists = async () => false;
+    await h.service.tick();
+    assert.equal(h.service.get(actor, task.id).status, "destroyed");
+    assert.equal(
+      h.herdr.closes,
+      2,
+      "only the other participant is closed; unknown close is not repeated",
+    );
+    const first = h.service.records.participants(h.service.get(actor, task.id))[0];
+    assert.ok(first);
+    const receipt = h.store.get<OperationReceipt>("operations", `${first.id}:close`);
+    assert.equal(receipt?.state, "uncertain");
+    assert.equal(receipt?.error?.code, "lost_response");
+    assert.equal(receipt?.resolution?.decidedBy, "evidence");
   } finally {
     h.close();
   }

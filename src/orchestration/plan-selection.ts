@@ -25,6 +25,14 @@ export async function choosePlan(
   // Deferrals refund retry attempts; each later evidence-based evaluation still
   // needs its own audit identity so an earlier wait is never overwritten.
   const logId = `${event.id}:planning:${newId("attempt")}`;
+  const actor = {
+    source: "system" as const,
+    ownerId: task.ownerId,
+    chatId: task.chatId ?? task.entryChatId,
+    sessionId: `orchestration:${task.id}`,
+    taskId: task.id,
+    messageId: event.id,
+  };
   task = {
     ...task,
     participantIds: ports
@@ -58,7 +66,9 @@ export async function choosePlan(
   let useConsensusTemplate = false;
   if (task.promptVersion === 3) {
     const assessment = await assessPlanningAssistance({
-      jev: ports.config?.jev,
+      engine: ports.engine,
+      actor,
+      sessionId: `${logId}:choice`,
       simpleDiscussion,
       snapshot: {
         userRequest: task.userRequest?.text ?? task.requirements,
@@ -74,7 +84,6 @@ export async function choosePlan(
         issues: state.issues,
       },
       signal: ports.signal,
-      fetch: ports.fetch,
       assertCurrent: () => {
         ports.assertCurrent(event);
       },
@@ -84,7 +93,7 @@ export async function choosePlan(
     });
     if (assessment.decision === "cancelled") fail("cancelled", "规划判断已取消。");
     if (assessment.decision === "deferred")
-      fail("workflow_assistance_deferred", "Jev 需要更多依据判断计划，也未请求 pi 协助。");
+      fail("workflow_assistance_deferred", "pi 未能确定合法计划，等待更多依据或用户裁决。");
     useConsensusTemplate = assessment.decision === "use_consensus_document_template";
     useDocumentTemplate = assessment.decision === "use_document_template" || useConsensusTemplate;
     useTemplate = assessment.decision === "use_template" || useDocumentTemplate;
@@ -135,9 +144,9 @@ export async function choosePlan(
     previous: state.plan,
     plan,
     userMessages,
-    jev: ports.config?.jev,
+    engine: ports.engine,
+    actor,
     signal: ports.signal,
-    fetch: ports.fetch,
     assertCurrent: () => {
       ports.assertCurrent(event);
     },
@@ -146,9 +155,9 @@ export async function choosePlan(
     task,
     plan,
     userMessages: ports.userMessages(task).map((entry) => entry.text),
-    jev: ports.config?.jev,
+    engine: ports.engine,
+    actor,
     signal: ports.signal,
-    fetch: ports.fetch,
     assertCurrent: () => {
       ports.assertCurrent(event);
     },

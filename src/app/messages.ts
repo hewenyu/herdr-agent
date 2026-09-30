@@ -69,6 +69,20 @@ export async function handleMessage(
     await deliverReply(context, actor, message, answer);
     return;
   }
+  const legacyCommand = message.text
+    .trim()
+    .replace(/^[／⁄∕]/, "/")
+    .split(/\s+/)[0]
+    ?.toLowerCase();
+  if (
+    !message.unsupportedType &&
+    (legacyCommand === "/ls" ||
+      legacyCommand === "/card" ||
+      (!actor.taskId && ["/say", "/stop", "/mirror", "/close"].includes(legacyCommand ?? "")))
+  ) {
+    await legacy.handle(message);
+    return;
+  }
   if (context.config.ai.enabled) {
     // Keep old/resumed pi turns on their original route even if ingress was enabled later.
     const priorPiTurn = context.sessions

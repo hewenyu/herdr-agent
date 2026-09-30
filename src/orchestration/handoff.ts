@@ -6,6 +6,7 @@ import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import { atomicWrite } from "../storage/atomic.js";
+import { parentHandoffPrompt } from "../tasks/parent-handoff.js";
 import { boardDirectory } from "./board.js";
 import { consensusDocuments, responseOutputs } from "./consensus.js";
 import { rejectReceipt } from "./receipt-diagnostics.js";
@@ -31,7 +32,8 @@ export async function checkedHandoffDirectory(
 ): Promise<void> {
   const root = await realpath(stateDir);
   const path = relative(resolve(stateDir), resolve(directory));
-  if (path.startsWith("..") || isAbsolute(path)) fail("workflow_handoff", "交接目录越界。");
+  if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path))
+    fail("workflow_handoff", "交接目录越界。");
   let current = root;
   for (const part of path.split(sep)) {
     current = join(current, part);
@@ -80,6 +82,9 @@ export async function prepareHandoff(
     "## 任务说明",
     task.requirements,
     ...userMessages,
+    ...(parentHandoffPrompt(task.parentContext)
+      ? ["## 父讨论方案快照", parentHandoffPrompt(task.parentContext)]
+      : []),
     "## 本轮工作",
     node.instruction,
     `必需交付文件：${state.plan.requiredArtifacts?.join("、") || "本轮材料及最终报告"}。只引用实际存在的文件。`,

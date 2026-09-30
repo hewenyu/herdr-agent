@@ -8,7 +8,7 @@ import { HerdrRuntime } from "../../src/herdr/runtime.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { TranscriptReader } from "../../src/transcripts/reader.js";
 import { TranscriptResolver } from "../../src/transcripts/resolver.js";
-import { actor, discussion, setup } from "../tasks/helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "../tasks/helpers.js";
 
 const receipt = `HERDR_RECEIPT_${"a".repeat(32)}`;
 const ref: ExecutionRef = {
@@ -126,7 +126,9 @@ test("restart recovers an existing missing-ID Claude reply and dispatches the ne
     },
   });
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, {
+      discussionMode: "round_robin",
+    });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);

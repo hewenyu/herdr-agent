@@ -11,6 +11,7 @@ async function readyTask() {
   const h = setup();
   h.engine.handler = async () => silent;
   const task = await h.app.tasks.create(actor, {
+    orchestration: { mode: "manual" },
     kind: "discussion",
     title: "清理通知",
     requirements: "仅验证资源收尾",

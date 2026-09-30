@@ -11,7 +11,7 @@ const input = {
     { kind: "claude", name: "Claude" },
     { kind: "codex", name: "Codex" },
   ],
-  discussion: { mode: "round_robin" },
+  discussion: { mode: "manual" },
 };
 
 test("pi tools create a real task flow, herdr owns agents, notification decisions never enter user authority", async () => {
@@ -32,6 +32,8 @@ test("pi tools create a real task flow, herdr owns agents, notification decision
     const task = h.app.tasks.records.list("owner")[0];
     assert.ok(task);
     assert.equal(h.herdr.creates, 0);
+    task.discussion.mode = "round_robin";
+    h.app.tasks.records.save(task);
     await h.app.tasks.reconcile(task.id);
     assert.equal(h.herdr.creates, 2);
     assert.equal(h.herdr.starts, 2);
@@ -68,6 +70,8 @@ test("Web-only participant output stays unconfirmed until visible session acknow
       createGroup: false,
       createRemoteTask: false,
     })) as Task;
+    task.discussion.mode = "round_robin";
+    h.app.tasks.records.save(task);
     await h.app.tasks.reconcile(task.id);
     const participant = h.app.tasks.records.participants(task)[0];
     h.herdr.finish(participant?.execution?.paneId ?? "", "已提出讨论方案");
@@ -100,6 +104,8 @@ test("identical participant display names require an ID and never silently choos
         { kind: "codex", name: "reviewer" },
       ],
     })) as Task;
+    task.discussion.mode = "round_robin";
+    h.app.tasks.records.save(task);
     await h.app.tasks.reconcile(task.id);
     const sends = h.herdr.sends.length;
     await assert.rejects(

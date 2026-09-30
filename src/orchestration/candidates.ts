@@ -1,6 +1,6 @@
 import type { Participant, Task } from "../core/types.js";
 import { independentReviewer } from "./authorship.js";
-import { readyNodes } from "./state.js";
+import { currentOpenIssues, readyNodes } from "./state.js";
 import type { VerificationCandidate } from "./verify.js";
 import type { WorkflowState } from "./workflow.js";
 
@@ -19,6 +19,7 @@ export function workflowCandidates(
   verification: VerificationCandidate[],
   reportReady: boolean,
 ): WorkflowCandidate[] {
+  const openIssues = currentOpenIssues(state);
   const available = participants.filter(
     (entry) =>
       entry.started && entry.execution && ["idle", "done"].includes(entry.status) && !entry.error,
@@ -28,8 +29,7 @@ export function workflowCandidates(
       {
         id: "user:stall",
         kind: "user",
-        description: `未决问题连续未变化，请用户裁决：${state.issues
-          .filter((item) => item.status === "open")
+        description: `未决问题连续未变化，请用户裁决：${openIssues
           .map((item) => `${item.id}: ${item.description}`)
           .join("；")}`,
       },
@@ -78,11 +78,7 @@ export function workflowCandidates(
       });
   } else {
     for (const node of ready) {
-      if (
-        node.phase === "reporting" &&
-        state.issues.some((issue) => issue.status === "open" && issue.blocking)
-      )
-        continue;
+      if (node.phase === "reporting" && openIssues.some((issue) => issue.blocking)) continue;
       if (node.phase === "validating" && verification.length) continue;
       for (const participant of eligible(node.id))
         candidates.push({
@@ -102,7 +98,10 @@ export function workflowCandidates(
     });
   if (
     ready.some(
-      (node) => node.role === "reviewer" && !node.participantId && !eligible(node.id).length,
+      (node) =>
+        node.role === "reviewer" &&
+        !node.participantId &&
+        !active.some((entry) => compatible(node.id, entry.id)),
     ) &&
     active.length < 8
   )
@@ -134,7 +133,7 @@ export function workflowCandidates(
         assignments: [{ nodeId, participantId: participant.id }],
       });
   }
-  if (state.issues.some((issue) => issue.status === "open")) {
+  if (openIssues.length > 0) {
     const target =
       [...state.plan.nodes]
         .reverse()
@@ -161,7 +160,7 @@ export function workflowCandidates(
       kind: "replan",
       description: "当前计划未产生可交付报告，请按缺失证据重规划。",
     });
-  if (blocked.length || state.issues.some((issue) => issue.status === "open"))
+  if (blocked.length || openIssues.length > 0)
     candidates.push(
       {
         id: "replan:blocked",

@@ -82,6 +82,18 @@ test("both template and pi planning filter removed participants before generatin
       h.config.jev.apiKey = "fixture-key";
       const engine = new Engine();
       engine.handler = async (request) => {
+        if (request.tools[0]?.name === "orchestration_choice") {
+          const body = JSON.parse(request.prompt);
+          const openings = body.state.template.nodes.filter((node: { id: string }) =>
+            node.id.startsWith("opening-"),
+          );
+          assert.deepEqual(
+            openings.map((node: { participantId: string }) => node.participantId),
+            [active.id],
+          );
+          await request.tools[0].execute({ candidateId: choice }, request.actor);
+          return { text: "", messages: [] };
+        }
         assert.equal(choice, "request_pi");
         assert.deepEqual(
           request.tools.map((tool) => tool.name),
@@ -126,33 +138,6 @@ test("both template and pi planning filter removed participants before generatin
         notify: async () => {},
         attention: async () => {},
         recoverNotification: async () => {},
-        fetch: async (_url, init) => {
-          const body = JSON.parse(String(init?.body));
-          const openings = body.state.template.nodes.filter((node: { id: string }) =>
-            node.id.startsWith("opening-"),
-          );
-          assert.deepEqual(
-            openings.map((node: { participantId: string }) => node.participantId),
-            [active.id],
-          );
-          return Response.json({
-            model: "jev-1.13.0",
-            answers: {
-              action: {
-                type: "choice",
-                choice,
-                confidence: 0.95,
-                probabilities: Object.fromEntries(
-                  Object.keys(body.questions.action.criteria).map((id, _, ids) => [
-                    id,
-                    id === choice ? 0.95 : 0.05 / (ids.length - 1),
-                  ]),
-                ),
-              },
-            },
-            usage: { input_tokens: 20, output_tokens: 5 },
-          });
-        },
       };
       const plan = await choosePlan(ports, task, state, event);
       const openings = plan.nodes.filter((node) => node.id.startsWith("opening-"));
@@ -162,7 +147,7 @@ test("both template and pi planning filter removed participants before generatin
       );
       assert.ok(!plan.nodes.some((node) => node.participantId === removed.id));
       validatePlan(plan, { ...task, participantIds: [active.id] });
-      assert.equal(engine.calls.length, choice === "request_pi" ? 1 : 0);
+      assert.equal(engine.calls.length, choice === "request_pi" ? 2 : 1);
       assert.equal(h.herdr.sends.length, 0);
     } finally {
       h.close();

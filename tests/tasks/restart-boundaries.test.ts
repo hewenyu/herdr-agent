@@ -11,12 +11,12 @@ import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { TaskRestart } from "../../src/tasks/restart.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { Engine, logger } from "../app/helpers.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 async function fixture(mode: "model" | "workflow" = "model") {
   const h = setup();
   h.config.ai.enabled = true;
-  const task = await h.service.create(actor, { ...discussion, orchestration: { mode } });
+  const task = await createPersistedTask(h, actor, discussion, { orchestration: { mode } });
   task.promptVersion = 2;
   h.service.records.save(task);
   await h.service.reconcile(task.id);
@@ -221,7 +221,18 @@ test("confirmed group deletion clears its stale error despite retired unknown in
     await h.service.action({ ...actor, messageId: "destroy-after-restart" }, h.task.id, "destroy");
     await h.service.reconcile(h.task.id);
     assert.equal(h.service.get(actor, h.task.id).error, "删除成功但回执丢失");
+    const deletionId = `${h.task.id}:delete-group`;
+    const original = h.store.get<OperationReceipt>("operations", deletionId);
+    assert.equal(original?.state, "uncertain");
     await h.service.reconcile(h.task.id);
+    const recovered = h.store.get<OperationReceipt>("operations", deletionId);
+    assert.ok(original && recovered);
+    assert.equal(recovered.state, original.state);
+    assert.deepEqual(recovered.error, original.error);
+    assert.equal(recovered.updatedAt, original.updatedAt);
+    assert.equal(recovered.resolution?.choice, "treat_done");
+    assert.equal(recovered.resolution?.decidedBy, "evidence");
+    assert.equal((recovered.resolution?.result as { status?: string })?.status, "dissolved");
     const task = h.service.get(actor, h.task.id);
     assert.equal(task.status, "destroyed");
     assert.equal(task.error, undefined);

@@ -4,6 +4,7 @@ import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import { stableId } from "../../src/core/ids.js";
 import { deferred, setup } from "./helpers.js";
+import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 test("unknown intermediate chat delivery does not stop model handoff or replay the notification", async () => {
   const h = setup();
@@ -57,7 +58,8 @@ test("unknown intermediate chat delivery does not stop model handoff or replay t
     return { text: "", messages: [] };
   };
   try {
-    const task = await h.app.tasks.create(
+    const task = await createLegacyModelTask(
+      h,
       { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "goal" },
       {
         kind: "development",
@@ -111,6 +113,7 @@ test("confirmed output receipt repairs the capture-notification crash gap withou
   const actor = { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "crash-gap" };
   try {
     const task = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "回复落盘恢复",
       requirements: "确认已送达输出不重发",
@@ -213,7 +216,8 @@ test("a final selected during an in-flight output retry recovers its delivered r
     return { text: "", messages: [] };
   };
   try {
-    const task = await h.app.tasks.create(
+    const task = await createLegacyModelTask(
+      h,
       { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "retry-race" },
       {
         kind: "development",

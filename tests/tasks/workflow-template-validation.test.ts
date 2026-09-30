@@ -143,17 +143,29 @@ for (const entry of ["direct", "tool"] as const) {
   });
 }
 
-test("historical orchestration modes continue to ignore a supplied workflow template", async () => {
+test("manual mode ignores a supplied workflow template; stale model input is validated as workflow", async () => {
   const h = setup();
   try {
     h.config.ai.enabled = true;
-    for (const mode of ["model", "manual"] as const) {
-      const task = await h.service.create(actor, {
-        ...discussion,
-        orchestration: { mode, template: "bugfix" },
-      });
-      assert.deepEqual(task.orchestration, { mode });
-    }
+    const manual = await h.service.create(actor, {
+      ...discussion,
+      orchestration: { mode: "manual", template: "bugfix" },
+    });
+    assert.deepEqual(manual.orchestration, { mode: "manual" });
+    // With AI enabled, a new explicit model request is normalized to workflow
+    // regardless of the Jev key, so its template must be compatible.
+    const model = await h.service.create(
+      { ...actor, messageId: "stale-model" },
+      { ...discussion, orchestration: { mode: "model", template: "discussion" } },
+    );
+    assert.deepEqual(model.orchestration, { mode: "workflow", template: "discussion" });
+    await assert.rejects(
+      h.service.create(
+        { ...actor, messageId: "stale-model-bugfix" },
+        { ...discussion, orchestration: { mode: "model", template: "bugfix" } },
+      ),
+      { code: "workflow_template" },
+    );
   } finally {
     h.close();
   }

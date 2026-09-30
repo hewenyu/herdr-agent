@@ -4,13 +4,12 @@
  * provenance; it never chooses a tool or generates a replacement response.
  */
 export function hasUnverifiedToolClaim(text: string): boolean {
-  const value = text.trim();
-  // A question asks for state; it does not assert that the state exists. Keep
-  // this narrow so a sentence containing a question and a separate assertion
-  // still receives the provenance guard.
-  if (/[?？]\s*$/u.test(value)) return false;
+  return assertionClauses(text).some(hasToolClaim);
+}
+
+function hasToolClaim(value: string): boolean {
   const action =
-    /(?:已经|正在|成功|排队|已(?:安排|创建|登记|发送|启动|转交|完成|关闭|解散|销毁)|\b(?:already\s+)?(?:created|creating|registered|queued|scheduled|sent|started|starting|assigned|dispatched|launched|provisioned|initialized|initialised|completed|complete|finished|closed|closing|deleted|deleting|removed|destroyed|done|succeeded)\b)/iu;
+    /(?:已经|正在|成功|排队|已(?:(?:为|帮)(?:你|您|用户)|(?:把|将)[^，,。.!！?？;；\n]{0,24})?(?:安排|创建|新建|建立|登记|发送|启动|转交|完成|关闭|解散|销毁)|\b(?:already\s+)?(?:created|creating|registered|queued|scheduled|sent|started|starting|assigned|dispatched|launched|provisioned|initialized|initialised|completed|complete|finished|closed|closing|deleted|deleting|removed|destroyed|done|succeeded)\b)/iu;
   const withoutNegatedAction = removeNegatedAction(value);
   const business =
     /(?:项目|任务|群|参与者|Codex|Claude|目录|链接|会话|session|project|task|chat|group|participant|directory|workspace|remoteTask)/iu;
@@ -27,8 +26,10 @@ export function hasUnverifiedToolClaim(text: string): boolean {
  * such as creating, sending, or closing was carried out in this turn.
  */
 export function requiresWriteEvidence(text: string): boolean {
-  const value = text.trim();
-  if (/[?？]\s*$/u.test(value)) return false;
+  return assertionClauses(text).some(needsWrite);
+}
+
+function needsWrite(value: string): boolean {
   const withoutNegatedAction = removeNegatedAction(value);
   const writeAction =
     /(?:创建|新建|登记|发送|启动|安排|转交|拉群|建群|建立|已(?:创建|登记|发送|启动|安排|转交)|\b(?:create|created|schedule|scheduled|send|sent|start|started|assign|assigned|dispatch|dispatched|launch|launched|provision|provisioned|initialize|initialise|initialized|initialised|succeeded)\b)/iu;
@@ -156,6 +157,20 @@ const futureChineseIntent =
   /(?:(?:我(?:们)?\s*)?(?:会|将)\s*(?:(?:帮(?:你)?|马上(?:就)?|直接)\s*)?|我(?:们)?\s*(?:来|马上(?:就)?(?:会|将)?|帮(?:你)?)\s*|接下来\s*(?:(?:我(?:们)?\s*)?(?:(?:会|将)\s*)?)?)(?:创建|新建|登记|安排|发送|启动|转交|拉群|建群|建立|关闭|解散|销毁|删除)/iu;
 const futureEnglishIntent =
   /\b(?:I|we)(?:'ll|'m\s+going\s+to|\s+(?:will|shall|am\s+going\s+to))\s+(?:(?:help\s+you|assist\s+you)\s+)?(?:create|schedule|start|send|assign|dispatch|launch|provision|initialize|initialise|close|delete|destroy)\b/iu;
+
+/** Only the interrogative clause is exempt, never the rest of its reply. */
+export function assertionClauses(text: string): string[] {
+  return text
+    .split(/(?<=[。.!！?？;；\n])|[，,]|(?:但是|不过|但|并且|而且)/iu)
+    .map((clause) => clause.trim())
+    .filter(
+      (clause) =>
+        !!clause &&
+        !/[?？]\s*$/u.test(clause) &&
+        !/(?:吗|么)[。.!！;；]?\s*$/u.test(clause) &&
+        !/^(?:是否|Has\s|Have\s|Is\s)/iu.test(clause),
+    );
+}
 
 function removeNegatedAction(value: string): string {
   return value.replace(negatedEnglishAction, "").replace(negatedChineseAction, "");

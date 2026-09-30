@@ -6,7 +6,7 @@ import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { TaskHooks } from "../../src/tasks/context.js";
 import { participantPrompt } from "../../src/tasks/prompts.js";
 import { TaskService } from "../../src/tasks/service.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, assertEvidenceResolved, discussion, setup } from "./helpers.js";
 
 async function exitedAfterUnknownInput(hooks: TaskHooks = {}) {
   const h = setup(hooks);
@@ -108,6 +108,45 @@ test("failed initial recovery cannot starve interval-based remote completion obs
   }
 });
 
+test("remote completion readback preserves the unknown update receipt and records an evidence decision", async () => {
+  const h = setup();
+  try {
+    const task = await h.service.create(actor, discussion);
+    await h.service.reconcile(task.id);
+    const updatesBeforeCompletion = h.platform.updates;
+    const update = h.platform.updateTask.bind(h.platform);
+    h.platform.updateTask = async (...args) => {
+      await update(...args);
+      throw new OperationError("completion_ack_lost", "更新已成功但回执丢失", "unknown");
+    };
+    await h.service.action({ ...actor, messageId: "complete" }, task.id, "complete", {
+      keepGroup: true,
+      keepExecution: true,
+    });
+    await h.service.reconcile(task.id);
+    const intent = h.store.get<{ id: string }>("completion_sync", task.id);
+    assert.ok(intent);
+    const original = h.store.get<OperationReceipt>("operations", intent.id);
+    assert.equal(original?.state, "uncertain");
+    await h.service.reconcile(task.id);
+    const recovered = h.store.get<OperationReceipt>("operations", intent.id);
+    assert.ok(original && recovered);
+    assert.equal(recovered.state, original.state);
+    assert.deepEqual(recovered.error, original.error);
+    assert.equal(recovered.updatedAt, original.updatedAt);
+    assert.equal(recovered.resolution?.choice, "treat_done");
+    assert.equal(recovered.resolution?.decidedBy, "evidence");
+    assert.equal(h.service.get(actor, task.id).status, "completed");
+    assert.equal(
+      h.platform.updates - updatesBeforeCompletion,
+      1,
+      "readback never repeats the completion write",
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("external completion survives a directory failure without trying to reprovision the task", async () => {
   const h = await exitedAfterUnknownInput();
   try {
@@ -133,6 +172,7 @@ test("exact recovered input and final output must be preserved and delivered bef
     },
   });
   try {
+    const original = h.store.get<OperationReceipt>("operations", h.operationId);
     const expectedInput = participantPrompt(h.task, h.participant);
     (h.herdr as HerdrPort).initialInput = async () => expectedInput;
     h.herdr.finish(h.participant.execution?.paneId ?? "", "final result after actual input");
@@ -146,7 +186,7 @@ test("exact recovered input and final output must be preserved and delivered bef
       true,
       "only exact native input confirms delivery",
     );
-    assert.equal(h.store.get<OperationReceipt>("operations", h.operationId)?.state, "done");
+    assertEvidenceResolved(original, h.store.get<OperationReceipt>("operations", h.operationId));
     assert.match(current.result, /final result after actual input/);
     assert.deepEqual(outputs, ["final result after actual input"]);
     assert.equal(h.store.list("pending_outputs").length, 1);

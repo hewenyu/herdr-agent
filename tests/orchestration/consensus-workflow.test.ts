@@ -50,13 +50,16 @@ async function harness(ignoredDocument = false) {
   h.service.records.save(task);
   await h.service.reconcile(task.id);
   const engine = new Engine();
-  engine.handler = async () => {
-    throw new Error("fixed consensus workflow must not invoke pi");
-  };
   const choices: string[] = [];
-  const fetch: typeof globalThis.fetch = async (_url, init) => {
-    const body = JSON.parse(String(init?.body));
-    const ids = Object.keys(body.questions.action.criteria);
+  engine.handler = async (request) => {
+    assert.equal(
+      request.tools[0]?.name,
+      "orchestration_choice",
+      "fixed consensus never invokes a graph planner",
+    );
+    const ids: string[] = JSON.parse(request.prompt).candidates.map(
+      (candidate: { id: string }) => candidate.id,
+    );
     const selected = ids.includes("use_consensus_document_template")
       ? "use_consensus_document_template"
       : ids.includes("authorized")
@@ -68,18 +71,8 @@ async function harness(ignoredDocument = false) {
           ids[0]);
     assert.ok(selected);
     choices.push(selected);
-    return Response.json({
-      model: "jev-fixture",
-      answers: {
-        action: {
-          type: "choice",
-          choice: selected,
-          confidence: 0.99,
-          probabilities: Object.fromEntries(ids.map((id) => [id, id === selected ? 1 : 0])),
-        },
-      },
-      usage: { input_tokens: 10, output_tokens: 1 },
-    });
+    await request.tools[0]?.execute({ candidateId: selected }, request.actor);
+    return { text: "", messages: [] };
   };
   const replies: Array<{ text: string; eventId: string }> = [];
   const options = {
@@ -92,7 +85,6 @@ async function harness(ignoredDocument = false) {
     logger,
     signal: new AbortController().signal,
     retryDelayMs: 0,
-    fetch,
     onReply: async (_task: unknown, text: string, eventId: string) => {
       replies.push({ text, eventId });
     },
@@ -181,7 +173,7 @@ async function harness(ignoredDocument = false) {
   const toFirstConfirmation = async () => {
     await worker.tick();
     assert.deepEqual(choices.slice(0, 2), ["use_consensus_document_template", "authorized"]);
-    assert.equal(engine.calls.length, 0);
+    assert.equal(engine.calls.length, 2);
     assert.deepEqual(state().plan.consensus?.participantIds, task.participantIds);
     await worker.tick();
     assert.equal(state().nodes["opening-1"]?.status, "dispatched");
@@ -252,7 +244,7 @@ test("fixed consensus workflow collects both native confirmations and delivers o
     assert.equal(h.state().phase, "awaiting_acceptance");
     assert.equal(h.replies.length, 1);
     assert.equal(h.deliveries().length, 1);
-    assert.equal(h.engine.calls.length, 0);
+    assert.ok(h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"));
     assert.match(h.replies[0]?.text ?? "", /同版文档/);
     assert.doesNotMatch(
       h.replies[0]?.text ?? "",

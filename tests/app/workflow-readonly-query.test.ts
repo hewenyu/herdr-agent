@@ -81,6 +81,11 @@ async function fixture(promptVersion: 2 | 3 = 3) {
   let requestedTools: string[] = [];
   let queryOptions: { args?: Record<string, unknown>; error?: string } = {};
   h.engine.handler = async (input) => {
+    const choice = input.tools.find((tool) => tool.name === "orchestration_choice");
+    if (choice) {
+      await choice.execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     if (input.sessionId.startsWith("workflow-plan:"))
       return { text: "等待补充规划", messages: [], toolCalls: 0, writeCalls: 0 };
     for (const name of requestedTools) {

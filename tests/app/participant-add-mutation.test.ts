@@ -7,6 +7,7 @@ import type { Participant, Task, TaskMutationRevision } from "../../src/core/typ
 import type { EngineInput } from "../../src/runtime/types.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { logger, setup } from "./helpers.js";
+import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 const EVENTS = "task_orchestration_events";
 const MUTATIONS = "task_mutation_revisions";
@@ -22,7 +23,8 @@ const calls = (h: Harness) =>
   h.engine.calls.filter((input) => input.sessionId.startsWith("orchestration:")).length;
 
 async function matureTask(h: Harness): Promise<Task> {
-  const task = await h.app.tasks.create(
+  const task = await createLegacyModelTask(
+    h,
     { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "create" },
     {
       kind: "discussion",

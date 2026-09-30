@@ -68,7 +68,15 @@ async function fixture(group: boolean) {
     await tool.execute(
       tool.name === "orchestration_plan"
         ? { template: "discussion", instructions: {}, deliveryRequirements: [] }
-        : { candidateId: JSON.parse(input.prompt).candidates[0].id, reason: "按已有要求继续" },
+        : tool.name === "orchestration_choice"
+          ? {
+              candidateId: JSON.parse(input.prompt).candidates.some(
+                (candidate: { id: string }) => candidate.id === "request_pi",
+              )
+                ? "request_pi"
+                : JSON.parse(input.prompt).candidates[0].id,
+            }
+          : { candidateId: JSON.parse(input.prompt).candidates[0].id, reason: "按已有要求继续" },
       input.actor,
     );
     return { text: "", messages: [] };

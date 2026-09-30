@@ -29,6 +29,8 @@ export interface HerdrPort {
   ping(signal?: AbortSignal): Promise<{ version: string; protocol: number }>;
   list(signal?: AbortSignal): Promise<AgentSnapshot[]>;
   get(paneId: string, signal?: AbortSignal): Promise<AgentSnapshot>;
+  /** Read-only pane presence: false only for pane_not_found; all other failures throw. */
+  paneExists(paneId: string, signal?: AbortSignal): Promise<boolean>;
   createWorkspace(
     cwd: string,
     label: string,

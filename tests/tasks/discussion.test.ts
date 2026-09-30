@@ -3,7 +3,7 @@ import test from "node:test";
 import { OperationError } from "../../src/core/errors.js";
 import type { Participant, Task } from "../../src/core/types.js";
 import { TaskService } from "../../src/tasks/service.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 test("round robin keeps dispatching past historical round limits without a user continuation", async () => {
   const outputs: string[] = [];
@@ -13,7 +13,7 @@ test("round robin keeps dispatching past historical round limits without a user 
     },
   });
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const stored = f.store.get<Task>("tasks", task.id);
     assert.ok(stored);
@@ -60,7 +60,7 @@ test("round robin keeps dispatching past historical round limits without a user 
 test("elapsed time and historical time limits do not stop turns; a missing participant still pauses", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const current = f.service.get(actor, task.id);
     const first = current.participants[0];
@@ -96,7 +96,7 @@ test("output delivery retries after restart while native discussion continues in
     },
   });
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -120,7 +120,9 @@ test("pending relay recovers after known nonexecution reset; unknown relay is ne
   for (const outcome of ["not_executed", "unknown"] as const) {
     const f = setup();
     try {
-      const task = await f.service.create(actor, discussion);
+      const task = await createPersistedTask(f, actor, discussion, {
+        discussionMode: "round_robin",
+      });
       await f.service.tick();
       const first = f.service.get(actor, task.id).participants[0];
       assert.ok(first?.execution);
@@ -155,7 +157,7 @@ test("legacy transcript establishes baseline and cannot replay old replies", asy
     },
   });
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);
@@ -206,10 +208,15 @@ test("every relay supplies a durable per-turn receipt without reusing the initia
     return send(ref, text);
   };
   try {
-    const task = await f.service.create(actor, {
-      ...discussion,
-      requirements: "较长讨论上下文".repeat(500),
-    });
+    const task = await createPersistedTask(
+      f,
+      actor,
+      {
+        ...discussion,
+        requirements: "较长讨论上下文".repeat(500),
+      },
+      { discussionMode: "round_robin" },
+    );
     await f.service.tick();
     const first = f.service.get(actor, task.id).participants[0];
     const second = f.service.get(actor, task.id).participants[1];

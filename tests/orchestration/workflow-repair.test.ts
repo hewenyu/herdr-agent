@@ -40,8 +40,15 @@ async function harness() {
   });
   await h.service.reconcile(task.id);
   const engine = new Engine();
-  engine.handler = async () => {
-    throw new Error("protocol repair must not call pi");
+  engine.handler = async (input) => {
+    assert.equal(input.tools[0]?.name, "orchestration_choice");
+    const ids: string[] = JSON.parse(input.prompt).candidates.map(
+      (candidate: { id: string }) => candidate.id,
+    );
+    calls.push(ids);
+    const choice = ids.includes("use_template") ? "use_template" : ids[0];
+    await input.tools[0]?.execute({ candidateId: choice }, input.actor);
+    return { text: "", messages: [] };
   };
   const calls: string[][] = [];
   const replies: string[] = [];
@@ -55,23 +62,7 @@ async function harness() {
     logger,
     signal: new AbortController().signal,
     retryDelayMs: 0,
-    fetch: (async (_url, init) => {
-      const ids = Object.keys(JSON.parse(String(init?.body)).questions.action.criteria);
-      calls.push(ids);
-      const choice = ids.includes("use_template") ? "use_template" : ids[0];
-      return Response.json({
-        model: "jev-fixture",
-        answers: {
-          action: {
-            type: "choice",
-            choice,
-            confidence: 0.99,
-            probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-          },
-        },
-        usage: { input_tokens: 10, output_tokens: 1 },
-      });
-    }) as typeof fetch,
+
     onReply: async (_task: unknown, text: string) => {
       replies.push(text);
     },
@@ -124,7 +115,11 @@ test("a rejected Claude handoff is repaired once through the existing dispatch c
     assert.equal(progress?.status, "dispatched");
     assert.notEqual(progress.operationId, initial.operationId);
     assert.equal(h.calls.length, calls, "a known protocol repair is deterministic");
-    assert.equal(h.engine.calls.length, 0);
+    assert.equal(
+      h.engine.calls.length,
+      calls,
+      "repair adds no pi call beyond prior planning choices",
+    );
     const repairEvent = h.events().find((event) => event.decision?.reason === "receipt_repair");
     assert.equal(repairEvent?.decision?.source, "rule");
     assert.equal(repairEvent?.dispatches.length, 1);

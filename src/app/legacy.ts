@@ -24,33 +24,26 @@ export class LegacyBridge {
       chatId: message.chatId,
     });
     if (command === "/ls") {
-      // herdr can expose plain shell panes alongside managed Claude/Codex
-      // agents. The legacy bridge can only route to a managed agent, so do
-      // not render an action that would fail after the user clicks it.
-      const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
-      const card = {
-        schema: "2.0",
-        body: {
-          elements: agents.length
-            ? agents.flatMap((agent) => [
-                {
-                  tag: "markdown",
-                  content: `${agent.kind ?? "unknown"} · ${agent.paneId} · ${agent.status}\n${agent.cwd}`,
-                },
-                {
-                  tag: "button",
-                  text: { tag: "plain_text", content: "选择" },
-                  value: { action: "select", paneId: agent.paneId },
-                },
-              ])
-            : [{ tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" }],
-        },
-      };
-      await this.context.platform?.sendCard(
-        message.chatId,
-        card,
-        stableId(message.messageId, "picker"),
+      await this.reply(
+        message,
+        "旧桥新接管入口已弃用，请改用 pi 创建任务；已有 agent 选择仍可继续使用。",
       );
+      return;
+    }
+    if (command === "/card") {
+      const selected = await this.selection(message.ownerId, message.chatId);
+      if (!selected || (args[0] && args[0] !== selected.ref.paneId)) {
+        await this.reply(
+          message,
+          "旧桥新接管入口已弃用，请改用 pi 创建任务；/card 仅可查看当前已选中的 agent。",
+        );
+        return;
+      }
+      const screen = await this.context.herdr.screen(selected.ref);
+      if (screen.agent.status === "blocked")
+        await this.context.approvals.publish(message.ownerId, message.chatId, selected.ref, screen);
+      else
+        await this.reply(message, presentScreen(screen.text, this.context.config.ui), selected.ref);
       return;
     }
     if (command === "/close") {
@@ -62,7 +55,7 @@ export class LegacyBridge {
     if (command === "/help") {
       await this.reply(
         message,
-        "已有 agent 模式：/ls 选择；/card <pane> 查看现场；/stop <pane> 中断；/mirror <pane> on|off；/close 解除选择。任务模式请在配置中启用。",
+        "旧桥新接管已弃用，请改用 pi 创建任务。已有选择：/card [pane] 查看现场；/say <pane> <消息>；/stop <pane> 中断；/mirror <pane> on|off；/close 仅解除选择。",
       );
       return;
     }
@@ -73,18 +66,10 @@ export class LegacyBridge {
     if (!target && args[0] && command.startsWith("/")) target = await this.ref(args[0]);
     if (!target) target = (await this.selection(message.ownerId, message.chatId))?.ref;
     if (!target) {
-      const agents = (await this.context.herdr.list()).filter((agent) => agent.kind);
-      if (agents.length === 1 && agents[0]) target = this.fromSnapshot(agents[0]);
-    }
-    if (!target) {
-      await this.reply(message, "请先发送 /ls 并选择要继续对话的 agent。");
-      return;
-    }
-    if (command === "/card") {
-      const screen = await this.context.herdr.screen(target);
-      if (screen.agent.status === "blocked")
-        await this.context.approvals.publish(message.ownerId, message.chatId, target, screen);
-      else await this.reply(message, presentScreen(screen.text, this.context.config.ui), target);
+      await this.reply(
+        message,
+        "旧桥新接管入口已弃用，请改用 pi 创建任务；当前没有已选中的 agent。",
+      );
       return;
     }
     if (command === "/stop") {
@@ -93,6 +78,14 @@ export class LegacyBridge {
       return;
     }
     if (command === "/mirror") {
+      const selected = await this.selection(message.ownerId, message.chatId);
+      if (!selected || selected.ref.paneId !== target.paneId) {
+        await this.reply(
+          message,
+          "旧桥新接管入口已弃用，请改用 pi 创建任务；/mirror 仅可用于当前已选中的 agent。",
+        );
+        return;
+      }
       if (args[1] !== "on" && args[1] !== "off")
         fail("command_args", "用法：/mirror <pane> on|off");
       this.context.store.set<Selection>("legacy_selection", key, {
@@ -124,15 +117,12 @@ export class LegacyBridge {
   }
 
   async select(ownerId: string, chatId: string, paneId: string): Promise<void> {
-    const ref = await this.ref(paneId);
-    const cursor = (await this.context.herdr.transcript(ref)).cursor;
-    const key = stableId(ownerId, chatId);
-    this.context.store.set("legacy_chats", key, { ownerId, chatId });
-    this.context.store.set<Selection>("legacy_selection", key, {
-      ref,
-      cursor,
-      mirror: this.context.config.mirrorDefaultOn,
-    });
+    const selected = await this.selection(ownerId, chatId);
+    if (!selected || selected.ref.paneId !== paneId)
+      fail(
+        "legacy_takeover_deprecated",
+        "旧桥新接管入口已弃用，请改用 pi 创建任务；已有 agent 选择仍可继续使用。",
+      );
   }
 
   async tick(): Promise<void> {
@@ -247,7 +237,7 @@ export class LegacyBridge {
     const route = this.context.store.get<unknown>("legacy_routes", messageId);
     if (!route) return undefined;
     if (typeof route !== "object" || Array.isArray(route))
-      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+      fail("route_unverified", "旧引用缺少 agent 身份，旧桥新接管入口已弃用，请改用 pi 创建任务。");
     if ("paneId" in route) {
       const candidate = route as Record<string, unknown>;
       if (
@@ -258,7 +248,10 @@ export class LegacyBridge {
         typeof candidate.cwd !== "string" ||
         typeof candidate.sessionId !== "string"
       )
-        fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+        fail(
+          "route_unverified",
+          "旧引用缺少 agent 身份，旧桥新接管入口已弃用，请改用 pi 创建任务。",
+        );
       return this.verifyRoute(candidate as unknown as ExecutionRef);
     }
     const raw = (route as Record<string, unknown>).p;
@@ -270,7 +263,7 @@ export class LegacyBridge {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
       binding = parsed as { p?: unknown; k?: unknown };
     } catch {
-      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+      fail("route_unverified", "旧引用缺少 agent 身份，旧桥新接管入口已弃用，请改用 pi 创建任务。");
     }
     if (
       typeof binding.p !== "string" ||
@@ -286,7 +279,7 @@ export class LegacyBridge {
 
   private async verifyRoute(route: ExecutionRef): Promise<ExecutionRef> {
     if (!route.paneId || !route.workspaceId || !route.kind || !route.cwd || !route.sessionId)
-      fail("route_unverified", "旧引用缺少 agent 身份，请通过 /ls 重新选择。");
+      fail("route_unverified", "旧引用缺少 agent 身份，旧桥新接管入口已弃用，请改用 pi 创建任务。");
     const agent = await this.context.herdr.get(route.paneId);
     if (
       !agent.kind ||

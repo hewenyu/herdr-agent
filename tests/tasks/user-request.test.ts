@@ -6,7 +6,7 @@ import type { HerdrPort } from "../../src/core/ports.js";
 import type { ActorContext, Task, TaskCreateInput } from "../../src/core/types.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { currentUserRequest } from "../../src/tasks/user-request.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 const feishuActor: ActorContext = { ...actor, source: "feishu", chatType: "private" };
 const original =
@@ -131,7 +131,9 @@ test("current source wraps direct followup, source mutation conflicts, automatic
   const h = setup();
   try {
     ingress(h);
-    const task = await h.service.create(feishuActor, discussion);
+    const task = await createPersistedTask(h, feishuActor, discussion, {
+      discussionMode: "round_robin",
+    });
     await h.service.tick();
     h.herdr.finish("p1", "第一轮观点");
     await h.service.tick();
@@ -233,8 +235,7 @@ test("main-private followups and lifecycle instructions retain exact task-scoped
   const h = setup();
   h.config.ai.enabled = true;
   try {
-    const task = await h.service.create(feishuActor, {
-      ...discussion,
+    const task = await createPersistedTask(h, feishuActor, discussion, {
       orchestration: { mode: "model" },
     });
     await h.service.tick();

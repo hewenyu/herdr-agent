@@ -95,6 +95,24 @@ test("closed executions release workspace admission without changing unknown inp
   }
 });
 
+for (const decidedBy of ["evidence", "user", "pi"] as const) {
+  test(`uncertain close resolved by ${decidedBy} controls workspace release without rewriting receipts`, async () => {
+    const f = fixture();
+    try {
+      f.store.set("operations", f.close.id, {
+        ...f.close,
+        state: "uncertain",
+        error: { code: "lost", message: "lost response", outcome: "unknown" },
+        resolution: { choice: "treat_done", decidedBy, reason: "confirmed", at: f.close.updatedAt },
+      });
+      assert.equal(await workspaceAvailable(f.store, f.task, "write"), decidedBy !== "pi");
+      assert.equal(f.store.get<{ state: string }>("operations", f.close.id)?.state, "uncertain");
+    } finally {
+      f.store.close();
+    }
+  });
+}
+
 const cases: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
   ["paused task", (f) => f.store.set("tasks", f.old.id, { ...f.old, status: "paused" })],
   ["live task", (f) => f.store.set("tasks", f.old.id, { ...f.old, status: "review" })],

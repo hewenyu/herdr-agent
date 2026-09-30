@@ -32,6 +32,15 @@ async function harness(verify?: string[] | ((directory: string) => string[])) {
 
   const engine = new Engine();
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     const plan = input.tools.find((tool) => tool.name === "orchestration_plan");
     if (plan)
       await plan.execute(
@@ -43,10 +52,7 @@ async function harness(verify?: string[] | ((directory: string) => string[])) {
       const candidate =
         data.candidates.find((entry: { kind: string }) => entry.kind === "deliver") ??
         data.candidates[0];
-      await input.tools[0]?.execute(
-        { candidateId: candidate.id, reason: "按安全测试合法候选执行。" },
-        input.actor,
-      );
+      await input.tools[0]?.execute({ candidateId: candidate.id }, input.actor);
     }
     return { text: "", messages: [] };
   };
@@ -492,6 +498,8 @@ test("verification retry resolves only its own issue when a participant already 
     assert.notEqual(systemIssue.id, "verify-0");
     assert.equal(systemIssue.verificationCommandIndex, 0);
     assert.equal(systemIssue.status, "open");
+    assert.equal(systemIssue.planVersion, h.state(task).plan.version);
+    assert.equal(systemIssue.needsRevalidation, false);
 
     await h.service.action({ ...actor, messageId: "resume-collision" }, task.id, "resume");
     for (
@@ -514,19 +522,21 @@ test("verification retry resolves only its own issue when a participant already 
     assert.equal(new Set(current.issues.map((issue) => issue.id)).size, current.issues.length);
     assert.deepEqual(
       current.issues.find((issue) => issue.id === "verify-0"),
-      originalIssue,
+      { ...originalIssue, needsRevalidation: true },
     );
     const resolved = current.issues.find((issue) => issue.id === systemIssue.id);
     assert.equal(resolved?.status, "resolved");
     assert.ok(resolved.evidenceRefs.includes(passed.id));
+    assert.equal(resolved.planVersion, current.plan.version);
+    assert.equal(resolved.needsRevalidation, false);
     assert.ok(
-      reportContract(
+      !reportContract(
         current,
         passed.artifactRevision,
         h.catalog.get("safety").verify ?? [],
         passed.configRevision,
       ).includes("仍有未处理阻塞问题"),
-      "a successful command does not resolve the participant's independent acceptance defect",
+      "the participant defect remains open history but needs revalidation after user resume",
     );
     assert.equal(h.replies.length, 0);
   } finally {

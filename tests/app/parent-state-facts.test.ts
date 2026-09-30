@@ -19,6 +19,7 @@ test("child history remains queryable but cleanup notice inputs omit it without 
   h.engine.handler = async () => silent;
   try {
     const parent = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "父讨论",
       requirements: "等待用户验收，不自动完成或关闭。",
@@ -28,6 +29,7 @@ test("child history remains queryable but cleanup notice inputs omit it without 
     const child = await h.app.tasks.create(
       { ...actor, messageId: "child" },
       {
+        orchestration: { mode: "manual" },
         kind: "development",
         title: "关联开发",
         requirements: "父讨论任务继续保持等待验收状态，不要对其执行完成或关闭。",

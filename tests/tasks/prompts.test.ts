@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 for (const requirements of [
   '只讨论，最多120字。只输出JSON对象，字段为"结论"；不要列未决问题，不要附加说明。',
@@ -14,7 +14,12 @@ for (const requirements of [
       },
     });
     try {
-      const task = await h.service.create(actor, { ...discussion, requirements });
+      const task = await createPersistedTask(
+        h,
+        actor,
+        { ...discussion, requirements },
+        { discussionMode: "round_robin" },
+      );
       await h.service.tick();
       const first = h.service.get(actor, task.id).participants[0];
       assert.ok(first?.execution);

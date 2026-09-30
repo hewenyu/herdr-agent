@@ -29,8 +29,14 @@ async function fixture(count = 2) {
   });
   await h.service.reconcile(task.id);
   const engine = new Engine();
-  engine.handler = async () => {
-    assert.fail("observed runtime constraints need no invented model explanation");
+  engine.handler = async (input) => {
+    assert.equal(input.tools[0]?.name, "orchestration_choice");
+    const ids: string[] = JSON.parse(input.prompt).candidates.map(
+      (candidate: { id: string }) => candidate.id,
+    );
+    const choice = ids.includes("use_template") ? "use_template" : "user:roles";
+    await input.tools[0]?.execute({ candidateId: choice }, input.actor);
+    return { text: "", messages: [] };
   };
   const replies: string[] = [];
   const options = {
@@ -43,25 +49,7 @@ async function fixture(count = 2) {
     logger,
     signal: new AbortController().signal,
     retryDelayMs: 0,
-    fetch: (async (_url, init) => {
-      const ids = Object.keys(JSON.parse(String(init?.body)).questions.action.criteria);
-      const choice = ids.includes("use_template") ? "use_template" : "user:roles";
-      assert.ok(ids.includes(choice), JSON.stringify(ids));
-      return new Response(
-        JSON.stringify({
-          model: "jev-fixture",
-          answers: {
-            action: {
-              type: "choice",
-              choice,
-              confidence: 0.99,
-              probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-            },
-          },
-          usage: { input_tokens: 10, output_tokens: 1 },
-        }),
-      );
-    }) as typeof fetch,
+
     onReply: async (_task: unknown, text: string) => {
       replies.push(text);
     },
@@ -140,7 +128,10 @@ test("a real user:roles wait presents the fixed author conflict and concrete ind
       binding,
     );
     assert.equal(h.herdr.sends.length, 0, "presenting options does not change or execute the plan");
-    assert.equal(h.engine.calls.length, 0);
+    assert.ok(
+      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      "program role questions need no question-generation model",
+    );
     await new TaskOrchestrator(h.options).tick();
     assert.equal(h.replies.length, 1);
   } finally {
@@ -160,7 +151,10 @@ test("a reviewer binding change invalidates the saved role question without sile
     const updated = await ensureUserDecision(h.questionInput());
     assert.equal(updated.status, "system");
     assert.deepEqual(updated.questions, []);
-    assert.equal(h.engine.calls.length, 0);
+    assert.ok(
+      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      "program role questions need no question-generation model",
+    );
   } finally {
     h.close();
   }
@@ -181,7 +175,10 @@ test("busy compatible participants and a generic selector reason do not invent r
     });
     assert.equal(decision.status, "system");
     assert.deepEqual(decision.questions, []);
-    assert.equal(h.engine.calls.length, 0);
+    assert.ok(
+      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      "program role questions need no question-generation model",
+    );
   } finally {
     h.close();
   }
@@ -198,7 +195,10 @@ test("a full roster of authors requests a concrete replacement name without prom
     assert.match(decision.questions[0]?.missingInput ?? "", /8\/8.*参与者姓名/);
     assert.match(decision.questions[0]?.example ?? "", /现有参与者姓名.*替换/);
     assert.equal(decision.questions[0]?.options, undefined);
-    assert.equal(h.engine.calls.length, 0);
+    assert.ok(
+      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      "program role questions need no question-generation model",
+    );
     assert.equal(h.service.records.participants(h.task).length, 8);
   } finally {
     h.close();

@@ -22,10 +22,12 @@ test("native done without transcript leaves explicit absent-output facts and wai
       title: "No captured discussion output",
       requirements: "仅讨论",
       participants: [{ kind: "claude" }, { kind: "codex" }],
-      discussion: { mode: "round_robin" },
+      discussion: { mode: "manual" },
       createRemoteTask: false,
       keepGroup: true,
     })) as Task;
+    task.discussion.mode = "round_robin";
+    h.app.tasks.records.save(task);
     await h.app.tasks.reconcile(task.id);
     const participants = h.app.tasks.records.participants(task);
     for (const participant of participants) {
@@ -51,15 +53,26 @@ test("native done without transcript leaves explicit absent-output facts and wai
       event.participants.map((participant) => ({
         status: participant.status,
         initialSent: participant.initialSent,
+        initialDelivery: participant.initialDelivery,
         hasOutput: participant.hasOutput,
       })),
       [
-        { status: "done", initialSent: true, hasOutput: false },
-        { status: "done", initialSent: false, hasOutput: false },
+        { status: "done", initialSent: true, initialDelivery: "confirmed", hasOutput: false },
+        { status: "done", initialSent: false, initialDelivery: "pending", hasOutput: false },
       ],
     );
     const first = participants[0];
     assert.ok(first);
+    for (const initialDelivery of ["confirmed", "decided", "pending"] as const) {
+      const projected = notificationParticipants([
+        { ...first, initialSent: true, initialDelivery },
+      ]);
+      assert.equal(projected[0]?.initialDelivery, initialDelivery);
+      assert.equal(projected[0]?.initialSent, true);
+    }
+    const legacy = notificationParticipants([{ ...first, initialSent: true }])[0];
+    assert.ok(legacy);
+    assert.ok(!("initialDelivery" in legacy), "missing delivery facts must not be fabricated");
     const withOutput = notificationParticipants([{ ...first, lastOutput: "已采集的观点" }])[0];
     assert.equal(withOutput?.hasOutput, true);
     assert.ok(!("lastOutput" in (withOutput ?? {})), "notices receive output presence, not prose");
@@ -83,10 +96,12 @@ test("Application notice projection keeps blocked, receipt and discussion facts 
       title: "当前讨论状态",
       requirements: "HISTORICAL_REQUIREMENTS_ONLY",
       participants: [{ kind: "claude", role: "HISTORICAL_ROLE_ONLY" }, { kind: "codex" }],
-      discussion: { mode: "round_robin" },
+      discussion: { mode: "manual" },
       createRemoteTask: false,
       keepGroup: true,
     })) as Task;
+    created.discussion.mode = "round_robin";
+    h.app.tasks.records.save(created);
     await h.app.tasks.reconcile(created.id);
     const task = h.store.get<Task>("tasks", created.id);
     assert.ok(task);

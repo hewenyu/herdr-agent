@@ -6,6 +6,7 @@ import { OperationError } from "../../src/core/errors.js";
 import type { StoredMessage } from "../../src/core/types.js";
 import {
   ReportDeliveries,
+  type ReportDelivery,
   type ReportEnvelope,
   reportSummaryText,
 } from "../../src/orchestration/report-delivery.js";
@@ -239,6 +240,10 @@ for (const stage of ["upload", "send"] as const)
       assert.equal(guards, 0, "unknown effects retain priority over freshness checks");
       assert.equal(uploads, 1);
       assert.equal(files, stage === "send" ? 1 : 0);
+      assert.equal(
+        h.store.get<ReportDelivery>("workflow_report_deliveries", "event")?.fileState,
+        "uncertain",
+      );
       assert.equal(h.deliveries.retryable("task", "event", "report"), false);
       assert.equal(await h.deliveries.confirmed("task", "event", "report"), false);
     } finally {
@@ -254,7 +259,7 @@ for (const boundary of ["upload", "file", "card"] as const)
     const calls = { uploads: 0, files: 0, cards: 0 };
     let fresh = boundary !== "upload";
     const guard = async () => {
-      if (!fresh) throw new OperationError("workflow_report", "Git facts changed");
+      if (!fresh) throw new Error("Git facts changed");
     };
     platform.uploadFile = async () => {
       calls.uploads++;
@@ -271,7 +276,14 @@ for (const boundary of ["upload", "file", "card"] as const)
       return "card-message";
     };
     try {
-      await assert.rejects(h.deliveries.send(input, guard), { code: "workflow_report" });
+      await assert.rejects(h.deliveries.send(input, guard), /Git facts changed/);
+      const failed = h.store.get<ReportDelivery>("workflow_report_deliveries", "event");
+      assert.equal(
+        failed?.fileState,
+        boundary === "upload" ? "prepared" : boundary === "file" ? "uploaded" : "delivered",
+      );
+      assert.equal(failed?.cardState, "prepared");
+      assert.equal(failed?.error?.outcome, "unknown");
       const expected = {
         uploads: boundary === "upload" ? 0 : 1,
         files: boundary === "card" ? 1 : 0,
@@ -281,7 +293,7 @@ for (const boundary of ["upload", "file", "card"] as const)
       assert.equal(await h.deliveries.confirmed("task", "event", "report"), false);
       assert.equal(h.deliveries.retryable("task", "event", "report"), true);
       const restarted = new ReportDeliveries(h.store, h.outbox, () => platform);
-      await assert.rejects(restarted.send(input, guard), { code: "workflow_report" });
+      await assert.rejects(restarted.send(input, guard), /Git facts changed/);
       assert.deepEqual(calls, expected, "retry checks freshness before its next unsent stage");
       fresh = true;
       await restarted.send(input, guard);
@@ -294,6 +306,43 @@ for (const boundary of ["upload", "file", "card"] as const)
       const record = h.store.get<Record<string, unknown>>("workflow_report_deliveries", "event");
       assert.equal(record?.text, input.text);
       assert.equal(record?.beforeSend, undefined, "callbacks are never persisted in the envelope");
+    } finally {
+      h.store.close();
+    }
+  });
+
+for (const boundary of ["body", "card"] as const)
+  test(`legacy ${boundary} guard errors are recorded without poisoning delivery`, async () => {
+    const h = fixture();
+    let bodies = 0;
+    let cards = 0;
+    let guards = 0;
+    h.platform.sendText = async () => {
+      bodies++;
+      return "body";
+    };
+    h.platform.sendCard = async () => {
+      cards++;
+      return "card";
+    };
+    try {
+      await assert.rejects(
+        h.deliveries.send(h.input, async () => {
+          if (++guards === (boundary === "body" ? 1 : 2)) throw new Error("guard failed");
+        }),
+        /guard failed/,
+      );
+      const failed = h.store.get<ReportDelivery>("workflow_report_deliveries", "event");
+      assert.equal(failed?.cardState, "prepared");
+      assert.equal(failed?.error?.outcome, "unknown");
+      assert.equal(
+        h.outbox.receipt(failed?.bodyId ?? "")?.state,
+        boundary === "body" ? undefined : "delivered",
+      );
+      assert.equal(h.deliveries.retryable("task", "event", "report"), true);
+      await new ReportDeliveries(h.store, h.outbox, () => h.platform).send(h.input);
+      assert.deepEqual({ bodies, cards }, { bodies: 1, cards: 1 });
+      assert.equal(await h.deliveries.confirmed("task", "event", "report"), true);
     } finally {
       h.store.close();
     }

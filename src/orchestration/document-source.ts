@@ -95,6 +95,15 @@ async function assertReadonlyDocuments(task: Task, documents: ReadonlyDocument[]
       fail("workflow_document_scope", "已撤销授权的文档发生变化，请先恢复撤销时的文件状态。");
 }
 
+/** Read legacy Jev evidence without changing its stored audit record. */
+function withdrawalChoiceAuthorized(decision: ContractChangeDecision): boolean {
+  const choice =
+    decision.policyVersion === "workflow-contract-authorization-v2"
+      ? decision.pi
+      : (decision as { jev?: { status: string; candidateId?: string } }).jev;
+  return choice?.status === "success" && choice.candidateId === "authorized";
+}
+
 /** A draft's authorization marker alone cannot relax the accepted source boundary. */
 function authorizedWithdrawal(store: Store, task: Task, state: WorkflowState): boolean {
   const change = state.plan.contractChange;
@@ -123,8 +132,7 @@ function authorizedWithdrawal(store: Store, task: Task, state: WorkflowState): b
     decision?.taskId === task.id &&
     decision.planVersion === state.plan.version &&
     decision.decision === "authorized" &&
-    decision.jev.status === "success" &&
-    decision.jev.candidateId === "authorized" &&
+    withdrawalChoiceAuthorized(decision) &&
     decision.change.sourceMessageId === change.sourceMessageId &&
     decision.change.removeDocumentDelivery === true &&
     decision.change.removeConsensus === change.removeConsensus

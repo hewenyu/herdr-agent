@@ -6,6 +6,19 @@ import type { OperationReceipt } from "../../src/storage/operations.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
 
+function assertDeletionResolved(
+  original: OperationReceipt,
+  recovered: OperationReceipt | undefined,
+) {
+  assert.ok(recovered);
+  assert.equal(recovered.state, original.state);
+  assert.deepEqual(recovered.error, original.error);
+  assert.equal(recovered.updatedAt, original.updatedAt);
+  assert.equal(recovered.resolution?.choice, "treat_done");
+  assert.equal(recovered.resolution?.decidedBy, "evidence");
+  assert.equal((recovered.resolution?.result as { status?: string })?.status, "dissolved");
+}
+
 async function lostDeletion(h: ReturnType<typeof setup>) {
   let dissolved = false;
   Object.assign(h.platform, {
@@ -38,6 +51,8 @@ for (const state of ["pending", "uncertain"] as const) {
         current.error = undefined;
         h.service.records.save(current);
       }
+      const original = h.store.get<OperationReceipt>("operations", id);
+      assert.ok(original);
       h.service.stop();
       const restored = new TaskService(h.options);
       await restored.reconcile(task.id);
@@ -47,10 +62,9 @@ for (const state of ["pending", "uncertain"] as const) {
       assert.equal(current.groupDeleted, true);
       assert.equal(current.error, undefined);
       assert.equal(current.completedAt, undefined, "resource cleanup is not task acceptance");
-      assert.equal(recovered?.state, "done");
+      assertDeletionResolved(original, recovered);
       assert.equal(recovered?.fingerprint, stableId(canonical({ chat: current.chatId })));
-      assert.equal(recovered?.error, undefined);
-      const result = recovered?.result as Record<string, unknown>;
+      const result = recovered?.resolution?.result as Record<string, unknown>;
       assert.equal(result.confirmedBy, "group_status");
       assert.equal(result.chatId, current.chatId);
       assert.equal(result.status, "dissolved");
@@ -162,7 +176,7 @@ for (const unresolved of [
       }
       const restored = new TaskService(h.options);
       await restored.reconcile(task.id);
-      assert.equal(h.store.get<OperationReceipt>("operations", id)?.state, "done");
+      assertDeletionResolved(receipt, h.store.get<OperationReceipt>("operations", id));
       assert.equal(restored.get(actor, task.id).error, current.error);
       assert.equal(h.platform.deletions, 1);
     } finally {
@@ -233,7 +247,8 @@ for (const state of ["pending", "uncertain", "done"] as const) {
       assert.equal(current.status, "destroyed");
       assert.equal(current.groupDeleted, true);
       assert.equal(current.error, state === "done" ? undefined : deletion?.error?.message);
-      assert.equal(h.store.get<OperationReceipt>("operations", id)?.state, "done");
+      assert.ok(deletion);
+      assertDeletionResolved(deletion, h.store.get<OperationReceipt>("operations", id));
       assert.deepEqual(h.store.get("operations", initialId), saved);
       assert.equal(h.herdr.sends.length, 1);
       assert.equal(h.herdr.closes, 1);
@@ -284,7 +299,7 @@ test("group recovery rolls back receipt and task state together when persistence
     assert.equal(restored.get(actor, task.id).groupDeleted, false);
     assert.equal(restored.get(actor, task.id).status, "destroying");
     await restored.reconcile(task.id);
-    assert.equal(h.store.get<OperationReceipt>("operations", id)?.state, "done");
+    assertDeletionResolved(receipt, h.store.get<OperationReceipt>("operations", id));
     assert.equal(restored.get(actor, task.id).status, "destroyed");
     assert.equal(restored.get(actor, task.id).error, "记录暂不可写");
     assert.equal(h.platform.deletions, 1);

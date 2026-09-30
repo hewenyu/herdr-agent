@@ -5,7 +5,7 @@ import { TaskOrchestrator } from "../../src/app/task-orchestrator.js";
 import type { ActorContext, Task, UserRequestSource } from "../../src/core/types.js";
 import type { EngineInput } from "../../src/runtime/types.js";
 import { Engine, logger } from "../app/helpers.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 const original = "给这个任务新增一位 Codex，独立检查现有结论并继续交付；不要修改文件。";
 const privateActor: ActorContext = {
@@ -53,11 +53,15 @@ test("adding a participant from the main private chat wakes a model task with no
   const h = setup();
   h.config.ai.enabled = true;
   try {
-    const task = await h.service.create(actor, {
-      ...discussion,
-      orchestration: { mode: "model" },
-      participants: [{ kind: "claude" }],
-    });
+    const task = await createPersistedTask(
+      h,
+      actor,
+      {
+        ...discussion,
+        participants: [{ kind: "claude" }],
+      },
+      { orchestration: { mode: "model" } },
+    );
     await h.service.reconcile(task.id);
     const first = h.service.get(actor, task.id).participants[0];
     assert.ok(first?.execution);

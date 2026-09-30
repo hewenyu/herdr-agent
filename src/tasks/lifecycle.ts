@@ -8,6 +8,7 @@ import { observeTask } from "./observe.js";
 import { activeTaskOperation, taskOperationPrefixes } from "./operation-scope.js";
 import { taskDescription } from "./prompts.js";
 import { resolveGroupRetention } from "./retention.js";
+import { reconcileUncertain } from "./uncertain-effects.js";
 
 export type TaskAction = "complete" | "close" | "destroy" | "reopen" | "retry" | "pause" | "resume";
 export interface TaskActionOptions {
@@ -216,17 +217,19 @@ export async function syncGroupState(context: TaskContext, task: Task): Promise<
 function confirmGroupDeletion(context: TaskContext, task: Task): void {
   const id = `${task.id}:delete-group`;
   const receipt = context.store.get<OperationReceipt>("operations", id);
-  if (!receipt || !["pending", "uncertain"].includes(receipt.state)) return;
+  if (!receipt || receipt.resolution || !["pending", "uncertain"].includes(receipt.state)) return;
   if (receipt.id !== id || receipt.fingerprint !== stableId(canonical({ chat: task.chatId })))
     fail("operation_conflict", "删群回执与当前绑定群不匹配，未确认该操作。");
-  const otherUnresolved = context.store
-    .entries<OperationReceipt>("operations")
-    .some(
-      ([key, value]) =>
-        key !== id &&
-        activeTaskOperation(context.store, task, key, value) &&
-        value.state !== "done",
-    );
+  const otherUnresolved = context.store.entries<OperationReceipt>("operations").some(
+    ([key, value]) =>
+      key !== id &&
+      activeTaskOperation(context.store, task, key, value) &&
+      value.state !== "done" &&
+      // An explicit target-state decision settles an unknown receipt without
+      // rewriting its history; only the owner may abandon an unknown effect.
+      value.resolution?.choice !== "treat_done" &&
+      !(value.resolution?.choice === "abandon" && value.resolution.decidedBy === "user"),
+  );
   const pendingDelivery = context.store
     .list<{ chatId: string; state: string }>("outbox")
     .some((value) => value.chatId === task.chatId && value.state !== "delivered");
@@ -239,10 +242,12 @@ function confirmGroupDeletion(context: TaskContext, task: Task): void {
   )
     task.error = undefined;
   const observedAt = now();
-  context.store.set("operations", id, {
-    ...receipt,
-    state: "done",
-    error: undefined,
+  context.operations.resolve(id, {
+    choice: "treat_done",
+    decidedBy: "evidence",
+    reason: "平台只读查询确认群已解散；原删除回执保留。",
+    evidence: ["group_status_dissolved"],
+    at: observedAt,
     result: {
       confirmedBy: "group_status",
       chatId: task.chatId,
@@ -251,7 +256,6 @@ function confirmGroupDeletion(context: TaskContext, task: Task): void {
       previousState: receipt.state,
       previousError: receipt.error,
     },
-    updatedAt: observedAt,
   });
 }
 
@@ -321,12 +325,13 @@ export async function syncCompletion(context: TaskContext, task: Task): Promise<
     ) {
       context.store.set("description_sync", task.id, { text: target.description, state: "done" });
     }
-    if (attempted && ["pending", "uncertain"].includes(attempted.state)) {
-      context.store.set("operations", target.id, {
-        ...attempted,
-        state: "done",
-        error: undefined,
-        updatedAt: now(),
+    if (attempted && !attempted.resolution && ["pending", "uncertain"].includes(attempted.state)) {
+      context.operations.resolve(target.id, {
+        choice: "treat_done",
+        decidedBy: "evidence",
+        reason: "平台只读查询确认任务完成状态已达到目标；原更新回执保留。",
+        evidence: ["remote_task_completion_state"],
+        at: now(),
       });
     }
   }
@@ -364,15 +369,30 @@ export async function closeTask(context: TaskContext, task: Task): Promise<void>
       outcome: outcome ?? { status: "processed" },
     });
   }
+  // Read-only target-state proof can settle a lost close reply without replaying it.
+  await reconcileUncertain(context, task);
   // Persist results and intent before any resource deletion.
   context.records.save(task);
   for (const participant of context.records.participants(task)) {
     assertActive(context);
     if (!participant.execution || participant.status === "removed") continue;
+    const closeReceipt = context.store.get<OperationReceipt>(
+      "operations",
+      `${participant.id}:close`,
+    );
+    // Only the owner may abandon an unknown close: the pane may still run, but
+    // cleanup continues without claiming it closed. Other deciders stay unresolved.
     if (
-      context.store.get<OperationReceipt>("operations", `${participant.id}:close`)?.state ===
-      "failed"
+      closeReceipt?.resolution?.choice === "abandon" &&
+      closeReceipt.resolution.decidedBy === "user"
     ) {
+      participant.status = "removed";
+      context.records.saveParticipant(participant);
+      continue;
+    }
+    if (closeReceipt?.resolution?.choice === "abandon")
+      fail("operation_uncertain", "执行窗口关闭结果未知，放弃需任务所有者确认。");
+    if (closeReceipt?.state === "failed") {
       context.operations.resetFailed(`${participant.id}:close`);
     }
     await context.operations.run(`${participant.id}:close`, participant.execution, () =>

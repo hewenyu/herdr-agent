@@ -42,6 +42,7 @@ test("Application polls admit a new task and a Web conversation while another ta
   const ticks: Promise<void>[] = [];
   const create = async (title: string) =>
     (await h.app.dispatch("task.create", {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title,
       requirements: "隔离并发验证",
