@@ -119,6 +119,8 @@ AI 与任务均启用时，[application](../src/app/application.ts) 每个 tick 
 
 全套改用 `node --import tsx --test --test-concurrency=2 tests/**/*.test.ts`：1802 项，1799 通过、3 失败，均为 `tests/deploy/install.test.ts` 的 launchd installer bootstrap 用例约 40s 超时；该文件单独重跑 46/46 通过。基线在负载下同样出现 launchd installer 超时，属于既有的负载敏感环境问题，非本迭代引入。
 
-合并测试 helper 后再次执行默认并发 `npm test`：1802 项，1751 通过、51 失败，仍全部为超时，分布于 install（33）、workflow-worktree（6）、code-delivery（5）、workflow-safety（3）、report-git-contract、verify、npm、workflow-report-delivery（各 1）。这 8 个文件合并单独重跑 142/142 通过。因此默认并发的 `npm run check` 在本机仍会因既有超时退出 1，不能称整树检查通过；是否为 `npm test` 固定 `--test-concurrency` 留待决定。
+合并测试 helper 后再次执行默认并发 `npm test`：1802 项，1751 通过、51 失败，仍全部为超时，分布于 install（33）、workflow-worktree（6）、code-delivery（5）、workflow-safety（3）、report-git-contract、verify、npm、workflow-report-delivery（各 1）。这 8 个文件合并单独重跑 142/142 通过。因此默认并发的 `npm run check` 在本机仍会因既有超时退出 1。
+
+经用户确认，`npm test` 已固定 `--test-concurrency=2`（只限制测试运行器同时执行的测试文件数，不影响产品运行时行为或断言）。固定后在本机负载约 3.5 时执行 `npm run check`：check:lines / tsc / Biome 通过，测试 1802 项 1788 通过、14 失败，仍全部为超时（install 10、workflow-safety 2、workflow-worktree 2）；这些文件单独重跑 67/68，剩余 1 项为 launchd installer 10s 超时。本机结果仍受负载影响，整树检查以 PR 的三平台 CI 为准。
 
 文档自检使用 `node scripts/check-lines.mjs`；该脚本不检查 docs。只读补证仍依赖绑定身份与可核验原生记录，报告附件仍没有平台查询接口，pi 判断也不能单独释放工作目录。本轮不调整 Bypass 与 Jev 自动审批默认值。
