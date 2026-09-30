@@ -44,6 +44,15 @@ async function harness(settings: { writableAnalysis?: boolean } = {}) {
   }
   const engine = new Engine();
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     const tool = input.tools[0];
     assert.ok(tool);
     if (tool.name === "orchestration_plan")
@@ -71,7 +80,7 @@ async function harness(settings: { writableAnalysis?: boolean } = {}) {
         ) ??
         candidates[0];
       assert.ok(selected);
-      await tool.execute({ candidateId: selected.id, reason: "验证作者身份边界。" }, input.actor);
+      await tool.execute({ candidateId: selected.id }, input.actor);
     }
     return { text: "", messages: [] };
   };

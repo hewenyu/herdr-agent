@@ -130,7 +130,8 @@ test("retained group cleanup waits for pending deliveries and keeps an unknown d
     };
     await h.service.reconcile(retained.id);
     const operationId = `${retained.id}:delete-group`;
-    assert.equal(h.store.get<OperationReceipt>("operations", operationId)?.state, "uncertain");
+    const original = h.store.get<OperationReceipt>("operations", operationId);
+    assert.equal(original?.state, "uncertain");
     h.service.stop();
     const restored = new TaskService(h.options);
     await restored.action(cleanupActor, retained.id, "destroy", { keepGroup: false });
@@ -141,7 +142,14 @@ test("retained group cleanup waits for pending deliveries and keeps an unknown d
     await restored.reconcile(retained.id);
     assert.equal(restored.get(actor, retained.id).status, "destroyed");
     assert.equal(restored.get(actor, retained.id).groupDeleted, true);
-    assert.equal(h.store.get<OperationReceipt>("operations", operationId)?.state, "done");
+    const recovered = h.store.get<OperationReceipt>("operations", operationId);
+    assert.ok(original && recovered);
+    assert.equal(recovered.state, original.state);
+    assert.deepEqual(recovered.error, original.error);
+    assert.equal(recovered.updatedAt, original.updatedAt);
+    assert.equal(recovered.resolution?.choice, "treat_done");
+    assert.equal(recovered.resolution?.decidedBy, "evidence");
+    assert.equal((recovered.resolution?.result as { status?: string })?.status, "dissolved");
     assert.equal(h.platform.deletions, 1);
     assert.equal(h.herdr.closes, 2);
   } finally {

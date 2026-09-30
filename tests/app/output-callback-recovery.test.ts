@@ -21,6 +21,7 @@ const result = "原生输出的完整正文";
 async function prepare(h: Harness): Promise<Task> {
   h.engine.handler = async () => ({ text: '{"notify":false,"text":""}', messages: [] });
   const task = await h.app.tasks.create(actor, {
+    orchestration: { mode: "manual" },
     ...discussion,
     participants: [{ kind: "codex" }],
     createGroup: false,

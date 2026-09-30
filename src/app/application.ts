@@ -23,6 +23,7 @@ import { ProjectCatalog } from "../projects/catalog.js";
 import { type ConversationEngine, PiEngine, SessionService } from "../runtime/index.js";
 import { NOTIFICATION_PROMPT } from "../runtime/prompts.js";
 import { transientTurnFailure } from "../runtime/recovery.js";
+import { Operations } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
 import { TaskService } from "../tasks/service.js";
@@ -45,6 +46,7 @@ import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
 import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
+import { UncertainResolver } from "./uncertain-resolver.js";
 import { currentWorkflowNotice, quietWorkflow } from "./workflow-notifications.js";
 import { compactReportCard } from "./workflow-report.js";
 
@@ -77,6 +79,7 @@ export class Application implements ApplicationContext {
   private readonly engine: ConversationEngine;
   private readonly directoryTrust: DirectoryTrust;
   private readonly automaticApprovals: AutomaticApprovals;
+  private readonly uncertainResolver: UncertainResolver;
   private readonly active = new Set<Promise<unknown>>();
   authorization = {
     status: "checking",
@@ -155,6 +158,25 @@ export class Application implements ApplicationContext {
       config: () => this.automaticApprovalConfig(),
     });
     this.tasks = this.taskService();
+    this.uncertainResolver = new UncertainResolver({
+      store: this.store,
+      engine: this.engine,
+      logger: this.logger,
+      platform: () => this.platform,
+      actor: (task, messageId) => this.actor(task, messageId),
+      context: () => ({
+        config: this.config,
+        store: this.store,
+        herdr: this.herdr,
+        platform: this.platform,
+        catalog: this.projects,
+        records: this.tasks.records,
+        operations: new Operations(this.store),
+        hooks: {},
+        logger: this.logger,
+        signal: AbortSignal.any([this.signal, this.tasks.signal]),
+      }),
+    });
     this.taskOrchestrator = new TaskOrchestrator({
       config: this.config,
       projects: this.projects,
@@ -336,11 +358,16 @@ export class Application implements ApplicationContext {
       this.config.ai.enabled && this.config.tasks.enabled
         ? this.track(this.taskOrchestrator.tick())
         : Promise.resolve();
+    const uncertain =
+      this.config.ai.enabled && this.config.tasks.enabled
+        ? this.track(this.uncertainResolver.tick(this.store.list<Task>("tasks")))
+        : Promise.resolve();
     const inbox = this.track(this.inbox.drain());
     const scheduler = this.track(
       this.config.tasks.enabled ? this.tasks.tick() : this.legacy.tick(),
     );
     await inbox;
+    await uncertain;
     if (this.config.tasks.enabled) {
       const followUp = this.track(this.tasks.tick());
       await Promise.allSettled([scheduler, followUp]);
@@ -464,6 +491,13 @@ export class Application implements ApplicationContext {
           action.chatId,
           String(action.value.nonce),
           String(action.value.key),
+        );
+      } else if (action.value.action === "uncertain") {
+        await this.uncertainResolver.cards.answer(
+          action.ownerId,
+          action.chatId,
+          String(action.value.nonce),
+          String(action.value.choice),
         );
       } else if (action.value.action === "select" && !this.config.tasks.enabled) {
         await this.legacy.select(action.ownerId, action.chatId, String(action.value.paneId));
@@ -762,7 +796,12 @@ export class Application implements ApplicationContext {
     kind: "welcome" | "group_ready" | "progress" | "before_close" | "before_group_delete",
   ): Promise<NoticeUnavailable | undefined> {
     const workflow = quietWorkflow(task)
-      ? await currentWorkflowNotice(task, kind, this.tasks.records.participants(task), this.store)
+      ? await currentWorkflowNotice(
+          task,
+          kind,
+          this.tasks.records.projectParticipants(task),
+          this.store,
+        )
       : undefined;
     if (quietWorkflow(task) && !workflow) return;
     const signature =
@@ -790,7 +829,7 @@ export class Application implements ApplicationContext {
         decision = workflow;
       } else if (this.config.ai.enabled) {
         try {
-          const participants = this.tasks.records.participants(task);
+          const participants = this.tasks.records.projectParticipants(task);
           const runId = newId("notice_run");
           decision = await noticeDecision(
             this.engine,

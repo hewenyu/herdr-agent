@@ -7,6 +7,18 @@ import type { InputDelivery } from "./input-delivery.js";
 import { activeTaskOperation } from "./operation-scope.js";
 import { participantPromptCandidates } from "./prompts.js";
 
+/**
+ * Whether scheduling may treat this input as delivered. Any treat_done decision
+ * (evidence, pi or user) advances the participant; the stored result keeps its
+ * own `verified` flag, so only evidence can be reported as confirmed delivery.
+ */
+function deliveryDecided(operation: OperationReceipt): boolean {
+  if (operation.resolution) return operation.resolution.choice === "treat_done";
+  return (
+    operation.state === "done" && (operation.result as Delivery | undefined)?.verified === true
+  );
+}
+
 /** Resolve only a unique initial delivery proved by native user input; never send again. */
 export async function recoverInitialInputs(context: TaskContext, task: Task): Promise<void> {
   await recoverPreparedInputs(context, task);
@@ -27,6 +39,7 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
           (id === `${participant.id}:initial` ||
             id.startsWith(`${task.id}:send:`) ||
             id.startsWith(`${task.id}:relay:`)) &&
+          !operation.resolution &&
           ["pending", "uncertain"].includes(operation.state),
       );
     if (!operations.length) continue;
@@ -74,15 +87,17 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
       if (
         !current ||
         current.fingerprint !== operation.fingerprint ||
+        current.resolution ||
         !["pending", "uncertain"].includes(current.state)
       )
         return;
-      context.store.set("operations", id, {
-        ...current,
-        state: "done",
+      context.operations.resolve(id, {
+        choice: "treat_done",
+        decidedBy: "evidence",
+        reason: delivery.detail as string,
+        evidence: ["native_user_input_exact_match"],
+        at: now(),
         result: delivery,
-        error: undefined,
-        updatedAt: now(),
       });
       participant.initialSent = true;
       execution.transcriptReceipt = participant.initialReceipt;
@@ -106,6 +121,7 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
         .some(
           ([key, entry]) =>
             activeTaskOperation(context.store, task, key, entry) &&
+            !entry.resolution &&
             ["pending", "uncertain"].includes(entry.state),
         );
       if (!unknown) task.pending = undefined;
@@ -120,12 +136,13 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
     if (delivery.taskId !== task.id || delivery.operationId !== id) continue;
     const operation = context.store.get<OperationReceipt>("operations", id);
     const unapplied =
-      operation?.state === "done" &&
-      (operation.result as Delivery | undefined)?.verified === true &&
+      operation !== undefined &&
+      deliveryDecided(operation) &&
       !context.store.get("task_input_applied", id);
     if (
       !operation ||
-      (!unapplied && !["pending", "uncertain"].includes(operation.state)) ||
+      (!unapplied &&
+        (operation.resolution || !["pending", "uncertain"].includes(operation.state))) ||
       operation.fingerprint !== delivery.fingerprint
     )
       continue;
@@ -157,6 +174,7 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
           ([key, candidate]) =>
             key !== id &&
             activeTaskOperation(context.store, task, key, candidate) &&
+            !candidate.resolution &&
             ["pending", "uncertain"].includes(candidate.state) &&
             candidate.fingerprint === delivery.fingerprint,
         )
@@ -183,17 +201,19 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
       if (
         !current ||
         current.fingerprint !== delivery.fingerprint ||
-        (!unapplied && !["pending", "uncertain"].includes(current.state)) ||
-        (unapplied && (current.state !== "done" || context.store.get("task_input_applied", id)))
+        (!unapplied && (current.resolution || !["pending", "uncertain"].includes(current.state))) ||
+        (unapplied && (!deliveryDecided(current) || context.store.get("task_input_applied", id)))
       )
         return;
-      context.store.set("operations", id, {
-        ...current,
-        state: "done",
-        result: unapplied ? current.result : result,
-        error: undefined,
-        updatedAt: now(),
-      });
+      if (!unapplied)
+        context.operations.resolve(id, {
+          choice: "treat_done",
+          decidedBy: "evidence",
+          reason: result.detail as string,
+          evidence: ["native_user_input_exact_match"],
+          at: now(),
+          result,
+        });
       participant.initialSent = true;
       participant.error = undefined;
       execution.transcriptReceipt = participant.initialReceipt;
@@ -230,6 +250,7 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
         .some(
           ([key, entry]) =>
             activeTaskOperation(context.store, task, key, entry) &&
+            !entry.resolution &&
             ["pending", "uncertain"].includes(entry.state),
         );
       if (!unknown) {

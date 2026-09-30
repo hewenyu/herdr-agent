@@ -3,6 +3,7 @@ import test from "node:test";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import type { Task } from "../../src/core/types.js";
 import { setup } from "./helpers.js";
+import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 test("one task autonomously plans, revises the same agent, hands off and delivers native synthesis", async () => {
   const fixture = setup();
@@ -50,7 +51,8 @@ test("one task autonomously plans, revises the same agent, hands off and deliver
   };
   try {
     const session = fixture.app.sessions.current("owner", "entry");
-    const task = await fixture.app.tasks.create(
+    const task = await createLegacyModelTask(
+      fixture,
       {
         source: "feishu",
         ownerId: "owner",

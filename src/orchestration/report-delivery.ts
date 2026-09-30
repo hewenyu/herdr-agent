@@ -6,6 +6,7 @@ import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { PlatformPort } from "../core/ports.js";
 import type { StoredMessage, Task } from "../core/types.js";
+import type { OperationResolution } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { ReportRevisionEvidence } from "./revision.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
@@ -32,6 +33,13 @@ export interface ReportDelivery extends ReportEnvelope {
     | "delivered"
     | "uncertain"
     | "retryable";
+  fileResolution?: OperationResolution;
+  fileHistory?: Array<
+    Pick<
+      ReportDelivery,
+      "fileState" | "fileKey" | "fileMessageId" | "error" | "fileResolution" | "updatedAt"
+    >
+  >;
   fileKey?: string;
   fileMessageId?: string;
   fingerprint: string;
@@ -48,6 +56,12 @@ export interface ReportDelivery extends ReportEnvelope {
 }
 
 const namespace = "workflow_report_deliveries";
+const fileTransfers = new WeakMap<Store, Set<string>>();
+
+/** True only while this process is inside an attachment upload/send for the event. */
+export function reportFileInFlight(store: Store, eventId: string): boolean {
+  return fileTransfers.get(store)?.has(eventId) ?? false;
+}
 
 /** Two independently recoverable notification components, never a dispatch authority. */
 export class ReportDeliveries {
@@ -129,7 +143,8 @@ export class ReportDeliveries {
     if (record.presentation === "attachment") await this.sendAttachment(record, beforeSend);
     else {
       const bodyState = this.outbox.receipt(record.bodyId)?.state;
-      if (!["delivered", "sending", "uncertain"].includes(bodyState ?? "")) await beforeSend?.();
+      if (!["delivered", "sending", "uncertain"].includes(bodyState ?? ""))
+        await this.checkBeforeSend(record, beforeSend);
       await this.outbox.send(record.chatId, record.text, record.bodyId);
     }
     if (record.cardState === "delivered") return record;
@@ -141,7 +156,7 @@ export class ReportDeliveries {
       );
     const platform = this.platform();
     if (!platform) throw new OperationError("platform_unavailable", "飞书尚未连接。");
-    await beforeSend?.();
+    await this.checkBeforeSend(record, beforeSend);
     record.cardState = "sending";
     this.save(record);
     try {
@@ -149,11 +164,13 @@ export class ReportDeliveries {
       if (!id) throw new OperationError("delivery_uncertain", "摘要卡片缺少送达编号。", "unknown");
       record.cardMessageId = id;
       record.cardState = "delivered";
-      record.error = undefined;
+      // An inferred file target state does not erase its historical transport error.
+      if (!record.fileResolution) record.error = undefined;
       this.save(record);
     } catch (error) {
-      record.error = safeError(error);
-      record.cardState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      const cardError = safeError(error);
+      if (!record.fileResolution) record.error = cardError;
+      record.cardState = cardError.outcome === "not_executed" ? "retryable" : "uncertain";
       this.save(record);
       throw error;
     }
@@ -231,7 +248,9 @@ export class ReportDeliveries {
     const body = this.outbox.receipt(record.bodyId);
     return (
       (record.presentation === "attachment"
-        ? ["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? "")
+        ? record.fileResolution?.choice !== "abandon" &&
+          (!!record.fileResolution ||
+            ["prepared", "uploaded", "retryable", "delivered"].includes(record.fileState ?? ""))
         : !body || ["prepared", "retryable", "delivered"].includes(body.state)) &&
       ["prepared", "retryable", "delivered"].includes(record.cardState)
     );
@@ -252,7 +271,8 @@ export class ReportDeliveries {
 
   private bodyConfirmed(record: ReportDelivery): boolean {
     return record.presentation === "attachment"
-      ? record.fileState === "delivered" && !!record.fileKey && !!record.fileMessageId
+      ? record.fileResolution?.choice === "treat_done" ||
+          (record.fileState === "delivered" && !!record.fileKey && !!record.fileMessageId)
       : this.outbox.receipt(record.bodyId)?.state === "delivered";
   }
 
@@ -260,6 +280,25 @@ export class ReportDeliveries {
     record: ReportDelivery,
     beforeSend?: () => Promise<void>,
   ): Promise<void> {
+    if (record.fileResolution?.choice === "treat_done") return;
+    if (record.fileResolution?.choice === "abandon")
+      throw new OperationError("operation_abandoned", "报告附件已放弃，未发送。", "not_executed");
+    if (record.fileResolution?.choice === "retry") {
+      record.fileHistory = [
+        ...(record.fileHistory ?? []),
+        {
+          fileState: record.fileState,
+          fileKey: record.fileKey,
+          fileMessageId: record.fileMessageId,
+          error: record.error,
+          fileResolution: record.fileResolution,
+          updatedAt: record.updatedAt,
+        },
+      ];
+      record.fileResolution = undefined;
+      record.fileState = record.fileKey ? "uploaded" : "prepared";
+      this.save(record); // Consume authorization before any await or platform call.
+    }
     if (record.fileState === "delivered") return;
     if (["uploading", "sending", "uncertain"].includes(record.fileState ?? ""))
       throw new OperationError(
@@ -267,24 +306,33 @@ export class ReportDeliveries {
         "报告附件传输结果未知，不能自动重复上传或发送。",
         "unknown",
       );
-    const platform = this.platform();
-    if (!platform?.uploadFile || !platform.sendFile)
-      throw new OperationError("platform_unavailable", "当前平台未提供报告附件能力。");
+    let settledState = record.fileState;
+    let platformCalled = false;
+    const transfers = fileTransfers.get(this.store) ?? new Set<string>();
+    fileTransfers.set(this.store, transfers);
+    transfers.add(record.eventId);
     try {
+      const platform = this.platform();
+      if (!platform?.uploadFile || !platform.sendFile)
+        throw new OperationError("platform_unavailable", "当前平台未提供报告附件能力。");
       if (!record.fileKey) {
         await beforeSend?.();
         record.fileState = "uploading";
         this.save(record);
+        platformCalled = true;
         const fileKey = await platform.uploadFile("report.md", record.text);
         if (!fileKey)
           throw new OperationError("delivery_uncertain", "报告上传缺少文件编号。", "unknown");
         record.fileKey = fileKey;
         record.fileState = "uploaded";
+        settledState = "uploaded";
+        platformCalled = false;
         this.save(record);
       }
       await beforeSend?.();
       record.fileState = "sending";
       this.save(record);
+      platformCalled = true;
       const messageId = await platform.sendFile(
         record.chatId,
         record.fileKey,
@@ -298,7 +346,27 @@ export class ReportDeliveries {
       this.save(record);
     } catch (error) {
       record.error = safeError(error);
-      record.fileState = record.error.outcome === "not_executed" ? "retryable" : "uncertain";
+      record.fileState = platformCalled
+        ? record.error.outcome === "not_executed"
+          ? "retryable"
+          : "uncertain"
+        : settledState;
+      this.save(record);
+      throw error;
+    } finally {
+      transfers.delete(record.eventId);
+    }
+  }
+
+  /** Guard failures are diagnostics, not evidence of a platform side effect. */
+  private async checkBeforeSend(
+    record: ReportDelivery,
+    beforeSend?: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await beforeSend?.();
+    } catch (error) {
+      record.error = safeError(error);
       this.save(record);
       throw error;
     }
@@ -370,9 +438,22 @@ export class ReportDeliveries {
             record.channel === "platform" &&
             (this.sending.has(record.eventId) ||
               !valid(record) ||
-              (!this.retireObsolete(record) &&
+              (!this.fileAbandoned(record) &&
+                !this.retireObsolete(record) &&
                 (record.cardState !== "delivered" || !this.bodyConfirmed(record)))),
         ) || this.pendingWithoutReceipt(chatId)
+    );
+  }
+
+  /**
+   * An owner-abandoned attachment stays undelivered (Web download unchanged) but
+   * no longer holds the chat; a summary card whose send is unknown still does.
+   */
+  private fileAbandoned(record: ReportDelivery): boolean {
+    return (
+      record.presentation === "attachment" &&
+      record.fileResolution?.choice === "abandon" &&
+      !["sending", "uncertain"].includes(record.cardState)
     );
   }
 

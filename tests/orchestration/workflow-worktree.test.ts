@@ -53,28 +53,21 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
   let modelCalls = 0;
   engine.handler = async (input) => {
     modelCalls++;
+    if (input.tools[0]?.name === "orchestration_choice") {
+      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+        (candidate: { id: string }) => candidate.id,
+      );
+      await input.tools[0].execute(
+        { candidateId: ids.includes("use_template") ? "use_template" : ids[0] },
+        input.actor,
+      );
+      return { text: "", messages: [] };
+    }
     await input.tools[0]?.execute(
       { template: kind, instructions: {}, deliveryRequirements: [] },
       input.actor,
     );
     return { text: "", messages: [] };
-  };
-  const fetch: typeof globalThis.fetch = async (_url, init) => {
-    modelCalls++;
-    const ids = Object.keys(JSON.parse(String(init?.body)).questions.action.criteria);
-    const choice = ids.includes("use_template") ? "use_template" : ids[0];
-    return Response.json({
-      model: "jev-fixture",
-      answers: {
-        action: {
-          type: "choice",
-          choice,
-          confidence: 0.99,
-          probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 1 : 0])),
-        },
-      },
-      usage: { input_tokens: 10, output_tokens: 1 },
-    });
   };
   const replies: string[] = [];
   const controller = new AbortController();
@@ -83,7 +76,6 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
     config: h.config,
     projects: h.catalog,
     engine,
-    fetch,
     logger,
     signal: controller.signal,
     tasks: () => h.service,
@@ -505,16 +497,22 @@ for (const change of ["readiness", "directories"] as const)
       let changed = false;
       const worker = new TaskOrchestrator({
         ...h.options,
-        fetch: async (url, init) => {
-          const result = await h.options.fetch(url, init);
-          if (!changed) {
-            changed = true;
-            h.service.records.save({
-              ...ready,
-              ...(change === "readiness" ? { worktreeReady: false } : { directories: [h.source] }),
-            });
-          }
-          return result;
+        engine: {
+          contextTokens: h.options.engine.contextTokens,
+          summarize: () => h.options.engine.summarize(),
+          run: async (input) => {
+            const result = await h.options.engine.run(input);
+            if (!changed) {
+              changed = true;
+              h.service.records.save({
+                ...ready,
+                ...(change === "readiness"
+                  ? { worktreeReady: false }
+                  : { directories: [h.source] }),
+              });
+            }
+            return result;
+          },
         },
       });
       await worker.tick();

@@ -62,7 +62,13 @@ function authorizedDraft(h: Awaited<ReturnType<typeof harness>>) {
     change: { sourceMessageId: "withdrawal-input", removeDocumentDelivery: true },
     decision: "authorized",
     reason: "authorized",
-    jev: { ...skippedJev(undefined, "authorized"), status: "success", candidateId: "authorized" },
+    policyVersion: "workflow-contract-authorization-v2",
+    pi: {
+      adapterVersion: "workflow-pi-choice-v1",
+      status: "success",
+      reason: "authorized",
+      candidateId: "authorized",
+    },
   };
   h.store.set("workflow_contract_decisions", "withdrawal-authorization", decision);
   return { draft, decision };
@@ -308,7 +314,7 @@ for (const invalid of [
       if (invalid === "different-source") decision.change.sourceMessageId = "different-input";
       if (invalid === "different-flags") decision.change.removeConsensus = true;
       if (invalid === "denied") decision.decision = "denied";
-      if (invalid === "unverified-decision") decision.jev.status = "skipped";
+      if (invalid === "unverified-decision") decision.pi.status = "skipped";
       if (invalid === "replaced-baseline") draft.documentSource.paths = ["A.md"];
       if (invalid === "partial-removal")
         draft.plan.documentDelivery = { paths: ["A.md"], userRequest: h.task.requirements };
@@ -457,6 +463,16 @@ for (const contaminated of [false, true])
       const sourceMessageId = stableId(h.task.id, who.messageId);
       const engine = new Engine();
       engine.handler = async (input) => {
+        if (input.tools[0]?.name === "orchestration_choice") {
+          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+            (candidate: { id: string }) => candidate.id,
+          );
+          await input.tools[0].execute(
+            { candidateId: ids.includes("authorized") ? "authorized" : "request_pi" },
+            input.actor,
+          );
+          return { text: "", messages: [] };
+        }
         const tool = input.tools.find((candidate) => candidate.name === "orchestration_plan");
         assert.ok(tool);
         await tool.execute(
@@ -497,25 +513,6 @@ for (const contaminated of [false, true])
         notify: async () => {},
         attention: async () => {},
         recoverNotification: async () => {},
-        fetch: async (_url, init) => {
-          const body = JSON.parse(String(init?.body));
-          const candidates = Object.keys(body.questions.action.criteria);
-          const selected = candidates.includes("authorized") ? "authorized" : "request_pi";
-          return Response.json({
-            model: "fixture",
-            answers: {
-              action: {
-                type: "choice",
-                choice: selected,
-                confidence: 0.99,
-                probabilities: Object.fromEntries(
-                  candidates.map((id) => [id, id === selected ? 1 : 0]),
-                ),
-              },
-            },
-            usage: { input_tokens: 10, output_tokens: 1 },
-          });
-        },
       };
       await new WorkflowOrchestrator(ports).process(h.task);
       const accepted = h.store.get<WorkflowState>(WORKFLOWS, h.task.id);
@@ -557,3 +554,22 @@ for (const contaminated of [false, true])
       h.close();
     }
   });
+
+test("historical Jev withdrawal authorization remains accepted without rewriting its audit", async () => {
+  const h = await harness();
+  try {
+    await h.prepare();
+    const { draft, decision } = authorizedDraft(h);
+    const { pi: _pi, policyVersion: _version, ...historical } = decision;
+    const audit = {
+      ...historical,
+      jev: { ...skippedJev(undefined, "authorized"), status: "success", candidateId: "authorized" },
+    };
+    h.store.set("workflow_contract_decisions", "withdrawal-authorization", audit);
+    const source = await prepareDocumentSource(h.store, h.task, draft);
+    assert.deepEqual(source.paths, []);
+    assert.deepEqual(h.store.get("workflow_contract_decisions", "withdrawal-authorization"), audit);
+  } finally {
+    h.close();
+  }
+});

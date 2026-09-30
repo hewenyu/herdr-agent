@@ -22,6 +22,15 @@ async function harness(kind: TaskKind = "discussion", verify = false) {
   });
   const engine = new Engine();
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     const plan = input.tools.find((tool) => tool.name === "orchestration_plan");
     if (plan)
       await plan.execute(
@@ -35,16 +44,13 @@ async function harness(kind: TaskKind = "discussion", verify = false) {
     else {
       assert.deepEqual(
         input.tools.map((tool) => tool.name),
-        ["orchestration_decide"],
+        ["orchestration_choice"],
       );
       const data = JSON.parse(input.prompt);
       const chosen =
         data.candidates.find((entry: { kind: string }) => entry.kind === "deliver") ??
         data.candidates[0];
-      await input.tools[0]?.execute(
-        { candidateId: chosen.id, reason: "按固定候选推进。" },
-        input.actor,
-      );
+      await input.tools[0]?.execute({ candidateId: chosen.id }, input.actor);
     }
     return { text: "", messages: [] };
   };

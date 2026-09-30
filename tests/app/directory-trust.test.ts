@@ -14,6 +14,7 @@ import { logger, setup } from "./helpers.js";
 async function fixture() {
   const h = setup();
   const task = (await h.app.dispatch("task.create", {
+    orchestration: { mode: "manual" },
     kind: "development",
     title: "启动信任验收",
     requirements: "专用目录内创建页面",

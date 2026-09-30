@@ -116,6 +116,7 @@ export interface Participant {
 }
 
 export interface DiscussionPolicy {
+  /** round_robin is deprecated for creation; persisted tasks retain their original protocol. */
   mode: "manual" | "round_robin";
   /** @deprecated Accepted only for old stored records and input replay; never enforced. */
   maxRounds?: number;
@@ -194,6 +195,8 @@ export interface Task {
     userRequest?: UserRequestSource;
     result: string;
     participants: Array<{ name: string; kind: AgentKind; lastOutput: string }>;
+    report?: ParentHandoffFile & { reportId: string };
+    documents?: Array<ParentHandoffFile & { path: string; consensusConfirmed: boolean }>;
   };
   discussion: DiscussionPolicy;
   /** Missing on historical tasks: keep their existing manual/round-robin policy. */
@@ -211,6 +214,15 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   remoteCheckedAt?: string;
+}
+
+/** A content-checked, create-only copy; never a reference to mutable project files. */
+export interface ParentHandoffFile {
+  originalPath: string;
+  sha256: string;
+  snapshotPath?: string;
+  verification: "verified" | "unverified";
+  reason?: string;
 }
 
 export interface IncomingMessage {

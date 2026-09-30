@@ -38,7 +38,7 @@ import {
   recoveryContext,
 } from "./selection-context.js";
 import { settleWorkflow } from "./settlement.js";
-import { invalidateFrom, readyNodes, workflowState } from "./state.js";
+import { invalidateFrom, markIssuesForRevalidation, readyNodes, workflowState } from "./state.js";
 import { VerificationRunner } from "./verify.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 import { workspaceAvailable, workspaceRevision } from "./workspace.js";
@@ -271,6 +271,7 @@ export class WorkflowOrchestrator {
       )
         return;
       state.userRevision = ports.baseRevision(task);
+      markIssuesForRevalidation(state);
       state.plan.version++;
       state.planning = "needed";
       state.planningReason = "用户要求或任务配置修订，旧计划输入已失效。";
@@ -482,13 +483,10 @@ export class WorkflowOrchestrator {
               ...(repair
                 ? { rule: { candidateId: repair.candidateId, reason: repair.reason } }
                 : {}),
-              jev: ports.config.jev,
               piModel: ports.config.ai.model,
-              ...(task.promptVersion === 3 ? { assistancePolicy: "jev-requested" as const } : {}),
               engine: ports.engine,
               actor: this.actor(task, event.id),
               signal: ports.signal,
-              fetch: ports.fetch,
               assertCurrent: () => {
                 ports.assertCurrent(event);
               },
@@ -729,6 +727,7 @@ export class WorkflowOrchestrator {
       await admitted.running;
       event.workflow.applied = true;
     } else if (candidate.kind === "replan") {
+      // Agent replanning changes structure, not user inputs: current issues remain binding.
       state.plan.version++;
       state.planning = "needed";
       state.planningReason = event.decision?.reason ?? candidate.description;
@@ -932,6 +931,8 @@ export class WorkflowOrchestrator {
       );
       if (result === "passed" && existing) {
         existing.status = "resolved";
+        existing.planVersion = state.plan.version;
+        existing.needsRevalidation = false;
         existing.description = `${run.command} 已取得当前版本成功证据。`;
         existing.evidenceRefs.push(run.id);
       } else if (result !== "passed") {
@@ -939,6 +940,8 @@ export class WorkflowOrchestrator {
           id:
             existing?.id ?? (state.issues.some((issue) => issue.id === id) ? newId("verify") : id),
           verificationCommandIndex: candidate.commandIndex,
+          planVersion: state.plan.version,
+          needsRevalidation: false,
           status: "open" as const,
           blocking: true,
           description: `${run.command} 未取得当前版本成功证据。`,

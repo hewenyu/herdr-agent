@@ -130,10 +130,10 @@ for (const evidence of [
       const recovered = evidence === "exact" || evidence === "session_from_receipt";
       const restored = new TaskService(f.options);
       await restored.reconcile(task.id);
-      assert.equal(
-        f.store.get<OperationReceipt>("operations", operationId)?.state,
-        recovered ? "done" : "uncertain",
-      );
+      const recoveredOperation = f.store.get<OperationReceipt>("operations", operationId);
+      assert.equal(recoveredOperation?.state, "uncertain");
+      assert.equal(recoveredOperation?.resolution?.choice, recovered ? "treat_done" : undefined);
+      assert.equal(recoveredOperation?.resolution?.decidedBy, recovered ? "evidence" : undefined);
       assert.equal(restored.get(actor, task.id).participants[0]?.initialSent, recovered);
       assert.equal(f.herdr.sends.length, 1, "input recovery never resends the unknown operation");
       assert.equal(f.store.get<InputDelivery>("input_deliveries", operationId)?.prompt, expected);

@@ -5,6 +5,7 @@ import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import type { StoredMessage, Task } from "../../src/core/types.js";
 import { logger, setup } from "./helpers.js";
+import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 const TABLE = "task_orchestration_events";
 const question = "需要你提供目标服务地址，才能继续已授权的任务。";
@@ -19,7 +20,8 @@ async function prepare(h: Harness): Promise<Task> {
     await decide.execute({ action: "wait", reason: question }, input.actor);
     return { text: "", messages: [] };
   };
-  return h.app.tasks.create(
+  return createLegacyModelTask(
+    h,
     { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "request" },
     {
       kind: "development",

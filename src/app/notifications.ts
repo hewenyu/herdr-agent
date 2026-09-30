@@ -1,4 +1,5 @@
 import type { Participant, Task } from "../core/types.js";
+import type { ParticipantProjection } from "../tasks/records.js";
 
 /** Notices start with lifecycle facts; historical business text remains available via task_get. */
 export function notificationTask(task: Task) {
@@ -30,7 +31,9 @@ export function notificationTask(task: Task) {
 }
 
 /** Runtime/receipt state is not proof of a captured utterance or its delivery to the user. */
-export function notificationParticipants(participants: Participant[]) {
+export function notificationParticipants(
+  participants: Array<Participant & Partial<Pick<ParticipantProjection, "initialDelivery">>>,
+) {
   return participants.map((participant) => ({
     id: participant.id,
     name: participant.name,
@@ -38,6 +41,9 @@ export function notificationParticipants(participants: Participant[]) {
     status: participant.status,
     started: participant.started,
     initialSent: participant.initialSent,
+    ...(participant.initialDelivery === undefined
+      ? {}
+      : { initialDelivery: participant.initialDelivery }),
     hasNativeSessionId: !!participant.execution?.sessionId,
     hasOutput: !!participant.lastOutput?.trim(),
     error: participant.error ?? null,

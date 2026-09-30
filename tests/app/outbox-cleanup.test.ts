@@ -10,6 +10,7 @@ async function readyTask() {
   const h = setup();
   h.engine.handler = async () => silent;
   const task = await h.app.tasks.create(actor, {
+    orchestration: { mode: "manual" },
     kind: "discussion",
     title: "旧回执恢复",
     requirements: "验证已送达消息后的本地恢复",

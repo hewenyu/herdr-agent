@@ -4,7 +4,26 @@ import type { Store } from "../storage/store.js";
 import { independentReviewer, restoreImplementationParticipants } from "./authorship.js";
 import type { StatusBlock } from "./status-block.js";
 import { templatePlan } from "./templates.js";
-import { validatePlan, WORKFLOWS, type WorkflowNode, type WorkflowState } from "./workflow.js";
+import {
+  validatePlan,
+  WORKFLOWS,
+  type WorkflowIssue,
+  type WorkflowNode,
+  type WorkflowState,
+} from "./workflow.js";
+
+/** Legacy issues remain current until an explicit user revision archives their open state. */
+export function currentOpenIssues(state: WorkflowState): WorkflowIssue[] {
+  return state.issues.filter((issue) => issue.status === "open" && !issue.needsRevalidation);
+}
+
+/** Call before replacing user inputs or incrementing their plan version. History is never erased. */
+export function markIssuesForRevalidation(state: WorkflowState): void {
+  for (const issue of state.issues) {
+    issue.planVersion ??= state.plan.version;
+    if (issue.status === "open") issue.needsRevalidation = true;
+  }
+}
 
 export function workflowState(store: Store, task: Task, userRevision: string): WorkflowState {
   const existing = store.get<WorkflowState>(WORKFLOWS, task.id);
@@ -91,11 +110,24 @@ export function mergeStatus(
     // A renamed duplicate must not reset the open-set stall window.
     old ??= state.issues.find((entry) => entry.description.trim() === issue.description.trim());
     if (old) {
-      Object.assign(old, { ...issue, id: old.id });
+      // Configured-command results are authoritative. Participant assertions can annotate,
+      // but cannot close, downgrade, rename, or revalidate myrix's verification issue.
+      const configuredVerification =
+        old.raisedBy === "myrix" &&
+        (old.verificationCommandIndex !== undefined || /^verify-\d+$/.test(old.id));
+      if (!configuredVerification)
+        Object.assign(old, {
+          ...issue,
+          id: old.id,
+          planVersion: state.plan.version,
+          needsRevalidation: false,
+        });
       old.responses.push({ outputId, summary: block.summary });
     } else
       state.issues.push({
         ...issue,
+        planVersion: state.plan.version,
+        needsRevalidation: false,
         raisedBy: progress.participantId ?? "",
         responses: [{ outputId, summary: block.summary }],
       });
@@ -121,8 +153,7 @@ export function mergeStatus(
 export function countSettledBatch(state: WorkflowState, batch: string, rounds: number): void {
   if (state.batches.includes(batch)) return;
   state.batches.push(batch);
-  const open = state.issues
-    .filter((issue) => issue.status === "open")
+  const open = currentOpenIssues(state)
     .map((issue) => issue.id)
     .sort();
   state.stall.unchanged =

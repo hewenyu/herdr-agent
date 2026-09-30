@@ -1,7 +1,13 @@
 import { fail } from "../core/errors.js";
 import { now } from "../core/ids.js";
-import type { ActorContext, Participant, Task } from "../core/types.js";
+import type { ActorContext, Delivery, Participant, Task } from "../core/types.js";
+import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
+import type { InputDelivery } from "./input-delivery.js";
+
+export type ParticipantProjection = Participant & {
+  initialDelivery: "confirmed" | "decided" | "pending";
+};
 
 export class TaskRecords {
   constructor(
@@ -70,6 +76,47 @@ export class TaskRecords {
     return task.participantIds
       .map((id) => this.store.get<Participant>("participants", id))
       .filter((participant): participant is Participant => !!participant);
+  }
+
+  /** Read-only delivery facts; initialSent remains the scheduler's compatibility flag. */
+  projectParticipants(task: Task): ParticipantProjection[] {
+    const prepared = this.store.entries<InputDelivery>("input_deliveries");
+    return this.participants(task).map((participant) => {
+      const ids = new Set([`${participant.id}:initial`]);
+      for (const [id, delivery] of prepared) {
+        if (
+          delivery.operationId === id &&
+          delivery.taskId === task.id &&
+          delivery.participantId === participant.id &&
+          delivery.initial &&
+          delivery.receipt === participant.initialReceipt &&
+          this.store.get<OperationReceipt>("operations", id)?.fingerprint === delivery.fingerprint
+        )
+          ids.add(id);
+      }
+      let initialDelivery: ParticipantProjection["initialDelivery"] = "pending";
+      for (const id of ids) {
+        const operation = this.store.get<OperationReceipt>("operations", id);
+        if (!operation || operation.retiredByRestart) continue;
+        const resolution = operation.resolution;
+        if (resolution) {
+          if (resolution.choice !== "treat_done") continue;
+          if (resolution.decidedBy !== "evidence") {
+            initialDelivery = "decided";
+            continue;
+          }
+          if ((resolution.result as Delivery | undefined)?.verified !== true) continue;
+        } else if (
+          operation.state !== "done" ||
+          (operation.result as Delivery | undefined)?.verified !== true
+        ) {
+          continue;
+        }
+        initialDelivery = "confirmed";
+        break;
+      }
+      return { ...participant, initialDelivery };
+    });
   }
 
   save(task: Task): Task {

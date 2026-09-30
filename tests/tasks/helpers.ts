@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +12,12 @@ import type {
   AgentSnapshot,
   Delivery,
   ExecutionRef,
+  Task,
   TaskCreateInput,
   TranscriptEntry,
 } from "../../src/core/types.js";
 import { ProjectCatalog } from "../../src/projects/catalog.js";
+import type { OperationReceipt } from "../../src/storage/operations.js";
 import { Store } from "../../src/storage/store.js";
 import type { TaskHooks } from "../../src/tasks/context.js";
 import { TaskService } from "../../src/tasks/service.js";
@@ -42,6 +45,14 @@ export class FakeHerdr implements HerdrPort {
     const agent = this.agents.get(id);
     if (!agent) throw new OperationError("agent_not_found", "missing");
     return { ...agent };
+  }
+  async paneExists(id: string) {
+    if (this.getError) {
+      if (this.getError instanceof OperationError && this.getError.code === "pane_not_found")
+        return false;
+      throw this.getError;
+    }
+    return this.agents.has(id);
   }
   async createWorkspace(cwd: string) {
     this.creates++;
@@ -181,6 +192,55 @@ export const discussion: TaskCreateInput = {
     { kind: "codex", name: "Codex" },
   ],
 };
+export function assertEvidenceResolved(
+  original: OperationReceipt | undefined,
+  recovered: OperationReceipt | undefined,
+): void {
+  assert.ok(original && recovered);
+  assert.equal(recovered.state, original.state);
+  assert.deepEqual(recovered.error, original.error);
+  assert.equal(recovered.updatedAt, original.updatedAt);
+  assert.equal(recovered.resolution?.choice, "treat_done");
+  assert.equal(recovered.resolution?.decidedBy, "evidence");
+  assert.equal((recovered.resolution?.result as Delivery | undefined)?.status, "delivered");
+  assert.equal((recovered.resolution?.result as Delivery | undefined)?.verified, true);
+}
+
+/** Simulate a persisted legacy task without bypassing current creation policy. */
+export async function createPersistedTask(
+  fixture: ReturnType<typeof setup>,
+  who: ActorContext,
+  input: TaskCreateInput,
+  overrides: {
+    orchestration?: Task["orchestration"];
+    discussionMode?: Task["discussion"]["mode"];
+  },
+): Promise<Task> {
+  const task = await fixture.service.create(who, input);
+  return persistLegacyMode(fixture.store, task, overrides);
+}
+
+/** Rewrite a stored task to simulate legacy orchestration and discussion modes. */
+export function persistLegacyMode(
+  store: Store,
+  task: Task,
+  overrides: {
+    orchestration?: Task["orchestration"];
+    discussionMode?: Task["discussion"]["mode"];
+  },
+): Task {
+  if (overrides.orchestration) {
+    task.orchestration = overrides.orchestration;
+    if (overrides.orchestration.mode === "model") {
+      task.promptVersion = 2;
+      task.boardDirectory = undefined;
+    }
+  }
+  if (overrides.discussionMode) task.discussion.mode = overrides.discussionMode;
+  store.set<Task>("tasks", task.id, task);
+  return task;
+}
+
 export function setup(hooks: TaskHooks = {}) {
   const directory = mkdtempSync(join(tmpdir(), "herdr-tasks-"));
   const store = new Store(join(directory, "state.sqlite"));

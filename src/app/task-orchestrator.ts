@@ -231,7 +231,8 @@ export class TaskOrchestrator {
     for (const dispatch of event.dispatches) {
       if (dispatch.state === "sent" || dispatch.state === "failed") continue;
       const receipt = this.options.store.get<OperationReceipt>("operations", dispatch.operationId);
-      if (receipt?.state === "done") dispatch.state = "sent";
+      if (receipt?.state === "done" || receipt?.resolution?.choice === "treat_done")
+        dispatch.state = "sent";
       // TaskService records the operation before any native send. A crash before
       // that record exists proves this dispatch never crossed the effect boundary.
       else if (!receipt || receipt.state === "failed") dispatch.state = "failed";

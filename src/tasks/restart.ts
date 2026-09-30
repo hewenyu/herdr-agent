@@ -45,7 +45,9 @@ function restartEffects(context: TaskContext, task: Task, selected: Set<string>)
   for (const [id, operation] of context.store.entries<OperationReceipt>("operations")) {
     if (
       !activeTaskOperation(context.store, task, id, operation) ||
-      !["pending", "uncertain"].includes(operation.state)
+      !["pending", "uncertain"].includes(operation.state) ||
+      // A resolved unknown input has an explicit target-state decision.
+      operation.resolution
     )
       continue;
     const delivery = context.store.get<InputDelivery>("input_deliveries", id);

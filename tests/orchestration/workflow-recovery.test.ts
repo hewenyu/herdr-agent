@@ -43,6 +43,15 @@ async function harness(
   };
   let plans = 0;
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     const tool = input.tools[0];
     assert.ok(tool);
     if (tool.name === "orchestration_plan") {
@@ -61,14 +70,11 @@ async function harness(
         input.actor,
       );
     } else {
-      assert.equal(tool.name, "orchestration_decide");
+      assert.equal(tool.name, "orchestration_choice");
       const candidates = JSON.parse(input.prompt).candidates as WorkflowCandidate[];
       const selected = selection.choose(candidates);
       assert.ok(selected);
-      await tool.execute(
-        { candidateId: selected.id, reason: "按恢复测试合法候选推进。" },
-        input.actor,
-      );
+      await tool.execute({ candidateId: selected.id }, input.actor);
     }
     return { text: "", messages: [] };
   };

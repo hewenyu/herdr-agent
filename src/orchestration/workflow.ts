@@ -49,6 +49,10 @@ export interface WorkflowPlan {
 }
 
 export interface WorkflowIssue {
+  /** Plan that last raised or independently revalidated this issue; absent in legacy history. */
+  planVersion?: number;
+  /** Kept as history after a user revision, until a current-plan receipt raises it again. */
+  needsRevalidation?: boolean;
   /** Set only by myrix for configured verification; participant IDs remain independent. */
   verificationCommandIndex?: number;
   id: string;

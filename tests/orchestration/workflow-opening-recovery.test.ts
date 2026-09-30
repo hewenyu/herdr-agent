@@ -20,6 +20,15 @@ async function harness() {
   const engine = new Engine();
   let plans = 0;
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     assert.equal(input.tools[0]?.name, "orchestration_plan");
     plans++;
     await input.tools[0].execute(
@@ -84,9 +93,23 @@ async function harness() {
       ? prepared.prompt
       : undefined;
   const prove = async () => {
+    const original = h.store.get<OperationReceipt>("operations", first.operationId);
+    assert.ok(original);
+    assert.equal(original.state, "uncertain");
+    assert.ok(original.error);
     proved = true;
     await h.service.reconcile(task.id);
-    assert.equal(h.store.get<OperationReceipt>("operations", first.operationId)?.state, "done");
+    const recovered = h.store.get<OperationReceipt>("operations", first.operationId);
+    assert.ok(recovered);
+    assert.equal(recovered.state, "uncertain");
+    assert.equal(recovered.resolution?.choice, "treat_done");
+    assert.equal(recovered.resolution?.decidedBy, "evidence");
+    assert.deepEqual(recovered.error, original.error);
+    assert.deepEqual(recovered.history, original.history);
+    assert.deepEqual(
+      { ...recovered, resolution: undefined },
+      { ...original, resolution: undefined },
+    );
     assert.ok(h.store.get("task_input_applied", first.operationId));
   };
   return { ...h, task, tick, event, prepared, prove, plans: () => plans };

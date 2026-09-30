@@ -128,6 +128,7 @@ test("Application durably audits rejected cleanup notices without logging, deliv
   try {
     h.engine.handler = async () => ({ text: '{"notify":false,"text":""}', messages: [] });
     const task = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "拒绝通知审计",
       requirements: "仅验证收尾拒绝通知的本地审计",
@@ -223,6 +224,7 @@ test("repeated progress reconciliation preserves each rejected decision run and 
   };
   try {
     const task = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "重复进度通知审计",
       requirements: "检查重复 reconcile 的通知拒绝证据不被覆盖",

@@ -5,7 +5,7 @@ import { stableId } from "../../src/core/ids.js";
 import type { HerdrPort } from "../../src/core/ports.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { TaskService } from "../../src/tasks/service.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, assertEvidenceResolved, discussion, setup } from "./helpers.js";
 
 async function legacyParticipant(h: ReturnType<typeof setup>) {
   const task = await h.service.create(actor, discussion);
@@ -97,13 +97,12 @@ test("readback of migrated initial input preserves an independent uncertain part
     const closeKey = `${participant.id}:close`;
     const close = h.store.get<OperationReceipt>("operations", closeKey);
     assert.equal(close?.state, "uncertain");
+    const initialKey = `${participant.id}:initial`;
+    const original = h.store.get<OperationReceipt>("operations", initialKey);
     (h.herdr as HerdrPort).initialInput = async () => h.herdr.sends[0]?.text;
     const restored = new TaskService(h.options);
     await restored.reconcile(task.id);
-    assert.equal(
-      h.store.get<OperationReceipt>("operations", `${participant.id}:initial`)?.state,
-      "done",
-    );
+    assertEvidenceResolved(original, h.store.get<OperationReceipt>("operations", initialKey));
     assert.equal(restored.get(actor, task.id).participants[0]?.initialSent, true);
     assert.match(restored.get(actor, task.id).pending ?? "", /未确认/);
     assert.deepEqual(h.store.get("operations", closeKey), close);

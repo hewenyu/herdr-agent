@@ -9,6 +9,7 @@ import { stableId } from "../../src/core/ids.js";
 import type { Task } from "../../src/core/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { Engine, logger } from "./helpers.js";
+import { persistLegacyModelTask } from "./legacy-model-helpers.js";
 
 for (const action of ["wait", "deliver"] as const)
   for (const checkpoint of ["sending", "uncertain"] as const)
@@ -21,6 +22,7 @@ for (const action of ["wait", "deliver"] as const)
             ...discussion,
             orchestration: { mode: "model" },
           });
+          persistLegacyModelTask(h.store, task);
           await h.service.reconcile(task.id);
           const participants = h.service.records.participants(task);
           for (const participant of participants) {

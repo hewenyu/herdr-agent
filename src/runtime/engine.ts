@@ -10,13 +10,10 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import type { ModelConfig } from "../config/types.js";
 import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
-import { hasUnverifiedToolClaim, requiresToolForRequest, requiresWriteEvidence } from "./claims.js";
+import { evaluateClaimPolicy } from "./claim-policy.js";
+import { requiresToolForRequest } from "./claims.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
-import {
-  type ProvisionEvidence,
-  recordProvisionEvidence,
-  unsupportedProvisionClaim,
-} from "./provision-evidence.js";
+import { type ProvisionEvidence, recordProvisionEvidence } from "./provision-evidence.js";
 import type {
   ConversationEngine,
   EngineInput,
@@ -404,16 +401,22 @@ export class PiEngine implements ConversationEngine {
         input.enforceClaims !== false &&
         input.tools.length > 0 &&
         requiresToolForRequest(input.prompt);
+      const claimPolicy = (requireEvidence = false) =>
+        evaluateClaimPolicy(
+          finalText,
+          {
+            successful: successfulToolCalls,
+            successfulWrites: successfulWriteCalls,
+            unknown: unknownToolResults,
+            notExecuted: notExecutedToolResults,
+            unresolvedNotExecuted: unresolvedNotExecuted(finalText),
+            provisioning,
+          },
+          requireEvidence,
+        );
       const claimRecovery =
         input.enforceClaims !== false &&
-        (((hasUnverifiedToolClaim(finalText) || (requestRequiresTool && toolCallsSeen === 0)) &&
-          (unknownToolResults > 0 ||
-            unresolvedNotExecuted(finalText) > 0 ||
-            toolCallsSeen === 0 ||
-            (requiresWriteEvidence(finalText)
-              ? successfulWriteCalls === 0
-              : successfulToolCalls === 0))) ||
-          unsupportedProvisionClaim(finalText, provisioning));
+        claimPolicy(requestRequiresTool && toolCallsSeen === 0).rejected;
       if (claimRecovery && input.tools.length > 0) {
         // The first answer is the evidence failure that triggered recovery. Do
         // not allow it to survive if the constrained retry is blocked or fails
@@ -424,7 +427,7 @@ export class PiEngine implements ConversationEngine {
           agent.prompt({
             role: "user",
             content:
-              "上一次答复缺少支持业务请求或所述结果的工具事实。请重新检查原始用户请求与本轮工具返回：尚未尝试的操作先调用合适工具；已经登记的操作不要重复创建，必要时只读查询。accepted/queued只证明本地登记，remoteTaskId证明飞书任务、chatId且groupDeleted=false证明群建立、initialSent或verified投递回执才证明要求已转交。按已核验的实际阶段重新回答；不要把历史文字当作执行回执。",
+              "上一次答复缺少支持业务请求或所述结果的工具事实。请重新检查原始用户请求与本轮工具返回：尚未尝试的操作先调用合适工具；已经登记的操作不要重复创建，必要时只读查询。accepted/queued只证明本地登记，remoteTaskId证明飞书任务、chatId且groupDeleted=false证明群建立、initialDelivery=confirmed或verified投递回执才证明要求已转交；initialDelivery=decided只能说已按决策视为送达、未经确认。按已核验的实际阶段重新回答；不要把历史文字当作执行回执。",
             timestamp: Date.now(),
           }),
           aborted,
@@ -455,15 +458,7 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError("empty_response", "pi 调度模型未生成完整答复。", "unknown");
       if (input.requireToolCall && toolCallsSeen === 0)
         throw new OperationError("model_failed", "本轮要求的工具调用未执行。", "not_executed");
-      if (
-        claimRecovery &&
-        (unknownToolResults > 0 ||
-          unresolvedNotExecuted(finalText) > 0 ||
-          (requiresWriteEvidence(finalText)
-            ? successfulWriteCalls === 0
-            : successfulToolCalls === 0) ||
-          unsupportedProvisionClaim(finalText, provisioning))
-      )
+      if (claimRecovery && claimPolicy(true).rejected)
         throw new OperationError(
           "model_failed",
           unknownToolResults > 0

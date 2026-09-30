@@ -154,7 +154,8 @@ test("Feishu normalize → durable inbox → real PiEngine recovery → applicat
     const task = tasks[0];
     assert.ok(task);
     assert.equal(task.kind, "discussion");
-    assert.equal(task.requirements, "仅讨论需求；禁止编码和修改文件。");
+    assert.equal(task.requirements, incoming.text, "the user's exact ingress is authoritative");
+    assert.deepEqual(task.orchestration, { mode: "workflow" });
     assert.deepEqual(
       app.tasks.records.participants(task).map((participant) => participant.kind),
       ["claude", "codex"],

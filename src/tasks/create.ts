@@ -4,6 +4,7 @@ import { fail } from "../core/errors.js";
 import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { ActorContext, Participant, Task, TaskCreateInput } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { parentHandoff } from "./parent-handoff.js";
 import { currentUserRequest, requestContext } from "./user-request.js";
 
 export async function createTask(
@@ -32,7 +33,12 @@ export async function createTask(
   }
   if (input.directoryMode && !["shared", "worktree"].includes(input.directoryMode))
     fail("directory_mode", "目录隔离模式无效。");
-  if (input.discussion?.mode && !["manual", "round_robin"].includes(input.discussion.mode))
+  if (input.discussion?.mode === "round_robin")
+    fail(
+      "discussion_mode_deprecated",
+      "round_robin 已弃用，新任务请使用默认 workflow 或 manual；存量任务仍按原协议运行。",
+    );
+  if (input.discussion?.mode && input.discussion.mode !== "manual")
     fail("discussion_mode", "讨论模式无效。");
   if (input.orchestration && !["model", "manual", "workflow"].includes(input.orchestration.mode))
     fail("orchestration_mode", "调度模式无效。");
@@ -60,10 +66,12 @@ export async function createTask(
   const legacy = store.get<Task>("tasks", legacyId);
   if (legacy?.sessionId === actor.sessionId) return records.get(actor, legacyId);
   // Automatic scheduling is selected by the current service configuration, not
-  // a model's copy of an old task_create call. Keep the original input above for
-  // durable task identity; a retry of an existing model task must not migrate it.
+  // a model's copy of an old task_create call. With AI enabled, pi leads workflow
+  // scheduling; a Jev key only affects native approvals and private ingress. Keep
+  // the original input above for durable task identity; a retry of an existing
+  // model task must not migrate it.
   const orchestration =
-    config.ai.enabled && config.jev?.apiKey && input.orchestration?.mode === "model"
+    config.ai.enabled && input.orchestration?.mode === "model"
       ? { ...input.orchestration, mode: "workflow" as const }
       : input.orchestration;
   if (
@@ -140,6 +148,7 @@ export async function createTask(
           requirements: parent.requirements,
           ...(parent.userRequest ? { userRequest: parent.userRequest } : {}),
           result: parent.result,
+          ...(await parentHandoff(store, config.stateDir, id, parent)),
           participants: records.participants(parent).map((entry) => ({
             name: entry.name,
             kind: entry.kind,
@@ -148,9 +157,7 @@ export async function createTask(
         }
       : undefined,
     discussion: {
-      mode:
-        input.discussion?.mode ??
-        (input.kind === "discussion" && participants.length > 1 ? "round_robin" : "manual"),
+      mode: input.discussion?.mode ?? "manual",
       rounds: 0,
       nextParticipant: 0,
       paused: false,
@@ -163,7 +170,7 @@ export async function createTask(
             ? { template: orchestration.template }
             : {}),
         }
-      : config.ai.enabled && config.jev?.apiKey && !input.discussion?.mode
+      : config.ai.enabled && !input.discussion?.mode
         ? { mode: "workflow" }
         : undefined,
     result: "",

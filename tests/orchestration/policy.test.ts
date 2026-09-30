@@ -43,20 +43,15 @@ const input: WorkflowSelectionInput = {
   },
   jev: { apiKey: "fixture-key", confidenceThreshold: 0.8 },
 };
-function provider(confidence: number): typeof fetch {
-  return async () =>
-    Response.json({
-      model: "jev-1.13.0",
-      answers: {
-        action: {
-          type: "choice",
-          choice: "review",
-          confidence,
-          probabilities: { review: 0.9, wait: 0.1 },
-        },
-      },
-      usage: { input_tokens: 100, output_tokens: 20 },
-    });
+function chooser(candidateId = "review", after?: () => void): ConversationEngine {
+  return {
+    ...unused,
+    run: async (request) => {
+      await request.tools[0]?.execute({ candidateId }, request.actor);
+      after?.();
+      return { text: "", messages: [] };
+    },
+  };
 }
 
 test("rule choice skips both models with replayable evidence and no fabricated distribution", async () => {
@@ -87,16 +82,16 @@ test("sole candidate and no-candidate states do not invoke a selector", async ()
   assert.equal(empty.log.pi.status, "skipped");
 });
 
-test("accepted Jev candidate records the same legal set and only invokes Jev", async () => {
-  const result = await selectWorkflowCandidate({ ...input, fetch: provider(0.9) });
-  assert.equal(result.source, "jev");
+test("accepted pi candidate records the same legal set without Jev", async () => {
+  const result = await selectWorkflowCandidate({ ...input, engine: chooser() });
+  assert.equal(result.source, "pi");
   assert.equal(result.candidateId, "review");
-  assert.equal(result.log.pi.status, "skipped");
+  assert.equal(result.log.pi.status, "success");
   assert.deepEqual(result.log.candidates, candidates);
   assert.equal(replayDecision(result.log).valid, true);
 });
 
-test("real PiEngine fallback exposes only orchestration_decide and chooses the unchanged candidate set", async () => {
+test("real PiEngine primary selector exposes only orchestration_choice and chooses the unchanged candidate set", async () => {
   const engine = new PiEngine(config, {
     streamFn: scripted(
       [
@@ -104,8 +99,8 @@ test("real PiEngine fallback exposes only orchestration_decide and chooses the u
           {
             type: "toolCall",
             id: "decision",
-            name: "orchestration_decide",
-            arguments: { candidateId: "wait", reason: "证据不足" },
+            name: "orchestration_choice",
+            arguments: { candidateId: "wait" },
           },
         ]),
         response("已选择等待用户裁决。"),
@@ -113,7 +108,7 @@ test("real PiEngine fallback exposes only orchestration_decide and chooses the u
       (context) => {
         assert.deepEqual(
           context.tools?.map((tool) => tool.name),
-          ["orchestration_decide"],
+          ["orchestration_choice"],
         );
         const schema = context.tools?.[0]?.parameters as {
           properties: { candidateId: { enum: string[] } };
@@ -126,15 +121,15 @@ test("real PiEngine fallback exposes only orchestration_decide and chooses the u
   const result = await selectWorkflowCandidate({
     ...input,
     engine,
-    fetch: provider(0.2),
+
     onLog: (log) => {
       stages.push(log);
     },
   });
   assert.equal(result.source, "pi");
   assert.equal(result.candidateId, "wait");
-  assert.equal(result.log.jev.status, "low-confidence");
-  assert.equal(result.log.pi.reason, "jev_low-confidence:below_threshold");
+  assert.equal(result.log.jev.status, "skipped");
+  assert.equal(result.log.pi.reason, "accepted");
   assert.equal(
     stages.some((log) => log.pi.status === "pending" && !log.final),
     true,
@@ -156,21 +151,18 @@ test("pi cannot select new candidates, pass action payloads or replace a decisio
         tool.execute({ candidateId: "wait", reason: "x", command: "rm -rf" }, request.actor),
         { code: "workflow_choice" },
       );
-      const accepted = await tool.execute({ candidateId: "wait", reason: "x" }, request.actor);
-      assert.deepEqual(accepted, {
-        candidateId: "wait",
-        reason: "x",
-        selected: true,
-        executed: false,
-      });
-      await assert.rejects(tool.execute({ candidateId: "review", reason: "x" }, request.actor), {
-        code: "orchestration_decided",
+      const accepted = await tool.execute({ candidateId: "wait" }, request.actor);
+      assert.deepEqual(accepted, { selected: "wait" });
+      await assert.rejects(tool.execute({ candidateId: "review" }, request.actor), {
+        code: "workflow_choice",
       });
       return { text: "", messages: [] };
     },
   };
   const result = await selectWorkflowCandidate({ ...input, engine, jev: undefined });
-  assert.equal(result.candidateId, "wait");
+  assert.equal(result.candidateId, undefined);
+  assert.equal(result.log.pi.status, "invalid");
+  assert.equal(result.deferred, true);
 });
 
 test("pi failure or text-only answer never loops or fabricates a selected candidate", async () => {
@@ -184,41 +176,37 @@ test("pi failure or text-only answer never loops or fabricates a selected candid
         return { text: '{"candidateId":"review"}', messages: [] };
       },
     };
-    const result = await selectWorkflowCandidate({ ...input, engine, fetch: provider(0.1) });
+    const result = await selectWorkflowCandidate({ ...input, engine });
     assert.equal(result.candidateId, undefined);
-    assert.equal(result.log.pi.status, "failed");
-    assert.equal(result.log.state, "failed");
+    assert.equal(result.log.pi.status, throws ? "error" : "invalid");
+    assert.equal(result.log.state, "deferred");
     assert.equal(calls, 1);
     assert.equal(JSON.stringify(result).includes("secret key"), false);
   }
 });
 
-test("cancellation during Jev does not invoke pi or return a late choice", async () => {
+test("cancellation during pi cannot authorize a late choice", async () => {
   const controller = new AbortController();
-  const result = await selectWorkflowCandidate({
-    ...input,
-    signal: controller.signal,
-    fetch: async (...args) => {
-      controller.abort();
-      return provider(1)(...args);
-    },
-  });
-  assert.equal(result.candidateId, undefined);
-  assert.equal(result.log.state, "cancelled");
-  assert.equal(result.log.pi.status, "skipped");
+  await assert.rejects(
+    selectWorkflowCandidate({
+      ...input,
+      signal: controller.signal,
+      engine: chooser("wait", () => controller.abort()),
+    }),
+    { code: "cancelled" },
+  );
 });
 
-test("revision invalidated during Jev cannot commit the returned candidate", async () => {
+test("revision invalidated during pi cannot commit the returned candidate", async () => {
   let current = true;
   await assert.rejects(
     selectWorkflowCandidate({
       ...input,
+      engine: chooser("wait", () => {
+        current = false;
+      }),
       assertCurrent: () => {
         if (!current) throw new Error("superseded");
-      },
-      fetch: async (...args) => {
-        current = false;
-        return provider(1)(...args);
       },
     }),
     /superseded/,
@@ -230,7 +218,7 @@ test("durable log replay validates snapshots and selection while linking existin
   try {
     const result = await selectWorkflowCandidate({
       ...input,
-      fetch: provider(0.9),
+      engine: chooser(),
       onLog: (log) => saveDecisionLog(store, log),
     });
     linkDecisionDispatches(store, input.eventId, [

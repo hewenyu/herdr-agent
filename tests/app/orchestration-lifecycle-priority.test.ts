@@ -7,11 +7,13 @@ import type { HerdrPort } from "../../src/core/ports.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { deferred, Engine, logger } from "./helpers.js";
+import { persistLegacyModelTask } from "./legacy-model-helpers.js";
 
 async function harness(mode: "model" | "workflow" = "model") {
   const h = setup();
   h.config.ai.enabled = true;
-  const created = await h.service.create(actor, { ...discussion, orchestration: { mode } });
+  let created = await h.service.create(actor, { ...discussion, orchestration: { mode } });
+  if (mode === "model") created = persistLegacyModelTask(h.store, created);
   created.promptVersion = 2;
   h.service.records.save(created);
   await h.service.reconcile(created.id);

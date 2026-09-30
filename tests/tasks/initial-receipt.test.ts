@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { HerdrPort } from "../../src/core/ports.js";
 import { verifyReceipt } from "../../src/herdr/echo.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 test("a long first relay can be confirmed from its final receipt without full screen echo", async () => {
   const f = setup();
@@ -14,7 +14,7 @@ test("a long first relay can be confirmed from its final receipt without full sc
       const verified = verifyReceipt("old output", screen, text, options?.receipt, false);
       return { ...delivered, status: verified ? "delivered" : "unconfirmed", verified };
     };
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first?.execution && second?.execution);

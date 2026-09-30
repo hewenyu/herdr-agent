@@ -78,6 +78,7 @@ test("lifecycle notice trusts its task snapshot without forcing a write tool", a
   ]);
   try {
     const task = await h.app.tasks.create(actor, {
+      orchestration: { mode: "manual" },
       kind: "discussion",
       title: "通知快照任务",
       requirements: "只验证生命周期通知",

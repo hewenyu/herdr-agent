@@ -6,7 +6,7 @@ import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { InputTiming } from "../../src/tasks/input-timing.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { deferred } from "../app/helpers.js";
-import { actor, discussion, setup } from "./helpers.js";
+import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 for (const mode of ["manual", "round_robin"] as const)
   test(`${mode} initial provisioning defers lifecycle ingress and resumes without a stale syncError lock`, async () => {
@@ -16,7 +16,7 @@ for (const mode of ["manual", "round_robin"] as const)
     const sample = h.herdr.sampleLastReply.bind(h.herdr);
     let hold = true;
     try {
-      const task = await h.service.create(actor, { ...discussion, discussion: { mode } });
+      const task = await createPersistedTask(h, actor, discussion, { discussionMode: mode });
       h.herdr.sampleLastReply = async (ref) => {
         if (hold) {
           hold = false;

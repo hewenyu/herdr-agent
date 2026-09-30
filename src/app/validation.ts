@@ -46,8 +46,12 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
   if (directoryMode && directoryMode !== "shared" && directoryMode !== "worktree")
     fail("input", "目录模式无效。");
   const discussion = input.discussion === undefined ? undefined : object(input.discussion);
-  if (discussion?.mode && discussion.mode !== "manual" && discussion.mode !== "round_robin")
-    fail("input", "讨论模式无效。");
+  if (discussion?.mode === "round_robin")
+    fail(
+      "discussion_mode_deprecated",
+      "round_robin 已弃用，新任务请使用默认 workflow 或 manual；存量任务仍按原协议运行。",
+    );
+  if (discussion?.mode && discussion.mode !== "manual") fail("input", "讨论模式无效。");
   const orchestration = input.orchestration === undefined ? undefined : object(input.orchestration);
   if (orchestration && !["model", "manual", "workflow"].includes(String(orchestration.mode)))
     fail("input", "调度模式无效。");
@@ -94,7 +98,7 @@ export function taskInput(input: Record<string, unknown>): TaskCreateInput {
       : undefined,
     discussion: discussion
       ? {
-          mode: discussion.mode as "manual" | "round_robin" | undefined,
+          mode: discussion.mode as "manual" | undefined,
           maxRounds: discussion.maxRounds === undefined ? undefined : Number(discussion.maxRounds),
           maxMinutes:
             discussion.maxMinutes === undefined ? undefined : Number(discussion.maxMinutes),

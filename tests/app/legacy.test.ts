@@ -15,7 +15,10 @@ async function existing() {
 test("legacy reply binding outranks selected pane and imported bindings verify agent kind", async () => {
   const h = await existing();
   try {
-    await h.app.legacy.select("owner", "entry", "p1");
+    h.store.set("legacy_selection", stableId("owner", "entry"), {
+      ref: await h.herdr.get("p1"),
+      mirror: true,
+    });
     h.store.set("legacy_routes", "old-reply", {
       m: "old-reply",
       p: JSON.stringify({ p: "p2", k: "codex", s: "old" }),
@@ -121,20 +124,21 @@ test("migrated selection resumes from current output baseline and close cannot r
   }
 });
 
-test("invalid old selection does not prevent explicit picker or detach controls", async () => {
+test("invalid old selection does not prevent deprecation reply or detach controls", async () => {
   const h = await existing();
   try {
     h.store.set("legacy_selection", "entry", { c: "entry", t: { pane: "gone", kind: "codex" } });
     await h.app.legacy.handle(message("pick", "/ls"));
     await h.app.legacy.handle(message("detach", "/close"));
-    assert.equal(h.platform.cards.length, 1);
+    assert.equal(h.platform.cards.length, 0);
+    assert.match(h.platform.texts[0]?.text ?? "", /已弃用.*pi/);
     assert.equal(h.herdr.sends.length, 0);
   } finally {
     await h.close();
   }
 });
 
-test("legacy picker does not offer bare herdr shell panes", async () => {
+test("legacy picker is deprecated even when managed agents exist", async () => {
   const h = await existing();
   try {
     h.herdr.agents.set("shell", {
@@ -147,16 +151,15 @@ test("legacy picker does not offer bare herdr shell panes", async () => {
       launchPending: false,
     });
     await h.app.legacy.handle(message("pick-managed", "/ls"));
-    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
-    assert.ok(elements);
-    assert.equal(elements.filter((item) => (item as { tag?: string }).tag === "button").length, 2);
-    assert.ok(elements.every((item) => !JSON.stringify(item).includes("shell")));
+    assert.equal(h.platform.cards.length, 0);
+    assert.match(h.platform.texts.at(-1)?.text ?? "", /已弃用.*pi/);
+    assert.equal(h.store.get("legacy_selection", stableId("owner", "entry")), undefined);
   } finally {
     await h.close();
   }
 });
 
-test("legacy picker explains when no managed agent is available", async () => {
+test("legacy picker is deprecated even when no managed agent is available", async () => {
   const h = setup(false);
   h.config.tasks.enabled = false;
   try {
@@ -170,10 +173,8 @@ test("legacy picker explains when no managed agent is available", async () => {
       launchPending: false,
     });
     await h.app.legacy.handle(message("pick-empty", "/ls"));
-    const elements = (h.platform.cards[0]?.card.body as { elements?: unknown[] })?.elements;
-    assert.deepEqual(elements, [
-      { tag: "markdown", content: "当前没有可接管的 Claude/Codex agent。" },
-    ]);
+    assert.equal(h.platform.cards.length, 0);
+    assert.match(h.platform.texts.at(-1)?.text ?? "", /已弃用.*pi/);
   } finally {
     await h.close();
   }

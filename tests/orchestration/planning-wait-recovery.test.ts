@@ -32,12 +32,13 @@ for (const interruption of ["cancelled", "orchestration_superseded", "workflow_a
       const controller = new AbortController();
       const engine = new Engine();
       engine.handler = async () => {
-        throw new Error("an interrupted wait must not invoke pi");
+        piCalls++;
+        return { text: "no valid choice", messages: [] };
       };
       const events = () => h.store.list<OrchestrationEvent>("task_orchestration_events");
       let revision = "original-input";
       let interrupted = false;
-      let jevCalls = 0;
+      let piCalls = 0;
       let notices = 0;
       const ports: WorkflowPorts = {
         store: h.store,
@@ -80,36 +81,11 @@ for (const interruption of ["cancelled", "orchestration_superseded", "workflow_a
           notices++;
         },
         recoverNotification: async () => {},
-        fetch: async (_url, init) => {
-          jevCalls++;
-          const ids = Object.keys(JSON.parse(String(init?.body)).questions.action.criteria);
-          const primary = ids.includes("use_template");
-          const choice = primary ? "use_template" : "wait_for_evidence";
-          const confidence = primary ? 0.55 : 0.99;
-          assert.ok(ids.includes(choice));
-          return Response.json({
-            model: "jev-fixture",
-            answers: {
-              action: {
-                type: "choice",
-                choice,
-                confidence,
-                probabilities: Object.fromEntries(
-                  ids.map((id) => [
-                    id,
-                    id === choice ? confidence : (1 - confidence) / (ids.length - 1),
-                  ]),
-                ),
-              },
-            },
-            usage: { input_tokens: 10, output_tokens: 1 },
-          });
-        },
       };
 
       await assert.doesNotReject(new WorkflowOrchestrator(ports).process(task));
 
-      assert.equal(jevCalls, 2, "the planning selector first asks Jev whether to wait");
+      assert.equal(piCalls, 1, "invalid pi planning choice defers to user evidence");
       assert.ok(interrupted, "the failure occurred after the planning defer decision");
       assert.equal(events().length, 1);
       const event = events()[0];
@@ -122,7 +98,7 @@ for (const interruption of ["cancelled", "orchestration_superseded", "workflow_a
       assert.equal(state?.planning, "needed");
       assert.equal(state?.userDecision, undefined);
       assert.equal(state?.assistanceWait, undefined);
-      assert.equal(engine.calls.length, 0);
+      assert.equal(engine.calls.length, 1);
       assert.equal(notices, 0);
       assert.equal(h.herdr.sends.length, 0);
     } finally {

@@ -4,7 +4,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { REPORT_ATTACHMENT_MAX_BYTES } from "../../src/core/report-limits.js";
 import { boardDirectory } from "../../src/orchestration/board.js";
-import { publishReport, reportText } from "../../src/orchestration/report.js";
+import {
+  publishReport,
+  reportCard,
+  reportContract,
+  reportText,
+} from "../../src/orchestration/report.js";
+import { reportSummaryText } from "../../src/orchestration/report-delivery.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import type { StatusBlock } from "../../src/orchestration/status-block.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
@@ -44,6 +50,64 @@ async function fixture(promptVersion: 2 | 3 = 3) {
     publish: () => publishReport(h.directory, task, state, block, "report-output", "revision"),
   };
 }
+
+test("report summary describes body, attachment and local Web delivery without implying acceptance", async () => {
+  const h = await fixture();
+  try {
+    const body = reportSummaryText(reportCard(h.task, h.state));
+    const attachment = reportSummaryText(reportCard(h.task, h.state, "attachment"));
+    const web = reportSummaryText(reportCard(h.task, h.state, "web"));
+    assert.match(body, /本会话正文中发送/);
+    assert.match(attachment, /report\.md 附件发送/);
+    assert.match(attachment, /本机 Web 下载/);
+    assert.match(web, /本机 Web 下载（report\.md）/);
+    for (const summary of [attachment, web]) assert.doesNotMatch(summary, /正文中发送/);
+    assert.doesNotMatch(web, /附件发送/);
+    for (const summary of [body, attachment, web]) assert.match(summary, /交付不代表已验收/);
+  } finally {
+    h.close();
+  }
+});
+
+test("stale open issues do not block delivery and are separated in the report and summary", async () => {
+  const h = await fixture();
+  try {
+    h.state.plan.consensus = { participantIds: h.task.participantIds };
+    h.state.issues.push({
+      id: "stale-blocker",
+      description: "旧版本阻塞问题",
+      status: "open",
+      blocking: true,
+      needsRevalidation: true,
+      evidenceRefs: [],
+      raisedBy: "old-output",
+      responses: [],
+    });
+    const gates = ["共同认可仍有未处理分歧", "仍有未处理阻塞问题"];
+    for (const gate of gates) assert.ok(!reportContract(h.state, "revision", []).includes(gate));
+
+    // Publishing itself need not exercise the independent consensus-document contract.
+    delete h.state.plan.consensus;
+    await h.publish();
+    const text = await reportText(h.state);
+    assert.match(text, /## 保留问题\n\n\n## 旧版本遗留问题（待重新验证）/);
+    assert.match(text, /## 旧版本遗留问题（待重新验证）\n\n- stale-blocker · open：旧版本阻塞问题/);
+    const summary = reportSummaryText(reportCard(h.task, h.state));
+    assert.match(summary, /未决事项：无/);
+    assert.match(summary, /旧版本遗留问题（待重新验证）：旧版本阻塞问题/);
+
+    const issue = h.state.issues[0];
+    assert.ok(issue);
+    delete issue.needsRevalidation;
+    h.state.plan.consensus = { participantIds: h.task.participantIds };
+    for (const gate of gates) assert.ok(reportContract(h.state, "revision", []).includes(gate));
+    const currentSummary = reportSummaryText(reportCard(h.task, h.state));
+    assert.match(currentSummary, /未决事项：旧版本阻塞问题/);
+    assert.doesNotMatch(currentSummary, /旧版本遗留问题（待重新验证）/);
+  } finally {
+    h.close();
+  }
+});
 
 test("aggregate UTF-8 document and section bytes are rejected before freezing and can be corrected", async () => {
   const h = await fixture();

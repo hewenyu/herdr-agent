@@ -17,14 +17,15 @@ import {
   readHandoff,
   reportSections,
 } from "../../src/orchestration/handoff.js";
-import type { JevResult } from "../../src/orchestration/jev.js";
 import { selectWorkflowOutput } from "../../src/orchestration/output-selection.js";
+import type { PiChoiceResult } from "../../src/orchestration/pi-choice.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { statusInstructions } from "../../src/orchestration/status-block.js";
 import { templatePlan } from "../../src/orchestration/templates.js";
 import { validatePlan } from "../../src/orchestration/workflow.js";
 import type { InputDelivery } from "../../src/tasks/input-delivery.js";
 import { participantPrompt, participantPromptCandidates } from "../../src/tasks/prompts.js";
+import { Engine } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function fixture() {
@@ -354,129 +355,99 @@ test("v3 initial prompts are natural while retaining exact historical readback c
   }
 });
 
-test("only an accepted Jev authorization can admit the exact proposed document scope", async () => {
+test("only an accepted restricted pi authorization can admit the exact proposed document scope", async () => {
   const h = await fixture();
   try {
     const plan = templatePlan(h.task);
     plan.documentDelivery = { paths: ["docs/DESIGN.md"], userRequest: h.task.requirements };
     const revision = "只保存设计，不开发代码。";
-    const decisions: JevResult[] = [];
+    const decisions: PiChoiceResult[] = [];
     let requests = 0;
-    const authorize = (choice: string, confidence: number) =>
-      authorizeDocumentDelivery({
+    const engine = new Engine();
+    const authorize = (choice: string) => {
+      engine.handler = async (input) => {
+        requests++;
+        const request = JSON.parse(input.prompt);
+        assert.deepEqual(request.state, {
+          original: h.task.requirements,
+          revisions: [revision],
+          proposed: plan.documentDelivery,
+        });
+        assert.deepEqual(
+          request.candidates.map((candidate: { id: string }) => candidate.id),
+          ["authorized", "forbidden", "unclear"],
+        );
+        await input.tools[0]?.execute({ candidateId: choice }, input.actor);
+        return { text: "", messages: [] };
+      };
+      return authorizeDocumentDelivery({
         task: h.task,
         plan,
         userMessages: [revision],
-        jev: { apiKey: "fixture-key", confidenceThreshold: 0.8 },
-        assertCurrent: () => {},
-        onDecision: (result) => {
+        engine,
+        actor,
+        assertCurrent() {},
+        onDecision(result) {
           decisions.push(result);
         },
-        fetch: async (_url, init) => {
-          requests++;
-          const request = JSON.parse(String(init?.body));
-          assert.deepEqual(request.state, {
-            original: h.task.requirements,
-            revisions: [revision],
-            proposed: plan.documentDelivery,
-          });
-          assert.deepEqual(Object.keys(request.questions.action.criteria), [
-            "authorized",
-            "forbidden",
-            "unclear",
-          ]);
-          return Response.json({
-            model: "jev-1.13.0",
-            answers: {
-              action: {
-                type: "choice",
-                choice,
-                confidence,
-                probabilities: Object.fromEntries(
-                  ["authorized", "forbidden", "unclear"].map((id) => [
-                    id,
-                    id === choice ? 0.9 : 0.05,
-                  ]),
-                ),
-              },
-            },
-            usage: { input_tokens: 100, output_tokens: 10 },
-          });
-        },
       });
-    await authorize("authorized", 0.95);
-    for (const [choice, confidence] of [
-      ["forbidden", 0.95],
-      ["unclear", 0.95],
-      ["authorized", 0.6],
-    ] as const)
-      await assert.rejects(authorize(choice, confidence), {
-        code: "workflow_document_authorization",
-      });
+    };
+    await authorize("authorized");
+    for (const choice of ["forbidden", "unclear", "illegal"])
+      await assert.rejects(authorize(choice), { code: "workflow_document_authorization" });
     assert.equal(requests, 4);
     assert.equal(decisions.length, 4);
-    assert.equal(decisions.at(-1)?.status, "low-confidence");
+    assert.equal(decisions.at(-1)?.status, "invalid");
     assert.ok(
       plan.nodes.every((node) => node.access === "read"),
-      "authorization itself never adds or dispatches work",
+      "authorization never dispatches work",
     );
   } finally {
     h.close();
   }
 });
 
-test("document authorization is fail-closed on missing keys, provider failure, and stale state", async () => {
+test("document authorization is fail-closed on empty choices, provider failure, and stale state", async () => {
   const h = await fixture();
   try {
     const plan = templatePlan(h.task);
     plan.documentDelivery = { paths: ["docs/DESIGN.md"], userRequest: h.task.requirements };
-    const decisions: JevResult[] = [];
+    const decisions: PiChoiceResult[] = [];
+    const engine = new Engine();
     const input = {
       task: h.task,
       plan,
       userMessages: [],
-      assertCurrent: () => {},
-      onDecision: (result: JevResult) => {
+      engine,
+      actor,
+      assertCurrent() {},
+      onDecision(result: PiChoiceResult) {
         decisions.push(result);
       },
+    };
+    engine.handler = async () => ({ text: "authorized", messages: [] });
+    await assert.rejects(authorizeDocumentDelivery(input), {
+      code: "workflow_document_authorization",
+    });
+    assert.equal(decisions.at(-1)?.reason, "empty_selection");
+    engine.handler = async () => {
+      throw new Error("private provider detail");
     };
     await assert.rejects(authorizeDocumentDelivery(input), {
       code: "workflow_document_authorization",
     });
-    await assert.rejects(
-      authorizeDocumentDelivery({
-        ...input,
-        jev: { apiKey: "fixture-key" },
-        fetch: async () => {
-          throw new Error("private provider detail");
-        },
-      }),
-      { code: "workflow_document_authorization" },
-    );
     assert.equal(decisions.at(-1)?.status, "error");
     assert.doesNotMatch(JSON.stringify(decisions), /private provider detail/);
     let current = true;
+    engine.handler = async () => {
+      current = false;
+      return { text: "", messages: [] };
+    };
     await assert.rejects(
       authorizeDocumentDelivery({
         ...input,
-        jev: { apiKey: "fixture-key" },
-        assertCurrent: () => {
+        assertCurrent() {
           if (!current) throw new Error("superseded");
-        },
-        fetch: async () => {
-          current = false;
-          return Response.json({
-            model: "jev-1.13.0",
-            answers: {
-              action: {
-                type: "choice",
-                choice: "authorized",
-                confidence: 0.95,
-                probabilities: { authorized: 0.95, forbidden: 0.03, unclear: 0.02 },
-              },
-            },
-            usage: { input_tokens: 100, output_tokens: 10 },
-          });
         },
       }),
       /superseded/,
@@ -599,21 +570,23 @@ test("cancelled document authorization records cancellation without granting wri
     const controller = new AbortController();
     controller.abort();
     let calls = 0;
-    const decisions: JevResult[] = [];
+    const engine = new Engine();
+    engine.handler = async () => {
+      calls++;
+      throw new Error("unexpected pi request");
+    };
+    const decisions: PiChoiceResult[] = [];
     await assert.rejects(
       authorizeDocumentDelivery({
         task: h.task,
         plan,
         userMessages: [],
-        jev: { apiKey: "fixture-key" },
+        engine,
+        actor,
         signal: controller.signal,
         assertCurrent: () => {},
         onDecision: (result) => {
           decisions.push(result);
-        },
-        fetch: async () => {
-          calls++;
-          throw new Error("unexpected network request");
         },
       }),
     );

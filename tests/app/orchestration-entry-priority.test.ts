@@ -6,6 +6,7 @@ import type { ActorContext, Task } from "../../src/core/types.js";
 import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { deferred, Engine, logger } from "./helpers.js";
+import { persistLegacyModelTask } from "./legacy-model-helpers.js";
 
 async function harness() {
   const h = setup();
@@ -15,6 +16,7 @@ async function harness() {
     participants: [{ kind: "codex" }],
     orchestration: { mode: "model" },
   });
+  persistLegacyModelTask(h.store, created);
   await h.service.reconcile(created.id);
   const task = h.service.get(actor, created.id);
   assert.ok(task.chatId);

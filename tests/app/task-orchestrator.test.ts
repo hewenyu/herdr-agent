@@ -11,6 +11,7 @@ import type { ActorContext, StoredMessage, Task } from "../../src/core/types.js"
 import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { deferred, Engine, logger } from "./helpers.js";
+import { persistLegacyModelTask } from "./legacy-model-helpers.js";
 
 const TABLE = "task_orchestration_events";
 
@@ -26,6 +27,7 @@ async function harness() {
     requirements: "Codex 与 Claude 协作交付功能。只修改授权文件；自主评审和修订。",
     orchestration: { mode: "model" },
   });
+  persistLegacyModelTask(h.store, task);
   await h.service.reconcile(task.id);
   const tools = (_actor: ActorContext): RuntimeTool[] => [
     {

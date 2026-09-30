@@ -59,6 +59,22 @@ test("Chinese failure and negation statements are not completion claims", () => 
   assert.equal(hasUnverifiedToolClaim("创建失败，但任务已登记"), true);
 });
 
+test("a trailing question exempts only its own clause", () => {
+  for (const text of [
+    "任务已创建。还需要什么？",
+    "任务已创建，还需要什么？",
+    "是否已创建任务？任务已创建。",
+    "Created task. Anything else?",
+  ]) {
+    assert.equal(hasUnverifiedToolClaim(text), true, text);
+    assert.equal(requiresWriteEvidence(text), true, text);
+  }
+  for (const text of ["是否已创建任务？", "任务已创建吗？", "Has the task been created?"]) {
+    assert.equal(hasUnverifiedToolClaim(text), false, text);
+    assert.equal(requiresWriteEvidence(text), false, text);
+  }
+});
+
 test("action claims require a write fact even when a read-only lookup ran", () => {
   assert.equal(requiresWriteEvidence("task created after lookup"), true);
   assert.equal(requiresWriteEvidence("已创建任务 task-1"), true);

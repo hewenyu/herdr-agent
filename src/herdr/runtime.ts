@@ -29,6 +29,15 @@ export class HerdrRuntime implements HerdrPort {
   ping: HerdrPort["ping"] = (signal) => this.client.ping(signal);
   list: HerdrPort["list"] = (signal) => this.client.list(signal);
   get: HerdrPort["get"] = (paneId, signal) => this.client.get(paneId, signal);
+  paneExists: HerdrPort["paneExists"] = async (paneId, signal) => {
+    try {
+      await this.client.pane(paneId, signal);
+      return true;
+    } catch (error) {
+      if (error instanceof OperationError && error.code === "pane_not_found") return false;
+      throw error;
+    }
+  };
   createWorkspace: HerdrPort["createWorkspace"] = (cwd, label, signal) =>
     createWorkspace(this.client, cwd, label, signal);
   startAgent: HerdrPort["startAgent"] = (paneId, kind, name, options) =>

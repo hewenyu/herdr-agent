@@ -13,10 +13,13 @@ import { actor, discussion, setup } from "../tasks/helpers.js";
 test("new automatic tasks use workflow while existing tasks and manual controls are preserved", async () => {
   const h = setup();
   try {
-    h.config.ai.enabled = true;
     const historical = await h.service.create(actor, discussion);
     assert.equal(historical.orchestration, undefined);
     assert.equal(historical.promptVersion, undefined);
+    h.config.ai.enabled = true;
+    const withoutKey = await h.service.create({ ...actor, messageId: "no-key" }, discussion);
+    assert.equal(withoutKey.orchestration?.mode, "workflow");
+    assert.equal(withoutKey.promptVersion, 3);
     assert.ok(h.config.jev);
     h.config.jev.apiKey = "synthetic-key-not-used";
     const replay = await h.service.create(actor, discussion);
@@ -30,7 +33,6 @@ test("new automatic tasks use workflow while existing tasks and manual controls 
       { input: { orchestration: { mode: "model" } }, expected: "workflow" },
       { input: { orchestration: { mode: "manual" } }, expected: "manual" },
       { input: { discussion: { mode: "manual" } }, expected: undefined },
-      { input: { discussion: { mode: "round_robin" } }, expected: undefined },
     ];
     for (const [index, scenario] of cases.entries()) {
       const task = await h.service.create(
@@ -40,6 +42,13 @@ test("new automatic tasks use workflow while existing tasks and manual controls 
       assert.equal(task.orchestration?.mode, scenario.expected);
       assert.equal(task.promptVersion, scenario.expected === "workflow" ? 3 : undefined);
     }
+    await assert.rejects(
+      h.service.create(
+        { ...actor, messageId: "deprecated-round-robin" },
+        { ...discussion, discussion: { mode: "round_robin" } },
+      ),
+      { code: "discussion_mode_deprecated" },
+    );
     h.config.ai.enabled = false;
     const disabled = await h.service.create({ ...actor, messageId: "ai-disabled" }, discussion);
     assert.equal(disabled.orchestration, undefined);

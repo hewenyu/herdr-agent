@@ -26,7 +26,7 @@ async function fixture(
   options: {
     consensus?: boolean;
     selection?: "request_pi" | "use_template";
-    decision?: "authorized" | "denied" | "unclear" | "low-confidence" | "error";
+    decision?: "authorized" | "denied" | "unclear" | "invalid" | "error";
   } = {},
 ) {
   const h = setup();
@@ -92,15 +92,36 @@ async function fixture(
   };
   let args: Record<string, unknown> = {};
   const engine = new Engine();
-  engine.handler = async (request) => {
-    await request.tools[0]?.execute(
-      { template: "discussion", instructions: {}, deliveryRequirements: [], ...args },
-      request.actor,
-    );
-    return { text: "", messages: [] };
-  };
   const calls: string[] = [];
   const snapshots: Record<string, unknown>[] = [];
+  engine.handler = async (request) => {
+    if (request.tools[0]?.name === "orchestration_plan") {
+      await request.tools[0].execute(
+        { template: "discussion", instructions: {}, deliveryRequirements: [], ...args },
+        request.actor,
+      );
+    } else {
+      const body = JSON.parse(request.prompt);
+      const snapshot = body.state ?? body;
+      const candidates = body.candidates.map((candidate: { id: string }) => candidate.id);
+      snapshots.push(snapshot);
+      const contract = "requestedChange" in snapshot;
+      const selected = contract
+        ? options.decision === "denied" || options.decision === "unclear"
+          ? options.decision
+          : "authorized"
+        : candidates.includes("authorized")
+          ? "authorized"
+          : (options.selection ?? "request_pi");
+      calls.push(contract ? `contract:${options.decision ?? "authorized"}` : selected);
+      if (contract && options.decision === "error") throw new Error("fixture pi failed");
+      await request.tools[0]?.execute(
+        { candidateId: contract && options.decision === "invalid" ? "illegal" : selected },
+        request.actor,
+      );
+    }
+    return { text: "", messages: [] };
+  };
   const ports: WorkflowPorts = {
     store: h.store,
     config: h.config,
@@ -122,36 +143,8 @@ async function fixture(
     notify: async () => {},
     attention: async () => {},
     recoverNotification: async () => {},
-    fetch: async (_url, init) => {
-      const body = JSON.parse(String(init?.body));
-      const candidates = Object.keys(body.questions.action.criteria);
-      snapshots.push(body.state);
-      const contract = "requestedChange" in body.state;
-      const selected = contract
-        ? options.decision === "denied" || options.decision === "unclear"
-          ? options.decision
-          : "authorized"
-        : candidates.includes("authorized")
-          ? "authorized"
-          : (options.selection ?? "request_pi");
-      calls.push(contract ? `contract:${options.decision ?? "authorized"}` : selected);
-      if (contract && options.decision === "error")
-        return new Response("unavailable", { status: 503 });
-      assert.ok(candidates.includes(selected));
-      return Response.json({
-        model: "jev-fixture",
-        answers: {
-          action: {
-            type: "choice",
-            choice: selected,
-            confidence: contract && options.decision === "low-confidence" ? 0.5 : 0.99,
-            probabilities: Object.fromEntries(
-              candidates.map((id) => [id, id === selected ? 1 : 0]),
-            ),
-          },
-        },
-        usage: { input_tokens: 10, output_tokens: 1 },
-      });
+    fetch: async () => {
+      throw new Error("workflow must not call Jev");
     },
   };
   const event: OrchestrationEvent = {
@@ -183,7 +176,7 @@ async function fixture(
   };
 }
 
-test("latest authenticated input can explicitly withdraw consensus after Jev authorization while preserving documents", async () => {
+test("latest authenticated input can explicitly withdraw consensus after restricted pi authorization while preserving documents", async () => {
   const h = await fixture();
   try {
     const sourceMessageId = h.input("取消双方认可门槛，保留独立复核并保存 docs/DESIGN.md 后交付。");
@@ -303,7 +296,7 @@ for (const identity of ["original", "older-input", "read", "control", "forged"])
     }
   });
 
-for (const decision of ["denied", "unclear", "low-confidence", "error"] as const)
+for (const decision of ["denied", "unclear", "invalid", "error"] as const)
   test(`a ${decision} authorization cannot downgrade the contract`, async () => {
     const h = await fixture({ decision });
     try {
@@ -322,20 +315,18 @@ for (const decision of ["denied", "unclear", "low-confidence", "error"] as const
     }
   });
 
-test("a missing Jev configuration cannot accept a withdrawal even if pi proposes it", async () => {
+test("a missing Jev configuration still authorizes a withdrawal through restricted pi", async () => {
   const h = await fixture();
   try {
     assert.ok(h.config.jev);
     h.config.jev.apiKey = "";
     const sourceMessageId = h.input("取消双方认可门槛，保存文档后交付。");
-    await assert.rejects(
-      h.choose({
-        documentDelivery: { paths: ["docs/DESIGN.md"], sourceMessageId, requireConsensus: false },
-      }),
-      { code: "workflow_contract_authorization" },
-    );
-    assert.equal(h.decisions()[0]?.jev.status, "skipped");
-    assert.equal(h.decisions()[0]?.decision, "denied");
+    const plan = await h.choose({
+      documentDelivery: { paths: ["docs/DESIGN.md"], sourceMessageId, requireConsensus: false },
+    });
+    assert.equal(plan.consensus, undefined);
+    assert.equal(h.decisions()[0]?.pi.status, "success");
+    assert.equal(h.decisions()[0]?.decision, "authorized");
     assert.deepEqual(h.state.plan, h.previous);
   } finally {
     h.close();
@@ -498,10 +489,8 @@ test("the centralized acceptance boundary rejects a partial path drop even if co
         previous: h.previous,
         plan: draft,
         userMessages: [],
-        jev: h.config.jev,
-        fetch: async () => {
-          throw new Error("a missing path must be rejected before Jev");
-        },
+        engine: h.engine,
+        actor,
         assertCurrent() {},
       }),
       { code: "workflow_contract" },

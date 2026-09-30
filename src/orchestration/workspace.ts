@@ -9,6 +9,7 @@ import type { Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import { activeTaskOperation } from "../tasks/operation-scope.js";
+import { inputExecutionClosed } from "./closed-input.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 
 const execute = promisify(execFile);
@@ -189,8 +190,10 @@ export async function workspaceAvailable(
         (["working", "unknown"].includes(participant.status) ||
           !!store.get("participant_awaiting_output", participant.id)),
     );
-    const unknown = operations.filter(([id, receipt]) =>
-      activeTaskOperation(store, other, id, receipt),
+    const unknown = operations.filter(
+      ([id, receipt]) =>
+        activeTaskOperation(store, other, id, receipt) &&
+        !inputExecutionClosed(store, other, id, receipt),
     );
     if (!active.length && !unknown.length) continue;
     let writer = active.some(

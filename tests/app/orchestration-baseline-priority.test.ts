@@ -8,6 +8,7 @@ import { canonical, stableId } from "../../src/core/ids.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { retryUnsentInput } from "../../src/tasks/input-delivery.js";
 import { deferred, logger, message, setup } from "./helpers.js";
+import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 for (const interruption of ["foreground", "cancelled"] as const)
   test(`background input rechecks ${interruption} after baseline reads and resumes from its durable refusal`, async () => {
@@ -45,7 +46,8 @@ for (const interruption of ["foreground", "cancelled"] as const)
         clock: () => time,
       });
     try {
-      const task = await h.app.tasks.create(
+      const task = await createLegacyModelTask(
+        h,
         { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "goal" },
         {
           kind: "development",

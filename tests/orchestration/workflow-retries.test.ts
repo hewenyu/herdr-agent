@@ -22,6 +22,15 @@ async function harness() {
   const calls = { plan: 0, selection: 0 };
   const fail = { plan: 0, selection: 0 };
   engine.handler = async (input) => {
+    if (
+      input.tools[0]?.name === "orchestration_choice" &&
+      JSON.parse(input.prompt).candidates.some(
+        (candidate: { id: string }) => candidate.id === "use_template",
+      )
+    ) {
+      await input.tools[0].execute({ candidateId: "request_pi" }, input.actor);
+      return { text: "", messages: [] };
+    }
     const tool = input.tools[0];
     assert.ok(tool);
     const stage = tool.name === "orchestration_plan" ? "plan" : "selection";
@@ -33,12 +42,9 @@ async function harness() {
         input.actor,
       );
     } else {
-      assert.equal(tool.name, "orchestration_decide");
+      assert.equal(tool.name, "orchestration_choice");
       const candidate = JSON.parse(input.prompt).candidates[0];
-      await tool.execute(
-        { candidateId: candidate.id, reason: "Proceed with legal candidate." },
-        input.actor,
-      );
+      await tool.execute({ candidateId: candidate.id }, input.actor);
     }
     return { text: "", messages: [] };
   };
@@ -220,13 +226,12 @@ test("unknown input effects immediately need attention and never replay after re
   }
 });
 
-for (const stage of ["plan", "selection"] as const) {
+for (const stage of ["plan"] as const) {
   for (const failures of [2, 3]) {
     test(`${stage} counts each failed attempt once and ${failures === 2 ? "recovers on the third attempt" : "stops after three failures"}`, async () => {
       const h = await harness();
       try {
         h.fail[stage] = failures;
-        if (stage === "selection") await h.worker.tick();
         for (let attempt = 1; attempt <= 3; attempt++) {
           await new TaskOrchestrator(h.options).tick();
           const event = h.events().find((entry) => stage === "plan" || !!entry.selectionLogId);
@@ -258,7 +263,7 @@ test("repeated foreground deferrals retain immutable selection logs and all inpu
     assert.ok(handler);
     h.engine.handler = async (input) => {
       const result = await handler(input);
-      if (input.tools[0]?.name === "orchestration_decide") h.foreground("queued");
+      if (input.tools[0]?.name === "orchestration_choice") h.foreground("queued");
       return result;
     };
     const logs: DecisionLog[] = [];
@@ -272,7 +277,7 @@ test("repeated foreground deferrals retain immutable selection logs and all inpu
       assert.equal(h.herdr.sends.length, 0);
       const log = h.store.get<DecisionLog>("workflow_decisions", event.selectionLogId);
       assert.ok(log);
-      assert.equal(log.state, "failed");
+      assert.equal(log.state, "pending");
       logs.push(log);
       h.foreground("done");
     }
@@ -394,6 +399,29 @@ test("abort does not refund an unknown native effect or permit it to replay", as
     assert.equal(h.herdr.sends.length, 1);
     assert.equal(h.dispatch().state, "attention");
     assert.equal(h.dispatch().attempts, 1);
+  } finally {
+    h.close();
+  }
+});
+
+test("pi selection errors defer without consuming native input retries or repeatedly invoking pi", async () => {
+  const h = await harness();
+  try {
+    h.fail.selection = 3;
+    await h.worker.tick();
+    await h.worker.tick();
+    const event = h.events().find((entry) => entry.selectionLogId);
+    assert.ok(event?.selectionLogId);
+    assert.equal(event.attempts, 0);
+    assert.equal(event.state, "pending");
+    const log = h.store.get<DecisionLog>("workflow_decisions", event.selectionLogId);
+    assert.equal(log?.pi.status, "error");
+    assert.equal(log?.state, "deferred");
+    assert.equal(h.calls.selection, 1);
+    assert.equal(h.herdr.sends.length, 0);
+    for (let tick = 0; tick < 3; tick++) await new TaskOrchestrator(h.options).tick();
+    assert.equal(h.calls.selection, 1);
+    assert.equal(event.attempts, 0);
   } finally {
     h.close();
   }

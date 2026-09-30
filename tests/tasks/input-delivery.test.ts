@@ -5,7 +5,13 @@ import type { Task } from "../../src/core/types.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { InputDelivery } from "../../src/tasks/input-delivery.js";
 import { TaskService } from "../../src/tasks/service.js";
-import { actor, discussion, setup } from "./helpers.js";
+import {
+  actor,
+  assertEvidenceResolved,
+  createPersistedTask,
+  discussion,
+  setup,
+} from "./helpers.js";
 
 test("a later round lost acknowledgement resumes from exact native input after restart", async () => {
   const outputs: string[] = [];
@@ -15,7 +21,7 @@ test("a later round lost acknowledgement resumes from exact native input after r
     },
   });
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first?.execution && second?.execution);
@@ -32,14 +38,15 @@ test("a later round lost acknowledgement resumes from exact native input after r
     assert.ok(id && delivery);
     assert.notEqual(delivery.receipt, first.initialReceipt);
     assert.equal(delivery.prompt, f.herdr.sends[2]?.text);
-    assert.equal(f.store.get<OperationReceipt>("operations", id)?.state, "uncertain");
+    const original = f.store.get<OperationReceipt>("operations", id);
+    assert.equal(original?.state, "uncertain");
     assert.equal(f.service.get(actor, task.id).discussion.paused, true);
     (f.herdr as HerdrPort).initialInput = async (_ref, receipt) =>
       receipt === delivery.receipt ? delivery.prompt : undefined;
     f.herdr.delivery = { status: "delivered", acked: true, verified: true, attempts: 1 };
     const restarted = new TaskService(f.options);
     await restarted.tick();
-    assert.equal(f.store.get<OperationReceipt>("operations", id)?.state, "done");
+    assertEvidenceResolved(original, f.store.get<OperationReceipt>("operations", id));
     assert.equal(f.herdr.sends.length, 3, "readback never resends the same turn");
     assert.equal(restarted.get(actor, task.id).discussion.paused, false);
     f.herdr.finish(first.execution.paneId, "second round A");
@@ -73,6 +80,7 @@ for (const evidence of ["exact", "wrong_body", "changed_session", "paused"] as c
         f.store.entries<InputDelivery>("input_deliveries").find(([, entry]) => !entry.initial) ??
         [];
       assert.ok(id && delivery);
+      const original = f.store.get<OperationReceipt>("operations", id);
       (f.herdr as HerdrPort).initialInput = async (_ref, receipt) =>
         receipt === delivery.receipt
           ? `${delivery.prompt}${evidence === "wrong_body" ? "changed" : ""}`
@@ -90,10 +98,12 @@ for (const evidence of ["exact", "wrong_body", "changed_session", "paused"] as c
         f.store.set("tasks", task.id, current);
       }
       await new TaskService(f.options).tick();
-      assert.equal(
-        f.store.get<OperationReceipt>("operations", id)?.state,
-        evidence === "wrong_body" || evidence === "changed_session" ? "uncertain" : "done",
-      );
+      const recovered = f.store.get<OperationReceipt>("operations", id);
+      if (evidence === "wrong_body" || evidence === "changed_session") {
+        assert.deepEqual(recovered, original);
+      } else {
+        assertEvidenceResolved(original, recovered);
+      }
       assert.equal(f.herdr.sends.length, 2);
       assert.equal(f.service.get(actor, task.id).discussion.paused, true);
       if (evidence === "paused") assert.equal(f.service.get(actor, task.id).status, "paused");
@@ -122,12 +132,13 @@ test("late native input readback cannot resurrect a turn whose answer already se
     const [id, delivery] =
       f.store.entries<InputDelivery>("input_deliveries").find(([, entry]) => !entry.initial) ?? [];
     assert.ok(id && delivery);
+    const original = f.store.get<OperationReceipt>("operations", id);
     f.herdr.finish(participant.execution.paneId, "final answer");
     await f.service.tick();
     assert.equal(f.store.get("participant_awaiting_output", participant.id), undefined);
     (f.herdr as HerdrPort).initialInput = async () => delivery.prompt;
     await new TaskService(f.options).tick();
-    assert.equal(f.store.get<OperationReceipt>("operations", id)?.state, "done");
+    assertEvidenceResolved(original, f.store.get<OperationReceipt>("operations", id));
     assert.equal(f.store.get("participant_awaiting_output", participant.id), undefined);
     assert.equal(f.service.get(actor, task.id).status, "review");
     assert.equal(f.herdr.sends.length, 2);
@@ -174,7 +185,7 @@ test("restart applies a confirmed receipt committed before participant state", a
 test("late delivery proof never resumes scheduling after an explicit interrupt", async () => {
   const f = setup();
   try {
-    const task = await f.service.create(actor, discussion);
+    const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
     await f.service.tick();
     const [first, second] = f.service.get(actor, task.id).participants;
     assert.ok(first?.execution && second?.execution);
@@ -189,13 +200,14 @@ test("late delivery proof never resumes scheduling after an explicit interrupt",
         .entries<InputDelivery>("input_deliveries")
         .find(([, entry]) => entry.participantId === first.id && !entry.initial) ?? [];
     assert.ok(id && delivery);
+    const original = f.store.get<OperationReceipt>("operations", id);
     await f.service.interrupt({ ...actor, messageId: "stop" }, task.id, "all");
     (f.herdr as HerdrPort).initialInput = async (_ref, receipt) =>
       receipt === delivery.receipt ? delivery.prompt : undefined;
     f.herdr.delivery = { status: "delivered", verified: true, acked: true, attempts: 1 };
     f.herdr.finish(first.execution.paneId, "late answer after stop");
     await new TaskService(f.options).tick();
-    assert.equal(f.store.get<OperationReceipt>("operations", id)?.state, "done");
+    assertEvidenceResolved(original, f.store.get<OperationReceipt>("operations", id));
     assert.equal(f.service.get(actor, task.id).discussion.paused, true);
     assert.equal(f.herdr.sends.length, 3);
   } finally {

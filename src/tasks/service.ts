@@ -27,7 +27,7 @@ import { activeTaskOperation } from "./operation-scope.js";
 import { TaskOperations } from "./operations.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
-import { TaskRecords } from "./records.js";
+import { type ParticipantProjection, TaskRecords } from "./records.js";
 import { RemotePolls } from "./remote-poll.js";
 import { restartParticipants } from "./restart.js";
 import { resolveCompletedRetention, resolveGroupRetention } from "./retention.js";
@@ -95,14 +95,16 @@ export class TaskService {
     });
   }
 
-  get(actor: ActorContext, id: string): Task & { participants: Participant[] } {
+  get(actor: ActorContext, id: string): Task & { participants: ParticipantProjection[] } {
     const task = this.records.get(actor, id);
-    return { ...task, participants: this.records.participants(task) };
+    return { ...task, participants: this.records.projectParticipants(task) };
   }
 
-  list(actor: ActorContext, all = false): Task[] {
-    if (actor.taskId) return [this.records.get(actor, actor.taskId)];
-    return this.records.list(actor.ownerId, all);
+  list(actor: ActorContext, all = false): Array<Task & { participants: ParticipantProjection[] }> {
+    const tasks = actor.taskId
+      ? [this.records.get(actor, actor.taskId)]
+      : this.records.list(actor.ownerId, all);
+    return tasks.map((task) => ({ ...task, participants: this.records.projectParticipants(task) }));
   }
 
   async action(
@@ -550,13 +552,13 @@ export class TaskService {
       } catch (error) {
         if (error instanceof OperationError && error.code === "stopping") return;
         const safe = safeError(error);
-        const uncertain = this.context.store
-          .entries<OperationReceipt>("operations")
-          .some(
-            ([key, receipt]) =>
-              activeTaskOperation(this.context.store, task, key, receipt) &&
-              ["pending", "uncertain"].includes(receipt.state),
-          );
+        const uncertain = this.context.store.entries<OperationReceipt>("operations").some(
+          ([key, receipt]) =>
+            activeTaskOperation(this.context.store, task, key, receipt) &&
+            ["pending", "uncertain"].includes(receipt.state) &&
+            // A resolved receipt keeps its historical state but is no longer unknown.
+            !receipt.resolution,
+        );
         if (
           uncertain ||
           (error instanceof OperationError &&

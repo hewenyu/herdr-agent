@@ -7,6 +7,7 @@ import {
 } from "./assistance.js";
 import type { ChoiceCandidate, JevResult } from "./jev.js";
 
+export const PI_SELECTION_POLICY_VERSION = "workflow-selection-v4";
 export const SELECTION_POLICY_VERSION = "workflow-selection-v1";
 export const REQUESTED_ASSISTANCE_POLICY_VERSION = "workflow-selection-v2";
 export const RECOVERY_ASSISTANCE_POLICY_VERSION = "workflow-selection-v3";
@@ -14,6 +15,7 @@ export const RECOVERY_ASSISTANCE_POLICY_VERSION = "workflow-selection-v3";
 export interface DecisionLog {
   version: 1;
   policyVersion:
+    | typeof PI_SELECTION_POLICY_VERSION
     | typeof SELECTION_POLICY_VERSION
     | typeof REQUESTED_ASSISTANCE_POLICY_VERSION
     | typeof RECOVERY_ASSISTANCE_POLICY_VERSION;
@@ -30,7 +32,9 @@ export interface DecisionLog {
   rule: { status: "selected" | "not-applicable"; reason: string; candidateId?: string };
   jev: JevResult;
   pi: {
-    status: "skipped" | "pending" | "success" | "failed" | "cancelled";
+    status: "skipped" | "pending" | "success" | "failed" | "invalid" | "error" | "cancelled";
+    adapterVersion?: "workflow-pi-choice-v1";
+    durationMs?: number;
     reason: string;
     candidateId?: string;
     rationale?: string;
@@ -97,6 +101,7 @@ export function replayDecision(log: DecisionLog): {
   if (
     log.version !== 1 ||
     ![
+      PI_SELECTION_POLICY_VERSION,
       SELECTION_POLICY_VERSION,
       REQUESTED_ASSISTANCE_POLICY_VERSION,
       RECOVERY_ASSISTANCE_POLICY_VERSION,
@@ -122,7 +127,9 @@ export function replayDecision(log: DecisionLog): {
     (log.pi.status !== "success" || log.pi.candidateId !== log.final.candidateId)
   )
     errors.push("pi_mismatch");
-  const requestedAssistance = log.policyVersion !== SELECTION_POLICY_VERSION;
+  const requestedAssistance =
+    log.policyVersion === REQUESTED_ASSISTANCE_POLICY_VERSION ||
+    log.policyVersion === RECOVERY_ASSISTANCE_POLICY_VERSION;
   const selectorIds = requestedAssistance
     ? (log.selectorCandidates?.map((entry) => entry.id) ?? [])
     : ids;

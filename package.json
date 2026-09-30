@@ -11,7 +11,7 @@
     "dev": "tsx src/cli/main.ts",
     "build": "tsx scripts/build.ts",
     "binary": "tsx scripts/binary.ts",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=2 tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests scripts package.json tsconfig.json biome.json",
     "format": "biome check --write src tests scripts package.json tsconfig.json biome.json",

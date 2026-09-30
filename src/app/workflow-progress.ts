@@ -32,6 +32,7 @@ export async function taskProgress(
         kind: participant.kind,
         status: participant.status,
         initialSent: participant.initialSent,
+        initialDelivery: participant.initialDelivery,
         error: participant.error,
       };
       if (participant.taskId !== task.id) fail("participant_scope", "参与者任务绑定不匹配。");

@@ -91,7 +91,7 @@ export async function planWorkflow(input: {
         contractChange: {
           type: "object",
           description:
-            "仅重规划：最新用户明确取消已接受的共同认可或项目文档要求时列出撤销项。省略即继承；取消文档时若绑定共同认可，须明确同时撤销该门槛。程序另用 Jev 核验，不接受模型自行降级。",
+            "仅重规划：最新用户明确取消已接受的共同认可或项目文档要求时列出撤销项。省略即继承；取消文档时若绑定共同认可，须明确同时撤销该门槛。程序另用受限 pi 核验，不接受模型自行降级。",
           properties: {
             sourceMessageId: {
               type: "string",
