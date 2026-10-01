@@ -1,6 +1,7 @@
 import { fail } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { ActorContext, Participant } from "../core/types.js";
+import type { WorkflowState } from "../orchestration/workflow.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
 import {
@@ -9,7 +10,8 @@ import {
   TASK_DETAIL_SECTION_HELP,
   TASK_DETAIL_SECTIONS,
   type TaskDetailSection,
-  taskDetailSections,
+  taskDetailSectionEntries,
+  type WorkflowStateReader,
   workflowOf,
 } from "./task-detail-sections.js";
 import { modelBytes } from "./task-views.js";
@@ -221,10 +223,25 @@ export async function taskDetailPage(
     fail("input", `limitBytes 必须是 512 到 ${TASK_DETAIL_MAX_BYTES} 之间的整数。`);
   // TaskService.get enforces owner, chat and bound-task scope before any read.
   const task = services.tasks.get(actor, taskId);
-  const state = workflowOf(services.store, task.id);
+  // Resolved at most once, and only when the requested section needs it: a
+  // participants page must not read or deserialize the workflow record.
+  let cachedState: WorkflowState | undefined;
+  let stateRead = false;
+  const state: WorkflowStateReader = () => {
+    if (!stateRead) {
+      cachedState = workflowOf(services.store, task.id);
+      stateRead = true;
+    }
+    return cachedState;
+  };
   const participants = task.participants as unknown as Participant[];
-  const all = await taskDetailSections(services.store, task, state, participants);
-  const entries = all[section] ?? [];
+  const entries = await taskDetailSectionEntries(
+    services.store,
+    task,
+    state,
+    participants,
+    section,
+  );
   const content = fingerprint(section, entries);
   const plans = entries.map(planEntry);
   const start: Cursor = options.cursor

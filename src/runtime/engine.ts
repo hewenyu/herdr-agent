@@ -22,6 +22,11 @@ import {
 import { SUMMARY_PROMPT } from "./prompts.js";
 import { type ProvisionEvidence, recordProvisionEvidence } from "./provision-evidence.js";
 import { isPageReadValue } from "./result-projection-pages.js";
+import {
+  createToolEvidenceCounters,
+  toolEvidenceLogFields,
+  turnToolEvidenceLogFields,
+} from "./tool-evidence-log.js";
 import type {
   ConversationEngine,
   EngineInput,
@@ -118,10 +123,7 @@ export class PiEngine implements ConversationEngine {
     let executedCalls = 0;
     let toolCallsSeen = 0;
     let writes = 0;
-    let successfulToolCalls = 0;
-    let successfulWriteCalls = 0;
-    let unknownToolResults = 0;
-    let notExecutedToolResults = 0;
+    const counters = createToolEvidenceCounters();
     const rejectedAttempts = new Map<
       string,
       { retry: string; target: string; code: unknown; corrected: boolean }
@@ -194,7 +196,7 @@ export class PiEngine implements ConversationEngine {
         if (message.role !== "toolResult") continue;
         const call = previousCalls.get(message.toolCallId);
         const tool = input.tools.find((candidate) => candidate.name === call?.name);
-        if (!call || !tool) continue;
+        if (!call) continue;
         let value: unknown;
         try {
           value = JSON.parse(
@@ -204,14 +206,15 @@ export class PiEngine implements ConversationEngine {
               .join("\n"),
           );
         } catch {
-          continue;
+          value = { outcome: "unknown" };
         }
+        // Ambiguous errors are not proof of nonexecution; removed tools are not known read-only.
         const outcome = toolResultOutcome(value);
-        if (outcome === "unknown") {
-          unknownToolResults++;
-          if (!tool.readOnly) uncertain = true;
-        } else if (outcome === "not_executed" || message.isError) {
-          notExecutedToolResults++;
+        if (outcome === "unknown" || (message.isError && outcome !== "not_executed")) {
+          counters.unknown++;
+          if (!tool?.readOnly) uncertain = true;
+        } else if (outcome === "not_executed") {
+          counters.notExecuted++;
           rejectedAttempts.set(attemptKey(call.name, call.args), {
             retry: retryKey(call.name, call.args),
             target: String(call.args.taskId ?? input.actor.taskId ?? ""),
@@ -219,9 +222,9 @@ export class PiEngine implements ConversationEngine {
             corrected: false,
           });
         } else {
-          successfulToolCalls++;
-          if (!tool.readOnly) {
-            successfulWriteCalls++;
+          counters.successful++;
+          if (tool && !tool.readOnly) {
+            counters.successfulWrites++;
             writes++;
           }
           rejectedAttempts.delete(attemptKey(call.name, call.args));
@@ -258,10 +261,10 @@ export class PiEngine implements ConversationEngine {
           // value, BEFORE the model-facing projection can change or fail it.
           const outcome = toolResultOutcome(result);
           if (outcome === "unknown") {
-            unknownToolResults++;
+            counters.unknown++;
             if (!tool.readOnly) uncertain = true;
           } else if (outcome === "not_executed") {
-            notExecutedToolResults++;
+            counters.notExecuted++;
             rejectedAttempts.set(attemptKey(tool.name, args as Record<string, unknown>), {
               retry: retryKey(tool.name, args as Record<string, unknown>),
               target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
@@ -275,8 +278,8 @@ export class PiEngine implements ConversationEngine {
               if (attempt.retry === retryKey(tool.name, args as Record<string, unknown>))
                 attempt.corrected = true;
             }
-            successfulToolCalls++;
-            if (!tool.readOnly) successfulWriteCalls++;
+            counters.successful++;
+            if (!tool.readOnly) counters.successfulWrites++;
             recordProvisionEvidence(
               provisioning,
               tool.name,
@@ -298,6 +301,7 @@ export class PiEngine implements ConversationEngine {
             ...trace,
             tool: tool.name,
             outcome: outcome === "successful" ? "returned" : outcome,
+            ...toolEvidenceLogFields(counters),
             durationMs: Date.now() - toolStartedAt,
           });
           surface.errorResults.set(_id, outcome !== "successful");
@@ -305,23 +309,26 @@ export class PiEngine implements ConversationEngine {
         } catch (error) {
           if (!tool.readOnly && !isNotExecuted(error)) uncertain = true;
           const safe = safeError(error);
-          this.logger?.warn("pi 工具未完成", {
-            event: "pi.tool_failed",
-            ...trace,
-            tool: tool.name,
-            code: safe.code,
-            outcome: safe.outcome,
-            durationMs: Date.now() - toolStartedAt,
-          });
           if (safe.outcome === "not_executed") {
-            notExecutedToolResults++;
+            counters.notExecuted++;
             rejectedAttempts.set(attemptKey(tool.name, args as Record<string, unknown>), {
               retry: retryKey(tool.name, args as Record<string, unknown>),
               target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
               code: safe.code,
               corrected: false,
             });
-          } else unknownToolResults++;
+          } else counters.unknown++;
+          // Logged after the counter update so this failure appears in its own
+          // diagnostic line instead of one call behind.
+          this.logger?.warn("pi 工具未完成", {
+            event: "pi.tool_failed",
+            ...trace,
+            tool: tool.name,
+            code: safe.code,
+            outcome: safe.outcome,
+            ...toolEvidenceLogFields(counters),
+            durationMs: Date.now() - toolStartedAt,
+          });
           const envelope = { error: safe.message, ...safe };
           // Error envelopes go through the same canonical-first projection and
           // byte bound as successful results; a giant error is never inlined.
@@ -415,7 +422,10 @@ export class PiEngine implements ConversationEngine {
         try {
           return await this.boundRequestContext(messages, surface, signal);
         } catch (error) {
-          surface.failure ??= this.contextFailure(error, successfulWriteCalls > 0 || uncertain);
+          surface.failure ??= this.contextFailure(
+            error,
+            counters.successfulWrites > 0 || uncertain,
+          );
           // A safe fallback, not a silent success: the loop stops at the next
           // request boundary because `stream` refuses to send this context.
           return messages;
@@ -484,10 +494,10 @@ export class PiEngine implements ConversationEngine {
         evaluateClaimPolicy(
           finalText,
           {
-            successful: successfulToolCalls,
-            successfulWrites: successfulWriteCalls,
-            unknown: unknownToolResults,
-            notExecuted: notExecutedToolResults,
+            successful: counters.successful,
+            successfulWrites: counters.successfulWrites,
+            unknown: counters.unknown,
+            notExecuted: counters.notExecuted,
             unresolvedNotExecuted: unresolvedNotExecuted(finalText),
             provisioning,
           },
@@ -501,7 +511,7 @@ export class PiEngine implements ConversationEngine {
         // not allow it to survive if the constrained retry is blocked or fails
         // before producing a new completed assistant message.
         finalText = "";
-        requireToolCall = toolCallsSeen === 0 || successfulToolCalls === 0;
+        requireToolCall = toolCallsSeen === 0 || counters.successful === 0;
         await Promise.race([
           agent.prompt({
             role: "user",
@@ -523,7 +533,7 @@ export class PiEngine implements ConversationEngine {
         throw new OperationError(
           "context_budget",
           "工具结果超出模型上下文容量且没有可用的持久化投影；已执行的操作不会重放，请查询实际状态。",
-          successfulWriteCalls > 0 || uncertain ? "unknown" : "not_executed",
+          counters.successfulWrites > 0 || uncertain ? "unknown" : "not_executed",
         );
       if (agent.state.errorMessage || agent.signal?.aborted || input.signal?.aborted) {
         throw new OperationError(
@@ -547,26 +557,21 @@ export class PiEngine implements ConversationEngine {
       if (claimRecovery && claimPolicy(true).rejected)
         throw new OperationError(
           "model_failed",
-          unknownToolResults > 0
+          counters.unknown > 0
             ? "pi 调度模型未取得可确认的工具事实，本轮业务结果未知；请查询状态。"
-            : notExecutedToolResults > 0 && successfulWriteCalls === 0
+            : counters.notExecuted > 0 && counters.successfulWrites === 0
               ? "pi 调度模型调用的工具未执行，本轮业务未执行；请重试。"
               : toolCallsSeen === 0
                 ? "pi 调度模型未调用工具，本轮业务未执行；请重试。"
                 : "pi 调度模型的答复缺少对应工具事实；已登记操作保留，请查询实际状态。",
-          unknownToolResults > 0 ? "unknown" : "not_executed",
+          counters.unknown > 0 ? "unknown" : "not_executed",
         );
       this.logger?.info("pi 已生成回复", {
         event: "pi.turn_completed",
         ...trace,
         toolCalls: executedCalls,
         writeCalls: writes,
-        toolEvidence: {
-          successful: successfulToolCalls,
-          successfulWrites: successfulWriteCalls,
-          unknown: unknownToolResults,
-          notExecuted: notExecutedToolResults,
-        },
+        ...turnToolEvidenceLogFields(counters),
         durationMs: Date.now() - startedAt,
       });
       return {
@@ -575,10 +580,10 @@ export class PiEngine implements ConversationEngine {
         toolCalls: toolCallsSeen,
         writeCalls: writes,
         toolEvidence: {
-          successful: successfulToolCalls,
-          successfulWrites: successfulWriteCalls,
-          unknown: unknownToolResults,
-          notExecuted: notExecutedToolResults,
+          successful: counters.successful,
+          successfulWrites: counters.successfulWrites,
+          unknown: counters.unknown,
+          notExecuted: counters.notExecuted,
           unresolvedNotExecuted: unresolvedNotExecuted(finalText),
           provisioning,
         },
@@ -592,12 +597,7 @@ export class PiEngine implements ConversationEngine {
         outcome: failure.outcome,
         toolCalls: executedCalls,
         writeCalls: writes,
-        toolEvidence: {
-          successful: successfulToolCalls,
-          successfulWrites: successfulWriteCalls,
-          unknown: unknownToolResults,
-          notExecuted: notExecutedToolResults,
-        },
+        ...turnToolEvidenceLogFields(counters),
         durationMs: Date.now() - startedAt,
       });
       throw error;
