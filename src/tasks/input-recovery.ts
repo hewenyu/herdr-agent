@@ -3,6 +3,7 @@ import type { Delivery, Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { nativeInputCandidates } from "../transcripts/input.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { releaseExecutionRecoveryPause } from "./execution-recovery.js";
 import type { InputDelivery } from "./input-delivery.js";
 import { activeTaskOperation } from "./operation-scope.js";
 import { participantPromptCandidates } from "./prompts.js";
@@ -28,10 +29,16 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
       !participant.execution ||
       !participant.started ||
       participant.initialSent ||
+      participant.recoveryPending ||
+      // Legacy `${id}:initial` proof can only describe the retired execution.
+      participant.executionRecovery ||
       ["removed", "gone"].includes(participant.status)
     )
       continue;
     const execution = participant.execution;
+    // `pending` forbids re-sending an uncertain write, not read-only native
+    // evidence reconciliation. A legacy initial input must stay readable so an
+    // unknown delivery cannot permanently strand the task.
     const operations = context.store
       .entries<OperationReceipt>("operations")
       .filter(
@@ -130,6 +137,33 @@ export async function recoverInitialInputs(context: TaskContext, task: Task): Pr
   }
 }
 
+/**
+ * Whether another unknown operation duplicates this delivery's exact input
+ * within the same execution generation. Legacy pre-generation records keep the
+ * original conservative collision; an attempt durably bound to a different
+ * execution generation (a different recorded `generation`) describes a retired
+ * execution and can never block this exact proof, nor be resolved by it.
+ */
+function collidesWithDelivery(
+  context: TaskContext,
+  task: Task,
+  id: string,
+  delivery: InputDelivery,
+  key: string,
+  candidate: OperationReceipt,
+): boolean {
+  if (key === id) return false;
+  if (!activeTaskOperation(context.store, task, key, candidate)) return false;
+  if (candidate.resolution || !["pending", "uncertain"].includes(candidate.state)) return false;
+  if (candidate.fingerprint !== delivery.fingerprint) return false;
+  const other = context.store.get<InputDelivery>("input_deliveries", key);
+  // No per-attempt record means a legacy operation: only a delivery that is
+  // itself pre-generation may be blocked by it. A recorded different
+  // generation never collides; the same generation stays conservative.
+  if (other === undefined) return delivery.generation === undefined;
+  return other.generation === delivery.generation;
+}
+
 /** Reconcile a lost reply from native user records; never replay an unknown write. */
 async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<void> {
   for (const [id, delivery] of context.store.entries<InputDelivery>("input_deliveries")) {
@@ -148,6 +182,9 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
       continue;
     const participant = context.store.get<Participant>("participants", delivery.participantId);
     const execution = participant?.execution;
+    // Captured before this proof clears the flag: only an attempt that was
+    // actually pending repair may release the automatic repair pause.
+    const wasRecoveryPending = participant?.recoveryPending === true;
     if (
       !participant ||
       participant.taskId !== task.id ||
@@ -155,6 +192,8 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
       !execution ||
       !participant.started ||
       participant.status === "removed" ||
+      // Evidence carved from one execution generation never applies to another.
+      delivery.generation !== participant.executionRecovery ||
       execution.paneId !== delivery.execution.paneId ||
       execution.workspaceId !== delivery.execution.workspaceId ||
       execution.kind !== delivery.execution.kind ||
@@ -165,18 +204,15 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
     )
       continue;
     // Initial markers predate per-operation receipts. Preserve the existing
-    // uniqueness guard for legacy operations that could share the same input.
+    // uniqueness guard for legacy operations that could share the same input,
+    // but never let an identical-text attempt from another execution generation
+    // swallow this exact proof.
     if (
       delivery.initial &&
       context.store
         .entries<OperationReceipt>("operations")
-        .some(
-          ([key, candidate]) =>
-            key !== id &&
-            activeTaskOperation(context.store, task, key, candidate) &&
-            !candidate.resolution &&
-            ["pending", "uncertain"].includes(candidate.state) &&
-            candidate.fingerprint === delivery.fingerprint,
+        .some(([key, candidate]) =>
+          collidesWithDelivery(context, task, id, delivery, key, candidate),
         )
     )
       continue;
@@ -215,6 +251,7 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
           result,
         });
       participant.initialSent = true;
+      participant.recoveryPending = false;
       participant.error = undefined;
       execution.transcriptReceipt = participant.initialReceipt;
       const alreadySettled = context.store
@@ -253,17 +290,34 @@ async function recoverPreparedInputs(context: TaskContext, task: Task): Promise<
             !entry.resolution &&
             ["pending", "uncertain"].includes(entry.state),
         );
-      if (!unknown) {
-        task.pending = undefined;
+      if (!unknown) task.pending = undefined;
+      if (wasRecoveryPending) {
+        // Native proof of a fresh arrangement for a participant that was
+        // actually awaiting repair is the same exit from automatic repair as a
+        // direct verified send, so it releases the automatic pause through the
+        // shared helper — and only that pause. The recorded pauseRevision keeps
+        // a proof from a retired pause from counting; the helper itself refuses
+        // an explicit user pause and refuses while another repaired
+        // participant still awaits fresh input. This must not depend on the
+        // global unknown scan: an unknown attempt from a retired generation
+        // stays recorded and unresolved forever, while the fresh explicit input
+        // whose exact proof resolves this participant still releases the pause.
         if (
-          !delivery.discussionWasPaused &&
-          task.status === "attention" &&
+          ["model", "workflow"].includes(task.orchestration?.mode ?? "") &&
+          delivery.generation !== undefined &&
           (delivery.pauseRevision ?? 0) ===
             (context.store.get<number>("task_pause_revision", task.id) ?? 0)
-        ) {
-          task.discussion.paused = false;
-          task.error = undefined;
-        }
+        )
+          releaseExecutionRecoveryPause(context, task);
+      } else if (
+        !unknown &&
+        !delivery.discussionWasPaused &&
+        task.status === "attention" &&
+        (delivery.pauseRevision ?? 0) ===
+          (context.store.get<number>("task_pause_revision", task.id) ?? 0)
+      ) {
+        task.discussion.paused = false;
+        task.error = undefined;
       }
       context.records.save(task);
     });

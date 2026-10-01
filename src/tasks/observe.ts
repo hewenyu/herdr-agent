@@ -56,7 +56,12 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
           "participant_input_baseline",
           participant.id,
         );
-        if (participant.initialSent && latest?.final && latest.id !== baseline?.id) {
+        if (
+          participant.initialSent &&
+          !participant.recoveryPending &&
+          latest?.final &&
+          latest.id !== baseline?.id
+        ) {
           await recordOutput(context, task, participant, latest);
         }
         context.records.saveParticipant(participant);
@@ -131,11 +136,20 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
     }
     const page = await context.herdr.transcript(participant.execution, participant.cursor);
     for (const entry of page.entries) {
-      if (entry.role === "assistant" && entry.final && participant.initialSent) {
+      if (
+        entry.role === "assistant" &&
+        entry.final &&
+        participant.initialSent &&
+        !participant.recoveryPending
+      ) {
         await recordOutput(context, task, participant, entry);
       }
     }
-    if (participant.initialSent && ["idle", "done"].includes(agent.status)) {
+    if (
+      participant.initialSent &&
+      !participant.recoveryPending &&
+      ["idle", "done"].includes(agent.status)
+    ) {
       const latest = await context.herdr.sampleLastReply(participant.execution);
       const baseline = context.store.get<{ id: string }>(
         "participant_input_baseline",
@@ -175,8 +189,12 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
   // Native status and the whole transcript page must settle before a final
   // message can transfer ownership to another participant.
   await flushPendingTaskEvents(context, task);
+  // A rebuilt executor has received no task input yet. Its native idle status and
+  // transcript are real startup facts, not recovered work, so they must not
+  // advance the task out of the durable repair pause (or imply work resumed).
+  const active = context.records.participants(task).filter((entry) => entry.status !== "removed");
+  if (active.length > 0 && active.every((entry) => entry.recoveryPending === true)) return;
   if (!["completed", "destroying", "destroyed", "paused"].includes(task.status)) {
-    const active = context.records.participants(task).filter((entry) => entry.status !== "removed");
     const stalled = active.filter((entry) => idleWithoutReply(context, entry));
     task.status =
       active.some((entry) => entry.status === "gone" || entry.error) || stalled.length > 0
@@ -303,7 +321,7 @@ export async function flushPendingTaskEvents(
   }
 }
 
-async function recordOutput(
+export async function recordOutput(
   context: TaskContext,
   task: Task,
   participant: Participant,

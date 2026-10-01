@@ -82,6 +82,8 @@ export async function provisionParticipant(
 ): Promise<void> {
   assertActive(context);
   const { herdr, records, operations } = context;
+  // Execution repair has its own durable operations and must never fall through to old input.
+  if (participant.executionRecovery) return;
   if (!participant.execution) {
     const workspace = await operations.run(
       `${participant.id}:workspace`,
