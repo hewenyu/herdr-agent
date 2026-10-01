@@ -628,7 +628,9 @@ export class SessionService {
               : (result.toolCalls ?? 0) === 0
                 ? "pi 调度模型未调用工具，本轮业务未执行；请重试。"
                 : "pi 调度模型的答复缺少对应工具事实；已登记操作保留，请查询实际状态。",
-          evidence?.unknown ? "unknown" : "not_executed",
+          evidence?.unknown || (evidence?.successfulWrites ?? result.writeCalls ?? 0) > 0
+            ? "unknown"
+            : "not_executed",
         );
       if (signal.aborted || this.get(actor.ownerId, session.id).generation !== session.generation)
         throw new OperationError(

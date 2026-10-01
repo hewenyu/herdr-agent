@@ -190,3 +190,107 @@ test("a write counter cannot prove a fabricated task identifier or missing group
   assert.equal(evaluateClaimPolicy("已创建任务 task_fake123", facts).rejected, true);
   assert.equal(evaluateClaimPolicy("任务群已建立，还需要什么？", facts).rejected, true);
 });
+
+/**
+ * A refused read-only call produces no side effect, so a later successful read
+ * can prove the current state and fully resolve the earlier refusal. Regression
+ * for the v0.3.26 false `model_failed`: a task_get with a missing argument
+ * (code "input") then a corrected task_get, whose accurate answer was rejected
+ * as not_executed on every retry even though the turn had a confirmed write.
+ */
+test("a refused read-only lookup never becomes an outstanding business action", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "wrong", name: "task_get", arguments: {} }]),
+      response("", [{ type: "toolCall", id: "correct", name: "task_get", arguments: { taskId } }]),
+      response("飞书任务已创建，任务群已就绪"),
+    ]),
+  });
+  const result = await engine.run({
+    actor,
+    sessionId: actor.sessionId,
+    systemPrompt: "Report only current tool facts",
+    prompt: "查询任务现状",
+    messages: [],
+    tools: [
+      {
+        ...tool(task, "task_get"),
+        execute: async (args) => {
+          if (!args.taskId) throw new OperationError("input", "缺少有效字段：taskId");
+          return task;
+        },
+      },
+    ],
+  });
+  assert.equal(result.text, "飞书任务已创建，任务群已就绪");
+  assert.equal(result.toolEvidence?.notExecuted, 1);
+  assert.equal(result.toolEvidence?.unresolvedNotExecuted, 0);
+});
+
+test("an unresolved write refusal still blocks a completion claim", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "write", name: "task_create", arguments: {} }]),
+      response("", [{ type: "toolCall", id: "read", name: "task_get", arguments: { taskId } }]),
+      response("飞书任务已创建，任务群已就绪"),
+      response("飞书任务已创建，任务群已就绪"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run({
+      actor,
+      sessionId: actor.sessionId,
+      systemPrompt: "Report only current tool facts",
+      prompt: "创建任务并确认现状",
+      messages: [],
+      tools: [
+        {
+          name: "task_create",
+          description: "Register a task",
+          readOnly: false,
+          parameters: { type: "object", properties: {} },
+          execute: async () => {
+            throw new OperationError("project_name", "新建项目需要明确名称。");
+          },
+        },
+        tool(task, "task_get"),
+      ],
+    }),
+    (error: unknown) => modelFailure(error),
+  );
+});
+
+test("a claim rejection after a confirmed write reports an unknown, never not_executed effect", async () => {
+  const engine = new PiEngine(config, {
+    streamFn: scripted([
+      response("", [{ type: "toolCall", id: "write", name: "task_create", arguments: {} }]),
+      response("已创建任务 task_fake123"),
+      response("已创建任务 task_fake123"),
+    ]),
+  });
+  await assert.rejects(
+    engine.run({
+      actor,
+      sessionId: actor.sessionId,
+      systemPrompt: "Report only current tool facts",
+      prompt: "创建任务",
+      messages: [],
+      tools: [
+        {
+          name: "task_create",
+          description: "Register a task",
+          readOnly: false,
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({
+            accepted: true,
+            task: { id: "task_real", status: "queued", groupDeleted: false },
+          }),
+        },
+      ],
+    }),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "model_failed" &&
+      error.outcome === "unknown",
+  );
+});

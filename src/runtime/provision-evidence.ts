@@ -10,7 +10,8 @@ interface ProvisionTask {
   id: string;
   remoteTask: boolean;
   group: boolean;
-  participants: Array<{ id: string; name: string; kind: string; sent: boolean }>;
+  /** `started` is process creation only; it never proves delivery or discussion. */
+  participants: Array<{ id: string; name: string; kind: string; started: boolean; sent: boolean }>;
   deliveries: string[];
 }
 
@@ -43,6 +44,7 @@ export function recordProvisionEvidence(
                 id: String(participant.id ?? ""),
                 name: String(participant.name ?? ""),
                 kind: String(participant.kind ?? ""),
+                started: participant.started === true,
                 sent:
                   participant.initialDelivery === undefined
                     ? participant.initialSent === true
@@ -98,11 +100,14 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
     if (/[?？]\s*$/u.test(sentence)) return false;
     const clause = sentence.replace(/[。！？!?；;\n]+$/u, "");
     if (/(?:吗|么)\s*$/u.test(clause) || /^\s*(?:是否|Has |Have |Is )/iu.test(clause)) return false;
-    // Remove only a negated/pending segment so a later contradictory assertion is still checked.
+    // Remove only a negated/pending segment so a later contradictory assertion
+    // is still checked. A pending stage ("正在异步创建飞书任务、专属群") never
+    // proves the resource exists, and it must not lend its verb to an earlier
+    // completed local registration in the same sentence.
     const value = clause
       .replace(/(?:已)?按决策视为送达/gu, "")
       .replace(
-        /(?:尚未|还没|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
+        /(?:尚未|还没|仍在|还在|正在|没有|未能|无法|不能|等待|待|尚需|即将|将会|未|不会|会(?=创建|建群|转交|发送|收到))[^，,：:]*|\b(?:not|never|pending|waiting|will|cannot|can't)\b[^,;.]*/giu,
         "",
       );
     const asserted =
@@ -134,6 +139,14 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
       /(?:任务|\btask\b|task_[a-zA-Z0-9]+).{0,24}(?:创建|登记|created|registered)|(?:创建|登记|created|registered).{0,24}(?:任务|\btask\b|task_[a-zA-Z0-9]+)/iu.test(
         value,
       );
+    // A started process is not a started discussion. No snapshot fact here
+    // proves discussion began, so that assertion is never evidence-backed.
+    // "讨论目录已生成" describes preparation, not a running discussion.
+    const discussion =
+      /(?:讨论|对话)(?:已经|已|正在|正)?(?:开始|展开|进行|启动)|(?:开始|进入|启动)(?:了)?(?:讨论|对话)|\b(?:discussion|conversation)\b(?:\s+(?:has|have|is|was|had))?\s+(?:started|begun|began|underway|ongoing|in\s+progress)\b/iu.test(
+        value,
+      );
+    if (discussion) return true;
     if (!group && !remote && !sent && !local) return false;
     const explicitIds = clause.match(/task_[a-zA-Z0-9]+/gu) ?? [];
     const ids = explicitIds.length ? explicitIds : evidence.created;
@@ -165,6 +178,66 @@ export function unsupportedProvisionClaim(text: string, evidence: ProvisionEvide
         : task.deliveries.length === 0 || kinds.length > 0;
     });
   });
+}
+
+/**
+ * `started` proves process creation only, never delivery or the start of a
+ * discussion. This accepts one narrow statement: an explicit start verb, with
+ * no creation/delivery/discussion/lifecycle verb, backed by a started
+ * participant for every kind or participant it names. It deliberately does NOT
+ * generalize to every assertion containing "start", so a clause that also
+ * claims a group, remote task, delivery or discussion stays rejected.
+ */
+export function supportedStartedClaim(text: string, evidence: ProvisionEvidence): boolean {
+  const clause = text.replace(/[。！？!?；;\n]+$/u, "").trim();
+  if (!clause) return false;
+  // Only passive process-state reports qualify, not new actions or promises.
+  if (
+    /(?:我|我们|本轮|本次|刚刚|刚才|为你|为您|将|会|马上|接下来|\b(?:I|we|just|will|new)\b)/iu.test(
+      clause,
+    )
+  )
+    return false;
+  if (
+    !/(?:执行环境|进程)(?:均|都|全部)?(?:已经|已)启动(?:[（(]started\s*[:：]\s*true[）)])?$|\b(?:processes?|execution environments?)\s+(?:(?:have|has)\s+)?(?:already\s+)?(?:started|launched)$/iu.test(
+      clause,
+    )
+  )
+    return false;
+  // Creation, delivery, discussion and lifecycle stages each have their own
+  // fact; a process start cannot prove any of them.
+  if (
+    /(?:创建|新建|建立|建群|拉群|登记|安排|转交|投递|送达|收到|发送|完成|关闭|解散|销毁|删除|讨论|对话|开始|create|created|establish|register|provision|schedule|send|sent|assign|deliver|delivered|received|discuss|conversation|close|delete|destroy|complete)/iu.test(
+      clause,
+    )
+  )
+    return false;
+  const explicitIds = clause.match(/task_[a-zA-Z0-9]+/gu) ?? [];
+  const ids = explicitIds.length ? explicitIds : evidence.created;
+  const tasks = ids.length
+    ? ids.map((id) => evidence.tasks.find((task) => task.id === id))
+    : evidence.tasks;
+  if (!tasks.length || tasks.some((task) => !task)) return false;
+  const present = tasks as ProvisionTask[];
+  const kinds = ["claude", "codex"].filter((kind) => clause.toLowerCase().includes(kind));
+  const named = present
+    .flatMap((task) => task.participants)
+    .filter(
+      (participant) =>
+        (participant.id && mentions(clause, participant.id)) ||
+        (participant.name &&
+          !["claude", "codex"].includes(participant.name.toLowerCase()) &&
+          mentions(clause, participant.name)),
+    );
+  // An unscoped "execution environment started" claim has no subject to verify.
+  if (!kinds.length && !named.length) return false;
+  const ofKind = (kind: string) =>
+    present.flatMap((task) => task.participants).filter((participant) => participant.kind === kind);
+  for (const kind of kinds) {
+    const group = ofKind(kind);
+    if (!group.length || group.some((entry) => !entry.started)) return false;
+  }
+  return named.every((participant) => participant.started);
 }
 
 /** A new explicit task starts its own assertion scope, not a new global claim. */

@@ -320,9 +320,15 @@ test("outcome-aware evidence rejects read-only, unknown, and not-executed comple
       "unknown",
     ],
     [
-      "not-executed",
+      "confirmed-write-and-refusal",
       { name: "task_create", readOnly: false },
       { successful: 1, successfulWrites: 1, unknown: 0, notExecuted: 1 },
+      "unknown",
+    ],
+    [
+      "not-executed",
+      { name: "task_create", readOnly: false },
+      { successful: 0, successfulWrites: 0, unknown: 0, notExecuted: 1 },
       "not_executed",
     ],
   ] as const) {

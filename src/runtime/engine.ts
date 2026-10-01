@@ -126,7 +126,7 @@ export class PiEngine implements ConversationEngine {
     const counters = createToolEvidenceCounters();
     const rejectedAttempts = new Map<
       string,
-      { retry: string; target: string; code: unknown; corrected: boolean }
+      { retry: string; target: string; code: unknown; corrected: boolean; write: boolean }
     >();
     const retryKey = (name: string, args: Record<string, unknown>) =>
       JSON.stringify([name, args.action]);
@@ -135,13 +135,15 @@ export class PiEngine implements ConversationEngine {
     const unresolvedNotExecuted = (text: string) =>
       [...rejectedAttempts.values()].filter(
         (attempt) =>
-          // A nonexistent identifier can be corrected in this turn. It cannot
-          // support a claim about that original identifier, and a failure for
-          // an existing/different target is never erased by another success.
-          attempt.code !== "task_missing" ||
-          !attempt.corrected ||
-          !attempt.target ||
-          text.includes(attempt.target),
+          // A refused read has no side effect, so a later successful read can
+          // resolve it; only an unresolved WRITE leaves an action outstanding.
+          attempt.write &&
+          // A missing identifier is correctable only when the answer no longer
+          // asserts that original target; another success never erases it.
+          (attempt.code !== "task_missing" ||
+            !attempt.corrected ||
+            !attempt.target ||
+            text.includes(attempt.target)),
       ).length;
     const provisioning: ProvisionEvidence = { created: [], tasks: [] };
     const startedAt = Date.now();
@@ -220,6 +222,7 @@ export class PiEngine implements ConversationEngine {
             target: String(call.args.taskId ?? input.actor.taskId ?? ""),
             code: value && typeof value === "object" && "code" in value ? value.code : undefined,
             corrected: false,
+            write: tool ? tool.readOnly !== true : true, // removed => unknown, not read-only
           });
         } else {
           counters.successful++;
@@ -271,6 +274,7 @@ export class PiEngine implements ConversationEngine {
               code:
                 result && typeof result === "object" && "code" in result ? result.code : undefined,
               corrected: false,
+              write: !tool.readOnly,
             });
           } else {
             rejectedAttempts.delete(attemptKey(tool.name, args as Record<string, unknown>));
@@ -316,6 +320,7 @@ export class PiEngine implements ConversationEngine {
               target: String((args as Record<string, unknown>).taskId ?? input.actor.taskId ?? ""),
               code: safe.code,
               corrected: false,
+              write: !tool.readOnly,
             });
           } else counters.unknown++;
           // Logged after the counter update so this failure appears in its own
@@ -330,8 +335,8 @@ export class PiEngine implements ConversationEngine {
             durationMs: Date.now() - toolStartedAt,
           });
           const envelope = { error: safe.message, ...safe };
-          // Error envelopes go through the same canonical-first projection and
-          // byte bound as successful results; a giant error is never inlined.
+          // Error envelopes use the same canonical-first projection and byte
+          // bound as successful results; a giant error is never inlined.
           const projected = await this.projectResult(surface, {
             tool: tool.name,
             args: args as Record<string, unknown>,
@@ -348,14 +353,13 @@ export class PiEngine implements ConversationEngine {
       },
     }));
     // A claims recovery turn must force a tool call only on its first provider
-    // request. Once that request returns a tool call, pi needs to ask the model
-    // for a normal follow-up answer with provider `auto`; leaving `required`
-    // latched forces every continuation into another unnecessary tool call.
+    // request; afterwards `required` would force every continuation into
+    // another unnecessary tool call instead of a normal follow-up answer.
     let requireToolCall = input.requireToolCall === true;
     const stream: StreamFn = async (model, context, options) => {
       if (closed || input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
       // A failed context preparation must never fall back to an unbounded
-      // request. The typed failure is rethrown after the loop settles.
+      // request; the typed failure is rethrown after the loop settles.
       if (surface.failure || surface.lossy) {
         const refused =
           surface.failure ??
@@ -414,10 +418,9 @@ export class PiEngine implements ConversationEngine {
       getApiKey: () => this.config.apiKey,
       toolExecution: "sequential",
       // pi documents that both hooks must never throw: throwing interrupts the
-      // low-level loop without a normal event sequence, which would surface as an
-      // untyped failure and could hide an already confirmed write. Both hooks
-      // catch internally and return a safe fallback; the typed failure is
-      // rethrown by `run` after the loop has settled.
+      // low-level loop without a normal event sequence and could hide an already
+      // confirmed write. Both catch internally and return a safe fallback; the
+      // typed failure is rethrown by `run` after the loop settles.
       transformContext: async (messages, signal) => {
         try {
           return await this.boundRequestContext(messages, surface, signal);
@@ -507,9 +510,8 @@ export class PiEngine implements ConversationEngine {
         input.enforceClaims !== false &&
         claimPolicy(requestRequiresTool && toolCallsSeen === 0).rejected;
       if (claimRecovery && input.tools.length > 0) {
-        // The first answer is the evidence failure that triggered recovery. Do
-        // not allow it to survive if the constrained retry is blocked or fails
-        // before producing a new completed assistant message.
+        // The first answer caused recovery; do not let it survive if the
+        // constrained retry is blocked or fails before producing a new message.
         finalText = "";
         requireToolCall = toolCallsSeen === 0 || counters.successful === 0;
         await Promise.race([
@@ -564,7 +566,9 @@ export class PiEngine implements ConversationEngine {
               : toolCallsSeen === 0
                 ? "pi 调度模型未调用工具，本轮业务未执行；请重试。"
                 : "pi 调度模型的答复缺少对应工具事实；已登记操作保留，请查询实际状态。",
-          counters.unknown > 0 ? "unknown" : "not_executed",
+          // A confirmed write makes the effect unknown, not "not executed": the
+          // answer lacks a fact, and not_executed would invite a duplicate retry.
+          counters.unknown > 0 || counters.successfulWrites > 0 ? "unknown" : "not_executed",
         );
       this.logger?.info("pi 已生成回复", {
         event: "pi.turn_completed",
