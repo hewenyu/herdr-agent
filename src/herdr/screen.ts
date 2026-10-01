@@ -186,7 +186,9 @@ export function showsStartupMenu(raw: string): boolean {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  if (lines.at(-1) !== "Press enter to continue") return false;
+  // Require the footer at the live screen boundary, not in composer history.
+  if (!/^(?:press enter to continue|enter continue\s*[·•|]\s*esc skip)$/i.test(lines.at(-1) ?? ""))
+    return false;
   return (
     lines.some((line) => /^[❯›▶>]\s+[1-9][.)]\s+\S/.test(line)) && parseOptions(raw).length >= 2
   );

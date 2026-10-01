@@ -1,5 +1,9 @@
 import { assertionClauses, hasUnverifiedToolClaim, requiresWriteEvidence } from "./claims.js";
-import { type ProvisionEvidence, unsupportedProvisionClaim } from "./provision-evidence.js";
+import {
+  type ProvisionEvidence,
+  supportedStartedClaim,
+  unsupportedProvisionClaim,
+} from "./provision-evidence.js";
 
 /** Outcome counters and provisioning snapshots belong to this turn, not history. */
 export interface ClaimEvidence {
@@ -18,11 +22,19 @@ export function evaluateClaimPolicy(
   requireEvidence = false,
 ): { rejected: boolean; hasCredibleEvidence: boolean; needsWrite: boolean } {
   const provisioning = evidence.provisioning;
+  // A verified process-start snapshot is the one fact a read may report that
+  // would otherwise look like a write: it proves an execution environment was
+  // created, never delivery or the start of a discussion. The exemption is
+  // scoped to the exact clause it proves, so every other start/create/send
+  // assertion still needs a current-turn tool fact.
+  const started = (clause: string) => !!provisioning && supportedStartedClaim(clause, provisioning);
   const needsWrite = assertionClauses(text).some(
     (clause) =>
       requiresWriteEvidence(clause) &&
+      !started(clause) &&
       (!provisioning || !supportedResourceState(clause, provisioning)),
   );
+  const unverified = hasUnverifiedToolClaim(text);
   const hasCredibleEvidence =
     evidence.unknown === 0 &&
     (evidence.unresolvedNotExecuted ?? evidence.notExecuted) === 0 &&
@@ -32,9 +44,7 @@ export function evaluateClaimPolicy(
   const unsupported = unsupportedProvisionClaim(text, provisioning ?? emptyProvisioning);
   return {
     rejected:
-      ((hasUnverifiedToolClaim(text) || provisionClaim || requireEvidence) &&
-        !hasCredibleEvidence) ||
-      unsupported,
+      ((unverified || provisionClaim || requireEvidence) && !hasCredibleEvidence) || unsupported,
     hasCredibleEvidence,
     needsWrite,
   };
