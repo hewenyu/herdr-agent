@@ -8,6 +8,7 @@ import {
 import { OperationError } from "../../src/core/errors.js";
 import { stableId } from "../../src/core/ids.js";
 import type { ActorContext, StoredMessage, Task } from "../../src/core/types.js";
+import { LEADER_SESSIONS, leaderSessionId } from "../../src/orchestration/leader-session-types.js";
 import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { deferred, Engine, logger } from "./helpers.js";
@@ -678,6 +679,30 @@ test("revoked task owner is never sent to the orchestration model", async () => 
     await h.worker.tick();
     assert.equal(h.engine.calls.length, 0);
     assert.equal(h.replies.length, 0);
+  } finally {
+    h.close();
+  }
+});
+
+test("unsupported Leader records require attention immediately rather than model retries", async () => {
+  const h = await harness();
+  try {
+    const id = leaderSessionId(h.task.id);
+    const future = { version: 999, id, taskId: h.task.id, ownerId: actor.ownerId };
+    h.store.set(LEADER_SESSIONS, id, future);
+    await h.worker.tick();
+    const event = h.store.list<OrchestrationEvent>(TABLE)[0];
+    assert.ok(event);
+    assert.equal(event.error?.code, "leader_record_version_unsupported");
+    assert.equal(event?.state, "attention");
+    assert.equal(event?.attempts, 1);
+    assert.equal(h.engine.calls.length, 0);
+    assert.equal(h.herdr.sends.length, 0);
+    assert.deepEqual(h.store.get(LEADER_SESSIONS, id), future);
+    await h.worker.tick();
+    assert.equal(h.engine.calls.length, 0);
+    assert.equal(h.store.get<OrchestrationEvent>(TABLE, event.id)?.attempts, 1);
+    assert.deepEqual(h.store.get(LEADER_SESSIONS, id), future);
   } finally {
     h.close();
   }

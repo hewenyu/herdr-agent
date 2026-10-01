@@ -517,30 +517,69 @@ function statusEntries(state: WorkflowState | undefined): DetailEntry[] {
   ];
 }
 
-/** Build every detail section for one task; callers page the result. */
-export async function taskDetailSections(
+/**
+ * Resolves this task's workflow state on first use. Sections that carry no
+ * workflow facts never call it, so their pages do not read or deserialize the
+ * workflow record at all.
+ */
+export type WorkflowStateReader = () => WorkflowState | undefined;
+
+/**
+ * Builds exactly one section. A builder receives only the canonical sources
+ * that section needs; it must not consult another section's namespaces.
+ */
+export type TaskDetailSectionBuilder = (
   store: Store,
   task: Task,
-  state: WorkflowState | undefined,
+  state: WorkflowStateReader,
   participants: Participant[],
-): Promise<Record<TaskDetailSection, DetailEntry[]>> {
-  return {
-    status: statusEntries(state),
-    participants: participantEntries(participants),
-    requirements: requirementEntries(store, task),
-    orchestration: orchestrationEntries(store, task.id),
-    decisions: decisionEntries(store, task.id),
-    planning: planningEntries(store, task.id),
-    nodes: state ? nodeEntries(state) : [],
-    issues: state ? issueEntries(state) : [],
-    evidence: state ? evidenceEntries(state) : [],
-    evidence_notes: noteEntries(store, task.id),
-    status_blocks: statusBlockEntries(store, state),
-    outputs: outputEntries(store, task.id),
-    artifacts: state ? artifactEntries(state) : [],
-    delivery: deliveryEntries(state),
-    report: await reportEntries(state),
-  };
+) => DetailEntry[] | Promise<DetailEntry[]>;
+
+/**
+ * One builder per section, keyed by the same section names the tool exposes.
+ * Construction is deliberately deferred: `taskDetailSectionEntries` invokes
+ * only the requested builder, so a `participants` page never scans decision,
+ * planning, contract, output or report records.
+ */
+export const TASK_DETAIL_SECTION_BUILDERS: Record<TaskDetailSection, TaskDetailSectionBuilder> = {
+  status: (_store, _task, state) => statusEntries(state()),
+  participants: (_store, _task, _state, participants) => participantEntries(participants),
+  requirements: (store, task) => requirementEntries(store, task),
+  orchestration: (store, task) => orchestrationEntries(store, task.id),
+  decisions: (store, task) => decisionEntries(store, task.id),
+  planning: (store, task) => planningEntries(store, task.id),
+  nodes: (_store, _task, state) => {
+    const current = state();
+    return current ? nodeEntries(current) : [];
+  },
+  issues: (_store, _task, state) => {
+    const current = state();
+    return current ? issueEntries(current) : [];
+  },
+  evidence: (_store, _task, state) => {
+    const current = state();
+    return current ? evidenceEntries(current) : [];
+  },
+  evidence_notes: (store, task) => noteEntries(store, task.id),
+  status_blocks: (store, _task, state) => statusBlockEntries(store, state()),
+  outputs: (store, task) => outputEntries(store, task.id),
+  artifacts: (_store, _task, state) => {
+    const current = state();
+    return current ? artifactEntries(current) : [];
+  },
+  delivery: (_store, _task, state) => deliveryEntries(state()),
+  report: (_store, _task, state) => reportEntries(state()),
+};
+
+/** Build only the requested section for one task; callers page the result. */
+export function taskDetailSectionEntries(
+  store: Store,
+  task: Task,
+  state: WorkflowStateReader,
+  participants: Participant[],
+  section: TaskDetailSection,
+): Promise<DetailEntry[]> {
+  return Promise.resolve(TASK_DETAIL_SECTION_BUILDERS[section](store, task, state, participants));
 }
 
 export function workflowOf(store: Store, taskId: string): WorkflowState | undefined {

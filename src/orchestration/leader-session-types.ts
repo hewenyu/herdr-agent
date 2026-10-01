@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { OperationError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import {
   boundModelValue,
@@ -25,6 +26,67 @@ export const LEADER_JOURNAL = "leader_journal";
 
 /** Canonical journal version; recovery refuses records it cannot interpret. */
 export const LEADER_RUNTIME_VERSION = 1;
+
+/**
+ * Strict durable-record version gate. A record whose version is missing, is not
+ * the supported canonical version, or is not even an object cannot be
+ * interpreted by this runtime: its fields may mean something different, so
+ * recovery must refuse it before relying on that record for inference or an
+ * effect, leaving the original record untouched. A future version is never silently
+ * downgraded to the current shape, and an absent one is never assumed current.
+ */
+export function assertLeaderRecordVersion(record: unknown, kind: string, ref: string): void {
+  if (
+    record !== null &&
+    typeof record === "object" &&
+    (record as { version?: unknown }).version === LEADER_RUNTIME_VERSION
+  )
+    return;
+  const version =
+    record !== null && typeof record === "object"
+      ? (record as { version?: unknown }).version
+      : record;
+  // Persisted JSON objects may shadow toString; diagnostics must not replace
+  // this typed refusal with a coercion TypeError and trigger automatic retries.
+  const seen =
+    version !== null && typeof version === "object"
+      ? Array.isArray(version)
+        ? "array"
+        : "object"
+      : String(version);
+  throw new OperationError(
+    "leader_record_version_unsupported",
+    `任务 Leader 的${kind}记录（${ref}）版本不受支持（${seen}）；本次读取及依赖该记录的操作已拒绝，原始记录保留。`,
+    "not_executed",
+  );
+}
+
+/** Version support only; callers retain their separate identity and state checks. */
+export function isLeaderRecordVersionSupported(record: unknown): boolean {
+  return (
+    record !== null &&
+    typeof record === "object" &&
+    (record as { version?: unknown }).version === LEADER_RUNTIME_VERSION
+  );
+}
+
+/**
+ * Read one durable Leader record by its exact key and refuse an uninterpretable
+ * version. Callers at recovery/authorization boundaries use this instead of a
+ * raw `store.get`, so an unknown future record can never be silently treated as
+ * absent — which for a write receipt would authorize a replay.
+ */
+export function readLeaderRecord<T>(
+  store: Store,
+  namespace: string,
+  key: string,
+  kind: string,
+): T | undefined {
+  const record = store.get<T>(namespace, key);
+  if (record === undefined) return undefined;
+  assertLeaderRecordVersion(record, kind, key);
+  return record;
+}
 
 /** Model-facing byte bounds. Canonical receipts keep the full value separately. */
 export const LEADER_RESULT_MAX_BYTES = MODEL_RESULT_MAX_BYTES;
@@ -307,11 +369,20 @@ export function leaderCheckpointId(taskId: string, eventId: string, revision: st
   return `lc_${stableId(taskId, eventId, revision)}`;
 }
 
-/** Safe accessor used by modules that must not import the context module eagerly. */
+/**
+ * Safe accessor used by modules that must not import the context module eagerly.
+ * The durable rows feed both the recovered model transcript and sequence
+ * numbering, so a row this runtime cannot interpret is refused typed instead of
+ * being silently replayed into a request or skipped past.
+ */
 export function leaderTaskMessagesSafe(store: Store, taskId: string): LeaderMessageRecord[] {
   return store
     .list<LeaderMessageRecord>(LEADER_MESSAGES)
     .filter((message) => message.taskId === taskId)
+    .map((message) => {
+      assertLeaderRecordVersion(message, "消息", message.id);
+      return message;
+    })
     .sort((a, b) => a.sequence - b.sequence);
 }
 

@@ -26,6 +26,7 @@ import {
   saveLeaderCheckpoint,
 } from "./leader-session-journal.js";
 import {
+  assertLeaderRecordVersion,
   boundLeaderText,
   LEADER_ACTIVATIONS,
   LEADER_CHECKPOINT_MAX_BYTES,
@@ -52,6 +53,7 @@ import {
   leaderEventKey,
   leaderTaskMessagesSafe,
   projectionToolCandidate,
+  readLeaderRecord,
 } from "./leader-session-types.js";
 import {
   classifyResult,
@@ -267,6 +269,7 @@ export async function executeActivation(context: ActivationContext): Promise<Act
       }) ?? prompt.payload);
   store.transaction(() => {
     const inbox = store.get<LeaderInboxRecord>(LEADER_INBOX, inboxId) as LeaderInboxRecord;
+    assertLeaderRecordVersion(inbox, "收件回执", inboxId);
     store.set<LeaderInboxRecord>(LEADER_INBOX, inboxId, {
       ...inbox,
       state: "active",
@@ -635,7 +638,15 @@ function wrapTool(
       // authorized new event executes its own operation.
       const id = operationIdForCall(taskId, session.id, eventId, revision, name, clean);
       if (!readOnly) {
-        const previous = store.get<LeaderOperationRecord>(LEADER_OPERATIONS, id);
+        // The replay-authorization boundary: a durable record this runtime
+        // cannot interpret must never be read as a confirmed receipt (which
+        // would skip work) nor as pending (which would misreport the effect).
+        const previous = readLeaderRecord<LeaderOperationRecord>(
+          store,
+          LEADER_OPERATIONS,
+          id,
+          "写操作",
+        );
         if (previous?.resolution?.choice === "abandon")
           // The user abandoned this exact operation: it may never be retried,
           // and its identity can never be re-created as a fresh pending row.

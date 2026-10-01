@@ -9,6 +9,8 @@ import {
 } from "../runtime/model-context.js";
 import type { Store } from "../storage/store.js";
 import {
+  assertLeaderRecordVersion,
+  isLeaderRecordVersionSupported,
   LEADER_CHECKPOINT_SUMMARY_MAX_BYTES,
   LEADER_CHECKPOINTS,
   LEADER_JOURNAL,
@@ -19,6 +21,7 @@ import {
   type LeaderOperationRecord,
   leaderCheckpointId,
   leaderOperationId,
+  readLeaderRecord,
 } from "./leader-session-types.js";
 
 const SEQUENCE_KEY = "sequence";
@@ -64,15 +67,30 @@ export function leaderJournal(store: Store, taskId: string): LeaderJournalEntry[
   return store
     .entries<LeaderJournalEntry>(LEADER_JOURNAL)
     .filter(([key]) => key.startsWith(`${taskId}:`) && !key.endsWith(`:${SEQUENCE_KEY}`))
-    .map(([, value]) => value)
+    .map(([key, value]) => {
+      // An entry written by a future runtime may mean something else; refusing
+      // it is the only honest read, and the original record stays untouched.
+      assertLeaderRecordVersion(value, "日志", key);
+      return value;
+    })
     .sort((a, b) => a.sequence - b.sequence);
 }
 
 export function leaderOperations(store: Store, taskId: string): LeaderOperationRecord[] {
-  return store
-    .list<LeaderOperationRecord>(LEADER_OPERATIONS)
-    .filter((operation) => operation.taskId === taskId)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return (
+    store
+      .list<LeaderOperationRecord>(LEADER_OPERATIONS)
+      // Only this task's receipts are interpreted at all; a foreign record is not
+      // this Leader's state and stays untouched. Every interpreted receipt must
+      // carry the supported version, so an unknown future write receipt can never
+      // be silently dropped from the blocking set.
+      .filter((operation) => operation.taskId === taskId)
+      .map((operation) => {
+        assertLeaderRecordVersion(operation, "写操作", operation.id);
+        return operation;
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  );
 }
 
 /** Invocation identity: task + session + event + revision + tool + args. */
@@ -166,7 +184,12 @@ export function recoverLeaderMessages(
         call.name,
         call.arguments,
       );
-      const operation = store.get<LeaderOperationRecord>(LEADER_OPERATIONS, id);
+      const operation = readLeaderRecord<LeaderOperationRecord>(
+        store,
+        LEADER_OPERATIONS,
+        id,
+        "写操作",
+      );
       const text =
         operation?.state === "complete"
           ? {
@@ -597,9 +620,11 @@ export function readLeaderCheckpoint(
   eventId: string,
   revision: string,
 ): LeaderCheckpointRecord | undefined {
-  const record = store.get<LeaderCheckpointRecord>(
+  const record = readLeaderRecord<LeaderCheckpointRecord>(
+    store,
     LEADER_CHECKPOINTS,
     leaderCheckpointId(taskId, eventId, revision),
+    "检查点",
   );
   return record?.taskId === taskId ? record : undefined;
 }
@@ -607,6 +632,9 @@ export function readLeaderCheckpoint(
 export function clearLeaderCheckpoints(store: Store, taskId: string): void {
   for (const [key, value] of store.entries<LeaderCheckpointRecord>(LEADER_CHECKPOINTS)) {
     if (value.taskId !== taskId) continue;
+    // A record this runtime cannot interpret is never deleted: cleanup must not
+    // destroy another version's durable state, and it is never read either.
+    if (!isLeaderRecordVersionSupported(value)) continue;
     store.delete(LEADER_CHECKPOINTS, key);
   }
 }

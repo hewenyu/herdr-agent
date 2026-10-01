@@ -30,6 +30,7 @@ import {
   leaderInboxId,
   leaderScope,
   leaderSessionId,
+  readLeaderRecord,
 } from "./leader-session-types.js";
 import { sessionActor } from "./leader-session-writes.js";
 
@@ -239,7 +240,12 @@ class LeaderService {
     if (!input.reason.trim())
       throw new OperationError("operation_resolution_invalid", "决议需要说明依据。");
     return this.store.transaction(() => {
-      const operation = this.store.get<LeaderOperationRecord>(LEADER_OPERATIONS, input.operationId);
+      const operation = readLeaderRecord<LeaderOperationRecord>(
+        this.store,
+        LEADER_OPERATIONS,
+        input.operationId,
+        "写操作",
+      );
       if (!operation || operation.taskId !== input.taskId)
         throw new OperationError("operation_resolution_invalid", "未找到对应的 Leader 写操作。");
       if (operation.state !== "pending" && operation.state !== "unknown")
@@ -329,13 +335,20 @@ class LeaderService {
   }
 
   session(taskId: string): LeaderSessionRecord | undefined {
-    return this.store.get<LeaderSessionRecord>(LEADER_SESSIONS, leaderSessionId(taskId));
+    return readLeaderRecord<LeaderSessionRecord>(
+      this.store,
+      LEADER_SESSIONS,
+      leaderSessionId(taskId),
+      "会话",
+    );
   }
 
   inboxReceipt(taskId: string, eventId: string, revision: string): LeaderInboxRecord | undefined {
-    return this.store.get<LeaderInboxRecord>(
+    return readLeaderRecord<LeaderInboxRecord>(
+      this.store,
       LEADER_INBOX,
       leaderInboxId(taskId, eventId, revision),
+      "收件回执",
     );
   }
 
@@ -350,7 +363,14 @@ class LeaderService {
       input.revision,
       inboxId,
     );
-    const inbox = this.store.get<LeaderInboxRecord>(LEADER_INBOX, inboxId) as LeaderInboxRecord;
+    // The inbox receipt decides duplicate delivery and attempt counting; a
+    // record this runtime cannot interpret must refuse here, before the engine.
+    const inbox = readLeaderRecord<LeaderInboxRecord>(
+      this.store,
+      LEADER_INBOX,
+      inboxId,
+      "收件回执",
+    ) as LeaderInboxRecord;
     if (inbox.state === "recorded" || inbox.state === "superseded")
       // Duplicate delivery of the same event and revision returns the recorded
       // receipt; the engine is never called a second time.
@@ -435,7 +455,10 @@ class LeaderService {
 
   private ensureSession(taskId: string, ownerId: string): LeaderSessionRecord {
     const id = leaderSessionId(taskId);
-    const existing = this.store.get<LeaderSessionRecord>(LEADER_SESSIONS, id);
+    // An existing session written by another version is never reused AND never
+    // overwritten: this path refuses typed instead of recreating the record,
+    // because its identity fields may not mean what this runtime assumes.
+    const existing = readLeaderRecord<LeaderSessionRecord>(this.store, LEADER_SESSIONS, id, "会话");
     if (existing) {
       if (existing.ownerId !== ownerId || existing.taskId !== taskId)
         throw new OperationError("invalid_scope", "任务 Leader 会话归属不匹配。");
@@ -466,9 +489,9 @@ class LeaderService {
   ): LeaderEventRecord {
     return this.store.transaction(() => {
       const key = leaderEventKey(taskId, eventId);
-      const existing = this.store.get<LeaderEventRecord>(LEADER_EVENTS, key);
+      const existing = readLeaderRecord<LeaderEventRecord>(this.store, LEADER_EVENTS, key, "事件");
       const at = now();
-      if (!this.store.get<LeaderInboxRecord>(LEADER_INBOX, inboxId))
+      if (!readLeaderRecord<LeaderInboxRecord>(this.store, LEADER_INBOX, inboxId, "收件回执"))
         this.store.set<LeaderInboxRecord>(LEADER_INBOX, inboxId, {
           version: LEADER_RUNTIME_VERSION,
           id: inboxId,
@@ -518,7 +541,12 @@ class LeaderService {
       this.store.set<LeaderEventRecord>(LEADER_EVENTS, key, updated);
       for (const older of existing.revisions) {
         const olderId = leaderInboxId(taskId, eventId, older);
-        const olderInbox = this.store.get<LeaderInboxRecord>(LEADER_INBOX, olderId);
+        const olderInbox = readLeaderRecord<LeaderInboxRecord>(
+          this.store,
+          LEADER_INBOX,
+          olderId,
+          "收件回执",
+        );
         if (!olderInbox || olderInbox.state !== "pending") continue;
         this.store.set<LeaderInboxRecord>(LEADER_INBOX, olderId, {
           ...olderInbox,
@@ -543,7 +571,7 @@ class LeaderService {
   /** True when any revision of this event already produced a durable result. */
   private recordedActivation(event: LeaderEventRecord): boolean {
     return event.inboxIds.some((id) => {
-      const inbox = this.store.get<LeaderInboxRecord>(LEADER_INBOX, id);
+      const inbox = readLeaderRecord<LeaderInboxRecord>(this.store, LEADER_INBOX, id, "收件回执");
       return inbox?.state === "recorded" || inbox?.state === "active";
     });
   }

@@ -512,6 +512,7 @@ export function isTypedLeaderRefusal(code: string): boolean {
     "orchestration_context_budget",
     "context_budget",
     "operation_unconfirmed",
+    "leader_record_version_unsupported",
     "revision_stale",
     "orchestration_superseded",
     "stopping",
