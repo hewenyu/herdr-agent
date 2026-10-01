@@ -3,15 +3,16 @@ import test from "node:test";
 import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import type { Task } from "../../src/core/types.js";
 import { setup } from "./helpers.js";
+import { leaderEventPrompt } from "./leader-helpers.js";
 import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 test("one task autonomously plans, revises the same agent, hands off and delivers native synthesis", async () => {
   const fixture = setup();
   let stage = 0;
   fixture.engine.handler = async (input) => {
-    if (!input.sessionId.startsWith("orchestration:"))
+    if (!input.sessionId.startsWith("task-leader:"))
       return { text: '{"notify":false,"text":""}', messages: [] };
-    const state = JSON.parse(input.prompt) as {
+    const state = JSON.parse(leaderEventPrompt(input)) as {
       participants: Array<{ id: string }>;
       authoritativeOutputs: Array<{ entry: { id: string; text: string } }>;
     };

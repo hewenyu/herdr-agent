@@ -11,6 +11,7 @@ import type { WorkflowPorts } from "../../src/orchestration/runner.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { validatePlan } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
+import { leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 const source = (text: string, messageId = "user-original"): UserRequestSource => ({
@@ -38,7 +39,7 @@ function portsFor(
       summarize: () => engine.summarize(),
       run: async (request) => {
         if (request.tools[0]?.name !== "orchestration_choice") return engine.run(request);
-        const body = JSON.parse(request.prompt);
+        const body = JSON.parse(leaderEventPrompt(request));
         const candidates = body.candidates.map((candidate: { id: string }) => candidate.id);
         const selected = candidates.includes("authorized") ? authorization : choice;
         calls.push(selected);

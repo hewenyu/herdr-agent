@@ -23,6 +23,7 @@ import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { associateTaskUserRequest } from "../../src/tasks/user-request.js";
 import { Engine, logger } from "../app/helpers.js";
+import { leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function harness() {
@@ -464,7 +465,7 @@ for (const contaminated of [false, true])
       const engine = new Engine();
       engine.handler = async (input) => {
         if (input.tools[0]?.name === "orchestration_choice") {
-          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+          const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
             (candidate: { id: string }) => candidate.id,
           );
           await input.tools[0].execute(

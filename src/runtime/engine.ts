@@ -12,18 +12,48 @@ import { isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import type { Logger } from "../core/ports.js";
 import { evaluateClaimPolicy } from "./claim-policy.js";
 import { requiresToolForRequest } from "./claims.js";
+import {
+  boundToolResultContent,
+  boundToolResultMessage,
+  MODEL_RESULT_MAX_BYTES,
+  modelInputBudgetTokens,
+  serializedBytes,
+} from "./model-context.js";
 import { SUMMARY_PROMPT } from "./prompts.js";
 import { type ProvisionEvidence, recordProvisionEvidence } from "./provision-evidence.js";
+import { isPageReadValue } from "./result-projection-pages.js";
 import type {
   ConversationEngine,
   EngineInput,
   EngineOptions,
   EngineResult,
   SummaryInput,
+  ToolResultProjectionInput,
 } from "./types.js";
 
 export function estimateTokens(value: unknown): number {
   return Math.ceil(Buffer.byteLength(JSON.stringify(value), "utf8") / 3) + 16;
+}
+
+/** Budget inputs and per-run bookkeeping for the model-facing context surface. */
+interface ModelSurface {
+  system: string;
+  tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+  /** Input tokens available for system + tools + messages (output reserve removed). */
+  budget: number;
+  project?: EngineInput["projectToolResult"];
+  /** Persist the compacted transcript before any request that depends on it. */
+  persist?: (messages: AgentMessage[]) => Promise<void> | void;
+  /** First typed failure raised while preparing a request; rethrown outside the loop. */
+  failure?: OperationError;
+  /** Oversized value with no durable projection; reported, never silently inlined. */
+  lossy?: { tool: string; bytes: number };
+  /** Leading messages folded into `summary`: one durable prefix, shared with checkpoints. */
+  compaction?: { keptFrom: number; anchor: string; summary: string };
+  /** Write calls that already reached their canonical effect boundary. */
+  writes: number;
+  /** Per-call error flags, applied through pi's documented afterToolCall hook. */
+  errorResults: Map<string, boolean>;
 }
 
 /** Use the real pi tool loop, with only the two explicitly configured transports. */
@@ -114,6 +144,23 @@ export class PiEngine implements ConversationEngine {
     const provisioning: ProvisionEvidence = { created: [], tasks: [] };
     const startedAt = Date.now();
     const trace = { sessionId: input.sessionId, messageId: input.actor.messageId };
+    const surface: ModelSurface = {
+      system: input.systemPrompt,
+      tools: input.tools.map(({ name, description, parameters }) => ({
+        name,
+        description,
+        parameters,
+      })),
+      budget: modelInputBudgetTokens(this.contextTokens),
+      project: input.projectToolResult,
+      persist: input.onCheckpoint
+        ? async (messages) => {
+            await input.onCheckpoint?.(safeMessages(messages));
+          }
+        : undefined,
+      writes: 0,
+      errorResults: new Map(),
+    };
     this.logger?.info("pi 开始处理", {
       event: "pi.turn_started",
       ...trace,
@@ -193,7 +240,10 @@ export class PiEngine implements ConversationEngine {
         if (!tool.readOnly && uncertain)
           throw new OperationError("effect_uncertain", "已有写操作未确认，只能查询状态。");
         executedCalls++;
-        if (!tool.readOnly) writes++;
+        if (!tool.readOnly) {
+          writes++;
+          surface.writes++;
+        }
         const toolStartedAt = Date.now();
         this.logger?.info("pi 调用工具", {
           event: "pi.tool_started",
@@ -204,6 +254,8 @@ export class PiEngine implements ConversationEngine {
         const stopWatching = watchOperation();
         try {
           const result = await tool.execute(args as Record<string, unknown>, input.actor, signal);
+          // Outcome and provisioning evidence are evaluated on the canonical
+          // value, BEFORE the model-facing projection can change or fail it.
           const outcome = toolResultOutcome(result);
           if (outcome === "unknown") {
             unknownToolResults++;
@@ -233,6 +285,14 @@ export class PiEngine implements ConversationEngine {
               input.actor.taskId,
             );
           }
+          const projected = await this.projectResult(surface, {
+            tool: tool.name,
+            args: args as Record<string, unknown>,
+            toolCallId: _id,
+            result,
+            isError: outcome !== "successful",
+            timestamp: toolStartedAt,
+          });
           this.logger?.info("pi 工具已返回", {
             event: "pi.tool_completed",
             ...trace,
@@ -240,7 +300,8 @@ export class PiEngine implements ConversationEngine {
             outcome: outcome === "successful" ? "returned" : outcome,
             durationMs: Date.now() - toolStartedAt,
           });
-          return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
+          surface.errorResults.set(_id, outcome !== "successful");
+          return { content: [{ type: "text", text: projected }], details: {} };
         } catch (error) {
           if (!tool.readOnly && !isNotExecuted(error)) uncertain = true;
           const safe = safeError(error);
@@ -261,10 +322,19 @@ export class PiEngine implements ConversationEngine {
               corrected: false,
             });
           } else unknownToolResults++;
-          return {
-            content: [{ type: "text", text: JSON.stringify({ error: safe.message, ...safe }) }],
-            details: {},
-          };
+          const envelope = { error: safe.message, ...safe };
+          // Error envelopes go through the same canonical-first projection and
+          // byte bound as successful results; a giant error is never inlined.
+          const projected = await this.projectResult(surface, {
+            tool: tool.name,
+            args: args as Record<string, unknown>,
+            toolCallId: _id,
+            result: envelope,
+            isError: true,
+            timestamp: toolStartedAt,
+          });
+          surface.errorResults.set(_id, true);
+          return { content: [{ type: "text", text: projected }], details: {} };
         } finally {
           stopWatching();
         }
@@ -277,6 +347,17 @@ export class PiEngine implements ConversationEngine {
     let requireToolCall = input.requireToolCall === true;
     const stream: StreamFn = async (model, context, options) => {
       if (closed || input.signal?.aborted) throw new OperationError("cancelled", "本轮已取消。");
+      // A failed context preparation must never fall back to an unbounded
+      // request. The typed failure is rethrown after the loop settles.
+      if (surface.failure || surface.lossy) {
+        const refused =
+          surface.failure ??
+          new OperationError(
+            "context_budget",
+            "工具结果超出模型上下文容量且没有可用的持久化投影；已执行的操作不会重放，请查询实际状态。",
+          );
+        throw refused;
+      }
       const stopWatching = watchOperation();
       try {
         let requestOptions = options;
@@ -325,31 +406,24 @@ export class PiEngine implements ConversationEngine {
       streamFn: stream,
       getApiKey: () => this.config.apiKey,
       toolExecution: "sequential",
+      // pi documents that both hooks must never throw: throwing interrupts the
+      // low-level loop without a normal event sequence, which would surface as an
+      // untyped failure and could hide an already confirmed write. Both hooks
+      // catch internally and return a safe fallback; the typed failure is
+      // rethrown by `run` after the loop has settled.
       transformContext: async (messages, signal) => {
-        if (
-          estimateTokens({
-            system: input.systemPrompt,
-            tools: input.tools.map(({ name, description, parameters }) => ({
-              name,
-              description,
-              parameters,
-            })),
-            messages,
-          }) > this.contextTokens
-        ) {
-          const compacted = await this.compactToolContext(messages, input.systemPrompt, signal);
-          if (
-            estimateTokens({ system: input.systemPrompt, tools, messages: compacted }) >
-            this.contextTokens
-          ) {
-            throw new OperationError(
-              "context_budget",
-              "上下文超过配置容量；已执行操作不会重放，请查询实际状态。",
-            );
-          }
-          return compacted;
+        try {
+          return await this.boundRequestContext(messages, surface, signal);
+        } catch (error) {
+          surface.failure ??= this.contextFailure(error, successfulWriteCalls > 0 || uncertain);
+          // A safe fallback, not a silent success: the loop stops at the next
+          // request boundary because `stream` refuses to send this context.
+          return messages;
         }
-        return messages;
+      },
+      afterToolCall: async (context) => {
+        const isError = surface.errorResults.get(context.toolCall.id);
+        return isError === undefined ? undefined : { isError };
       },
     });
     let rejectAborted!: (reason: OperationError) => void;
@@ -368,7 +442,12 @@ export class PiEngine implements ConversationEngine {
       if (closed) return;
       if (event.type === "message_end" || event.type === "agent_end") {
         try {
-          await input.onCheckpoint?.(safeMessages(agent.state.messages));
+          // Persist the ACTUAL compacted Agent state, not a temporary request
+          // view: a resume must replay exactly what the run was using, or
+          // compaction would be undone by its own checkpoint.
+          await input.onCheckpoint?.(
+            safeMessages(this.checkpointMessages(agent.state.messages, surface)),
+          );
         } catch {
           checkpointError = true;
           agent.abort();
@@ -433,11 +512,18 @@ export class PiEngine implements ConversationEngine {
           aborted,
         ]);
       }
+      if (surface.failure) throw surface.failure;
       if (checkpointError)
         throw new OperationError(
           "checkpoint_failed",
           "会话持久化失败；请先核对已登记操作。",
           "unknown",
+        );
+      if (surface.lossy)
+        throw new OperationError(
+          "context_budget",
+          "工具结果超出模型上下文容量且没有可用的持久化投影；已执行的操作不会重放，请查询实际状态。",
+          successfulWriteCalls > 0 || uncertain ? "unknown" : "not_executed",
         );
       if (agent.state.errorMessage || agent.signal?.aborted || input.signal?.aborted) {
         throw new OperationError(
@@ -485,7 +571,7 @@ export class PiEngine implements ConversationEngine {
       });
       return {
         text: finalText,
-        messages: safeMessages(agent.state.messages),
+        messages: this.resultMessages(agent.state.messages, surface),
         toolCalls: toolCallsSeen,
         writeCalls: writes,
         toolEvidence: {
@@ -547,53 +633,346 @@ export class PiEngine implements ConversationEngine {
     return result.text;
   }
 
-  private async compactToolContext(
+  /**
+   * Bound one provider request. Never throws out of pi's `transformContext`
+   * contract: callers wrap it and keep the failure typed.
+   *
+   * The budget accounts for the system prompt, every tool schema, the output
+   * reserve and the messages, so tool definitions alone can never starve the
+   * conversation. Oversized single values are compacted out of the durable
+   * transcript before the byte bound is applied.
+   */
+  private async boundRequestContext(
     messages: AgentMessage[],
-    system: string,
+    surface: ModelSurface,
     signal?: AbortSignal,
   ): Promise<AgentMessage[]> {
-    const userIndex = messages.findLastIndex((message) => message.role === "user");
-    const lastAssistant = messages.findLastIndex((message) => message.role === "assistant");
-    // Keep the complete current user request and the latest tool-call/result batch.
-    // Only context is transformed; the running pi loop and execution receipts continue.
-    if (userIndex < 0 || lastAssistant <= userIndex + 1) {
+    const view = this.requestView(messages, surface);
+    if (this.estimateRequest(surface, view) <= surface.budget) return view;
+    await this.compactForBudget(messages, surface, signal);
+    const compacted = this.requestView(messages, surface);
+    if (this.estimateRequest(surface, compacted) > surface.budget)
+      throw new OperationError("context_budget", "压缩后上下文仍超出容量；原始历史保留。");
+    return compacted;
+  }
+
+  /** Estimated input tokens for a request, including tools, overhead and reserve. */
+  private estimateRequest(surface: ModelSurface, messages: AgentMessage[]): number {
+    return estimateTokens({ system: surface.system, tools: surface.tools, messages });
+  }
+
+  /** The exact message list a provider request would carry, byte-bounded. */
+  private requestView(messages: AgentMessage[], surface: ModelSurface): AgentMessage[] {
+    return this.applyCompaction(messages, surface).map((message) =>
+      this.boundResultMessage(message, surface),
+    );
+  }
+
+  /**
+   * Bound one tool-result message for the model surface, refusing rather than
+   * sending when its identity cannot fit.
+   *
+   * Every model-facing path — live projection, recovered history, durable
+   * checkpoints and `EngineResult.messages` — uses this one seam, so a caller
+   * that reads any of them observes exactly what the provider would. A typed
+   * `context_budget` raised here is recorded on the surface and rethrown at the
+   * next request boundary (or after the loop settles), never converted into
+   * `model_failed`: an executable but unsendable transcript is a context
+   * problem, and the model must never be handed a rewritten call identity.
+   */
+  private boundResultMessage(message: AgentMessage, surface: ModelSurface): AgentMessage {
+    try {
+      return boundToolResultMessage(message, MODEL_RESULT_MAX_BYTES);
+    } catch (error) {
+      // Only a committed write makes the effect unknown; a failure while
+      // merely formatting an unsent result must never be reported as an
+      // unknown effect, or a safe read would look like a lost write.
+      surface.failure ??= this.contextFailure(error, surface.writes > 0);
+      return message;
+    }
+  }
+
+  /**
+   * Persistable variant of {@link boundResultMessage}: a message whose identity
+   * cannot be bounded is never written to the durable checkpoint, because a
+   * stored transcript the provider could not accept would make a later resume
+   * replay an unusable turn. The typed failure is recorded on the surface (so
+   * the run reports `context_budget`, not a storage fault) and rethrown, which
+   * makes the checkpoint subscriber abort the loop.
+   */
+  private strictBoundResultMessage(message: AgentMessage, surface: ModelSurface): AgentMessage {
+    try {
+      return boundToolResultMessage(message, MODEL_RESULT_MAX_BYTES);
+    } catch (error) {
+      surface.failure ??= this.contextFailure(error, surface.writes > 0);
+      throw surface.failure;
+    }
+  }
+
+  /**
+   * Fold completed history into one persisted summary until the request fits.
+   *
+   * The fold always ends at the current user request, so the request itself is
+   * never summarized away and tool-call/tool-result pairing is preserved (the
+   * retained suffix starts at a user or assistant message). The resulting
+   * transcript is exactly what checkpoints persist — not a throwaway request
+   * view that a resume would silently undo.
+   */
+  private async compactForBudget(
+    messages: AgentMessage[],
+    surface: ModelSurface,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const previous = surface.compaction;
+    const keptFrom = previous?.keptFrom ?? 0;
+    const request = messages.findLastIndex((message) => message.role === "user");
+    if (request < keptFrom)
       throw new OperationError(
         "context_budget",
         "当前输入或最新工具结果超过上下文容量；原始历史保留。",
       );
+    const folded = messages.slice(keptFrom, request);
+    const summary = folded.length
+      ? await this.summarizeFolded(folded, previous?.summary ?? "", surface, signal)
+      : (previous?.summary ?? "");
+    const anchor = messages[request];
+    if (request > keptFrom && anchor) {
+      surface.compaction = { keptFrom: request, anchor: messageSignature(anchor), summary };
+      // Persist the compacted transcript before the request that depends on it.
+      // A checkpoint written only after the model replies would let a crash
+      // replay the turn against the unfolded history.
+      await this.persistCompacted(messages, surface);
     }
-    const old = messages.slice(0, lastAssistant).filter((_, index) => index !== userIndex);
-    let summary = "";
+  }
+
+  /** Persist a compacted transcript; failure is a typed checkpoint failure. */
+  private async persistCompacted(messages: AgentMessage[], surface: ModelSurface): Promise<void> {
+    if (!surface.persist) return;
+    try {
+      await surface.persist(this.checkpointMessages(messages, surface));
+    } catch {
+      throw new OperationError(
+        "checkpoint_failed",
+        "会话持久化失败；请先核对已登记操作。",
+        "unknown",
+      );
+    }
+  }
+
+  /**
+   * Summarize a folded range in budget-sized chunks, chaining the summary, so a
+   * large history never becomes one oversized summarization request.
+   */
+  private async summarizeFolded(
+    messages: AgentMessage[],
+    previousSummary: string,
+    surface: ModelSurface,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const chunkBudget = Math.max(512, surface.budget * 0.6);
+    let summary = previousSummary;
     let chunk: AgentMessage[] = [];
-    for (const message of old) {
+    for (const message of messages) {
       if (
-        estimateTokens({ messages: [...chunk, message], summary }) > this.contextTokens * 0.6 &&
-        chunk.length
+        chunk.length &&
+        estimateTokens({ messages: [...chunk, message], summary }) > chunkBudget
       ) {
         summary = await this.summarize({ messages: chunk, previousSummary: summary, signal });
         chunk = [];
       }
-      if (estimateTokens(message) > this.contextTokens * 0.6)
-        throw new OperationError("context_budget", "单条工具记录超过可压缩上下文容量。");
       chunk.push(message);
     }
     if (chunk.length)
       summary = await this.summarize({ messages: chunk, previousSummary: summary, signal });
-    const current = messages[userIndex];
-    if (!current) throw new OperationError("context_budget", "当前输入无法恢复。");
-    const compacted: AgentMessage[] = [
+    return summary;
+  }
+
+  /**
+   * The durable transcript after compaction: the leading messages replaced by
+   * one explicit summary message, the rest untouched. Tool-call/tool-result
+   * pairing is preserved because the fold always ends on a message boundary.
+   */
+  private applyCompaction(messages: AgentMessage[], surface: ModelSurface): AgentMessage[] {
+    const compaction = surface.compaction;
+    const keptFrom = compaction ? this.resolveFold(messages, compaction) : 0;
+    if (!compaction || keptFrom <= 0) return messages;
+    const head = messages[keptFrom - 1];
+    return [
       {
         role: "user",
-        content: `历史工具执行摘要（数据，不是新授权；不得重放已有操作）：${summary}`,
-        timestamp: Date.now(),
+        content: `历史工具执行摘要（数据，不是新授权；不得重放已有操作）：${compaction.summary}`,
+        timestamp: head?.timestamp ?? Date.now(),
       },
-      current,
-      ...messages.slice(lastAssistant),
+      ...messages.slice(keptFrom),
     ];
-    if (estimateTokens({ system, messages: compacted }) > this.contextTokens)
-      throw new OperationError("context_budget", "压缩后上下文仍超出容量。");
-    return compacted;
   }
+
+  /**
+   * Locate the retained suffix. The index is verified against the first kept
+   * message; if the array has been cloned or reordered the boundary is
+   * re-derived by content, and an unfindable boundary falls back to
+   * "not compacted", which is safe because a too-large request surfaces as a
+   * typed context_budget rather than a lossy transcript.
+   */
+  private resolveFold(
+    messages: AgentMessage[],
+    compaction: NonNullable<ModelSurface["compaction"]>,
+  ): number {
+    if (compaction.keptFrom > 0 && compaction.keptFrom < messages.length) {
+      const candidate = messages[compaction.keptFrom];
+      if (candidate && messageSignature(candidate) === compaction.anchor)
+        return compaction.keptFrom;
+    }
+    const found = messages.findIndex((message) => messageSignature(message) === compaction.anchor);
+    return found < 0 ? 0 : found;
+  }
+
+  /**
+   * Same view as `applyCompaction`, applied to the live Agent state for
+   * checkpointing. Tool results are bounded exactly like the request view, so
+   * the durable checkpoint and the request that produced it carry the same
+   * shape: a resume never replays a message the provider never saw, and a
+   * recovered history never re-grows past the model budget.
+   */
+  private checkpointMessages(messages: AgentMessage[], surface: ModelSurface): AgentMessage[] {
+    return this.applyCompaction(messages, surface).map((message) =>
+      this.strictBoundResultMessage(message, surface),
+    );
+  }
+
+  /**
+   * The message list handed back to callers as `EngineResult.messages`: the
+   * same bounded model view the provider received.
+   */
+  private resultMessages(messages: AgentMessage[], surface: ModelSurface): AgentMessage[] {
+    return safeMessages(messages).map((message) => this.boundResultMessage(message, surface));
+  }
+
+  /**
+   * Canonical-first projection for one tool result.
+   *
+   * The durable projection receives the full canonical value; the model only
+   * ever sees a result the REAL tool-result message can hold. Projection failure
+   * is never business failure: if the projection throws, or returns a value the
+   * message cannot hold, the canonical value is bounded locally instead. An
+   * oversized result must never abort the loop after its side effect committed,
+   * and must never be inlined raw either.
+   *
+   * Both the trigger and the proof are the ACTUAL message, never the canonical
+   * value's own JSON: a value whose serialization fits the budget can still
+   * overflow once its text is escaped a second time inside `content`. A
+   * projector that returns the canonical value unchanged, or any other value
+   * that still overflows, is therefore NOT treated as a durable archive — the
+   * continued turn would otherwise carry an excerpt with no reachable source.
+   *
+   * The bound covers the WHOLE tool-result message (text plus call id, tool
+   * name, timestamp and error flag). If the irreducible metadata alone exceeds
+   * the budget, no bounded message exists and the request is refused instead of
+   * sending or silently truncating an oversized identity.
+   */
+  private async projectResult(
+    surface: ModelSurface,
+    input: ToolResultProjectionInput & { toolCallId: string; timestamp: number },
+  ): Promise<string> {
+    const canonicalBytes = serializedBytes(input.result) ?? Number.MAX_SAFE_INTEGER;
+    const bound = (value: unknown): { text: string; fits: boolean } =>
+      boundToolResultContent({
+        value,
+        toolCallId: input.toolCallId,
+        toolName: input.tool,
+        isError: input.isError === true,
+        timestamp: input.timestamp,
+      });
+    // A canonical value the message holds verbatim is already complete for the
+    // model: every byte is there, so no durable copy or reference is needed.
+    const exact = bound(input.result);
+    // The durable projection is offered the canonical value even when it would
+    // fit: archiving is what later checkpoints, recoveries and nested envelope
+    // reductions fall back to. Its answer is used whenever the real message can
+    // hold it.
+    //
+    // A page read is the ONE exception: it is itself the model's way back to
+    // canonical bytes, so re-archiving it would replace a readable page with a
+    // reference to a reference that no reader could resolve.
+    //
+    // Provenance, not shape: the exception is bound to the ACTUAL tool call and
+    // to the reader's own embedded identity. A business tool whose payload
+    // happens to copy every page field — even with the page's exact text — is
+    // not the reader, so its value is archived whole like any other result. The
+    // structural check stays as strict as before, because presence of a real
+    // reference plus page-shaped fields proves neither the origin nor the
+    // correspondence of this result to the stored bytes.
+    let projected: { text: string; fits: boolean } | undefined;
+    if (surface.project && !isPageReadValue(input.result, input.tool)) {
+      try {
+        const candidate = bound(await surface.project(input));
+        if (candidate.fits) projected = candidate;
+      } catch {
+        // A failed durable projection must still hand the model the canonical
+        // facts (bounded), or a confirmed write would become an opaque `null`.
+      }
+    }
+    if (projected) return projected.text;
+    if (exact.fits) return exact.text;
+    // Neither the canonical value nor a durable reference fits the real
+    // message. `exact` is the deterministic shrinking bound, which keeps the
+    // typed outcome facts and an explicit omission marker.
+    //
+    // Failure envelopes are exempt from the loss report. Their outcome is
+    // already typed and the bounded marker carries the code, so a long
+    // transport message must not discard the whole turn — the model still has
+    // to report honestly. Losing the body of a *successful* business result is
+    // what must never pass silently, because that is where unverifiable claims
+    // come from.
+    if (input.isError !== true) this.markLossy(surface, input.tool, canonicalBytes);
+    return exact.text;
+  }
+
+  /** Remember an oversized canonical result so a caller can require durable pages. */
+  private markLossy(surface: ModelSurface, tool: string, bytes: number): void {
+    surface.lossy ??= { tool, bytes };
+  }
+
+  /**
+   * Normalizes any failure raised while preparing a model request. The outcome
+   * is downgraded to `unknown` when a write already committed, so a budget
+   * failure is never reported as "nothing happened" after a real effect.
+   */
+  private contextFailure(error: unknown, uncertain: boolean): OperationError {
+    if (error instanceof OperationError)
+      return uncertain && error.outcome === "not_executed"
+        ? new OperationError(error.code, error.message, "unknown")
+        : error;
+    return new OperationError(
+      "context_budget",
+      "上下文压缩未完成；已执行的操作不会重放，请查询实际状态。",
+      uncertain ? "unknown" : "not_executed",
+    );
+  }
+}
+
+/**
+ * Stable identity of one transcript message, used to re-locate a compaction
+ * boundary if the array was cloned or reordered. Only structural fields that
+ * survive cloning and redaction are used.
+ */
+function messageSignature(message: AgentMessage): string {
+  const record = message as { role?: unknown; timestamp?: unknown; content?: unknown };
+  const content = record.content;
+  const body =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((part) => {
+              const item = part as { type?: unknown; text?: unknown; id?: unknown };
+              return typeof item.text === "string"
+                ? item.text
+                : `${item.type ?? ""}${item.id ?? ""}`;
+            })
+            .join("\u0001")
+        : "";
+  return `${String(record.role ?? "")}\u0000${String(record.timestamp ?? "")}\u0000${body.length}\u0000${body.slice(0, 200)}`;
 }
 
 function toolResultOutcome(value: unknown): "successful" | "unknown" | "not_executed" {

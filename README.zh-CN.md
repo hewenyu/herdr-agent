@@ -10,7 +10,11 @@ AI 入口采用 **规则 → Jev → LLM**：程序先执行身份、作用域�
 
 前后端均使用 TypeScript，连同 Node 和原生锁扩展一体打包为可执行文件。独立二进制、版本输出、运行提示和服务名称统一使用 `myrix`。GitHub 仓库地址保持不变。全新安装使用 `~/.myrix`；检测到已有 `~/.herdr-agent` 时原地沿用，保留配置和对话。
 
-任务和 AI 已启用时，无论是否配置 Jev key，新任务默认保存 `orchestration.mode = "workflow"` 和 v3 参与者协议；显式手动模式仍可选择。workflow 由规则筛选合法候选，再由受限 pi leader 选择下一步、规划协助、文档授权与合同变更；唯一合法候选或确定性规则可直接选定。pi 无效或出错时延后处理，交用户决定，不擅自派发或扩大权限。Jev 不再负责 workflow 主选择，只保留原生审批菜单自动选择与可选私聊分类。已有 v2 workflow、`model`、`manual` 及存量 `round_robin` 任务保留原协议；新建 `round_robin` 已弃用，无 AI 的多参与者讨论默认 `manual`。
+任务和 AI 已启用时，无论是否配置 Jev key，新任务默认保存 `orchestration.mode = "workflow"` 和 v3 参与者协议；显式手动模式仍可选择。每个 v3 任务具有独立的持久化 pi Leader，通过任务看板和受限调度工具决策。程序负责合法动作、修订、依赖、独立评审和原生投递回执门禁，不用一次性枚举选择替代 Leader。规划协助、文档授权与合同变更仍分别核验；无效或失败的决策不能授权派发或扩大权限。
+
+飞书 / Web 外层会话默认只获得有界任务状态，不接收完整任务 transcript 和决策快照。完整要求、输出与审计通过有作用域的 `task_detail` 分页及持久化结果引用按需读取。强制约束必须完整保留；未知操作不会为了恢复上下文而重放。详见[持久化 Leader 与上下文边界](docs/durable-task-leader-context.md)。
+
+Jev 不再负责 workflow 主选择，只保留原生审批菜单自动选择与可选私聊分类。已有 v2 workflow、`model`、`manual` 及存量 `round_robin` 任务保留执行协议；存量 model 编排也接入独立任务 Leader。新建 `round_robin` 已弃用，无 AI 的多参与者讨论默认 `manual`。
 
 v3 讨论由参与者按序回应，详细材料及独立回执保存在任务状态目录，原生聊天只作简短自然交接。用户已明确要求的讨论文档可以在批准的路径落盘并由另一位参与者复核，无需再次询问，也不会自动开始业务代码开发。中间输出保留在内部；飞书只接收必要的开始、真实阻塞通知和最终摘要及 `report.md` 附件，本机记录页可下载冻结报告。用户要求的讨论文档会连同哈希收录在报告附件中，可直接在飞书阅读。开发交付展示实际采集的分支、commit 和可核验的对应 PR。用户主动问进度时，pi 用 `task_progress` 读取该任务绑定的原生 session 及当前证据后自然总结。交付仍等待用户验收。见[v3 行为和验收记录](docs/workflow-natural-collaboration-2026-09-28.md)、[初版编排设计](docs/myrix-jev-llm-orchestration-design.md)和[历史调度审计](docs/ai-orchestration-audit-2026-09-25.md)。
 

@@ -17,6 +17,7 @@ import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import type { TaskUserRevision } from "../../src/tasks/user-request.js";
 import { logger, message, setup } from "../app/helpers.js";
+import { chooseLeaderAction } from "../app/leader-helpers.js";
 import { branch, fixture, prUrl } from "./code-delivery-fixture.js";
 
 interface Internals {
@@ -60,6 +61,14 @@ async function harness() {
   await git.initialize();
   await writeFile(join(git.directory, "index.mjs"), "export const answer = 43;\n");
   const h = setup(true, false);
+  h.engine.handler = async (input) => ({
+    text: (await chooseLeaderAction(input))
+      ? ""
+      : input.sessionId.startsWith("notice:")
+        ? '{"notify":true,"text":"进度通知"}'
+        : h.engine.response,
+    messages: [],
+  });
   await h.app.projects.save({ name: "git-report", directories: [git.directory], agent: "codex" });
   const actor = {
     source: "web" as const,

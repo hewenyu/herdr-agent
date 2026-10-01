@@ -14,7 +14,7 @@ import { HerdrRuntime } from "../../src/herdr/runtime.js";
 import { revisionHash, revisionInputs } from "../../src/orchestration/revision.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import { ensureUserDecision } from "../../src/orchestration/user-decision.js";
-import { WORKFLOWS } from "../../src/orchestration/workflow.js";
+import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { setup } from "./helpers.js";
 
 const actor = { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "progress" };
@@ -334,7 +334,18 @@ test("progress summaries receive actionable questions and exclude a dispute afte
     });
     const services = { tasks: h.app.tasks, herdr: h.herdr, store: h.store };
     const result = await taskProgress(services, actor, task.id);
-    assert.deepEqual(result.workflow?.userDecision, decision);
+    // The default projection keeps the answerable facts, not the full audit object.
+    assert.equal(result.workflow?.userDecision?.status, decision.status);
+    assert.equal(result.workflow?.userDecision?.fingerprint, decision.fingerprint);
+    assert.deepEqual(
+      result.workflow?.userDecision?.questions,
+      decision.questions.map((question) => question.question),
+    );
+    assert.equal(
+      h.store.get<WorkflowState>(WORKFLOWS, task.id)?.userDecision?.questions[0]?.replyExample,
+      decision.questions[0]?.replyExample,
+      "the durable decision keeps its original fields",
+    );
     assert.equal(state.stall.awaitingUser, false);
     assert.equal(
       result.workflow?.awaitingUser,

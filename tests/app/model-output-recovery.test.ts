@@ -4,6 +4,7 @@ import type { OrchestrationEvent } from "../../src/app/task-orchestrator.js";
 import { OperationError } from "../../src/core/errors.js";
 import { stableId } from "../../src/core/ids.js";
 import { deferred, setup } from "./helpers.js";
+import { leaderEventPrompt } from "./leader-helpers.js";
 import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 test("unknown intermediate chat delivery does not stop model handoff or replay the notification", async () => {
@@ -23,9 +24,9 @@ test("unknown intermediate chat delivery does not stop model handoff or replay t
     return sendText(...args);
   };
   h.engine.handler = async (input) => {
-    if (!input.sessionId.startsWith("orchestration:"))
+    if (!input.sessionId.startsWith("task-leader:"))
       return { text: '{"notify":false,"text":""}', messages: [] };
-    const state = JSON.parse(input.prompt);
+    const state = JSON.parse(leaderEventPrompt(input));
     const send = input.tools.find((tool) => tool.name === "participant_send");
     const decide = input.tools.find((tool) => tool.name === "orchestration_decide");
     assert.ok(send && decide);
@@ -190,9 +191,9 @@ test("a final selected during an in-flight output retry recovers its delivered r
     }
   };
   h.engine.handler = async (input) => {
-    if (!input.sessionId.startsWith("orchestration:"))
+    if (!input.sessionId.startsWith("task-leader:"))
       return { text: '{"notify":false,"text":""}', messages: [] };
-    const state = JSON.parse(input.prompt);
+    const state = JSON.parse(leaderEventPrompt(input));
     const send = input.tools.find((tool) => tool.name === "participant_send");
     const decide = input.tools.find((tool) => tool.name === "orchestration_decide");
     assert.ok(send && decide);

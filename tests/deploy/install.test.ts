@@ -19,6 +19,15 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { defaultPackageName, launcher } from "../../scripts/npm/config.js";
 
+// A successful install runs several fresh-Node preflight/status probes and
+// requires three consecutive stable readiness checks. Cold executable startup
+// and scheduling contention can push this healthy fixture past the old 10s cap
+// (warm runs take about 3s). Keep a finite 30s success-fixture allowance; this is
+// not a bound on the sum of the installer's separate per-stage deadlines.
+// Failure cases retain their original 10s / 15s / 40s budgets and boundedness
+// assertions; do not widen them to make readiness or rollback failures pass.
+const INSTALL_SUCCESS_TIMEOUT_MS = 30_000;
+
 const probeFixture = `
 const fs = require("node:fs");
 const path = require("node:path");
@@ -75,6 +84,40 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
+// Use SIGKILL when the test's outer watchdog expires: the installer's EXIT
+// rollback can delay shutdown after the default SIGTERM. This does not change
+// the production probe/readiness deadlines or prove why an earlier run stalled.
+// A killed run still fails the exit-status assertions, with its output retained.
+function runInstaller(
+  f: { script: string; env: NodeJS.ProcessEnv },
+  timeout: number,
+  env: NodeJS.ProcessEnv = f.env,
+): SpawnSyncReturns<string> {
+  return spawnSync("/bin/bash", [f.script, "--bridge-only"], {
+    env,
+    encoding: "utf8",
+    timeout,
+    killSignal: "SIGKILL",
+  });
+}
+
+// Each successful readiness probe extracts eight fields, for up to thirty
+// attempts. Avoid starting a fresh Node VM for every extraction on Darwin,
+// which ships the same plutil used in production. Other platforms retain the
+// portable Node JSON extractor; the rejected-plist case still forces lint failure.
+function plutilBody(failLint = false): string {
+  if (process.platform === "darwin")
+    return [
+      "#!/bin/sh",
+      failLint ? 'if [ "$1" = "-lint" ]; then exit 1; fi' : "",
+      'exec /usr/bin/plutil "$@"',
+      "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  return `#!${process.execPath}\n${failLint ? 'if (process.argv[2] === "-lint") process.exit(1);\n' : ""}${plutilFixture}`;
+}
+
 function fixture(stateName = ".herdr-agent") {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "myrix-launchd-test-")));
   cpSync(resolve("deploy"), join(directory, "deploy"), { recursive: true });
@@ -102,7 +145,7 @@ function fixture(stateName = ".herdr-agent") {
       'printf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in print) exit 1;; print-disabled) echo "{}";; esac',
   }))
     executable(join(tools, name), `#!/bin/sh\n${body}\n`);
-  executable(join(tools, "plutil"), `#!${process.execPath}\n${plutilFixture}`);
+  executable(join(tools, "plutil"), plutilBody());
   const log = join(directory, "launchctl.log");
   return {
     directory,
@@ -209,11 +252,7 @@ for (const selected of ["npm", "explicit", "alias", "legacy"] as const)
         f.env.HERDR_AGENT_BIN = npmLauncher;
       }
       if (selected === "alias") f.env.HERDR_AGENT_BIN = f.old;
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       const plist = readFileSync(
         join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
@@ -244,11 +283,7 @@ test("adding the selected Node directory never shadows earlier selected executor
       executable(join(f.nodeBin, name), "#!/bin/sh\necho obsolete\n");
     }
     f.env.PATH = `${agentBin}:${f.env.PATH}`;
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const plist = readFileSync(
       join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
@@ -287,11 +322,7 @@ for (const directories of ["new", "legacy", "both"] as const)
       const database = join(f.state, "state.sqlite");
       writeFileSync(database, "existing task and conversation history");
       if (directories === "both") mkdirSync(join(f.home, ".myrix"));
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
       assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
       const plist = readFileSync(join(agents, "com.hewenyu.myrix.plist"), "utf8");
       assert.match(plist, /<key>Label<\/key>\s*<string>com\.hewenyu\.myrix<\/string>/);
@@ -328,11 +359,7 @@ for (const legacy of ["plist", "loaded", "absent"] as const)
         join(f.tools, "launchctl"),
         `#!/bin/sh\nprintf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in disable) exit 1;; print) exit ${legacy === "loaded" ? 0 : 1};; print-disabled) echo "{}";; esac\n`,
       );
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      const result = runInstaller(f, legacy === "absent" ? INSTALL_SUCCESS_TIMEOUT_MS : 10_000);
       assert.equal(
         result.status,
         legacy === "absent" ? 0 : 1,
@@ -366,15 +393,8 @@ test("a rejected new plist never disables or unloads the previous bridge", () =>
     mkdirSync(agents, { recursive: true });
     const legacyPlist = join(agents, "com.hewenyu.herdr-agent.plist");
     writeFileSync(legacyPlist, "old bridge deployment");
-    executable(
-      join(f.tools, "plutil"),
-      `#!${process.execPath}\nif (process.argv[2] === "-lint") process.exit(1);\n${plutilFixture}`,
-    );
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    executable(join(f.tools, "plutil"), plutilBody(true));
+    const result = runInstaller(f, 10_000);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /com\.hewenyu\.myrix\.plist did not render into a valid plist/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "old bridge deployment");
@@ -408,11 +428,7 @@ case "$1" in
 esac
 `,
         );
-        const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-          env: f.env,
-          encoding: "utf8",
-          timeout: 10_000,
-        });
+        const result = runInstaller(f, 10_000);
         assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
         assert.match(result.stderr, /previous bridge definition and service state restored/);
         assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
@@ -446,11 +462,7 @@ test("legacy enablement read failure preserves the old service before any mutati
       join(f.tools, "launchctl"),
       '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\nexit 1\n',
     );
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, 10_000);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /cannot read the previous bridge enablement/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
@@ -475,11 +487,7 @@ test("failure to install the new plist still restores the preserved old definiti
       join(f.tools, "install"),
       '#!/bin/sh\ncase "$*" in */com.hewenyu.myrix.plist) exit 7;; esac\nexec /usr/bin/install "$@"\n',
     );
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, 10_000);
     assert.equal(result.status, 7);
     assert.match(result.stderr, /previous bridge definition and service state restored/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "original private configuration");
@@ -512,11 +520,7 @@ case "$1" in
 esac
 `,
     );
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, 10_000);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
     const backupName = readdirSync(agents).find((name) =>
@@ -551,11 +555,7 @@ for (const unavailable of ["native-package", "status-command"] as const)
         executable(npmEntry, launcher(defaultPackageName));
         env.MYRIX_BIN = npmEntry;
       } else env.MYRIX_TEST_STATUS_MODE = "unsupported";
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env,
-        encoding: "utf8",
-        timeout: 15_000,
-      });
+      const result = runInstaller(f, 15_000, env);
       assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
       assert.match(result.stderr, /cannot (execute version|inspect status)/);
       assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
@@ -578,11 +578,7 @@ test("a nonresponsive executable probe is bounded without changing the old deplo
       `#!${process.execPath}\nprocess.on("SIGTERM", () => {}); setInterval(() => {}, 1000);\n`,
     );
     const started = Date.now();
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 15_000,
-    });
+    const result = runInstaller(f, 15_000);
     assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
     assert.ok(Date.now() - started < 15_000);
     assert.match(result.stderr, /cannot execute version/);
@@ -616,11 +612,7 @@ case "$1" in
 esac
 `,
       );
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: { ...f.env, MYRIX_TEST_STATUS_MODE: mode },
-        encoding: "utf8",
-        timeout: 40_000,
-      });
+      const result = runInstaller(f, 40_000, { ...f.env, MYRIX_TEST_STATUS_MODE: mode });
       assert.equal(result.status, mode === "stable" ? 0 : 1, `${result.stdout}\n${result.stderr}`);
       assert.equal(existsSync(join(f.directory, "old-loaded")), mode !== "stable");
       assert.equal(existsSync(join(f.directory, "new-loaded")), mode === "stable");
@@ -647,11 +639,7 @@ for (const loaded of [false, true])
       test(`canonical ${failure} failure restores its definition and prior state (loaded=${loaded}, disabled=${disabled})`, () => {
         const f = canonicalFixture({ loaded, disabled, failure, legacy: disabled });
         try {
-          const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-            env: f.env,
-            encoding: "utf8",
-            timeout: 40_000,
-          });
+          const result = runInstaller(f, 40_000);
           assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
           assert.match(result.stderr, /previous bridge definition and service state restored/);
           assert.equal(readFileSync(f.canonical, "utf8"), "original canonical configuration");
@@ -695,11 +683,7 @@ for (const failure of ["bootstrap", "readiness"] as const)
   test(`fresh ${failure} failure removes the failed job and definition`, () => {
     const f = canonicalFixture({ installed: false, failure, disabled: true });
     try {
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 40_000,
-      });
+      const result = runInstaller(f, 40_000);
       assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
       assert.equal(existsSync(f.canonical), false);
       assert.equal(existsSync(f.legacy), false);
@@ -722,11 +706,7 @@ for (const failure of ["bootstrap", "readiness"] as const)
 test("successful canonical upgrade keeps the verified replacement and removes both backups", () => {
   const f = canonicalFixture({ loaded: true, legacy: true });
   try {
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(readFileSync(f.canonical, "utf8"), /<string>com\.hewenyu\.myrix<\/string>/);
     assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "replacement");
@@ -744,11 +724,7 @@ for (const failure of ["install", "legacy-disable"] as const)
   test(`${failure} failure preserves an existing canonical bridge before replacement bootstrap`, () => {
     const f = canonicalFixture({ loaded: true, legacy: true, failure });
     try {
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      const result = runInstaller(f, 10_000);
       assert.equal(
         result.status,
         failure === "install" ? 7 : 1,
@@ -776,11 +752,7 @@ for (const conflict of ["missing-plist", "both-loaded"] as const)
       legacyLoaded: conflict === "both-loaded",
     });
     try {
-      const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-        env: f.env,
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      const result = runInstaller(f, 10_000);
       assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
       assert.match(
         result.stderr,
@@ -803,11 +775,7 @@ for (const conflict of ["missing-plist", "both-loaded"] as const)
 test("a stuck replacement retains private backups for both previous labels and restarts neither", () => {
   const f = canonicalFixture({ loaded: true, legacy: true, failure: "stuck-replacement" });
   try {
-    const result = spawnSync("/bin/bash", [f.script, "--bridge-only"], {
-      env: f.env,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
+    const result = runInstaller(f, 10_000);
     assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
     const backups = readdirSync(f.agents).filter((name) =>

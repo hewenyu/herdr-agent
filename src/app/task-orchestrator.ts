@@ -11,6 +11,7 @@ import type {
   TranscriptEntry,
 } from "../core/types.js";
 import type { WorkflowCandidate } from "../orchestration/candidates.js";
+import { runTaskLeader } from "../orchestration/leader-session.js";
 import {
   currentOrchestrationTask,
   finishReportNotifications,
@@ -25,6 +26,18 @@ import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
+import { reconcileLeaderReceipts } from "./leader-receipts.js";
+import {
+  activationTokenBudget,
+  assertMandatoryContextFits,
+  boundActivationEnvelope,
+  isTypedLeaderRefusal,
+  mandatoryOnlyPrompt,
+  priorDecisionFacts,
+  safeReconcile,
+  taskContextEnvelope,
+} from "./orchestration-context.js";
+import { orchestrationOutputTool } from "./orchestration-output.js";
 import { assertTaskIngress, taskIngress } from "./task-ingress.js";
 import { workflowWaitText } from "./workflow-notifications.js";
 
@@ -43,7 +56,7 @@ export interface OrchestrationDecision {
   participantId?: string;
   reportId?: string;
   candidateId?: string;
-  source?: "rule" | "jev" | "pi";
+  source?: "rule" | "jev" | "pi" | "leader";
 }
 
 export interface Dispatch {
@@ -118,7 +131,9 @@ taskMutations 记录已提交的任务配置变更，不是新的聊天指令；
 每次调用 participant_send 必须带真实 participantId，完整转交原始限制及后续修订，说明本次具体交付物以及必要的其他参与者反馈。不得为了证明进展重复发送已经确认的输入。
 本轮必须调用 orchestration_decide 明确决策：安排了参与者后用 continue；只有确实缺少用户决定/权限/必需信息才用 wait 并清楚说明阻塞；所有目标均有参与者产出依据时用 deliver，并引用该参与者已结束的真实 outputId。交付多个发言的综合结论前先让合适参与者整合，不要自己代写总结。
 一轮回复结束、原生 idle/done、发送成功都不代表任务完成。交付仍等待用户验收，不自动 complete/close。不要无故等待下一条用户消息；常规命名、下一位参与者、评审和修订可以在原授权范围内自主决定。
-工具参数中的输出编号来自 outputIndex。authoritativeOutputs 只带最近输出的明确截取摘要；需要完整细节或较早发言时，使用 orchestration_output 按编号分页读取原文，不能将缺失内容当作不存在。以工具记录为事实，不仅在正文描述将要采取的行动。`;
+工具参数中的输出编号来自 outputIndex。outputIndex 只有编号、参与者、长度和时间，不含正文；authoritativeOutputs 只带最近若干条输出的明确截取摘要，两者都不是完整历史，也不代表其他输出不存在。
+读取历史的两级方法：先用 task_detail 的 requirements/decisions/outputs section 分页找到较早输出、完整需求修订或不可变决策记录及其编号，再用 orchestration_output 按 outputId 精确分页读取完整正文（offset 为字符偏移，用返回的 nextOffset 继续，直到 nextOffset 为 null）。摘要或列表缺失的内容不得当作不存在。
+工具记录才是事实，不能只在正文描述将要采取的行动。`;
 
 /** The worker runs outside TaskService's reconciliation mutex; native work stays in herdr. */
 export class TaskOrchestrator {
@@ -496,10 +511,19 @@ export class TaskOrchestrator {
     };
   }
 
+  /**
+   * Background scheduling may only read the current task and schedule its
+   * participants. `task_detail` is the on-demand reader for complete history,
+   * requirements and output indexes; it is read-only and bound to this task
+   * exactly like `task_get`. Lifecycle, group or manual-action authority is
+   * never exposed here.
+   */
   private scopedTools(actor: ActorContext, event: OrchestrationEvent): RuntimeTool[] {
     return this.options
       .tools(actor)
-      .filter((tool) => ["task_get", "participant_screen", "participant_send"].includes(tool.name))
+      .filter((tool) =>
+        ["task_get", "task_detail", "participant_screen", "participant_send"].includes(tool.name),
+      )
       .map((tool) => ({
         ...tool,
         execute: async (
@@ -509,6 +533,8 @@ export class TaskOrchestrator {
         ) => {
           if (signal?.aborted) fail("cancelled", "本轮调度已取消，未执行输入。");
           const task = this.assertCurrent(event);
+          if (tool.readOnly !== true && tool.name !== "participant_send")
+            fail("task_scope", "后台调度不提供该操作。");
           if (args.taskId !== undefined && args.taskId !== task.id)
             fail("task_scope", "后台调度只允许当前任务。");
           if (tool.name !== "participant_send")
@@ -569,49 +595,31 @@ export class TaskOrchestrator {
   }
 
   private outputTool(event: OrchestrationEvent): RuntimeTool {
-    return {
-      name: "orchestration_output",
-      description:
-        "按真实输出编号分页读取本任务参与者的完整历史原文，只读。offset为字符偏移，limit最多12000。",
-      readOnly: true,
-      parameters: {
-        type: "object",
-        properties: {
-          outputId: { type: "string" },
-          offset: { type: "integer", minimum: 0 },
-          limit: { type: "integer", minimum: 1, maximum: 12000 },
-        },
-        required: ["outputId"],
-        additionalProperties: false,
-      },
-      execute: async (args) => {
+    return orchestrationOutputTool(
+      () => this.outputs(event.taskId),
+      () => {
         this.assertCurrent(event);
-        const output = this.outputs(event.taskId).find((entry) => entry.entry.id === args.outputId);
-        if (!output) fail("orchestration_evidence", "指定输出不属于当前任务。");
-        const offset = args.offset ?? 0;
-        const limit = args.limit ?? 6000;
-        if (
-          !Number.isInteger(offset) ||
-          Number(offset) < 0 ||
-          !Number.isInteger(limit) ||
-          Number(limit) < 1 ||
-          Number(limit) > 12000
-        )
-          fail("input", "输出分页参数无效。");
-        const text = output.entry.text.slice(Number(offset), Number(offset) + Number(limit));
-        return {
-          outputId: output.entry.id,
-          participantId: output.participantId,
-          text,
-          offset,
-          totalCharacters: output.entry.text.length,
-          nextOffset:
-            Number(offset) + text.length < output.entry.text.length
-              ? Number(offset) + text.length
-              : null,
-        };
       },
-    };
+    );
+  }
+
+  /**
+   * Reconcile pending/unknown Leader write receipts against EXACT existing
+   * native records before the legacy activation. This only closes a receipt when
+   * an authoritative record already proves the exact native outcome; it never
+   * sends anything, never infers completion from inactivity, and a later
+   * failure of the activation cannot undo a proven resolution.
+   */
+  private reconcileLeader(taskId: string): void {
+    safeReconcile(
+      () => reconcileLeaderReceipts(this.options.store, taskId),
+      (failure) => {
+        this.options.logger.warn("Leader 回执对账未完成", {
+          taskId,
+          code: failure.code,
+        });
+      },
+    );
   }
 
   private async run(
@@ -631,11 +639,17 @@ export class TaskOrchestrator {
     event.state = "processing";
     event.attempts++;
     this.save(event);
+    this.reconcileLeader(task.id);
     try {
-      await this.options.engine.run({
+      await runTaskLeader({
+        store: this.options.store,
+        engine: this.options.engine,
         actor,
-        sessionId: actor.sessionId,
-        messages: [],
+        eventId: event.id,
+        revision: event.userRevision,
+        assertCurrent: () => {
+          this.assertCurrent(event);
+        },
         systemPrompt: PROMPT,
         prompt: this.modelPrompt(task, participants, outputs, event),
         tools: [
@@ -643,7 +657,6 @@ export class TaskOrchestrator {
           this.outputTool(event),
           this.decisionTool(event),
         ],
-        enforceClaims: false,
         signal: this.options.signal,
       });
       if (!event.decision && !event.dispatches.some((dispatch) => dispatch.state === "sent"))
@@ -671,7 +684,10 @@ export class TaskOrchestrator {
       } else if (this.options.signal.aborted) {
         event.state = "pending";
         event.attempts--;
-      } else if (event.attempts >= MAX_ATTEMPTS || safe.code === "orchestration_context_budget")
+      } else if (event.attempts >= MAX_ATTEMPTS || isTypedLeaderRefusal(safe.code))
+        // A typed budget/uncertainty refusal is never flattened into a retryable
+        // model failure: retrying without real durable reduction cannot help and
+        // an unresolved write must never be replayed.
         event.state = "attention";
       else {
         event.state = "pending";
@@ -685,68 +701,45 @@ export class TaskOrchestrator {
     }
   }
 
+  /**
+   * The complete activation payload, bounded as a whole escaped JSON envelope.
+   * Mandatory task/revision/role constraints are never truncated; optional
+   * observation fields are shed or shortened until the envelope fits the
+   * configured model context. The 12KiB inline policy budget only decides
+   * whether the runtime delivers the complete payload inline or out-of-line.
+   * Everything shed stays readable through the scoped read-only tools.
+   */
   private modelPrompt(
     task: Task,
     participants: Participant[],
     outputs: SettledTaskOutput[],
     event: OrchestrationEvent,
   ): string {
-    const parent = task.parentContext;
-    const base = {
-      event: { id: event.id, trigger: event.trigger, outputIds: event.outputIds },
-      task: {
-        ...task,
-        result: undefined,
-        parentContext: parent
-          ? {
-              ...parent,
-              result: undefined,
-              participants: parent.participants.map(({ name, kind }) => ({ name, kind })),
-            }
-          : undefined,
-      },
-      participants: participants.map((participant) => ({ ...participant, lastOutput: undefined })),
-      // Preserve every authenticated user constraint; only observation excerpts
-      // are shortened and can be recovered through the paged output tool.
-      userRevisions: this.userMessages(task),
-      taskMutations: this.options.store
+    const envelope = taskContextEnvelope({
+      task,
+      participants,
+      userMessages: this.userMessages(task),
+      mutations: this.options.store
         .list<TaskMutationRevision>("task_mutation_revisions")
         .filter((mutation) => mutation.taskId === task.id),
-      outputIndex: outputs.map((output) => ({
-        outputId: output.entry.id,
-        participantId: output.participantId,
-        sequence: output.sequence,
-        observedAt: output.observedAt,
-        characters: output.entry.text.length,
-      })),
-      priorDecisions: this.events(task.id)
-        .filter((entry) => entry.decision)
-        .slice(-8)
-        .map((entry) => ({
-          eventId: entry.id,
-          ...entry.decision,
-          reason: entry.decision?.reason.slice(0, 2000),
-        })),
-    };
-    const budget = Math.max(0, this.options.engine.contextTokens - 6000);
-    const fits = (text: string) => Math.ceil(Buffer.byteLength(text, "utf8") / 3) <= budget;
-    if (!fits(JSON.stringify(base)))
-      fail(
-        "orchestration_context_budget",
-        "完整任务要求与修订已超过当前模型上下文容量，自动调度已暂停；请调整模型上下文容量后继续，原始要求完整保留。",
-      );
-    for (let limit = 6000; limit >= 0; limit = limit > 0 ? Math.floor(limit / 2) : -1) {
-      const prompt = JSON.stringify({
-        ...base,
-        authoritativeOutputs: outputs.slice(-8).map((output) => ({
-          ...output,
-          entry: { ...output.entry, text: output.entry.text.slice(0, limit) },
-          truncated: output.entry.text.length > limit,
-        })),
-      });
-      if (fits(prompt)) return prompt;
-    }
-    fail("orchestration_context_budget", "完整任务上下文超出模型容量，已保留数据并暂停自动调度。");
+      outputs,
+      decisions: priorDecisionFacts(this.events(task.id)),
+      event,
+    });
+    // Mandatory-only shape: if even this cannot fit the configured model
+    // context, no request may be sent and the activation is refused typed.
+    assertMandatoryContextFits({
+      engineTokens: this.options.engine.contextTokens,
+      prompt: mandatoryOnlyPrompt(envelope),
+    });
+    // Optional observations are shed to fit the MODEL CONTEXT. The 12KiB
+    // LEADER_PROMPT_MAX_BYTES is an inline-delivery policy budget only: a
+    // complete payload above it is delivered out-of-line by the Leader runtime
+    // (buildLeaderPrompt -> inline:false), never truncated or needlessly refused.
+    const bounded = boundActivationEnvelope(envelope, {
+      tokenBudget: activationTokenBudget(this.options.engine.contextTokens),
+    });
+    return bounded.prompt;
   }
 
   private async attention(task: Task, event: OrchestrationEvent): Promise<void> {

@@ -1,13 +1,17 @@
 import { fail } from "../core/errors.js";
-import type { ActorContext } from "../core/types.js";
+import type { ActorContext, Participant, Task } from "../core/types.js";
 import type { ConversationEngine } from "../runtime/types.js";
+import type { Store } from "../storage/store.js";
+import type { WorkflowCandidate } from "./candidates.js";
 import {
   type DecisionLog,
   decisionSnapshotRef,
   PI_SELECTION_POLICY_VERSION,
 } from "./decision-log.js";
 import { type ChoiceCandidate, type JevOptions, skippedJev } from "./jev.js";
+import { type LeaderActionRequest, runLeaderScheduling } from "./leader-policy.js";
 import { chooseWithPi, skippedPi } from "./pi-choice.js";
+import type { WorkflowState } from "./workflow.js";
 
 export interface WorkflowSelectionInput {
   eventId: string;
@@ -31,10 +35,101 @@ export interface WorkflowSelectionInput {
 
 export interface WorkflowSelection {
   candidateId?: string;
-  source?: "rule" | "jev" | "pi";
+  source?: "rule" | "jev" | "pi" | "leader";
   reason: string;
   log: DecisionLog;
   deferred?: true;
+}
+
+/**
+ * Durable Leader scheduling for one workflow event. The Leader reads bounded
+ * task state with its own tools and commits at most one action; the machine
+ * safety skeleton (valid candidate, revision, DAG, admission, review, receipt)
+ * stays authoritative and the runner executes the committed action.
+ */
+/**
+ * The durable Leader owns new (promptVersion 3) workflow scheduling. Tasks
+ * created under the frozen v2 workflow protocol keep their original restricted
+ * chooser so their persisted audit stays replayable and unchanged.
+ */
+export type WorkflowSchedulingMode = "leader" | "legacy";
+
+export interface LeaderSelectionInput {
+  store: Store;
+  engine: ConversationEngine;
+  actor: ActorContext;
+  task: Task;
+  state: WorkflowState;
+  eventId: string;
+  revision: string;
+  planVersion: string | number;
+  templateVersion: string | number;
+  artifactRevision: string;
+  candidates: readonly WorkflowCandidate[];
+  participants: readonly Participant[];
+  commands: readonly string[];
+  reportMissing: readonly string[];
+  configRevision?: string;
+  boardDirectory?: string;
+  userMessages: readonly string[];
+  recentConversation?: unknown;
+  recoveryMaterials?: unknown;
+  priorDecisions?: Array<{ candidateId?: string; reason: string }>;
+  signal?: AbortSignal;
+  assertCurrent?: () => void;
+  currentRevision(): string;
+  persistAction(action: LeaderActionRequest, candidate: WorkflowCandidate): void;
+  piModel?: string;
+  onLog?: (log: DecisionLog) => void | Promise<void>;
+}
+
+export async function selectWorkflowLeader(
+  input: LeaderSelectionInput,
+): Promise<WorkflowSelection> {
+  const logId = input.eventId;
+  const candidates = structuredClone([...input.candidates]);
+  const ids = candidates.map((candidate) => candidate.id);
+  if (new Set(ids).size !== ids.length || candidates.some((candidate) => !candidate.id.trim()))
+    fail("workflow_candidates", "工作流候选编号无效或重复。");
+  const outcome = await runLeaderScheduling(
+    {
+      store: input.store,
+      engine: input.engine,
+      actor: input.actor,
+      task: input.task,
+      state: input.state,
+      eventId: input.eventId,
+      revision: input.revision,
+      planVersion: Number(input.planVersion),
+      templateVersion: input.templateVersion,
+      artifactRevision: input.artifactRevision,
+      candidates,
+      participants: [...input.participants],
+      commands: [...input.commands],
+      reportMissing: [...input.reportMissing],
+      configRevision: input.configRevision,
+      boardDirectory: input.boardDirectory,
+      userMessages: [...input.userMessages],
+      recentConversation: input.recentConversation,
+      recoveryMaterials: input.recoveryMaterials,
+      priorDecisions: input.priorDecisions,
+      signal: input.signal,
+      assertCurrent: input.assertCurrent,
+      currentRevision: input.currentRevision,
+      persistAction: input.persistAction,
+      piModel: input.piModel,
+      onLog: input.onLog,
+    },
+    logId,
+  );
+  if (outcome.deferred)
+    return { reason: outcome.reason, log: outcome.log, deferred: true as const };
+  return {
+    candidateId: outcome.candidateId,
+    source: "leader",
+    reason: outcome.reason,
+    log: outcome.log,
+  };
 }
 
 /** Rule → one restricted pi choice; never dispatches a participant itself. */

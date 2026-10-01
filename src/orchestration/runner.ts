@@ -20,12 +20,12 @@ import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { assertCodeDelivery } from "./code-delivery.js";
 import { assertConsensusDocuments } from "./consensus.js";
-import { type DecisionLog, linkDecisionDispatches, saveDecisionLog } from "./decision-log.js";
+import { type DecisionLog, linkDecisionDispatches } from "./decision-log.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
 import { legacyAssignment, prepareHandoff } from "./handoff.js";
+import { runWorkflowLeaderStepFor } from "./leader-policy.js";
 import { choosePlan } from "./plan-selection.js";
-import { selectWorkflowCandidate } from "./policy.js";
 import { selectedReceiptRepair } from "./receipt-dispatch.js";
 import { reportContract } from "./report.js";
 import {
@@ -34,8 +34,6 @@ import {
   deferAssistance,
   prepareUserDecision,
   receiptRepairRule,
-  recentConversation,
-  recoveryContext,
 } from "./selection-context.js";
 import { settleWorkflow } from "./settlement.js";
 import { invalidateFrom, markIssuesForRevalidation, readyNodes, workflowState } from "./state.js";
@@ -59,17 +57,13 @@ export interface WorkflowPorts extends TaskOrchestratorOptions {
   recoverNotification(task: Task, event: OrchestrationEvent): Promise<void>;
 }
 
-function workspaceReady(task: Task): boolean {
-  return task.directoryMode !== "worktree" || task.worktreeReady;
-}
+const workspaceReady = (task: Task): boolean =>
+  task.directoryMode !== "worktree" || task.worktreeReady;
 
-function sameWorkspace(left: Task, right: Task): boolean {
-  return (
-    left.directoryMode === right.directoryMode &&
-    left.worktreeReady === right.worktreeReady &&
-    JSON.stringify(left.directories) === JSON.stringify(right.directories)
-  );
-}
+const sameWorkspace = (left: Task, right: Task): boolean =>
+  left.directoryMode === right.directoryMode &&
+  left.worktreeReady === right.worktreeReady &&
+  JSON.stringify(left.directories) === JSON.stringify(right.directories);
 
 /** A workflow policy over the existing events/dispatches, not another execution queue. */
 export class WorkflowOrchestrator {
@@ -95,12 +89,13 @@ export class WorkflowOrchestrator {
     return current;
   }
   private actor(task: Task, eventId: string): ActorContext {
+    const { ownerId, entryChatId, chatId, id } = task;
     return {
       source: "system",
-      ownerId: task.ownerId,
-      chatId: task.chatId ?? task.entryChatId,
-      sessionId: `orchestration:${task.id}`,
-      taskId: task.id,
+      ownerId,
+      chatId: chatId ?? entryChatId,
+      sessionId: `orchestration:${id}`,
+      taskId: id,
       messageId: eventId,
     };
   }
@@ -123,19 +118,16 @@ export class WorkflowOrchestrator {
     );
   }
   private commands(task: Task): string[] {
-    if (
-      this.ports.store.get<WorkflowState>(WORKFLOWS, task.id)?.plan.validation?.mode === "not_run"
-    )
-      return [];
+    const workflow = this.ports.store.get<WorkflowState>(WORKFLOWS, task.id);
+    if (workflow?.plan.validation?.mode === "not_run") return [];
     return task.kind !== "discussion" && task.project && this.ports.projects
       ? (this.ports.projects.get(task.project).verify ?? [])
       : [];
   }
 
   private configRevision(task: Task): string | undefined {
-    return task.project && this.ports.projects
-      ? verificationConfigRevision(this.ports.projects.get(task.project))
-      : undefined;
+    if (!task.project || !this.ports.projects) return undefined;
+    return verificationConfigRevision(this.ports.projects.get(task.project));
   }
 
   async admit<T>(task: Task, access: "read" | "write", run: () => Promise<T>): Promise<T> {
@@ -286,12 +278,14 @@ export class WorkflowOrchestrator {
       this.save(state);
     }
     if (state.phase === "awaiting_acceptance") return;
+    // A Leader-committed, unapplied action resumes here before any new decision.
     const pending = events.find(
       (event) =>
-        event.workflow &&
+        !!event.workflow &&
         !event.workflow.applied &&
-        event.userRevision === ports.revision(task) &&
-        event.state === "pending",
+        event.state === "pending" &&
+        // A committed action whose revision changed is superseded below.
+        (event.userRevision === ports.revision(task) || !!event.decision?.candidateId),
     );
     if (pending) {
       if (pending.nextAttemptAt && Date.parse(pending.nextAttemptAt) > Date.now()) return;
@@ -454,68 +448,47 @@ export class WorkflowOrchestrator {
       if (previous?.state !== "selected")
         event.selectionLogId = `${event.id}:selection:${newId("attempt")}`;
       ports.save(event);
-      const selection =
-        previous?.state === "selected" && previous.revision === event.userRevision && previous.final
-          ? { ...previous.final, reason: previous.final.reason }
-          : await selectWorkflowCandidate({
-              eventId: event.selectionLogId as string,
-              revision: event.userRevision,
-              planVersion: state.plan.version,
-              templateVersion: state.plan.templateVersion,
-              snapshot: {
-                goal: state.plan.goal,
-                artifactRevision,
-                userConstraints: ports.userMessages(task).map((entry) => entry.text),
-                phase: state.phase,
-                issues: state.issues,
-                nodes: state.nodes,
-                evidence: state.evidence,
-                recentConversation: recentConversation(ports, task, state),
-                recoveryMaterials: recoveryContext(ports, task, state),
-                reportMissing: reportContract(
-                  state,
-                  artifactRevision,
-                  this.commands(task),
-                  this.configRevision(task),
-                ),
-              },
-              candidates,
-              ...(repair
-                ? { rule: { candidateId: repair.candidateId, reason: repair.reason } }
-                : {}),
-              piModel: ports.config.ai.model,
-              engine: ports.engine,
-              actor: this.actor(task, event.id),
-              signal: ports.signal,
-              assertCurrent: () => {
-                ports.assertCurrent(event);
-              },
-              onLog: (log) => saveDecisionLog(ports.store, log),
-            });
+      const selection = await runWorkflowLeaderStepFor({
+        ports,
+        actor: this.actor(task, event.id),
+        task,
+        state,
+        event,
+        candidates,
+        participants,
+        artifactRevision,
+        ...(repair ? { repair: { candidateId: repair.candidateId, reason: repair.reason } } : {}),
+      });
       ports.assertCurrent(event);
       if ("deferred" in selection && selection.deferred) {
         const request = await prepareUserDecision(ports, task, state, event, selection.reason);
         deferAssistance(ports, state, event, fingerprint, request.text);
         return;
       }
-      const candidate = candidates.find((entry) => entry.id === selection.candidateId);
+      // A committed Leader action already lives on the event; it is never
+      // re-decided. The frozen v2 chooser records its decision here.
+      const candidate =
+        event.workflow?.candidate ?? candidates.find((entry) => entry.id === selection.candidateId);
       if (!candidate) fail("workflow_selection", "本步没有得到合法选择，保留原候选等待恢复。");
-      event.workflow = { candidate, planVersion: state.plan.version, artifactRevision };
-      event.decision = {
-        action:
+      if (!event.workflow) {
+        const action =
           candidate.kind === "deliver"
             ? "deliver"
             : candidate.kind === "user"
               ? "wait"
-              : "continue",
-        reason: candidate.kind === "user" ? candidate.description : selection.reason,
-        candidateId: candidate.id,
-        source: selection.source,
-        ...(candidate.kind === "deliver"
-          ? { reportId: state.report?.id, outputId: state.report?.outputId }
-          : {}),
-      };
-      ports.save(event);
+              : "continue";
+        event.workflow = { candidate, planVersion: state.plan.version, artifactRevision };
+        event.decision = {
+          action,
+          reason: candidate.kind === "user" ? candidate.description : selection.reason,
+          candidateId: candidate.id,
+          source: selection.source,
+          ...(candidate.kind === "deliver"
+            ? { reportId: state.report?.id, outputId: state.report?.outputId }
+            : {}),
+        };
+        ports.save(event);
+      }
       await this.executeSafely(task, state, event);
     } catch (error) {
       await this.failed(task, event, error);
@@ -971,6 +944,10 @@ export class WorkflowOrchestrator {
         "workflow_artifact",
         "workflow_plan_no_progress",
         "workflow_receipt_no_progress",
+        // A typed context overflow is not a retryable model failure: retrying
+        // the same unchanged activation cannot succeed and must stay visible.
+        "context_budget",
+        "orchestration_context_budget",
       ].includes(safe.code) ||
       safe.outcome === "unknown" ||
       event.dispatches.some((entry) => entry.state === "uncertain")

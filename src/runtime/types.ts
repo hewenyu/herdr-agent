@@ -17,6 +17,15 @@ export interface RuntimeTool {
   ): Promise<unknown>;
 }
 
+/** One canonical tool result offered to a durable, byte-bounded model projection. */
+export interface ToolResultProjectionInput {
+  tool: string;
+  args: Record<string, unknown>;
+  toolCallId: string;
+  result: unknown;
+  isError?: boolean;
+}
+
 export interface EngineInput {
   actor: ActorContext;
   systemPrompt: string;
@@ -26,6 +35,12 @@ export interface EngineInput {
   sessionId: string;
   signal?: AbortSignal;
   onCheckpoint?: (messages: AgentMessage[]) => Promise<void> | void;
+  /**
+   * Durable oversized-result projection. It receives the canonical value before
+   * any model-facing bound and must return the value the model may see; the
+   * engine still applies its own byte bound to whatever comes back.
+   */
+  projectToolResult?: (input: ToolResultProjectionInput) => unknown | Promise<unknown>;
   /** Internal summaries do not represent user-visible business claims. */
   enforceClaims?: boolean;
   /** Continue a durable tool transcript; the original request is already in messages. */

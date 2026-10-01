@@ -13,6 +13,7 @@ import type { VerificationRun, VerificationRunner } from "../../src/orchestratio
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { Engine, logger } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 const execute = promisify(execFile);
@@ -53,8 +54,9 @@ async function fixture(version: 2 | 3 = 3, kind: Task["kind"] = "discussion") {
   let modelCalls = 0;
   engine.handler = async (input) => {
     modelCalls++;
+    if (await chooseLeaderAction(input)) return { text: "", messages: [] };
     if (input.tools[0]?.name === "orchestration_choice") {
-      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+      const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
         (candidate: { id: string }) => candidate.id,
       );
       await input.tools[0].execute(

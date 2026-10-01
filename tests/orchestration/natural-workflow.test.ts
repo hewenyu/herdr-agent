@@ -12,6 +12,7 @@ import { workflowState } from "../../src/orchestration/state.js";
 import { templatePlan } from "../../src/orchestration/templates.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function harness(documents = false, twoDocuments = false) {
@@ -37,8 +38,9 @@ async function harness(documents = false, twoDocuments = false) {
   const engine = new Engine();
   let plans = 0;
   engine.handler = async (input) => {
+    if (await chooseLeaderAction(input)) return { text: "", messages: [] };
     if (input.tools[0]?.name === "orchestration_choice") {
-      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+      const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
         (candidate: { id: string }) => candidate.id,
       );
       const choice = ids.includes("use_template")
@@ -269,8 +271,15 @@ for (const documents of [false, true])
       const current = h.service.get(actor, h.task.id);
       h.service.records.save({ ...current, requirements });
       h.options.engine.handler = async (input) => {
+        if (
+          await chooseLeaderAction(
+            input,
+            (ids) => ids.find((id) => id.startsWith("dispatch:")) ?? ids[0],
+          )
+        )
+          return { text: "", messages: [] };
         if (input.tools[0]?.name === "orchestration_choice") {
-          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+          const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
             (candidate: { id: string }) => candidate.id,
           );
           const candidateId = ids.includes("use_template")
@@ -758,12 +767,14 @@ for (const stage of ["planning", "selection"] as const)
         contextTokens: h.options.engine.contextTokens,
         summarize: () => h.options.engine.summarize(),
         run: async (input: Parameters<Engine["run"]>[0]) => {
-          if (input.tools[0]?.name !== "orchestration_choice") return h.options.engine.run(input);
+          const selecting = input.tools.some((tool) => tool.name === "workflow_status");
+          const choosingPlan = input.tools[0]?.name === "orchestration_choice";
+          if (!choosingPlan && !selecting) return h.options.engine.run(input);
           calls++;
-          const ids: string[] = JSON.parse(input.prompt).candidates.map(
+          const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
             (candidate: { id: string }) => candidate.id,
           );
-          const planning = ids.includes("use_template");
+          const planning = choosingPlan && ids.includes("use_template");
           if (release || (stage === "selection" && planning)) return h.options.engine.run(input);
           return { text: "no valid choice", messages: [] };
         },

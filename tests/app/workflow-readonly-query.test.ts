@@ -86,7 +86,10 @@ async function fixture(promptVersion: 2 | 3 = 3) {
       await choice.execute({ candidateId: "request_pi" }, input.actor);
       return { text: "", messages: [] };
     }
-    if (input.sessionId.startsWith("workflow-plan:"))
+    if (
+      input.sessionId.startsWith("workflow-plan:") ||
+      input.tools.some((tool) => tool.name === "orchestration_plan")
+    )
       return { text: "等待补充规划", messages: [], toolCalls: 0, writeCalls: 0 };
     for (const name of requestedTools) {
       const tool = input.tools.find((entry) => entry.name === name);
@@ -233,7 +236,13 @@ for (const order of [
       await h.app.tick();
       assert.equal(h.state()?.plan.version, h.original.plan.version + 1);
       assert.equal(h.state()?.report, undefined);
-      assert.ok(h.engine.calls.some((call) => call.sessionId.startsWith("workflow-plan:")));
+      assert.ok(
+        h.engine.calls.some(
+          (call) =>
+            call.sessionId.startsWith("task-leader:") &&
+            call.tools.some((tool) => tool.name === "orchestration_plan"),
+        ),
+      );
     } finally {
       await h.close();
     }

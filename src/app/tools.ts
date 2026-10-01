@@ -2,14 +2,43 @@ import type { AppConfig } from "../config/types.js";
 import { fail, safeError } from "../core/errors.js";
 import type { HerdrPort } from "../core/ports.js";
 import type { ActorContext } from "../core/types.js";
+import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { ProjectCatalog } from "../projects/catalog.js";
 import type { RuntimeTool, SessionService } from "../runtime/index.js";
 import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
 import type { TaskService } from "../tasks/service.js";
 import { associateTaskUserRequest, requestHistory } from "../tasks/user-request.js";
+import { TASK_DETAIL_MAX_BYTES, TASK_DETAIL_SECTIONS, taskDetailPage } from "./task-details.js";
+import {
+  boundTaskList,
+  boundTaskView,
+  boundWorkflowSummary,
+  decisionFacts,
+  deliveryFacts,
+  reportFacts,
+  truncateText,
+  workflowSummary,
+} from "./task-views.js";
 import { agentKind, boolean, optionalString, string, strings, taskInput } from "./validation.js";
+import { currentTaskUserDecision } from "./workflow-notifications.js";
 import { taskProgress } from "./workflow-progress.js";
+
+/** Record counts and readable sections; never the records themselves. */
+function auditCounts(store: Store, taskId: string) {
+  return {
+    orchestrationEvents: store
+      .list<{ taskId: string }>("task_orchestration_events")
+      .filter((event) => event.taskId === taskId).length,
+    workflowDecisions: store
+      .entries<{ eventId: string }>("workflow_decisions")
+      .filter(([, record]) => record.eventId.startsWith("orchestrate:")).length,
+    outputs: store
+      .list<{ taskId: string }>("task_settled_outputs")
+      .filter((output) => output.taskId === taskId).length,
+    sections: TASK_DETAIL_SECTIONS.map((section) => section),
+  };
+}
 
 interface Services {
   config?: AppConfig;
@@ -53,14 +82,28 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
       [],
       async (args, ctx) => {
         const tasks = services.tasks.list(ctx, boolean(args, "all"));
-        for (const task of tasks) associateTaskUserRequest(services.store, ctx, task, "read");
-        return tasks;
+        for (const task of tasks)
+          associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, task.id), "read");
+        return boundTaskList(
+          tasks.map((task) => ({
+            ...task,
+            title: truncateText(task.title, 200),
+            requirements: truncateText(task.requirements, 480),
+            error: task.error ? truncateText(task.error, 800) : undefined,
+            participants: task.participants.map((participant) => ({
+              ...participant,
+              role: truncateText(participant.role, 120),
+              lastOutput: undefined,
+            })),
+          })),
+        );
       },
     ),
     tool(
       "task_get",
       "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialDelivery=confirmed才证明初始要求投递已确认；initialDelivery=decided只能说已按决策视为送达、未经确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
-        "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。",
+        "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。" +
+        "默认只返回状态、参与者事实和有界工作流摘要（阶段、节点、未决问题、证据与交付计数）；完整调度历史、不可变决策证据、问题与证据明细、原始材料、输出和报告原文用task_detail按section分页读取，默认摘要缺少某条记录不代表它不存在。",
       true,
       { taskId },
       [],
@@ -82,24 +125,145 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
             }
           }),
         );
-        const orchestrationHistory = services.store
-          .list<{ taskId: string; createdAt: string }>("task_orchestration_events")
-          .filter((event) => event.taskId === task.id)
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        const workflow = services.store.get("task_workflows", task.id);
-        const ids = new Set(orchestrationHistory.map((event) => (event as { id?: string }).id));
-        const workflowDecisions = services.store
-          .entries<{ eventId: string }>("workflow_decisions")
-          .filter(([, record]) =>
-            [...ids].some((id) => id && record.eventId.startsWith(`${id}:selection:`)),
-          )
-          .map(([, record]) => record);
-        return {
-          ...task,
-          participants,
-          orchestrationHistory,
-          ...(workflow ? { workflow, workflowDecisions } : {}),
-        };
+        const state = services.store.get<WorkflowState>(WORKFLOWS, task.id);
+        const decision = state?.userDecision
+          ? await currentTaskUserDecision(services.store, task)
+          : undefined;
+        return boundTaskView(
+          {
+            ...task,
+            participants,
+            workflow: state
+              ? boundWorkflowSummary({
+                  ...workflowSummary(state),
+                  awaitingUser: state.userDecision
+                    ? decision?.status === "ready"
+                    : state.stall.awaitingUser,
+                  waitingForEvidence:
+                    state.assistanceWait &&
+                    (state.userDecision && !decision
+                      ? "待决问题依据暂未通过当前项目版本核验，等待重新整理。"
+                      : state.assistanceWait.reason),
+                  userDecision: decisionFacts(decision),
+                  delivery: deliveryFacts(state),
+                  report: reportFacts(state),
+                })
+              : undefined,
+            audit: auditCounts(services.store, task.id),
+            interpretation:
+              "默认只返回有界状态摘要；audit 只报告记录数量与可读 section。完整调度历史、决策证据、参与者输出与报告原文必须用 task_detail 按 section 分页读取；分页或摘要中缺少某条记录不代表它不存在。读取失败不证明未执行或未完成。",
+          },
+          {
+            shed: [
+              (draft) => {
+                if (draft.audit === undefined) return false;
+                draft.audit = undefined;
+                return true;
+              },
+              (draft) => {
+                const workflow = draft.workflow as Record<string, unknown> | undefined;
+                if (!workflow?.nodes) return false;
+                workflow.nodes = (workflow.nodes as unknown[]).map((node) => {
+                  const { error, ...rest } = node as Record<string, unknown>;
+                  return { ...rest, errorOmitted: error !== undefined };
+                });
+                return true;
+              },
+              // The outer task record itself carries audit-scale fields (a
+              // creation summary, a parent handoff, a result body). They are
+              // readable through task_detail, so shed them before any workflow
+              // fact: a status answer must never lose phase, counts or the
+              // blocking question to a duplicated requirements body.
+              (draft) => {
+                const heavy = [
+                  "requirements",
+                  "requestContext",
+                  "parentContext",
+                  "result",
+                  "userRequest",
+                ].filter((key) => draft[key] !== undefined);
+                if (!heavy.length) return false;
+                for (const key of heavy) draft[key] = undefined;
+                draft.shedTaskBodies = heavy.map((key) => `${key} → task_detail`);
+                return true;
+              },
+            ],
+            critical: {
+              id: task.id,
+              taskId: task.id,
+              status: task.status,
+              remoteTaskId: task.remoteTaskId,
+              chatId: task.chatId,
+              groupDeleted: task.groupDeleted,
+              error: task.error,
+              // Scope identities and lifecycle facts a management answer
+              // depends on; the bodies stay readable through task_detail.
+              ownerId: task.ownerId,
+              kind: task.kind,
+              title: truncateText(task.title, 200),
+              closeRequested: task.closeRequested,
+              completedAt: task.completedAt,
+              participantIds: [...task.participantIds],
+              requirements: truncateText(task.requirements, 480),
+              participants: participants.map((participant) => ({
+                id: participant.id,
+                name: participant.name,
+                kind: participant.kind,
+                status: participant.status,
+                started: participant.started,
+                initialSent: participant.initialSent,
+                initialDelivery: participant.initialDelivery,
+                error: participant.error ? truncateText(participant.error, 200) : undefined,
+              })),
+              workflow: state
+                ? {
+                    phase: state.phase,
+                    planVersion: state.plan.version,
+                    counts: workflowSummary(state).counts,
+                    stall: state.stall,
+                    userDecision: decisionFacts(decision),
+                    delivery: deliveryFacts(state),
+                    report: reportFacts(state),
+                    records: {
+                      detail: "task_detail",
+                      sections: TASK_DETAIL_SECTIONS,
+                    },
+                  }
+                : undefined,
+            },
+          },
+        );
+      },
+    ),
+    tool(
+      "task_detail",
+      "按 section 分页读取当前任务的完整持久记录：工作流节点、问题、证据、原始材料、回执、参与者输出、产物、交付证据、报告正文、用户原文、调度事件与不可变决策证据（含完整快照与候选）。只读且限定本任务；每页整份 JSON 都受字节预算限制，超长正文用返回的 cursor 继续，cursor 只对同一任务、同一 section 且内容未变化时有效。",
+      true,
+      {
+        taskId,
+        section: {
+          type: "string",
+          enum: [...TASK_DETAIL_SECTIONS],
+          description: `必填：${TASK_DETAIL_SECTIONS.join("、")}`,
+        },
+        cursor: text("上次本工具对同一任务与 section 返回的 cursor；省略从该 section 开头读取"),
+        limitBytes: {
+          type: "integer",
+          minimum: 512,
+          maximum: TASK_DETAIL_MAX_BYTES,
+          description:
+            "本页完整 JSON 的字节预算；省略使用默认值。超长内容按 cursor 分页返回，不会静默截断或跳过记录。",
+        },
+      },
+      ["section"],
+      async (args, ctx) => {
+        const target = id(args, ctx);
+        associateTaskUserRequest(services.store, ctx, services.tasks.get(ctx, target), "read");
+        return taskDetailPage({ tasks: services.tasks, store: services.store }, ctx, target, {
+          section: string(args, "section"),
+          cursor: optionalString(args, "cursor"),
+          limitBytes: args.limitBytes === undefined ? undefined : Number(args.limitBytes),
+        });
       },
     ),
     tool(

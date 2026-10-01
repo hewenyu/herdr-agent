@@ -13,7 +13,7 @@ type Harness = ReturnType<typeof setup>;
 
 async function prepare(h: Harness): Promise<Task> {
   h.engine.handler = async (input) => {
-    if (!input.sessionId.startsWith("orchestration:"))
+    if (!input.sessionId.startsWith("task-leader:"))
       return { text: '{"notify":false,"text":""}', messages: [] };
     const decide = input.tools.find((tool) => tool.name === "orchestration_decide");
     assert.ok(decide);
@@ -62,7 +62,7 @@ function notices(h: Harness): StoredMessage[] {
 }
 
 function decisionCalls(h: Harness): number {
-  return h.engine.calls.filter((input) => input.sessionId.startsWith("orchestration:")).length;
+  return h.engine.calls.filter((input) => input.sessionId.startsWith("task-leader:")).length;
 }
 
 for (const boundary of ["before_outbox", "after_delivery"] as const)

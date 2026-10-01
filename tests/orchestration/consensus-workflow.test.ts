@@ -10,6 +10,7 @@ import type { StatusBlock } from "../../src/orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { Engine, logger } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 const documentPath = "docs/DESIGN.md";
@@ -52,12 +53,26 @@ async function harness(ignoredDocument = false) {
   const engine = new Engine();
   const choices: string[] = [];
   engine.handler = async (request) => {
+    if (
+      await chooseLeaderAction(request, (ids) => {
+        const selected =
+          ids.find((id) => id.startsWith("deliver:")) ??
+          ids.find((id) => id.startsWith("dispatch:")) ??
+          ids.find((id) => id.startsWith("resolve:")) ??
+          ids.find((id) => id.startsWith("rework:")) ??
+          ids[0];
+        assert.ok(selected);
+        choices.push(selected);
+        return selected;
+      })
+    )
+      return { text: "", messages: [] };
     assert.equal(
       request.tools[0]?.name,
       "orchestration_choice",
       "fixed consensus never invokes a graph planner",
     );
-    const ids: string[] = JSON.parse(request.prompt).candidates.map(
+    const ids: string[] = JSON.parse(leaderEventPrompt(request)).candidates.map(
       (candidate: { id: string }) => candidate.id,
     );
     const selected = ids.includes("use_consensus_document_template")
@@ -244,7 +259,20 @@ test("fixed consensus workflow collects both native confirmations and delivers o
     assert.equal(h.state().phase, "awaiting_acceptance");
     assert.equal(h.replies.length, 1);
     assert.equal(h.deliveries().length, 1);
-    assert.ok(h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"));
+    assert.ok(
+      h.engine.calls.every(
+        (input) => !input.tools.some((tool) => tool.name === "orchestration_plan"),
+      ),
+      "the fixed consensus graph is never replanned by the model",
+    );
+    assert.ok(
+      h.engine.calls.some(
+        (input) =>
+          input.sessionId.startsWith("task-leader:") &&
+          input.tools.some((tool) => tool.name === "workflow_status"),
+      ),
+      "the durable Leader still chooses legal actions on the fixed graph",
+    );
     assert.match(h.replies[0]?.text ?? "", /同版文档/);
     assert.doesNotMatch(
       h.replies[0]?.text ?? "",

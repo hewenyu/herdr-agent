@@ -11,6 +11,8 @@ export const PI_SELECTION_POLICY_VERSION = "workflow-selection-v4";
 export const SELECTION_POLICY_VERSION = "workflow-selection-v1";
 export const REQUESTED_ASSISTANCE_POLICY_VERSION = "workflow-selection-v2";
 export const RECOVERY_ASSISTANCE_POLICY_VERSION = "workflow-selection-v3";
+/** Durable task Leader scheduling. Frozen v1..v4 logs remain replayable unchanged. */
+export const LEADER_SELECTION_POLICY_VERSION = "workflow-leader-selection-v1";
 
 export interface DecisionLog {
   version: 1;
@@ -18,7 +20,8 @@ export interface DecisionLog {
     | typeof PI_SELECTION_POLICY_VERSION
     | typeof SELECTION_POLICY_VERSION
     | typeof REQUESTED_ASSISTANCE_POLICY_VERSION
-    | typeof RECOVERY_ASSISTANCE_POLICY_VERSION;
+    | typeof RECOVERY_ASSISTANCE_POLICY_VERSION
+    | typeof LEADER_SELECTION_POLICY_VERSION;
   eventId: string;
   revision: string;
   planVersion: string | number;
@@ -43,7 +46,7 @@ export interface DecisionLog {
     model?: string;
   };
   state: "pending" | "selected" | "deferred" | "failed" | "cancelled";
-  final?: { source: "rule" | "jev" | "pi"; candidateId: string; reason: string };
+  final?: { source: "rule" | "jev" | "pi" | "leader"; candidateId: string; reason: string };
   dispatches: Array<{ operationId: string; state: string; receiptId?: string }>;
   createdAt: string;
   updatedAt: string;
@@ -105,6 +108,7 @@ export function replayDecision(log: DecisionLog): {
       SELECTION_POLICY_VERSION,
       REQUESTED_ASSISTANCE_POLICY_VERSION,
       RECOVERY_ASSISTANCE_POLICY_VERSION,
+      LEADER_SELECTION_POLICY_VERSION,
     ].includes(log.policyVersion)
   )
     errors.push("unsupported_version");
@@ -127,6 +131,11 @@ export function replayDecision(log: DecisionLog): {
     (log.pi.status !== "success" || log.pi.candidateId !== log.final.candidateId)
   )
     errors.push("pi_mismatch");
+  if (
+    log.final?.source === "leader" &&
+    (log.pi.status !== "success" || log.pi.candidateId !== log.final.candidateId)
+  )
+    errors.push("leader_mismatch");
   const requestedAssistance =
     log.policyVersion === REQUESTED_ASSISTANCE_POLICY_VERSION ||
     log.policyVersion === RECOVERY_ASSISTANCE_POLICY_VERSION;

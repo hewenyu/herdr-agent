@@ -8,6 +8,7 @@ import { canonical, stableId } from "../../src/core/ids.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { retryUnsentInput } from "../../src/tasks/input-delivery.js";
 import { deferred, logger, message, setup } from "./helpers.js";
+import { leaderEventPrompt } from "./leader-helpers.js";
 import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 for (const interruption of ["foreground", "cancelled"] as const)
@@ -21,9 +22,9 @@ for (const interruption of ["foreground", "cancelled"] as const)
     let time = Date.now();
     const sample = h.herdr.sampleLastReply.bind(h.herdr);
     h.engine.handler = async (input) => {
-      if (!input.sessionId.startsWith("orchestration:"))
+      if (!input.sessionId.startsWith("task-leader:"))
         return { text: '{"notify":false,"text":""}', messages: [] };
-      const state = JSON.parse(input.prompt);
+      const state = JSON.parse(leaderEventPrompt(input));
       const send = input.tools.find((tool) => tool.name === "participant_send");
       const decide = input.tools.find((tool) => tool.name === "orchestration_decide");
       assert.ok(send && decide);
