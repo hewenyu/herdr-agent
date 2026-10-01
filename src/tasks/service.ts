@@ -16,6 +16,11 @@ import { assertActive, type TaskContext } from "./context.js";
 import { createTask } from "./create.js";
 import { hasFinalDescription, syncDescription, syncFinalDescription } from "./description.js";
 import {
+  markUserControlPause,
+  recoverMissingExecutions,
+  releaseExecutionRecoveryPause,
+} from "./execution-recovery.js";
+import {
   closeTask,
   requestAction,
   syncCompletion,
@@ -230,10 +235,12 @@ export class TaskService {
         fail("task_scope", "工作流投递标识只能用于当前任务的系统调度。");
       const participant = this.selectParticipant(task, participantId);
       this.associateUserRequest(actor, task);
-      if (!["model", "workflow"].includes(task.orchestration?.mode ?? "")) {
-        this.pauseScheduling(task);
-      }
-      return sendParticipant(
+      // Automatic scheduling owns the repair pause; a manual send keeps the
+      // ordinary manual-mode pause exactly like any other manual arrangement.
+      const automatic = ["model", "workflow"].includes(task.orchestration?.mode ?? "");
+      const repairing = participant.recoveryPending === true;
+      if (!automatic) this.pauseScheduling(task);
+      const delivery = await sendParticipant(
         this.context,
         task,
         participant,
@@ -241,7 +248,20 @@ export class TaskService {
         workflowOperationId ?? `${task.id}:send:${stableId(actor.messageId, participant.id, text)}`,
         currentUserRequest(this.context.store, actor),
         beforeSend,
+        actor.source !== "system",
       );
+      // A fresh user arrangement is the appointed way out of an automatic
+      // repair: it resumes scheduling once the rebuilt executor has actually
+      // taken the input. An explicit pause/interrupt is never released.
+      if (
+        automatic &&
+        repairing &&
+        actor.source !== "system" &&
+        participant.recoveryPending !== true &&
+        releaseExecutionRecoveryPause(this.context, task)
+      )
+        this.records.save(task);
+      return delivery;
     };
     return actor.source === "system" ? this.locks.run(id, run) : this.controlLock(actor, id, run);
   }
@@ -255,7 +275,7 @@ export class TaskService {
     await this.controlLock(actor, id, async () => {
       beforeMutation?.();
       const task = this.records.get(actor, id);
-      this.pauseScheduling(task);
+      this.pauseByUserControl(task);
       const selected =
         participantId === "all"
           ? this.records.participants(task)
@@ -355,7 +375,7 @@ export class TaskService {
       beforeMutation?.();
       const task = this.records.get(actor, id);
       const participant = this.selectParticipant(task, participantId);
-      this.pauseScheduling(task);
+      this.pauseByUserControl(task);
       if (participant.execution)
         await this.context.operations.run(`${participant.id}:close`, participant.execution, () =>
           this.context.herdr.close(
@@ -520,11 +540,16 @@ export class TaskService {
           `${task.id}:legacy-pending`,
         );
         if (legacyPending && ["pending", "uncertain"].includes(legacyPending.state)) return;
+        // Remote/lifecycle barriers win over repair; a failed remote read is not permission
+        // to start replacement processes while completion may be pending.
+        if (!remoteError)
+          await recoverMissingExecutions(this.context, task, () => this.approvalsBlocked(task.id));
         const needsProvision = this.records
           .participants(task)
           .some(
             (participant) =>
               participant.status !== "removed" &&
+              !participant.executionRecovery &&
               (!participant.started ||
                 (!["model", "workflow"].includes(task.orchestration?.mode ?? "") &&
                   participant.id === task.participantIds[0] &&
@@ -653,6 +678,12 @@ export class TaskService {
       task.discussion.paused = true;
       this.records.save(task);
     });
+  }
+
+  /** Pauses that are explicit user controls, distinct from a plain send. */
+  private pauseByUserControl(task: Task): void {
+    this.pauseScheduling(task);
+    markUserControlPause(this.context, task);
   }
 
   private selectParticipant(task: Task, id?: string): Participant {

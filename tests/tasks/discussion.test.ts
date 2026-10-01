@@ -57,7 +57,7 @@ test("round robin keeps dispatching past historical round limits without a user 
   }
 });
 
-test("elapsed time and historical time limits do not stop turns; a missing participant still pauses", async () => {
+test("elapsed time and historical time limits do not stop turns; a missing participant is rebuilt and pauses", async () => {
   const f = setup();
   try {
     const task = await createPersistedTask(f, actor, discussion, { discussionMode: "round_robin" });
@@ -78,9 +78,18 @@ test("elapsed time and historical time limits do not stop turns; a missing parti
     assert.equal(f.service.get(actor, task.id).discussion.paused, false);
     f.herdr.agents.delete(second.execution.paneId);
     await f.service.tick();
-    assert.equal(f.service.get(actor, task.id).status, "attention");
-    assert.equal(f.service.get(actor, task.id).discussion.paused, true);
-    assert.equal(f.service.get(actor, task.id).participants[1]?.status, "gone");
+    // The missing execution is rebuilt automatically, but the old work is neither
+    // replayed nor implied to have resumed: the task stays paused for a fresh arrangement.
+    const rebuilt = f.service.get(actor, task.id);
+    assert.equal(rebuilt.status, "attention");
+    assert.equal(rebuilt.discussion.paused, true);
+    assert.equal(rebuilt.participants[1]?.recoveryPending, true);
+    assert.notEqual(rebuilt.participants[1]?.execution?.paneId, second.execution.paneId);
+    assert.equal(f.herdr.sends.length, 2, "no old input is replayed into the replacement");
+    const starts = f.herdr.starts;
+    await new TaskService(f.options).tick();
+    assert.equal(f.herdr.starts, starts, "the same replacement is reused, not rebuilt twice");
+    assert.equal(f.service.get(actor, task.id).participants[1]?.recoveryPending, true);
   } finally {
     f.close();
   }

@@ -9,6 +9,8 @@ export interface InputDelivery {
   operationId: string;
   fingerprint: string;
   execution: ExecutionRef;
+  /** Execution-repair generation this attempt belongs to; never apply it to another. */
+  generation?: string;
   prompt: string;
   receipt: string;
   initial: boolean;
@@ -28,7 +30,7 @@ export function prepareInputDelivery(
 ): { prompt: string; receipt: string } {
   if (!participant.execution)
     throw new OperationError("participant_unavailable", "参与者尚未就绪。");
-  const initial = !participant.initialSent;
+  const initial = !participant.initialSent || participant.recoveryPending === true;
   const receipt = initial
     ? participant.initialReceipt
     : `HERDR_RECEIPT_${stableId(operationId, participant.id)}`;
@@ -43,6 +45,7 @@ export function prepareInputDelivery(
     operationId,
     fingerprint,
     execution: { ...participant.execution },
+    generation: participant.executionRecovery,
     prompt: body,
     receipt,
     initial,

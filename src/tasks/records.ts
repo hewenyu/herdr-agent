@@ -82,13 +82,19 @@ export class TaskRecords {
   projectParticipants(task: Task): ParticipantProjection[] {
     const prepared = this.store.entries<InputDelivery>("input_deliveries");
     return this.participants(task).map((participant) => {
-      const ids = new Set([`${participant.id}:initial`]);
+      const generation = participant.executionRecovery;
+      const ids = new Set<string>();
+      // The legacy `${id}:initial` receipt predates execution repair. Once the
+      // execution has been rebuilt it can only describe the retired generation;
+      // it must never confirm delivery to the replacement.
+      if (!generation) ids.add(`${participant.id}:initial`);
       for (const [id, delivery] of prepared) {
         if (
           delivery.operationId === id &&
           delivery.taskId === task.id &&
           delivery.participantId === participant.id &&
           delivery.initial &&
+          delivery.generation === generation &&
           delivery.receipt === participant.initialReceipt &&
           this.store.get<OperationReceipt>("operations", id)?.fingerprint === delivery.fingerprint
         )

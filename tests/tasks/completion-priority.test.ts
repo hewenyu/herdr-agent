@@ -68,7 +68,7 @@ for (const source of ["remote", "action", "group"] as const) {
   });
 }
 
-test("failed initial recovery cannot starve interval-based remote completion observation", async (t) => {
+test("a pending execution repair cannot starve interval-based remote completion observation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-18T00:00:00Z") });
   const h = await exitedAfterUnknownInput();
   let reads = 0;
@@ -82,27 +82,27 @@ test("failed initial recovery cannot starve interval-based remote completion obs
       throw new OperationError("transcript_unavailable", "native evidence temporarily unreadable");
     };
     await h.service.tick();
-    assert.equal(reads, 1, "remote is read before failing local recovery");
+    assert.equal(reads, 1, "remote is read before the local execution repair");
     assert.equal(h.service.get(actor, h.task.id).status, "attention");
+    // The exited executor is replaced, but its unknown first input stays unknown.
+    assert.equal(h.store.get<OperationReceipt>("operations", h.operationId)?.state, "uncertain");
+    assert.equal(h.herdr.sends.length, 1);
     h.remote.completedAt = "native-user-completed";
     t.mock.timers.tick(1_000);
     await h.service.tick();
-    assert.equal(reads, 1, "a recovery error does not bypass the remote polling interval");
+    assert.equal(reads, 1, "a pending repair does not bypass the remote polling interval");
     t.mock.timers.tick(29_000);
     await h.service.tick();
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
     const closing = h.service.get(actor, h.task.id);
     assert.equal(closing.completedAt, "native-user-completed");
-    assert.equal(closing.status, "destroying");
-    assert.equal(h.herdr.closes, 0, "unreadable final evidence still blocks destructive cleanup");
-    assert.equal(h.platform.deletions, 0);
-    (h.herdr as HerdrPort).initialInput = async () => undefined;
-    t.mock.timers.tick(1_000);
-    await h.service.tick();
-    assert.equal(h.service.get(actor, h.task.id).status, "destroyed");
-    assert.equal(reads, 3, "only the new final description needs another GET");
+    assert.equal(closing.status, "destroyed");
+    assert.equal(
+      h.store.get<OperationReceipt>("operations", h.operationId)?.state,
+      "uncertain",
+      "the historical unknown receipt is never rewritten",
+    );
     assert.deepEqual([h.herdr.sends.length, h.herdr.closes, h.platform.deletions], [1, 1, 1]);
-    assert.equal(h.store.get<OperationReceipt>("operations", h.operationId)?.state, "uncertain");
   } finally {
     h.close();
   }

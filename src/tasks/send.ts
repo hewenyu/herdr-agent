@@ -4,7 +4,7 @@ import type { Delivery, Participant, Task, UserRequestSource } from "../core/typ
 import type { OperationReceipt } from "../storage/operations.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
-import { prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
+import { type InputDelivery, prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
 import { inputGuard } from "./input-guard.js";
 import { inputTiming } from "./input-timing.js";
 import { participantPrompt } from "./prompts.js";
@@ -18,6 +18,7 @@ export async function sendParticipant(
   operationId: string,
   source?: UserRequestSource,
   beforeSend?: () => void,
+  allowRecovery = false,
 ): Promise<Delivery> {
   assertActive(context);
   if (!text.trim()) fail("empty_input", "消息不能为空。");
@@ -34,7 +35,25 @@ export async function sendParticipant(
     if (otherWorking)
       fail("participant_busy", "同一执行任务按参与者串行工作，请等待当前参与者结束。");
   }
-  const initial = !participant.initialSent;
+  if (participant.recoveryPending && !allowRecovery)
+    fail("execution_recovered", "执行器刚重建，需用户发送新的安排，不能自动续投旧工作。");
+  const historical = context.store.get<InputDelivery>("input_deliveries", operationId);
+  const priorAttempt = context.store.get<OperationReceipt>("operations", operationId);
+  // A definitely-refused attempt has no side effect and stays retryable below.
+  const refused =
+    priorAttempt?.state === "failed" && priorAttempt.error?.outcome === "not_executed";
+  if (participant.executionRecovery && priorAttempt && !refused) {
+    // A rebuilt generation may only resume an attempt durably bound to that same
+    // generation and place. A historical result a crash left behind belongs to
+    // the retired execution and must never be replayed onto the replacement.
+    const sameGeneration = historical?.generation === participant.executionRecovery;
+    const samePlace =
+      historical?.execution.paneId === participant.execution.paneId &&
+      historical?.execution.workspaceId === participant.execution.workspaceId;
+    if (!historical || !sameGeneration || !samePlace)
+      fail("operation_conflict", "该输入属于旧执行现场，不能投递到重建的执行器。");
+  }
+  const initial = !participant.initialSent || participant.recoveryPending === true;
   const assertCurrent = inputGuard(context, task, participant, beforeSend);
   const arrangement = [
     source ? requestPrompt(source, text) : text,
@@ -94,6 +113,7 @@ export async function sendParticipant(
     context.store.set("participant_awaiting_output", participant.id, { operationId, at: now() });
     context.store.set("task_input_applied", operationId, { at: now() });
     participant.initialSent = true;
+    participant.recoveryPending = false;
     participant.status = "working";
     participant.error = undefined;
     context.records.saveParticipant(participant);

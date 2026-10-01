@@ -102,6 +102,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     tool(
       "task_get",
       "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialDelivery=confirmed才证明初始要求投递已确认；initialDelivery=decided只能说已按决策视为送达、未经确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
+        "参与者执行现场消失时，系统会在原参与者身份下自动重建一个新的执行器；这只是执行位置修复，不证明旧要求已送达或原工作已恢复，也不会重放旧输入。重建后initialDelivery回到pending，需用户发送新的安排才继续；旧输入与未知回执保留为历史未知。" +
         "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。" +
         "默认只返回状态、参与者事实和有界工作流摘要（阶段、节点、未决问题、证据与交付计数）；完整调度历史、不可变决策证据、问题与证据明细、原始材料、输出和报告原文用task_detail按section分页读取，默认摘要缺少某条记录不代表它不存在。",
       true,

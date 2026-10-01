@@ -102,6 +102,9 @@ export interface Participant {
   status: AgentStatus | "pending" | "removed";
   execution?: ExecutionRef;
   started: boolean;
+  /** Durable execution-only repair; historical delivery facts are not replay permission. */
+  executionRecovery?: string;
+  recoveryPending?: boolean;
   initialSent: boolean;
   initialReceipt: string;
   cursor?: string;

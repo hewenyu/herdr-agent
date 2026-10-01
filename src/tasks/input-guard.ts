@@ -12,6 +12,7 @@ export function inputGuard(
 ): () => void {
   const revision = taskIngress(context.store, task, true).revision;
   const ref = participant.execution;
+  const generation = participant.executionRecovery;
   return () => {
     assertActive(context);
     beforeSend?.();
@@ -30,6 +31,8 @@ export function inputGuard(
       !ref ||
       !latest.participantIds.includes(current.id) ||
       ["removed", "gone"].includes(current.status) ||
+      // A concurrent repair must not let an in-flight send land on a replacement.
+      current.executionRecovery !== generation ||
       current.execution?.paneId !== ref.paneId ||
       current.execution.workspaceId !== ref.workspaceId ||
       current.execution.kind !== ref.kind ||
