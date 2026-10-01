@@ -31,6 +31,7 @@ import {
 import { observeTask } from "./observe.js";
 import { activeTaskOperation } from "./operation-scope.js";
 import { TaskOperations } from "./operations.js";
+import { holdExecutor, lifecycleActive, releaseExecutor } from "./pause.js";
 import { taskDescription } from "./prompts.js";
 import { provision } from "./provision.js";
 import { type ParticipantProjection, TaskRecords } from "./records.js";
@@ -60,6 +61,7 @@ export class TaskService {
       signal: this.control.signal,
       records: this.records,
       operations: new TaskOperations(options.store, this.control.signal),
+      controlPending: (id) => this.approvalsBlocked(id),
     };
   }
 
@@ -240,6 +242,9 @@ export class TaskService {
       const automatic = ["model", "workflow"].includes(task.orchestration?.mode ?? "");
       const repairing = participant.recoveryPending === true;
       if (!automatic) this.pauseScheduling(task);
+      // A fresh explicit user arrangement is the appointed way to lift an
+      // executor hold; a system dispatch may never do so.
+      if (actor.source !== "system") releaseExecutor(this.context.store, participant);
       const delivery = await sendParticipant(
         this.context,
         task,
@@ -281,6 +286,9 @@ export class TaskService {
           ? this.records.participants(task)
           : [this.selectParticipant(task, participantId)];
       for (const participant of selected) {
+        // An explicit interrupt holds this executor specifically; the following
+        // business pause must not defer a peer's lifecycle repair.
+        holdExecutor(this.context.store, participant, "用户已中断执行器");
         if (participant.execution && !["removed", "gone"].includes(participant.status)) {
           await this.context.operations.run(
             `${task.id}:stop:${stableId(actor.messageId, participant.id)}`,
@@ -376,6 +384,7 @@ export class TaskService {
       const task = this.records.get(actor, id);
       const participant = this.selectParticipant(task, participantId);
       this.pauseByUserControl(task);
+      holdExecutor(this.context.store, participant, "用户已移除参与者");
       if (participant.execution)
         await this.context.operations.run(`${participant.id}:close`, participant.execution, () =>
           this.context.herdr.close(
@@ -555,8 +564,10 @@ export class TaskService {
                   participant.id === task.participantIds[0] &&
                   !participant.initialSent)),
           );
-        if (needsProvision && !["completed", "paused"].includes(task.status))
-          await provision(this.context, task);
+        // Provisioning is lifecycle work: a settled business pause (`paused`
+        // status) must not stop it, but business input inside provision is
+        // fenced by the pause. Only a terminal/closing task skips provisioning.
+        if (needsProvision && lifecycleActive(task)) await provision(this.context, task);
         await observeTask(this.context, task);
         assertActive(this.context);
         // Newly provisioned tasks did not have a remote ID during the early read.

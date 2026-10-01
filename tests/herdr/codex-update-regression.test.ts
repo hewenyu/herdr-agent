@@ -119,7 +119,7 @@ test("idle codex with the update menu normalizes to blocked and stays startup sc
     "idle",
   );
   client.truncated = true;
-  assert.equal((await client.normalize(raw)).status, "idle");
+  assert.equal((await client.normalize(raw)).status, "unknown");
 });
 
 test("task text is refused by the real update menu without any native write", async () => {

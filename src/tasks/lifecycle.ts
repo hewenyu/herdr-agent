@@ -6,6 +6,7 @@ import { assertActive, type TaskContext } from "./context.js";
 import { queueFinalDescription } from "./description.js";
 import { observeTask } from "./observe.js";
 import { activeTaskOperation, taskOperationPrefixes } from "./operation-scope.js";
+import { clearUserPause, releaseHeldExecutors } from "./pause.js";
 import { taskDescription } from "./prompts.js";
 import { resolveGroupRetention } from "./retention.js";
 import { reconcileUncertain } from "./uncertain-effects.js";
@@ -167,6 +168,10 @@ export function requestAction(
       task.discussion.rounds = 0;
       task.discussion.startedAt = now();
       task.status = "review";
+      // An explicit user resume is control: it lifts executor holds that an
+      // interrupt/removal placed, so a peer repair may proceed again.
+      releaseHeldExecutors(context.store, task);
+      clearUserPause(context.store, task.id);
       break;
     default:
       fail("task_action", "未知任务操作。");

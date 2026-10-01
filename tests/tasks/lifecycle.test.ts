@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OperationError } from "../../src/core/errors.js";
 import type { Task } from "../../src/core/types.js";
+import type { OperationReceipt } from "../../src/storage/operations.js";
 import { participantPrompt } from "../../src/tasks/prompts.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { actor, discussion, setup } from "./helpers.js";
@@ -187,6 +188,10 @@ test("external Feishu completion closes on reconciliation, retained groups remai
 });
 
 test("unknown workspace creation and initial delivery never repeat across service restart", async () => {
+  // Intentional contract change: a business pause no longer freezes lifecycle
+  // provisioning of a *different*, still-unprovisioned participant. The unknown
+  // effect itself (the workspace create or the initial delivery) must still
+  // never replay.
   for (const stage of ["workspace", "delivery"]) {
     const f = setup();
     try {
@@ -198,9 +203,29 @@ test("unknown workspace creation and initial delivery never repeat across servic
       const counts = [f.herdr.creates, f.herdr.sends.length];
       const restored = new TaskService(f.options);
       await restored.tick();
-      assert.deepEqual([f.herdr.creates, f.herdr.sends.length], counts);
+      if (stage === "workspace") {
+        assert.deepEqual(
+          [f.herdr.creates, f.herdr.sends.length],
+          counts,
+          "unknown workspace creation never repeats",
+        );
+        assert.equal(restored.get(actor, task.id).status, "attention");
+      } else {
+        assert.equal(f.herdr.sends.length, counts[1], "unknown initial delivery never repeats");
+        // The unknown delivery stays durably unknown; the peer's lifecycle may
+        // still proceed, but nothing is replayed and nothing claims delivery.
+        const initial = f.store.get<OperationReceipt>(
+          "operations",
+          `${f.service.get(actor, task.id).participants[0]?.id}:initial`,
+        );
+        assert.equal(initial?.state, "uncertain");
+        assert.equal(
+          restored.get(actor, task.id).participants[0]?.initialSent,
+          false,
+          "an unknown delivery is never reported as sent",
+        );
+      }
       await assert.rejects(restored.action({ ...actor, messageId: "retry" }, task.id, "retry"));
-      assert.equal(restored.get(actor, task.id).status, "attention");
     } finally {
       f.close();
     }

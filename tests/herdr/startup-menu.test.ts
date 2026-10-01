@@ -66,6 +66,16 @@ test("a numbered startup choice reported idle cannot receive task text or automa
   assert.ok(transport.calls.every((method) => ["agent.get", "agent.read"].includes(method)));
 });
 
+test("unreadable startup screen cannot leave a raw idle agent verified ready", async () => {
+  const transport = new StartupTransport();
+  const call = transport.call.bind(transport);
+  transport.call = async (method, params) => {
+    if (method === "agent.read") throw new Error("readback unavailable");
+    return call(method, params);
+  };
+  assert.equal((await new HerdrClient(transport).get(ref.paneId)).status, "unknown");
+});
+
 test("manual approval receives the visible startup menu instead of stale herdr detection output", async () => {
   const runtime = new HerdrRuntime({ socket: "/not-used" });
   const transport = new StartupTransport();
@@ -87,7 +97,7 @@ test("incomplete menus and ordinary numbered output do not establish a startup c
   const transport = new StartupTransport();
   const client = new HerdrClient(transport);
   transport.truncated = true;
-  assert.equal((await client.get(ref.paneId)).status, "idle");
+  assert.equal((await client.get(ref.paneId)).status, "unknown");
   // An established session's past output is not reclassified by startup normalization.
   transport.truncated = false;
   assert.equal(

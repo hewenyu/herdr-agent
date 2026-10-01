@@ -1,15 +1,38 @@
 import { dirname } from "node:path";
 import { assertTaskIngress, taskIngress } from "../app/task-ingress.js";
 import { OperationError, safeError } from "../core/errors.js";
-import { newId, stableId } from "../core/ids.js";
+import { newId, now, stableId } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { launchGuard } from "./input-guard.js";
 import { recordOutput } from "./observe.js";
+import {
+  businessPaused,
+  clearUserPause,
+  executorHeld,
+  lifecycleActive,
+  markUserPause,
+  userPauseMarked,
+} from "./pause.js";
+import {
+  bindLegacyTrustEffects,
+  type ExecutionObservation,
+  inputReady,
+  isRecoveryDiagnostic,
+  readinessDiagnostic,
+  reconcileReadiness,
+} from "./readiness.js";
 
 export interface ExecutionRecovery {
   id: string;
   taskId: string;
+  at?: string;
+  /**
+   * `building` while the replacement executor has not been observed
+   * input-ready; `ready` only once a fresh readback proves readiness. A start
+   * receipt is never readiness.
+   */
   state: "building" | "ready";
   previous: Participant;
   baseline?: unknown;
@@ -26,9 +49,12 @@ const readyDiagnostic = "执行器已自动重建；旧输入和未知回执保�
  * pause. Bumping the scheduling revision is what makes an older delivery's
  * recorded `pauseRevision` stale, so late proof for some other participant can
  * never treat the repair pause as its own to clear. `task_user_pause_revision`
- * is deliberately untouched: repair must not look like a user control.
+ * and the durable user-pause marker are deliberately untouched: repair must not
+ * look like a user control. A business pause also never gates this repair.
  */
 export function setExecutionRecoveryPause(context: Pick<TaskContext, "store">, task: Task): void {
+  // Preserve explicit pauses from records predating the durable user-pause marker.
+  if (userControlPaused(context, task)) markUserPause(context.store, task);
   context.store.set(
     "task_pause_revision",
     task.id,
@@ -40,12 +66,12 @@ export function setExecutionRecoveryPause(context: Pick<TaskContext, "store">, t
 /**
  * Whether scheduling is paused by an explicit user control — a `pause` action,
  * an interrupt or a participant removal — rather than by automatic repair or a
- * plain send. Only user controls keep repair deferred; a persisted `gone` task
- * may carry a scheduling pause from the very observation that found it.
+ * plain send.
  */
 export function userControlPaused(context: Pick<TaskContext, "store">, task: Task): boolean {
   if (!task.discussion.paused) return false;
   if (task.status === "paused") return true;
+  if (userPauseMarked(context.store, task.id)) return true;
   return (
     (context.store.get<number>("task_user_pause_revision", task.id) ?? -1) >=
     (context.store.get<number>("task_pause_revision", task.id) ?? 0)
@@ -59,6 +85,7 @@ export function markUserControlPause(context: Pick<TaskContext, "store">, task: 
     task.id,
     context.store.get<number>("task_pause_revision", task.id) ?? 0,
   );
+  markUserPause(context.store, task);
 }
 
 /**
@@ -84,6 +111,7 @@ export function releaseExecutionRecoveryPause(
   });
   if (awaitingFreshInput) return false;
   task.discussion.paused = false;
+  clearUserPause(context.store, task.id);
   if (task.error === diagnostic || task.error === readyDiagnostic) task.error = undefined;
   return true;
 }
@@ -93,15 +121,6 @@ function retryRefused(context: Pick<TaskContext, "store" | "operations">, id: st
   const receipt = context.store.get<OperationReceipt>("operations", id);
   if (receipt?.state === "failed" && receipt.error?.outcome === "not_executed")
     context.store.delete("operations", id);
-}
-
-function eligible(task: Task): boolean {
-  return !(
-    ["paused", "completed", "destroying", "destroyed"].includes(task.status) ||
-    task.closeRequested ||
-    task.completionRequest ||
-    task.groupDeleted
-  );
 }
 
 /**
@@ -129,16 +148,62 @@ function retireRelays(
   for (const [key] of recovery.relays) context.store.delete("pending_relays", key);
 }
 
+function absent(error: unknown): error is OperationError {
+  return (
+    error instanceof OperationError && ["agent_not_found", "pane_not_found"].includes(error.code)
+  );
+}
+
+/**
+ * Reconcile the replacement's readiness from a fresh native readback, never
+ * from the start receipt. A blocked startup menu, a launch-pending agent, a
+ * lost identity or an unreadable target all stay not-ready; only a definite
+ * `agent_not_found`/`pane_not_found` is evidence of absence.
+ */
+async function reconcileReplacement(
+  context: TaskContext,
+  task: Task,
+  participant: Participant,
+): Promise<ExecutionObservation> {
+  const ref = participant.execution;
+  if (!ref) return { kind: "unreadable", code: "unallocated" };
+  let observation: ExecutionObservation;
+  try {
+    const agent = await context.herdr.get(ref.paneId, context.signal);
+    observation = { kind: "snapshot", agent };
+  } catch (error) {
+    if (!absent(error)) return { kind: "unreadable", code: safeError(error).code };
+    return { kind: "absent", code: error.code };
+  }
+  if (observation.kind === "snapshot") {
+    const agent = observation.agent;
+    if (
+      agent.paneId !== ref.paneId ||
+      agent.workspaceId !== ref.workspaceId ||
+      agent.kind !== participant.kind
+    )
+      throw new OperationError("agent_replaced", "重建执行器的身份未确认，停止调度。");
+    ref.sessionId = agent.sessionId;
+    ref.transcriptReceipt = participant.initialReceipt;
+  }
+  if (observation.kind === "snapshot" && observation.agent.status === "blocked") {
+    // A startup menu still awaiting a decision is not readiness. Record the
+    // readiness, then let the blocked hook run the same restricted trust
+    // reconciliation as a first start.
+    reconcileReadiness(context.store, context.records, task, participant, observation);
+    return observation;
+  }
+  return observation;
+}
+
 /** Execution-only repair under the task lock. Never send input or alter old operation receipts. */
 export async function recoverMissingExecutions(
   context: TaskContext,
   task: Task,
   controlPending: () => boolean,
 ): Promise<void> {
-  if (!eligible(task) || controlPending()) return;
-  // A plain send or automatic observation pause is not a user control; only an
-  // explicit pause/interrupt/removal keeps repair deferred.
-  if (userControlPaused(context, task)) return;
+  // Only a terminal/closing lifecycle stops repair. A business pause does not.
+  if (!lifecycleActive(task) || controlPending()) return;
   const ingress = taskIngress(context.store, task, true);
   if (ingress.pending || ingress.unverifiedLifecycle) return;
   if (
@@ -149,6 +214,8 @@ export async function recoverMissingExecutions(
     return;
   for (const participant of context.records.participants(task)) {
     if (!participant.execution || participant.status === "removed") continue;
+    // An executor the user explicitly stopped is not resurrected by a pause.
+    if (executorHeld(context.store, participant.id)) continue;
     // A close receipt may refer to intentionally removed resources, including legacy records.
     if (context.store.get("operations", `${participant.id}:close`)) continue;
     const guard = () => {
@@ -158,10 +225,8 @@ export async function recoverMissingExecutions(
       if (
         controlPending() ||
         !latest ||
-        !eligible(latest) ||
-        // An explicit pause/interrupt/removal that arrived while creating must
-        // defer the repair, even before its participant record is written.
-        userControlPaused(context, latest) ||
+        !lifecycleActive(latest) ||
+        executorHeld(context.store, participant.id) ||
         !latest.participantIds.includes(participant.id) ||
         current?.status === "removed" ||
         current?.executionRecovery !== participant.executionRecovery
@@ -173,25 +238,47 @@ export async function recoverMissingExecutions(
     let recovery = participant.executionRecovery
       ? context.store.get<ExecutionRecovery>("execution_recoveries", participant.executionRecovery)
       : undefined;
+    if (recovery?.state === "building" && participant.recoveryPending !== true) {
+      // The replacement already took a fresh user arrangement, so the repair
+      // has served its purpose even though the startup observation never
+      // settled. Finalize it as ready; re-running the build would re-apply the
+      // repair diagnostic over a running executor.
+      const journal = recovery;
+      context.store.transaction(() => {
+        journal.state = "ready";
+        // This branch only runs once the replacement already took a fresh user
+        // arrangement (recoveryPending is false), so it is not in a diagnostic
+        // state and must not read as attention.
+        participant.error = undefined;
+        context.store.set("execution_recoveries", journal.id, journal);
+        if (isRecoveryDiagnostic(task.error)) task.error = undefined;
+        context.records.saveParticipant(participant);
+        context.records.save(task);
+      });
+      continue;
+    }
     if (recovery?.state !== "building") {
       if (!participant.started) continue;
+      let observation: ExecutionObservation;
       try {
         const agent = await context.herdr.get(participant.execution.paneId, context.signal);
-        guard();
+        observation = { kind: "snapshot", agent };
+      } catch (error) {
+        // A historical gone marker is not authority to replace a live target;
+        // a read failure is not authority to respawn either.
+        if (!absent(error)) throw error;
+        observation = { kind: "absent", code: error.code };
+      }
+      guard();
+      if (observation.kind === "snapshot") {
+        const agent = observation.agent;
         if (
           agent.paneId !== participant.execution.paneId ||
           agent.workspaceId !== participant.execution.workspaceId ||
           agent.kind !== participant.kind
         )
           throw new OperationError("agent_replaced", "参与者身份发生变化，已停止调度。");
-        // A historical gone marker is not authority to replace a live target.
         continue;
-      } catch (error) {
-        if (
-          !(error instanceof OperationError) ||
-          !["agent_not_found", "pane_not_found"].includes(error.code)
-        )
-          throw error;
       }
       guard();
       // Do not churn workspaces if the empty replacement itself exits before a fresh arrangement.
@@ -200,6 +287,7 @@ export async function recoverMissingExecutions(
       recovery = {
         id,
         taskId: task.id,
+        at: now(),
         state: "building",
         previous: structuredClone(participant),
         baseline: context.store.get("participant_input_baseline", participant.id),
@@ -211,12 +299,20 @@ export async function recoverMissingExecutions(
           ),
       };
       context.store.transaction(() => {
+        bindLegacyTrustEffects(context.store, participant);
         participant.executionRecovery = id;
         participant.recoveryPending = true;
         participant.status = "gone";
         participant.error = diagnostic;
-        task.status = "attention";
-        task.error = diagnostic;
+        participant.readiness = undefined;
+        // A settled explicit business pause stays paused; only an unpaused
+        // task moves to attention so the repair pause is visible.
+        if (!businessPaused(task)) {
+          task.status = "attention";
+          task.error = diagnostic;
+        } else if (isRecoveryDiagnostic(task.error)) {
+          task.error = diagnostic;
+        }
         setExecutionRecoveryPause(context, task);
         context.store.set("execution_recoveries", id, recovery);
         context.records.saveParticipant(participant);
@@ -224,7 +320,9 @@ export async function recoverMissingExecutions(
       });
       // Salvage a final reply without allowing a missing transcript to prevent process repair.
       try {
-        const latest = await context.herdr.sampleLastReply(recovery.previous.execution!);
+        const previousExecution = recovery.previous.execution;
+        if (!previousExecution) throw new OperationError("missing_execution", "旧执行现场缺失。");
+        const latest = await context.herdr.sampleLastReply(previousExecution);
         guard();
         const baseline = recovery.baseline as { id?: string } | undefined;
         if (participant.initialSent && latest?.final && latest.id !== baseline?.id)
@@ -267,6 +365,7 @@ export async function recoverMissingExecutions(
         participant.cursor = undefined;
         participant.lastStateSeq = undefined;
         participant.lastNotifiedState = undefined;
+        participant.readiness = undefined;
         context.store.delete("participant_awaiting_output", participant.id);
         context.store.delete("participant_input_baseline", participant.id);
         context.store.delete("participant_idle_wait", participant.id);
@@ -285,15 +384,22 @@ export async function recoverMissingExecutions(
       ]),
     ];
     retryRefused(context, `${recovery.id}:start`);
+    const assertLaunch = launchGuard(context, task, participant);
+    assertLaunch();
     const agent = await context.operations.run(
       `${recovery.id}:start`,
       { pane: workspace.paneId, kind: participant.kind, directories, bypass: task.bypass },
       () => {
+        assertLaunch();
         guard();
         return context.herdr.startAgent(workspace.paneId, participant.kind, participant.name, {
           directories,
           bypass: task.bypass,
           signal: context.signal,
+          beforeWrite: () => {
+            assertLaunch();
+            guard();
+          },
         });
       },
     );
@@ -306,18 +412,56 @@ export async function recoverMissingExecutions(
       throw new OperationError("agent_replaced", "重建执行器的身份未确认，停止调度。");
     participant.execution.sessionId = agent.sessionId;
     participant.execution.transcriptReceipt = participant.initialReceipt;
-    const page = await context.herdr.transcript(participant.execution);
+    // The start receipt proves allocation, not input-readiness. Mark the
+    // execution started before reconciling, then derive readiness from a fresh
+    // readback; the blocked hook runs the same restricted trust flow as a first
+    // start.
+    participant.started = true;
+    const observation = await reconcileReplacement(context, task, participant);
     guard();
+    const readiness = reconcileReadiness(
+      context.store,
+      context.records,
+      task,
+      participant,
+      observation,
+    );
+    // Ready/busy means the executor can take input; it never fabricates business
+    // completion and never resumes a settled business pause.
+    const settled = inputReady(readiness) || readiness.phase === "busy";
+    const observedStatus =
+      observation.kind === "snapshot"
+        ? observation.agent.status
+        : observation.kind === "absent"
+          ? ("gone" as const)
+          : // An unreadable target proves neither presence nor absence.
+            participant.status;
+    const cursor =
+      observation.kind === "snapshot"
+        ? (
+            await context.herdr.transcript(
+              participant.execution as NonNullable<typeof participant.execution>,
+            )
+          ).cursor
+        : undefined;
     context.store.transaction(() => {
-      participant.cursor = page.cursor;
+      if (cursor !== undefined) participant.cursor = cursor;
       participant.started = true;
-      participant.status = agent.status;
-      participant.error = readyDiagnostic;
-      participant.sessionNote = readyDiagnostic;
-      recovery.state = "ready";
+      participant.status = observedStatus;
+      if (settled) {
+        participant.error = readyDiagnostic;
+        participant.sessionNote = readyDiagnostic;
+        recovery.state = "ready";
+        task.error = businessPaused(task) ? task.error : readyDiagnostic;
+      } else {
+        // A blocked menu, launch-pending start or unreadable target is not
+        // ready. Keep the repair journal building and say so honestly.
+        participant.error = readinessDiagnostic(readiness);
+        recovery.state = "building";
+        task.error = participant.error;
+      }
       context.store.set("execution_recoveries", recovery.id, recovery);
       context.records.saveParticipant(participant);
-      task.error = readyDiagnostic;
       context.records.save(task);
     });
   }

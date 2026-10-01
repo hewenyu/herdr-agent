@@ -14,6 +14,7 @@ const agent = {
   terminal_id: "t1",
   agent: "claude",
   agent_status: "idle",
+  agent_session: { kind: "id", value: "session-1" },
   name: "participant-1",
   interactive_ready: true,
   launch_pending: false,

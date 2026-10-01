@@ -1,4 +1,5 @@
 import type { Participant, Task } from "../core/types.js";
+import { readinessOf } from "../tasks/readiness.js";
 import type { ParticipantProjection } from "../tasks/records.js";
 
 /** Notices start with lifecycle facts; historical business text remains available via task_get. */
@@ -44,6 +45,9 @@ export function notificationParticipants(
     ...(participant.initialDelivery === undefined
       ? {}
       : { initialDelivery: participant.initialDelivery }),
+    // Managed-execution readiness, so a notice never implies fully ready while
+    // a startup trust or manual menu is still pending.
+    readiness: readinessOf(participant).phase,
     hasNativeSessionId: !!participant.execution?.sessionId,
     hasOutput: !!participant.lastOutput?.trim(),
     error: participant.error ?? null,

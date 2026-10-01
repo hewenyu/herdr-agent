@@ -20,7 +20,13 @@ test("completion projects completed immediately and cleaned resources in the fin
     await h.service.tick();
     assert.equal(h.service.get(actor, task.id).status, "destroyed");
     assert.match(remote.description, /状态：destroyed/);
-    assert.match(remote.description, /Claude\(claude\): gone；Codex\(codex\): gone/);
+    // Intentional contract change: the participant line now reports the managed
+    // execution readiness beside the native status, and a gone executor is
+    // reported as missing rather than as ready.
+    assert.match(
+      remote.description,
+      /Claude\(claude\): gone · 就绪度=missing；Codex\(codex\): gone · 就绪度=missing/,
+    );
     assert.match(remote.description, /最终讨论结论/);
     assert.doesNotMatch(remote.description, /会话：https/);
     assert.equal(remote.completedAt, completedAt);

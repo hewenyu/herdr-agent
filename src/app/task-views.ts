@@ -1,6 +1,7 @@
 import { visibleOutput } from "../orchestration/status-block.js";
 import type { WorkflowState } from "../orchestration/workflow.js";
 import type { ProvisionEvidence } from "../runtime/provision-evidence.js";
+import { readinessOf } from "../tasks/readiness.js";
 
 /**
  * Model-facing task projections. Every value that leaves these helpers is a
@@ -150,6 +151,7 @@ export interface ParticipantViewInput {
   started: boolean;
   initialSent: boolean;
   initialDelivery?: "confirmed" | "decided" | "pending";
+  readiness?: { phase: string; reason: string };
   error?: string;
   sessionNote?: string;
   lastOutput?: string;
@@ -158,6 +160,9 @@ export interface ParticipantViewInput {
 
 /** Delivery and start facts that a success claim depends on; no audit prose. */
 export function participantFacts(participant: ParticipantViewInput) {
+  // A definite terminal native status must beat an older durable snapshot, so
+  // this always classifies rather than trusting a possibly stale stored phase.
+  const readiness = readinessOf(participant as never);
   return {
     id: participant.id,
     name: participant.name,
@@ -172,6 +177,10 @@ export function participantFacts(participant: ParticipantViewInput) {
     hasExecution: !!participant.execution,
     hasNativeSessionId: !!participant.execution?.sessionId,
     hasOutput: !!participant.lastOutput?.trim(),
+    // Managed-execution readiness, distinct from started/initialSent and from
+    // the business task status. `ready` means input-capable, not "business done".
+    readiness: readiness.phase,
+    readinessReason: readiness.reason,
     error: participant.error ? truncateText(participant.error, ERROR_CHARS) : null,
     sessionNote: participant.sessionNote
       ? truncateText(participant.sessionNote, ERROR_CHARS)

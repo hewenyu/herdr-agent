@@ -151,15 +151,27 @@ export class AgentControl {
     });
   }
 
-  private async writeKeys(ref: ExecutionRef, input: string[], signal?: AbortSignal): Promise<void> {
+  private async writeKeys(
+    ref: ExecutionRef,
+    input: string[],
+    signal?: AbortSignal,
+    beforeWrite?: () => void,
+  ): Promise<void> {
     let phase: "send_keys" | "settle" | "identity" = "send_keys";
     try {
-      await this.client.keys(ref.paneId, input, signal);
+      await this.client.keys(ref.paneId, input, signal, beforeWrite);
       phase = "settle";
       await pause(3_000, signal);
       phase = "identity";
       await this.current(ref, signal);
     } catch (cause) {
+      if (
+        beforeWrite &&
+        phase === "send_keys" &&
+        cause instanceof OperationError &&
+        cause.outcome === "not_executed"
+      )
+        throw cause;
       throw new ApprovalEffectError(
         "input_unconfirmed",
         "按键已尝试，结果未确认；不要重复操作。",
@@ -294,6 +306,9 @@ export class AgentControl {
       expiresAt: string;
       signal?: AbortSignal;
       worktreeRoot?: string;
+      terminalId?: string;
+      beforeWrite?: () => Promise<void>;
+      assertCurrent?: () => void;
     },
   ): Promise<void> {
     if (
@@ -316,6 +331,7 @@ export class AgentControl {
           agent.sessionId !== (guard.sessionId ?? ref.sessionId) ||
           (agent.sessionId && agent.interactiveReady && !agent.launchPending) ||
           !agent.terminalId ||
+          (guard.terminalId !== undefined && agent.terminalId !== guard.terminalId) ||
           (terminalId && terminalId !== agent.terminalId)
         )
           throw new OperationError("stale_guard", "目录信任目标已变化或已越过启动阶段。");
@@ -359,9 +375,21 @@ export class AgentControl {
           "本次目录信任已尝试，请核对现场，不能重复确认。",
           "unknown",
         );
-      this.directoryTrustAttempts.add(attempt);
+      // Async preflight is followed by a synchronous check at socket.write;
+      // a refused connection must not consume the native effect reservation.
+      await guard.beforeWrite?.();
+      guard.assertCurrent?.();
+      if (guard.signal?.aborted)
+        throw new OperationError("cancelled", "目录信任已取消，未发送按键。");
+      let attempted = false;
       try {
-        await this.writeKeys(ref, input, guard.signal);
+        await this.writeKeys(ref, input, guard.signal, () => {
+          guard.assertCurrent?.();
+          if (guard.signal?.aborted || Date.parse(guard.expiresAt) < Date.now())
+            throw new OperationError("stale_guard", "目录信任授权已取消或过期，未发送按键。");
+          this.directoryTrustAttempts.add(attempt);
+          attempted = true;
+        });
         const readback = await this.client.read(ref.paneId, "visible", guard.signal);
         const after = await this.current(ref, guard.signal);
         const text = cleanScreen(readback.text);
@@ -386,6 +414,8 @@ export class AgentControl {
         )
           throw new Error("directory trust readback unconfirmed");
       } catch (cause) {
+        if (!attempted && cause instanceof OperationError && cause.outcome === "not_executed")
+          throw cause;
         throw new OperationError(
           "directory_trust_uncertain",
           "目录信任按键已尝试，但菜单消失与执行身份尚未确认；不能重复操作。",
