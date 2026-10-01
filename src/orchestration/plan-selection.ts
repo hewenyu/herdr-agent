@@ -10,11 +10,23 @@ import {
   latestContractInput,
 } from "./contract-change.js";
 import { addDocumentDelivery, authorizeDocumentDelivery } from "./document-delivery.js";
+import { createLeaderTemplateChoice, createPlanningLeaderBridge } from "./leader-planning.js";
 import { planWorkflow } from "./planner.js";
 import { planningSources } from "./planning-sources.js";
 import type { WorkflowPorts } from "./runner.js";
 import { templatePlan } from "./templates.js";
 import type { WorkflowPlan, WorkflowState } from "./workflow.js";
+
+/**
+ * Plans that already passed every independent verifier for this event/revision.
+ * Reusing one is not an authorization shortcut: it is the same fully authorized
+ * plan, and this record is written only after the verifiers below succeed.
+ */
+export const AUTHORIZED_PLANS = "workflow_authorized_plans";
+
+export function authorizedPlanKey(eventId: string, revision: string, planVersion: number): string {
+  return `${eventId}\u0000${revision}\u0000${planVersion}`;
+}
 
 export async function choosePlan(
   ports: WorkflowPorts,
@@ -22,6 +34,14 @@ export async function choosePlan(
   state: WorkflowState,
   event: OrchestrationEvent,
 ): Promise<WorkflowPlan> {
+  const authorizedKey = authorizedPlanKey(event.id, event.userRevision, state.plan.version);
+  const authorized = ports.store.get<WorkflowPlan>(AUTHORIZED_PLANS, authorizedKey);
+  // Deep equality with the accepted plan is the recovery contract: a restart
+  // after commit must reproduce the exact authorized plan, not a new draft.
+  if (authorized) return JSON.parse(JSON.stringify(authorized)) as WorkflowPlan;
+  const choiceId = `${event.id}:planning:choice:${newId("attempt")}`;
+  const planRecordKey = `${event.id}:plan:${state.plan.version}`;
+  const PLANNING_PLANS = "workflow_planning_plans";
   // Deferrals refund retry attempts; each later evidence-based evaluation still
   // needs its own audit identity so an earlier wait is never overwritten.
   const logId = `${event.id}:planning:${newId("attempt")}`;
@@ -61,6 +81,43 @@ export async function choosePlan(
   });
   const simpleDiscussion =
     task.promptVersion === 3 && task.kind === "discussion" && state.plan.version === 1;
+  // Auxiliary authorization: template-mode selection stays a choice over
+  // program-computed candidates, executed inside the same durable Leader
+  // envelope as every other model call for this task.
+  const templateChoice = createLeaderTemplateChoice({
+    store: ports.store,
+    engine: ports.engine,
+    actor,
+    // One durable identity per planning attempt: the existing deferral logic
+    // still decides when a new attempt is warranted.
+    eventId: choiceId,
+    revision: event.userRevision,
+  });
+  // New (promptVersion 3) tasks create plans inside their durable Leader
+  // session under a bounded prompt; frozen v2 tasks keep their original
+  // one-shot planning call. Plan validation and authorization verifiers are
+  // identical on both paths.
+  const leader =
+    task.promptVersion === 3
+      ? createPlanningLeaderBridge({
+          store: ports.store,
+          engine: ports.engine,
+          task,
+          state,
+          eventId: `${event.id}:planning`,
+          revision: event.userRevision,
+          userMessages: userMessages.map((entry) => entry.text),
+          // A plan accepted by an earlier activation of this planning step is
+          // recovered from durable storage instead of being re-planned.
+          completedPlan: () => ports.store.get(PLANNING_PLANS, planRecordKey),
+          recordPlan: (plan) => {
+            ports.store.set(PLANNING_PLANS, planRecordKey, plan);
+          },
+          assertCurrent: () => {
+            ports.assertCurrent(event);
+          },
+        })
+      : undefined;
   let useTemplate = false;
   let useDocumentTemplate = false;
   let useConsensusTemplate = false;
@@ -68,7 +125,10 @@ export async function choosePlan(
     const assessment = await assessPlanningAssistance({
       engine: ports.engine,
       actor,
-      sessionId: `${logId}:choice`,
+      // Same task-Leader session namespace as the durable Leader so no model
+      // call for this task is attributed to an outer or foreign session; the
+      // surface stays the restricted auxiliary chooser.
+      sessionId: `task-leader:${task.id}:planning-choice`,
       simpleDiscussion,
       snapshot: {
         userRequest: task.userRequest?.text ?? task.requirements,
@@ -90,6 +150,7 @@ export async function choosePlan(
       onLog: (log) => {
         ports.store.set("workflow_planning_decisions", logId, log);
       },
+      leader: templateChoice,
     });
     if (assessment.decision === "cancelled") fail("cancelled", "规划判断已取消。");
     if (assessment.decision === "deferred")
@@ -133,6 +194,7 @@ export async function choosePlan(
         simpleDiscussion,
         audit: { store: ports.store, id: logId, taskId: task.id, planVersion: state.plan.version },
         signal: ports.signal,
+        ...(leader ? { leader } : {}),
         assertCurrent: () => {
           ports.assertCurrent(event);
         },
@@ -165,6 +227,7 @@ export async function choosePlan(
       ports.store.set("workflow_document_decisions", logId, decision);
     },
   });
-
+  // Only a fully authorized plan is recorded for recovery.
+  ports.store.set(AUTHORIZED_PLANS, authorizedKey, JSON.parse(JSON.stringify(plan)));
   return plan;
 }

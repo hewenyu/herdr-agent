@@ -5,6 +5,18 @@ import { visibleOutput } from "../orchestration/status-block.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { Store } from "../storage/store.js";
 import type { TaskService } from "../tasks/service.js";
+import {
+  boundConversation,
+  boundTaskView,
+  boundWorkflowSummary,
+  decisionFacts,
+  deliveryFacts,
+  participantFacts,
+  reportFacts,
+  runtimeFacts,
+  truncateText,
+  workflowSummary,
+} from "./task-views.js";
 import { currentTaskUserDecision } from "./workflow-notifications.js";
 
 export async function taskProgress(
@@ -26,15 +38,7 @@ export async function taskProgress(
   const selectedIds = new Set(selected.map((participant) => participant.id));
   const participants = await Promise.all(
     task.participants.map(async (participant) => {
-      const facts = {
-        id: participant.id,
-        name: participant.name,
-        kind: participant.kind,
-        status: participant.status,
-        initialSent: participant.initialSent,
-        initialDelivery: participant.initialDelivery,
-        error: participant.error,
-      };
+      const facts = participantFacts(participant);
       if (participant.taskId !== task.id) fail("participant_scope", "参与者任务绑定不匹配。");
       if (!selectedIds.has(participant.id)) return { ...facts, conversationRead: false };
       if (!participant.execution || !participant.initialSent)
@@ -69,15 +73,23 @@ export async function taskProgress(
           .participants.find((entry) => entry.id === participant.id);
         if (JSON.stringify(latest?.execution) !== JSON.stringify(ref))
           fail("target_changed", "读取期间参与者绑定已变化。");
+        const page = boundConversation(
+          conversation.entries
+            .map((entry) => ({ text: visibleOutput(entry.text) }))
+            .filter((entry) => entry.text.trim()),
+        );
         return {
           ...facts,
           observedAt: new Date().toISOString(),
-          runtime: runtime
-            ? { status: runtime.status, sessionId: runtime.sessionId }
-            : { status: "gone" },
-          conversation: conversation.entries
-            .map((entry) => ({ ...entry, text: visibleOutput(entry.text) }))
-            .filter((entry) => entry.text.trim()),
+          runtime: runtimeFacts(participant.id, {
+            kind: "observed",
+            status: runtime?.status ?? "gone",
+            sessionId: runtime?.sessionId,
+            context: runtime?.cwd ?? "",
+          }),
+          conversation: page.entries,
+          omittedEntries: page.omittedEntries,
+          conversationTruncated: page.truncated,
           cursor: conversation.cursor,
           truncated: conversation.truncated,
         };
@@ -88,42 +100,40 @@ export async function taskProgress(
   );
   const state = services.store.get<WorkflowState>(WORKFLOWS, task.id);
   const decision = state?.userDecision && (await currentTaskUserDecision(services.store, task));
-  return {
+  return boundTaskView({
     id: task.id,
     taskId: task.id,
     remoteTaskId: task.remoteTaskId,
     remoteTaskUrl: task.remoteTaskUrl,
     chatId: task.chatId,
     groupDeleted: task.groupDeleted,
-    title: task.title,
+    title: truncateText(task.title, 200),
     status: task.status,
     completedAt: task.completedAt,
-    error: task.error,
+    error: task.error ? truncateText(task.error, 800) : undefined,
     participants,
     workflow: state
-      ? {
-          phase: state.phase,
-          nodes: state.plan.nodes.map((node) => ({
-            id: node.id,
-            phase: node.phase,
-            ...state.nodes[node.id],
-          })),
-          issues: state.issues,
-          artifacts: state.artifacts,
-          evidence: state.evidence,
-          report: state.report,
+      ? boundWorkflowSummary({
+          ...workflowSummary(state),
           awaitingUser: state.userDecision
             ? decision?.status === "ready"
             : state.stall.awaitingUser,
-          waitingForEvidence:
-            state.assistanceWait &&
-            (state.userDecision && !decision
-              ? "待决问题依据暂未通过当前项目版本核验，等待重新整理。"
-              : state.assistanceWait.reason),
-          userDecision: decision,
-        }
+          waitingForEvidence: state.assistanceWait
+            ? truncateText(
+                state.userDecision && !decision
+                  ? "待决问题依据暂未通过当前项目版本核验，等待重新整理。"
+                  : state.assistanceWait.reason,
+                480,
+              )
+            : undefined,
+          userDecision: decisionFacts(decision),
+          delivery: deliveryFacts(state),
+          report: reportFacts(state),
+        })
       : undefined,
     interpretation:
-      "会话文本是参与者自述；工具记录、产物证据、最终交付和用户验收分别判断。读取失败不证明未执行或未完成，不得补发输入。只有 userDecision.status=ready 的当前具体问题才需要用户回答；system/failed 表示系统恢复或问题整理失败，不能笼统要求用户补需求或材料。",
-  };
+      "会话文本是参与者自述；工具记录、产物证据、最终交付和用户验收分别判断。读取失败不证明未执行或未完成，不得补发输入。" +
+      "只有 userDecision.status=ready 的当前具体问题才需要用户回答；system/failed 表示系统恢复或问题整理失败，不能笼统要求用户补需求或材料。" +
+      "会话页、问题、证据与报告正文按字节预算分页或计数；缺失内容不代表记录不存在，可用 task_detail 按 section 读取。",
+  });
 }

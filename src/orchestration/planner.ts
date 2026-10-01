@@ -16,6 +16,41 @@ import {
   type WorkflowTemplate,
 } from "./workflow.js";
 
+export interface PlanningLeaderBridgeInput {
+  systemPrompt: string;
+  prompt: string;
+  tools: RuntimeTool[];
+  signal: AbortSignal;
+  /** The plan this activation accepted, if any; the caller persists it. */
+  acceptedPlan?(): WorkflowPlan | undefined;
+  assertCurrent(): void;
+}
+
+/**
+ * When present, plan creation runs inside the task's durable Leader session
+ * instead of a one-shot planning call. The same validation, source checks and
+ * authorization verifiers stay in force either way.
+ */
+export type PlanningLeaderBridge = ((
+  input: PlanningLeaderBridgeInput,
+) => Promise<{ text: string }>) & {
+  /** Durable plan this step already accepted, if any. */
+  acceptedPlan?(): WorkflowPlan | undefined;
+};
+
+/** The bridge exposes the plan the model accepted so the caller can persist it. */
+export interface PlanningLeaderOutcome {
+  text: string;
+  acceptedPlan?: WorkflowPlan;
+}
+
+/**
+ * Inline size at which planning switches to paged on-demand reads. It is a
+ * presentation threshold, never a refusal cap: mandatory user原文 still reaches
+ * the engine whole.
+ */
+export const PLANNING_PROMPT_INLINE_BYTES = 12288;
+
 export async function planWorkflow(input: {
   task: Task;
   state: WorkflowState;
@@ -28,6 +63,7 @@ export async function planWorkflow(input: {
   simpleDiscussion?: boolean;
   audit?: PlanningAudit;
   signal: AbortSignal;
+  leader?: PlanningLeaderBridge;
   assertCurrent(): void;
 }): Promise<WorkflowPlan> {
   let selected: WorkflowPlan | undefined;
@@ -300,35 +336,67 @@ export async function planWorkflow(input: {
   const properties = tool.parameters.properties as Record<string, unknown>;
   if (input.simpleDiscussion) delete properties.nodes;
   if (input.task.kind === "discussion") delete properties.validation;
+  const systemPrompt =
+    "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从允许的模板选择适用流程并细化具体任务书；调用 orchestration_plan。任务显式指定的模板必须保留，重规划可调整节点但不能改换模板。保留用户硬约束，不能把参与者意见当授权。" +
+    "已有文档交付与共同认可默认继承；只有 contractChangeSource 中最新真实用户输入明确撤销时，用 contractChange 列出撤销项及来源编号，取消文档要用 removeDocumentDelivery，不能靠省略字段取消。程序会另行核验撤销授权。" +
+    "讨论模板没有验证步骤，不设置 validation。执行任务仅在真实用户原文明令禁止验证时设置 validation.mode=not_run，通过 sourceMessageId 引用；任务 requirements 概括不授予新约束，独立只读评审仍保留。" +
+    "普通讨论首轮不替换节点图；文档写入会由程序生成 document 节点，可通过 instructions.document 补充任务书。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。";
+  const prompt = JSON.stringify({
+    task: {
+      kind: input.task.kind,
+      template: input.task.orchestration?.template,
+      requirements: input.task.requirements,
+      userRequest: input.task.userRequest,
+    },
+    userMessages: input.userMessages,
+    sources,
+    contractChangeSource: input.contractSource,
+    template: input.state.plan,
+    previous: { issues: input.state.issues, nodes: input.state.nodes },
+  });
   try {
-    await input.engine.run({
-      actor: input.actor,
-      sessionId: `workflow-plan:${input.task.id}:${input.state.plan.version}`,
-      messages: [],
-      signal,
-      tools: [tool],
-      enforceClaims: false,
-      // Tool execution is mandatory via the selected-plan guard below. Let the
-      // provider use auto: some compatible Responses gateways reject "required".
-      systemPrompt:
-        "你只负责规划 myrix 工作流，不执行用户项目工作。理解完整原文及后续修订，从允许的模板选择适用流程并细化具体任务书；调用 orchestration_plan。任务显式指定的模板必须保留，重规划可调整节点但不能改换模板。保留用户硬约束，不能把参与者意见当授权。" +
-        "已有文档交付与共同认可默认继承；只有 contractChangeSource 中最新真实用户输入明确撤销时，用 contractChange 列出撤销项及来源编号，取消文档要用 removeDocumentDelivery，不能靠省略字段取消。程序会另行核验撤销授权。" +
-        "讨论模板没有验证步骤，不设置 validation。执行任务仅在真实用户原文明令禁止验证时设置 validation.mode=not_run，通过 sourceMessageId 引用；任务 requirements 概括不授予新约束，独立只读评审仍保留。" +
-        "普通讨论首轮不替换节点图；文档写入会由程序生成 document 节点，可通过 instructions.document 补充任务书。bugfix 用于修复已有缺陷。单纯评审任务不得开始实现。额外验收条件应可核对，不扩大范围。",
-      prompt: JSON.stringify({
-        task: {
-          kind: input.task.kind,
-          template: input.task.orchestration?.template,
-          requirements: input.task.requirements,
-          userRequest: input.task.userRequest,
-        },
-        userMessages: input.userMessages,
-        sources,
-        contractChangeSource: input.contractSource,
-        template: input.state.plan,
-        previous: { issues: input.state.issues, nodes: input.state.nodes },
-      }),
-    });
+    if (input.leader) {
+      // A plan this planning step already accepted is recovered from durable
+      // state: the model is never asked to re-plan an accepted action.
+      const accepted = input.leader.acceptedPlan?.();
+      if (accepted) return accepted;
+      // Delegated planning runs in the task's durable Leader session. The
+      // activation envelope is bounded, but mandatory user原文 is never cut:
+      // the payload is delivered whole through the runtime's own context
+      // management, exactly like any other Leader activation.
+      const bounded = JSON.stringify({
+        activation: "create_plan",
+        planVersion: input.state.plan.version,
+        systemPrompt,
+        payloadBytes: Buffer.byteLength(prompt, "utf8"),
+        payload: JSON.parse(prompt) as unknown,
+      });
+      await input.leader({
+        systemPrompt:
+          "你正在同一任务的持久 Leader 会话中创建计划；只生成计划，不执行任何调度动作。",
+        prompt: bounded,
+        tools: [tool],
+        signal,
+        acceptedPlan: () => selected,
+        assertCurrent: input.assertCurrent,
+      });
+      // Return the canonical durable plan: the plan committed and any later
+      // recovery of it must be byte-identical, never two subtly different shapes.
+      const durable = input.leader.acceptedPlan?.();
+      if (durable !== undefined) selected = durable;
+    } else
+      await input.engine.run({
+        actor: input.actor,
+        sessionId: `workflow-plan:${input.task.id}:${input.state.plan.version}`,
+        messages: [],
+        signal,
+        tools: [tool],
+        enforceClaims: false,
+        // Tool execution is mandatory via the selected-plan guard below. Let the
+        // provider use auto: some compatible Responses gateways reject "required".
+        systemPrompt,
+        prompt,
+      });
   } catch (error) {
     throw diagnostics.stopped ?? error;
   }

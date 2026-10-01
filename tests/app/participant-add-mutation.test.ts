@@ -7,6 +7,7 @@ import type { Participant, Task, TaskMutationRevision } from "../../src/core/typ
 import type { EngineInput } from "../../src/runtime/types.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import { logger, setup } from "./helpers.js";
+import { leaderEventPrompt } from "./leader-helpers.js";
 import { createLegacyModelTask } from "./legacy-model-helpers.js";
 
 const EVENTS = "task_orchestration_events";
@@ -20,7 +21,7 @@ async function execute(input: EngineInput, name: string, args: Record<string, un
 }
 
 const calls = (h: Harness) =>
-  h.engine.calls.filter((input) => input.sessionId.startsWith("orchestration:")).length;
+  h.engine.calls.filter((input) => input.sessionId.startsWith("task-leader:")).length;
 
 async function matureTask(h: Harness): Promise<Task> {
   const task = await createLegacyModelTask(
@@ -37,9 +38,9 @@ async function matureTask(h: Harness): Promise<Task> {
     },
   );
   h.engine.handler = async (input) => {
-    if (!input.sessionId.startsWith("orchestration:"))
+    if (!input.sessionId.startsWith("task-leader:"))
       return { text: '{"notify":false,"text":""}', messages: [] };
-    const data = JSON.parse(input.prompt);
+    const data = JSON.parse(leaderEventPrompt(input));
     if (data.event.trigger === "ready")
       await execute(input, "participant_send", {
         participantId: data.participants[0].id,
@@ -99,9 +100,9 @@ test("Web participant addition wakes a mature task after restart without inventi
     assert.deepEqual(h.store.entries(MUTATIONS), revisions);
     await h.app.shutdown();
     h.engine.handler = async (turn) => {
-      if (!turn.sessionId.startsWith("orchestration:"))
+      if (!turn.sessionId.startsWith("task-leader:"))
         return { text: '{"notify":false,"text":""}', messages: [] };
-      const data = JSON.parse(turn.prompt);
+      const data = JSON.parse(leaderEventPrompt(turn));
       const participant = data.participants.find((entry: Participant) => entry.id === added.id);
       assert.ok(participant);
       if (!participant.initialSent) {

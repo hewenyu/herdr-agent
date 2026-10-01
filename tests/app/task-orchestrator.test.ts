@@ -11,6 +11,7 @@ import type { ActorContext, StoredMessage, Task } from "../../src/core/types.js"
 import type { EngineInput, RuntimeTool } from "../../src/runtime/types.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 import { deferred, Engine, logger } from "./helpers.js";
+import { leaderEventPrompt } from "./leader-helpers.js";
 import { persistLegacyModelTask } from "./legacy-model-helpers.js";
 
 const TABLE = "task_orchestration_events";
@@ -91,16 +92,17 @@ test("model selects arbitrary participants, revises same agent and delivers veri
     let step = 0;
     h.engine.handler = async (input) => {
       assert.deepEqual(
-        input.tools.map((tool) => tool.name),
+        input.tools.map((tool) => tool.name).sort(),
         [
           "task_get",
           "participant_screen",
           "participant_send",
           "orchestration_output",
           "orchestration_decide",
-        ],
+          "tool_result_read",
+        ].sort(),
       );
-      const data = JSON.parse(input.prompt);
+      const data = JSON.parse(leaderEventPrompt(input));
       assert.equal(data.task.requirements, h.task.requirements);
       if (step < 3) {
         const chosen = step < 2 ? second : first;
@@ -336,8 +338,9 @@ test("a model which only talks cannot leave an infinite silent planning loop", a
   try {
     h.engine.handler = async () => ({ text: "我来安排", messages: [] });
     for (let n = 0; n < 6; n++) await h.worker.tick();
-    assert.equal(h.engine.calls.length, 3);
+    assert.equal(h.engine.calls.length, 1, "a recorded Leader activation is not inferred again");
     const event = h.store.list<OrchestrationEvent>(TABLE)[0];
+    assert.equal(event?.attempts, 3, "the outer no-decision recovery remains bounded");
     assert.equal(event?.state, "attention");
     assert.equal(event?.error?.code, "orchestration_no_decision");
     assert.equal(h.herdr.sends.length, 0);
@@ -357,7 +360,7 @@ test("a clarification after wait wakes the model without requiring the user to r
           reason: "需要部署目标。",
         });
       else {
-        const snapshot = JSON.parse(input.prompt);
+        const snapshot = JSON.parse(leaderEventPrompt(input));
         assert.equal(snapshot.event.trigger, "user_revision");
         assert.equal(snapshot.userRevisions.at(-1).text, "部署到测试环境，继续。 ");
         await h.execute(input, "participant_send", {
@@ -410,7 +413,7 @@ for (const legacyLimits of [false, true])
             text: `继续完成第 ${calls} 项交付`,
           });
         else {
-          const data = JSON.parse(input.prompt);
+          const data = JSON.parse(leaderEventPrompt(input));
           await h.execute(input, "orchestration_decide", {
             action: "deliver",
             reason: "所有已授权目标均有真实产出。",
@@ -450,7 +453,7 @@ for (const paused of [false, true])
             text: "先完成第一阶段",
           });
         else {
-          const data = JSON.parse(input.prompt);
+          const data = JSON.parse(leaderEventPrompt(input));
           await h.execute(input, "orchestration_decide", {
             action: "deliver",
             reason: "原生交付完整，供用户验收。",
@@ -581,13 +584,16 @@ test("unknown native effects remain frozen even when a new user message arrives"
 test("crash before the native operation journal exists resumes safely instead of freezing forever", async () => {
   const h = await harness();
   try {
-    h.engine.handler = async (input) => {
-      await h.execute(input, "orchestration_decide", { action: "wait", reason: "等待信息。" });
-      return { text: "", messages: [] };
+    // Interrupt before any decision: deleting a completed event's decision while
+    // keeping its recorded Leader inbox would fabricate contradictory evidence.
+    h.engine.handler = async () => {
+      throw new OperationError("model_failed", "Interrupted before native admission.");
     };
     await h.worker.tick();
     const event = h.store.list<OrchestrationEvent>(TABLE)[0];
     assert.ok(event);
+    assert.equal(event.decision, undefined);
+    assert.equal(h.herdr.sends.length, 0);
     h.store.set(TABLE, event.id, {
       ...event,
       state: "processing",
@@ -739,7 +745,7 @@ test("main-entry authenticated task revisions are included in the next autonomou
       if (calls++ === 0)
         await h.execute(input, "orchestration_decide", { action: "wait", reason: "等待确认。" });
       else {
-        const data = JSON.parse(input.prompt);
+        const data = JSON.parse(leaderEventPrompt(input));
         assert.equal(data.event.trigger, "user_revision");
         assert.ok(
           data.userRevisions.some(
@@ -796,7 +802,7 @@ test("an unknown final notification recovers from exact delivered proof before t
       },
     });
     h.engine.handler = async (input) => {
-      const data = JSON.parse(input.prompt);
+      const data = JSON.parse(leaderEventPrompt(input));
       if (data.event.trigger === "ready")
         await h.execute(input, "participant_send", {
           participantId: h.participants[0]?.id,
@@ -853,7 +859,7 @@ test("restart after final envelope delivery recovers the sending checkpoint with
     };
     const worker = new TaskOrchestrator(options);
     h.engine.handler = async (input) => {
-      const data = JSON.parse(input.prompt);
+      const data = JSON.parse(leaderEventPrompt(input));
       if (data.event.trigger === "ready")
         await h.execute(input, "participant_send", {
           participantId: h.participants[0]?.id,

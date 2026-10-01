@@ -5,6 +5,7 @@ import { TaskOrchestrator } from "../../src/app/task-orchestrator.js";
 import type { ActorContext, Task, UserRequestSource } from "../../src/core/types.js";
 import type { EngineInput } from "../../src/runtime/types.js";
 import { Engine, logger } from "../app/helpers.js";
+import { leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 const original = "给这个任务新增一位 Codex，独立检查现有结论并继续交付；不要修改文件。";
@@ -69,7 +70,7 @@ test("adding a participant from the main private chat wakes a model task with no
     let calls = 0;
     let addedId = "";
     engine.handler = async (input) => {
-      const data = JSON.parse(input.prompt);
+      const data = JSON.parse(leaderEventPrompt(input));
       if (calls === 0) {
         await execute(input, "participant_send", { participantId: first.id, text: "完成原始讨论" });
       } else if (calls === 1) {

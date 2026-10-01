@@ -1,3 +1,4 @@
+import { reconcileLeaderReceipts } from "../app/leader-receipts.js";
 import { fail, OperationError, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
@@ -419,6 +420,23 @@ export class TaskService {
       if (this.control.signal.aborted) return;
       const task = this.context.store.get<Task>("tasks", id);
       if (!task || !this.context.config.feishu.allowedOpenIds.includes(task.ownerId)) return;
+      // A durable Leader write receipt that existing authoritative native records
+      // already prove must not strand the task behind the activation barrier: an
+      // event stuck in `attention` still needs its device facts reconciled.
+      // This is synchronous and read-only over existing records plus one durable
+      // resolution; it never calls a native tool and never replays an effect.
+      // Closing a receipt is not business completion, so nothing below may treat
+      // it as evidence of a delivered input, a dispatch or a finished task.
+      // It is an additive recovery aid: a defect here must never stop the
+      // authoritative native reconciliation below from running.
+      try {
+        reconcileLeaderReceipts(this.context.store, task.id);
+      } catch (error) {
+        this.context.logger?.warn("Leader 回执对账暂未完成", {
+          taskId: task.id,
+          code: safeError(error).code,
+        });
+      }
       const forceRemote = options.forceRemote ?? true;
       try {
         if (task.status === "destroyed") {

@@ -12,6 +12,7 @@ import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.
 import { associateTaskUserRequest, type TaskUserRevision } from "../../src/tasks/user-request.js";
 import { actor, discussion } from "../tasks/helpers.js";
 import { logger, message, setup } from "./helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "./leader-helpers.js";
 
 const unrelated = "另一个新项目设计必须保存 OTHER-PROJECT.md，不运行验证；先查旧任务进度。";
 
@@ -63,6 +64,7 @@ async function fixture(group: boolean) {
   assert.ok(query);
   await query.execute({}, who);
   h.engine.handler = async (input) => {
+    if (await chooseLeaderAction(input)) return { text: "", messages: [] };
     const tool = input.tools[0];
     assert.ok(tool);
     await tool.execute(
@@ -70,13 +72,16 @@ async function fixture(group: boolean) {
         ? { template: "discussion", instructions: {}, deliveryRequirements: [] }
         : tool.name === "orchestration_choice"
           ? {
-              candidateId: JSON.parse(input.prompt).candidates.some(
+              candidateId: JSON.parse(leaderEventPrompt(input)).candidates.some(
                 (candidate: { id: string }) => candidate.id === "request_pi",
               )
                 ? "request_pi"
-                : JSON.parse(input.prompt).candidates[0].id,
+                : JSON.parse(leaderEventPrompt(input)).candidates[0].id,
             }
-          : { candidateId: JSON.parse(input.prompt).candidates[0].id, reason: "按已有要求继续" },
+          : {
+              candidateId: JSON.parse(leaderEventPrompt(input)).candidates[0].id,
+              reason: "按已有要求继续",
+            },
       input.actor,
     );
     return { text: "", messages: [] };
@@ -108,9 +113,13 @@ for (const group of [false, true])
           await h.app.tasks.reconcile(h.task.id);
         }
         await h.worker.tick();
-        const planning = h.engine.calls.find((call) => call.sessionId.startsWith("workflow-plan:"));
+        const planning = h.engine.calls.find((call) =>
+          call.tools.some((tool) => tool.name === "orchestration_plan"),
+        );
         assert.ok(planning, JSON.stringify(h.store.list("task_orchestration_events")));
-        const supplied = JSON.parse(planning.prompt);
+        assert.ok(planning.sessionId.startsWith("task-leader:"));
+        const activation = JSON.parse(leaderEventPrompt(planning));
+        const supplied = activation.activation === "create_plan" ? activation.payload : activation;
         assert.equal(supplied.userMessages.includes(unrelated), upgrade);
         assert.equal(
           supplied.sources.some((source: { text: string }) => source.text === unrelated),

@@ -20,6 +20,7 @@ import { orchestrationUserMessages } from "../../src/orchestration/user-messages
 import { WORKFLOWS } from "../../src/orchestration/workflow.js";
 import { associateTaskUserRequest, type TaskUserRevision } from "../../src/tasks/user-request.js";
 import { Engine, logger } from "../app/helpers.js";
+import { leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function fixture(
@@ -27,6 +28,7 @@ async function fixture(
     consensus?: boolean;
     selection?: "request_pi" | "use_template";
     decision?: "authorized" | "denied" | "unclear" | "invalid" | "error";
+    documentDecision?: "authorized" | "forbidden" | "unclear";
   } = {},
 ) {
   const h = setup();
@@ -58,8 +60,10 @@ async function fixture(
   h.store.set(WORKFLOWS, task.id, state);
   const previous = structuredClone(state.plan);
   let sequence = 0;
+  let userRevision = "revision";
   const input = (text: string, usage: "input" | "read" | "control" = "input") => {
     const messageId = `revision-${++sequence}`;
+    if (usage === "input") userRevision = messageId;
     const who: ActorContext = { ...actor, source: "feishu", chatType: "private", messageId };
     h.store.set<InboxRecord>("inbox", `message:${messageId}`, {
       id: `message:${messageId}`,
@@ -101,7 +105,7 @@ async function fixture(
         request.actor,
       );
     } else {
-      const body = JSON.parse(request.prompt);
+      const body = JSON.parse(leaderEventPrompt(request));
       const snapshot = body.state ?? body;
       const candidates = body.candidates.map((candidate: { id: string }) => candidate.id);
       snapshots.push(snapshot);
@@ -111,7 +115,7 @@ async function fixture(
           ? options.decision
           : "authorized"
         : candidates.includes("authorized")
-          ? "authorized"
+          ? (options.documentDecision ?? "authorized")
           : (options.selection ?? "request_pi");
       calls.push(contract ? `contract:${options.decision ?? "authorized"}` : selected);
       if (contract && options.decision === "error") throw new Error("fixture pi failed");
@@ -132,8 +136,8 @@ async function fixture(
     signal: new AbortController().signal,
     current: () => task,
     foregroundPending: () => false,
-    revision: () => "revision",
-    baseRevision: () => "revision",
+    revision: () => userRevision,
+    baseRevision: () => userRevision,
     userMessages: () => orchestrationUserMessages(h.store, task),
     events: () => [],
     outputs: () => [],
@@ -170,7 +174,13 @@ async function fixture(
     snapshots,
     choose(proposed: Record<string, unknown> = {}) {
       args = proposed;
-      return choosePlan(ports, task, state, event);
+      return choosePlan(ports, task, state, {
+        ...event,
+        // A later authenticated request is a new event/revision, not a replay
+        // of the already completed planning inbox for the previous request.
+        id: `${event.id}:${userRevision}`,
+        userRevision,
+      });
     },
     decisions: () => h.store.list<ContractChangeDecision>("workflow_contract_decisions"),
   };
@@ -195,6 +205,14 @@ test("latest authenticated input can explicitly withdraw consensus after restric
     assert.equal(h.decisions()[0]?.decision, "authorized");
     assert.deepEqual(h.calls, ["request_pi", "contract:authorized", "authorized"]);
     assert.deepEqual(h.state.plan, h.previous, "a draft cannot rewrite the accepted previous plan");
+    const recovered = await h.choose({
+      documentDelivery: { paths: ["docs/DESIGN.md"], sourceMessageId, requireConsensus: false },
+    });
+    assert.deepEqual(
+      recovered,
+      plan,
+      "recovery preserves the independently verified authorization",
+    );
   } finally {
     h.close();
   }
@@ -310,6 +328,32 @@ for (const decision of ["denied", "unclear", "invalid", "error"] as const)
       assert.deepEqual(h.state.plan, h.previous);
       assert.equal(h.decisions()[0]?.decision, "denied");
       assert.deepEqual(h.calls, ["request_pi", `contract:${decision}`]);
+      await assert.rejects(
+        h.choose({
+          documentDelivery: { paths: ["docs/DESIGN.md"], sourceMessageId, requireConsensus: false },
+        }),
+        { code: "workflow_contract_authorization" },
+        "a durable staged draft is not an authorization receipt on recovery",
+      );
+      assert.deepEqual(h.state.plan, h.previous);
+    } finally {
+      h.close();
+    }
+  });
+
+for (const documentDecision of ["forbidden", "unclear"] as const)
+  test(`a ${documentDecision} document authorization remains rejected after draft recovery`, async () => {
+    const h = await fixture({ documentDecision });
+    try {
+      h.input("本轮先只读讨论；没有确认允许保存文件。");
+      await assert.rejects(h.choose(), { code: "workflow_document_authorization" });
+      assert.deepEqual(h.state.plan, h.previous);
+      await assert.rejects(
+        h.choose(),
+        { code: "workflow_document_authorization" },
+        "a persisted draft must not bypass independent document authorization",
+      );
+      assert.deepEqual(h.state.plan, h.previous);
     } finally {
       h.close();
     }

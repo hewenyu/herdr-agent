@@ -9,6 +9,7 @@ import type { Task } from "../../src/core/types.js";
 import { handoffDirectory } from "../../src/orchestration/handoff.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { logger, setup } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 
 const actor = { ownerId: "owner", chatId: "entry", sessionId: "entry", messageId: "create" };
 const questionText = "首版是否包含跨设备同步？";
@@ -34,9 +35,17 @@ async function harness(mode: "user" | "defer" = "user") {
   let piCalls = 0;
   let questions = 0;
   h.engine.handler = async (input) => {
+    if (
+      await chooseLeaderAction(input, (ids) => {
+        piCalls++;
+        if (mode === "defer" && ids.includes("user:blocked")) return null;
+        return ids.find((id) => id === "user:blocked") ?? ids[0];
+      })
+    )
+      return { text: "", messages: [] };
     if (input.tools[0]?.name === "orchestration_choice") {
       piCalls++;
-      const ids: string[] = JSON.parse(input.prompt).candidates.map(
+      const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
         (candidate: { id: string }) => candidate.id,
       );
       const planning = ids.includes("use_template");
@@ -53,7 +62,7 @@ async function harness(mode: "user" | "defer" = "user") {
     }
     assert.equal(input.tools[0]?.name, "workflow_user_decision");
     questions++;
-    const source = JSON.parse(input.prompt).sources.find(
+    const source = JSON.parse(leaderEventPrompt(input)).sources.find(
       (source: { kind: string }) => source.kind === "blocker",
     );
     assert.ok(source, "a genuine accepted blocker must reach question synthesis without an issue");

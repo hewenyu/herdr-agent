@@ -14,6 +14,7 @@ import {
   type WorkflowPlan,
 } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
+import { leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 test("custom independent openings remain separate v3 choices while legacy discussions retain batching", async () => {
@@ -83,7 +84,7 @@ test("both template and pi planning filter removed participants before generatin
       const engine = new Engine();
       engine.handler = async (request) => {
         if (request.tools[0]?.name === "orchestration_choice") {
-          const body = JSON.parse(request.prompt);
+          const body = JSON.parse(leaderEventPrompt(request));
           const openings = body.state.template.nodes.filter((node: { id: string }) =>
             node.id.startsWith("opening-"),
           );
@@ -95,10 +96,10 @@ test("both template and pi planning filter removed participants before generatin
           return { text: "", messages: [] };
         }
         assert.equal(choice, "request_pi");
-        assert.deepEqual(
-          request.tools.map((tool) => tool.name),
-          ["orchestration_plan"],
-        );
+        assert.ok(request.sessionId.startsWith("task-leader:"));
+        assert.equal(request.tools[0]?.name, "orchestration_plan");
+        assert.ok(request.tools.some((tool) => tool.name === "planning_read"));
+        assert.ok(request.tools.every((tool) => tool.readOnly));
         await request.tools[0]?.execute(
           { template: "discussion", instructions: {}, deliveryRequirements: [] },
           request.actor,

@@ -7,6 +7,7 @@ import { roleConflictQuestions } from "../../src/orchestration/role-conflicts.js
 import { currentUserDecision, ensureUserDecision } from "../../src/orchestration/user-decision.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { Engine, logger } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function fixture(count = 2) {
@@ -30,8 +31,9 @@ async function fixture(count = 2) {
   await h.service.reconcile(task.id);
   const engine = new Engine();
   engine.handler = async (input) => {
+    if (await chooseLeaderAction(input, () => "user:roles")) return { text: "", messages: [] };
     assert.equal(input.tools[0]?.name, "orchestration_choice");
-    const ids: string[] = JSON.parse(input.prompt).candidates.map(
+    const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
       (candidate: { id: string }) => candidate.id,
     );
     const choice = ids.includes("use_template") ? "use_template" : "user:roles";
@@ -129,7 +131,9 @@ test("a real user:roles wait presents the fixed author conflict and concrete ind
     );
     assert.equal(h.herdr.sends.length, 0, "presenting options does not change or execute the plan");
     assert.ok(
-      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      h.engine.calls.every((input) =>
+        input.tools.every((tool) => tool.name !== "workflow_user_decision"),
+      ),
       "program role questions need no question-generation model",
     );
     await new TaskOrchestrator(h.options).tick();
@@ -152,7 +156,9 @@ test("a reviewer binding change invalidates the saved role question without sile
     assert.equal(updated.status, "system");
     assert.deepEqual(updated.questions, []);
     assert.ok(
-      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      h.engine.calls.every((input) =>
+        input.tools.every((tool) => tool.name !== "workflow_user_decision"),
+      ),
       "program role questions need no question-generation model",
     );
   } finally {
@@ -176,7 +182,9 @@ test("busy compatible participants and a generic selector reason do not invent r
     assert.equal(decision.status, "system");
     assert.deepEqual(decision.questions, []);
     assert.ok(
-      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      h.engine.calls.every((input) =>
+        input.tools.every((tool) => tool.name !== "workflow_user_decision"),
+      ),
       "program role questions need no question-generation model",
     );
   } finally {
@@ -196,7 +204,9 @@ test("a full roster of authors requests a concrete replacement name without prom
     assert.match(decision.questions[0]?.example ?? "", /现有参与者姓名.*替换/);
     assert.equal(decision.questions[0]?.options, undefined);
     assert.ok(
-      h.engine.calls.every((input) => input.tools[0]?.name === "orchestration_choice"),
+      h.engine.calls.every((input) =>
+        input.tools.every((tool) => tool.name !== "workflow_user_decision"),
+      ),
       "program role questions need no question-generation model",
     );
     assert.equal(h.service.records.participants(h.task).length, 8);

@@ -8,6 +8,8 @@ import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.
 import { Engine, logger } from "../app/helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
+const READ_TOOLS = ["workflow_status", "workflow_board", "workflow_detail"];
+
 async function fixture() {
   const h = setup();
   h.config.ai.enabled = true;
@@ -20,18 +22,48 @@ async function fixture() {
   const choices: string[][] = [];
   const engine = new Engine();
   engine.handler = async (input) => {
-    assert.deepEqual(
-      input.tools.map((tool) => tool.name),
-      ["orchestration_choice"],
+    // Planning mode selection is a Leader activation with the same decision
+    // tool; it stays a bounded choice over program-computed candidates.
+    const choice = input.tools.find((tool) => tool.name === "orchestration_choice");
+    if (choice) {
+      await choice.execute({ candidateId: "use_template" }, input.actor);
+      return { text: "", messages: [] };
+    }
+    const plan = input.tools.find((tool) => tool.name === "orchestration_plan");
+    if (plan) {
+      await plan.execute(
+        { template: "discussion", instructions: {}, deliveryRequirements: [] },
+        input.actor,
+      );
+      return { text: "", messages: [] };
+    }
+    // The durable Leader reads bounded status itself instead of receiving one
+    // pre-selected enum choice.
+    assert.ok(
+      READ_TOOLS.every((name) => input.tools.some((tool) => tool.name === name)),
+      `expected the Leader read surface, saw ${input.tools.map((tool) => tool.name).join(",")}`,
     );
-    const ids: string[] = JSON.parse(input.prompt).candidates.map(
-      (candidate: { id: string }) => candidate.id,
+    assert.ok(
+      !input.tools.some((tool) => tool.name === "orchestration_choice"),
+      "the restricted enum chooser is no longer the workflow scheduling interface",
     );
-    choices.push(ids);
-    await input.tools[0]?.execute(
-      { candidateId: ids.includes("use_template") ? "use_template" : ids[ids.length - 1] },
-      input.actor,
+    const status = input.tools.find((tool) => tool.name === "workflow_status");
+    assert.ok(status);
+    const view = (await status.execute({}, input.actor)) as {
+      legalActions: Array<{ id: string; kind: string }>;
+    };
+    choices.push(view.legalActions.map((candidate) => candidate.id));
+    assert.ok(view.legalActions.length > 0);
+    const candidate = view.legalActions.at(-1) as { id: string };
+    const action = input.tools.find(
+      (tool) =>
+        tool.readOnly === false &&
+        (
+          tool.parameters as { properties?: { candidateId?: { enum?: string[] } } }
+        ).properties?.candidateId?.enum?.includes(candidate.id),
     );
+    assert.ok(action, `no action tool accepts ${candidate.id}`);
+    await action.execute({ candidateId: candidate.id, reason: "leader_dispatch" }, input.actor);
     return { text: "", messages: [] };
   };
   const worker = new TaskOrchestrator({
@@ -56,7 +88,7 @@ async function fixture() {
   return { ...h, task, worker, state, choices };
 }
 
-test("workflow tick dispatches the restricted pi choice with no Jev configuration", async () => {
+test("workflow tick lets the durable Leader choose through its own bounded tools", async () => {
   const h = await fixture();
   try {
     await h.worker.tick();
@@ -64,16 +96,45 @@ test("workflow tick dispatches the restricted pi choice with no Jev configuratio
     for (const node of state.plan.nodes.filter((node) => node.id.startsWith("opening-")))
       node.dependsOn = [];
     h.store.set(WORKFLOWS, h.task.id, state);
+    const current = h.service.records.get(actor, h.task.id);
+    const candidates = workflowCandidates(
+      current,
+      state,
+      h.service.records.participants(current),
+      [],
+      false,
+    );
+    assert.equal(candidates.length, 2);
+    const chosen = candidates[1];
+    assert.ok(chosen);
     await h.worker.tick();
-    const offered = h.choices[1];
-    assert.equal(offered?.length, 2);
-    const decision = h.store.list<DecisionLog>("workflow_decisions")[0];
-    assert.equal(decision?.final?.source, "pi");
-    assert.equal(decision?.final?.candidateId, offered?.[1]);
-    assert.equal(decision?.pi.status, "success");
-    assert.equal(decision?.jev.status, "skipped");
+    const offered = h.choices.at(-1);
+    assert.deepEqual(
+      offered,
+      candidates.map((candidate) => candidate.id),
+    );
+    const decision = h.store
+      .list<DecisionLog>("workflow_decisions")
+      .find((log) => log.state === "selected");
+    assert.ok(decision);
+    assert.equal(decision.final?.source, "leader");
+    assert.equal(
+      decision.final?.candidateId,
+      chosen.id,
+      "the Leader selected the non-first action",
+    );
+    assert.equal(decision.jev.status, "skipped");
+    assert.equal(decision.rule.status, "not-applicable");
     assert.equal(h.herdr.sends.length, 1);
-    assert.equal(h.state().nodes["opening-2"]?.status, "dispatched");
+    const dispatched = Object.entries(h.state().nodes).filter(
+      ([, progress]) => progress.status === "dispatched",
+    );
+    assert.equal(dispatched.length, 1);
+    assert.deepEqual(
+      dispatched.map(([nodeId, progress]) => ({ nodeId, participantId: progress.participantId })),
+      chosen.assignments,
+      "native dispatch must execute exactly the Leader's non-first choice",
+    );
   } finally {
     h.close();
   }

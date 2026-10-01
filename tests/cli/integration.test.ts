@@ -68,6 +68,63 @@ test("offline Feishu adapter drives the real pi loop and turn-taking; Web only r
           ]),
         ])(model, context, options);
       }
+      if (context.tools?.some((tool) => tool.name === "workflow_status")) {
+        const latest = context.messages.at(-1);
+        if (latest?.role === "toolResult") {
+          assert.equal(
+            latest.isError,
+            false,
+            "offline Leader must use a valid read/action sequence",
+          );
+          if (latest.toolName !== "workflow_status")
+            return scripted([response("本轮调度动作已登记，业务完成仍以原生回执为准。")])(
+              model,
+              context,
+              options,
+            );
+          const text = latest.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+          const status = JSON.parse(text) as {
+            legalActions: Array<{ id: string; kind: string }>;
+          };
+          const candidate =
+            status.legalActions.find((entry) => entry.kind === "deliver") ??
+            status.legalActions.find((entry) => entry.kind === "dispatch") ??
+            status.legalActions[0];
+          assert.ok(candidate, "the offline model must choose an actual legal candidate");
+          const kind =
+            candidate.kind === "rework"
+              ? "dispatch"
+              : candidate.kind === "user"
+                ? "wait"
+                : candidate.kind;
+          return scripted([
+            response("", [
+              {
+                type: "toolCall",
+                id: `workflow-action-${modelCalls}`,
+                name: `workflow_${kind}`,
+                arguments: {
+                  ...(["deliver", "wait"].includes(kind) ? {} : { candidateId: candidate.id }),
+                  reason: "依据当前看板和可执行候选继续",
+                },
+              },
+            ]),
+          ])(model, context, options);
+        }
+        return scripted([
+          response("", [
+            {
+              type: "toolCall",
+              id: `workflow-status-${modelCalls}`,
+              name: "workflow_status",
+              arguments: {},
+            },
+          ]),
+        ])(model, context, options);
+      }
       return context.systemPrompt === NOTIFICATION_PROMPT
         ? scripted([response('{"notify":false,"text":""}')])(model, context, options)
         : main(model, context, options);

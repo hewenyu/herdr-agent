@@ -21,6 +21,7 @@ import { settleWorkflow } from "../../src/orchestration/settlement.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
 import { Engine, logger } from "../app/helpers.js";
+import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
 
 async function harness() {
@@ -41,8 +42,15 @@ async function harness() {
   await h.service.reconcile(task.id);
   const engine = new Engine();
   engine.handler = async (input) => {
+    if (
+      await chooseLeaderAction(input, (ids) => {
+        calls.push(ids);
+        return ids[0];
+      })
+    )
+      return { text: "", messages: [] };
     assert.equal(input.tools[0]?.name, "orchestration_choice");
-    const ids: string[] = JSON.parse(input.prompt).candidates.map(
+    const ids: string[] = JSON.parse(leaderEventPrompt(input)).candidates.map(
       (candidate: { id: string }) => candidate.id,
     );
     calls.push(ids);
