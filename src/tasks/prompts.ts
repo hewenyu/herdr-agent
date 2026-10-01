@@ -1,5 +1,6 @@
 import type { Participant, Task } from "../core/types.js";
 import { parentHandoffPrompt } from "./parent-handoff.js";
+import { readinessOf } from "./readiness.js";
 import { requestPrompt } from "./user-request.js";
 
 export function participantPrompt(
@@ -107,7 +108,15 @@ export function taskDescription(task: Task, participants: Participant[]): string
     `任务：${task.title}`,
     `类型：${task.kind} · 状态：${task.status}`,
     `编号：${task.id}`,
-    `参与者：${participants.map((p) => `${p.name}(${p.kind}): ${p.status}`).join("；")}`,
+    `参与者：${participants
+      .map((p) => {
+        // Readiness is a separate state machine from the business task status:
+        // `started` proves allocation only, so it is shown beside readiness
+        // rather than being read as "fully ready".
+        const readiness = readinessOf(p).phase;
+        return `${p.name}(${p.kind}): ${p.status} · 就绪度=${readiness}`;
+      })
+      .join("；")}`,
     task.chatId && !task.groupDeleted
       ? `会话：https://applink.feishu.cn/client/chat/open?openChatId=${task.chatId}`
       : "",

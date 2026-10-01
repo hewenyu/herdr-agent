@@ -34,6 +34,8 @@ export interface TaskHooks {
 
 export interface TaskContext {
   signal: AbortSignal;
+  /** Pending user controls veto lifecycle writes but settled business pauses do not. */
+  controlPending?: (taskId: string) => boolean;
   config: AppConfig;
   store: Store;
   records: TaskRecords;

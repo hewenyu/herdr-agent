@@ -12,6 +12,37 @@ export type TaskStatus =
   | "destroying"
   | "destroyed";
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown" | "gone";
+/**
+ * The managed-execution readiness of one participant, independent of the
+ * business task status. `created`/`started` are not `ready`, and `ready` is not
+ * "business running". Keyed to a concrete execution generation so a stale
+ * observation can never describe a replacement.
+ */
+export type AgentReadiness =
+  | "unallocated"
+  | "provisioning"
+  | "starting"
+  | "awaiting_trust"
+  | "awaiting_manual"
+  | "ready"
+  | "busy"
+  | "missing"
+  | "uncertain"
+  | "stopped"
+  | "removed";
+
+export interface ReadinessState {
+  phase: AgentReadiness;
+  reason: string;
+  /** Execution identity this observation belongs to; never ported to another. */
+  generation: string;
+  paneId?: string;
+  workspaceId?: string;
+  terminalId?: string;
+  sessionId?: string;
+  stateSeq?: string;
+  at: string;
+}
 export type DirectoryMode = "shared" | "worktree";
 
 export interface Project {
@@ -105,6 +136,8 @@ export interface Participant {
   /** Durable execution-only repair; historical delivery facts are not replay permission. */
   executionRecovery?: string;
   recoveryPending?: boolean;
+  /** Last durable lifecycle/readiness observation, keyed to the current generation. */
+  readiness?: ReadinessState;
   initialSent: boolean;
   initialReceipt: string;
   cursor?: string;

@@ -93,7 +93,13 @@ class TrustClient extends HerdrClient {
       truncated: this.sent ? this.afterTruncated : this.truncated,
     };
   }
-  override async keys(_target: string, input: string[]) {
+  override async keys(
+    _target: string,
+    input: string[],
+    _signal?: AbortSignal,
+    beforeWrite?: () => void,
+  ) {
+    beforeWrite?.();
     this.strokes.push(input);
     if (this.error) throw this.error;
     this.sent = true;
@@ -108,6 +114,23 @@ function folderClient(): TrustClient {
   client.text = codexFolder;
   return client;
 }
+
+test("startup trust pre-write refusal leaves the same native attempt available", async () => {
+  const client = folderClient();
+  const control = new AgentControl(client);
+  await assert.rejects(
+    control.trustDirectory(client.ref, client.ref.cwd, {
+      ...guard(),
+      beforeWrite: async () => {
+        throw new OperationError("control_pending", "pause queued");
+      },
+    }),
+    { code: "control_pending", outcome: "not_executed" },
+  );
+  assert.equal(client.strokes.length, 0);
+  await control.trustDirectory(client.ref, client.ref.cwd, guard());
+  assert.equal(client.strokes.length, 1);
+});
 
 test("Codex folder-access template requires its exact native text and full wrapped directory", () => {
   assert.deepEqual(directoryTrustKeys("codex", codexFolder, codexFolderDirectory), ["enter"]);
@@ -159,7 +182,7 @@ test("Codex folder-access false idle is blocked before task delivery and remains
   };
   assert.equal((await client.normalize(raw)).status, "blocked");
   client.truncated = true;
-  assert.equal((await client.normalize(raw)).status, "idle");
+  assert.equal((await client.normalize(raw)).status, "unknown");
   client.truncated = false;
   assert.equal(
     (await client.normalize({ ...raw, agent_session: { kind: "id", value: "existing" } })).status,
@@ -316,7 +339,7 @@ test("false idle Claude startup is recognized as blocked only from its complete 
   };
   assert.equal((await client.normalize(raw)).status, "blocked");
   client.truncated = true;
-  assert.equal((await client.normalize(raw)).status, "idle");
+  assert.equal((await client.normalize(raw)).status, "unknown");
   client.truncated = false;
   assert.equal(
     (await client.normalize({ ...raw, agent_session: { kind: "id", value: "existing" } })).status,

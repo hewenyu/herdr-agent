@@ -44,7 +44,12 @@ export interface HerdrPort {
     paneId: string,
     kind: AgentKind,
     name: string,
-    options: { directories: string[]; bypass: boolean; signal?: AbortSignal },
+    options: {
+      directories: string[];
+      bypass: boolean;
+      signal?: AbortSignal;
+      beforeWrite?: () => void;
+    },
   ): Promise<AgentSnapshot>;
   send(ref: ExecutionRef, text: string, options?: NativeSendOptions): Promise<Delivery>;
   interrupt(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;
@@ -75,6 +80,12 @@ export interface HerdrPort {
       expiresAt: string;
       signal?: AbortSignal;
       worktreeRoot?: string;
+      /** Observed native terminal identity; a change vetoes the write. */
+      terminalId?: string;
+      /** Last-moment authorization/control check, run after the final native read. */
+      beforeWrite?: () => Promise<void>;
+      /** Synchronous admission check immediately before the keys are written. */
+      assertCurrent?: () => void;
     },
   ): Promise<void>;
   close(ref: ExecutionRef, signal?: AbortSignal): Promise<void>;

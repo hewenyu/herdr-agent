@@ -4,6 +4,7 @@ import type { ActorContext, Delivery, Participant, Task } from "../core/types.js
 import type { OperationReceipt } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { InputDelivery } from "./input-delivery.js";
+import { readinessOf } from "./readiness.js";
 
 export type ParticipantProjection = Participant & {
   initialDelivery: "confirmed" | "decided" | "pending";
@@ -121,7 +122,7 @@ export class TaskRecords {
         initialDelivery = "confirmed";
         break;
       }
-      return { ...participant, initialDelivery };
+      return { ...participant, initialDelivery, readiness: readinessOf(participant) };
     });
   }
 

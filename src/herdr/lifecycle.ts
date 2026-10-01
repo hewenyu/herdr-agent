@@ -59,7 +59,12 @@ export async function startAgent(
   paneId: string,
   kind: AgentKind,
   name: string,
-  options: { directories: string[]; bypass: boolean; signal?: AbortSignal },
+  options: {
+    directories: string[];
+    bypass: boolean;
+    signal?: AbortSignal;
+    beforeWrite?: () => void;
+  },
 ): Promise<AgentSnapshot> {
   if (!paneId || !name || !["claude", "codex"].includes(kind))
     throw new OperationError("invalid_params", "agent 启动参数不完整。");
@@ -90,6 +95,7 @@ export async function startAgent(
           },
           signal,
           Math.max(32_000, client.transport.timeoutMs),
+          options.beforeWrite,
         ),
       );
       break;

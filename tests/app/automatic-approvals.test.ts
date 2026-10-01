@@ -295,25 +295,30 @@ test("no-selection retries keep backoff and attempt budget across controller rec
   }
 });
 
-test("a crash after effect reservation freezes automatic writes even on a later menu", async () => {
-  const h = await fixture();
-  try {
-    h.choose("wait_user");
-    await h.handle();
-    const entry = h.store.entries<Record<string, unknown>>("automatic_approval_decisions")[0];
-    assert.ok(entry);
-    const [id, decision] = entry;
-    h.store.set("automatic_approval_decisions", id, { ...decision, state: "executing" });
-    h.screen.agent.stateSeq = "100";
-    h.screen.text = "Next menu";
-    h.choose("option:1");
-    assert.equal(await h.handle(), "manual");
-    assert.equal(h.requests.length, 1);
-    assert.deepEqual(h.writes, []);
-  } finally {
-    await h.close();
+for (const legacy of [false, true]) {
+  for (const state of ["executing", "uncertain"]) {
+    test(`a ${legacy ? "legacy" : "current"} ${state} effect freezes automatic writes on a later menu`, async () => {
+      const h = await fixture();
+      try {
+        h.choose("wait_user");
+        await h.handle();
+        const entry = h.store.entries<Record<string, unknown>>("automatic_approval_decisions")[0];
+        assert.ok(entry);
+        const [id, decision] = entry;
+        if (legacy) delete decision.generation;
+        h.store.set("automatic_approval_decisions", id, { ...decision, state });
+        h.screen.agent.stateSeq = "100";
+        h.screen.text = h.screen.text.replace("v999", "v1000");
+        h.choose("option:1");
+        assert.equal(await h.handle(), "manual");
+        assert.equal(h.requests.length, 1);
+        assert.deepEqual(h.writes, []);
+      } finally {
+        await h.close();
+      }
+    });
   }
-});
+}
 
 for (const menu of [
   "Permission\n> 1. Allow once\n  2. Cancel\nEnter to select",

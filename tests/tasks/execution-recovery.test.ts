@@ -316,7 +316,6 @@ test("a definitely-refused recovery create is retried without duplicating the ge
 });
 
 for (const mode of [
-  "paused",
   "completed",
   "close",
   "removed",
@@ -331,12 +330,12 @@ for (const mode of [
       const task = await f.service.create(actor, discussion);
       await f.service.tick();
       const before = f.service.get(actor, task.id).participants[0]!;
-      if (mode === "paused" || mode === "completed") {
+      if (mode === "completed") {
         const stored = f.store.get<Task>("tasks", task.id)!;
         stored.status = mode;
         stored.keepGroup = true;
         f.store.set("tasks", task.id, stored);
-        if (mode === "completed") f.platform.tasks.get(stored.remoteTaskId!)!.completedAt = "123";
+        f.platform.tasks.get(stored.remoteTaskId!)!.completedAt = "123";
       } else if (mode === "close") {
         const stored = f.store.get<Task>("tasks", task.id)!;
         stored.closeRequested = true;
@@ -360,6 +359,32 @@ for (const mode of [
     }
   });
 }
+
+// Intentional contract change: business scheduling and agent lifecycle are
+// separate state machines. An explicit business pause now fences business input
+// and relays only; it must NOT stop lifecycle repair of a lost executor. The
+// pause is preserved across the repair and no business input is dispatched.
+test("an explicit business pause still allows lifecycle repair but never business input", async () => {
+  const f = setup();
+  try {
+    const task = await f.service.create(actor, discussion);
+    await f.service.tick();
+    const before = f.service.get(actor, task.id).participants[0]!;
+    await f.service.action({ ...actor, messageId: "pause-task" }, task.id, "pause");
+    f.herdr.agents.delete(before.execution!.paneId);
+    const sends = f.herdr.sends.length;
+    await f.service.tick();
+    const current = f.service.get(actor, task.id);
+    const repaired = current.participants[0]!;
+    assert.notEqual(repaired.execution?.paneId, before.execution?.paneId);
+    assert.equal(repaired.recoveryPending, true);
+    assert.equal(current.status, "paused");
+    assert.equal(current.discussion.paused, true);
+    assert.equal(f.herdr.sends.length, sends, "repair must not deliver business input");
+  } finally {
+    f.close();
+  }
+});
 
 test("a missing agent with a surviving shell is replaced in a new workspace, never in that shell", async () => {
   const f = setup();

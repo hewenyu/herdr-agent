@@ -2,23 +2,26 @@ import { dirname } from "node:path";
 import { fail, OperationError } from "../core/errors.js";
 import { now } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
+import type { OperationReceipt } from "../storage/operations.js";
 import { captureInputBaseline } from "./baseline.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { prepareInputDelivery, retryUnsentInput } from "./input-delivery.js";
-import { inputGuard } from "./input-guard.js";
+import { inputGuard, launchGuard } from "./input-guard.js";
 import { recoverInitialInputs } from "./input-recovery.js";
 import { inputTiming } from "./input-timing.js";
+import { businessPaused, executorHeld } from "./pause.js";
 import { participantPrompt, taskDescription } from "./prompts.js";
+import { type ExecutionObservation, inputReady, reconcileReadiness } from "./readiness.js";
 
 export async function provision(context: TaskContext, task: Task): Promise<void> {
   assertActive(context);
   await recoverInitialInputs(context, task);
   const { records, platform, operations, catalog } = context;
-  // A blocked or attention task can still need provisioning work (for example,
-  // the first participant is waiting on a native approval). Do not expose a
-  // transient starting state while that user-action fact is being reconciled;
-  // observeTask will keep the durable status aligned with the live participants.
-  if (task.status !== "blocked" && task.status !== "attention") {
+  // A blocked, attention or business-paused task can still need provisioning
+  // work (the executor is lifecycle, not business). Do not expose a transient
+  // starting state while a user-action fact or an explicit pause is settled;
+  // observeTask keeps the durable status aligned with the live participants.
+  if (!["blocked", "attention", "paused"].includes(task.status)) {
     task.status = "starting";
     records.save(task);
   }
@@ -83,7 +86,7 @@ export async function provisionParticipant(
   assertActive(context);
   const { herdr, records, operations } = context;
   // Execution repair has its own durable operations and must never fall through to old input.
-  if (participant.executionRecovery) return;
+  if (participant.executionRecovery || executorHeld(context.store, participant.id)) return;
   if (!participant.execution) {
     const workspace = await operations.run(
       `${participant.id}:workspace`,
@@ -107,6 +110,17 @@ export async function provisionParticipant(
         ...(task.recovery ? [dirname(task.recovery.materialPath)] : []),
       ]),
     ];
+    const assertLaunch = launchGuard(context, task, participant);
+    assertLaunch();
+    const refused = context.store.get<OperationReceipt>("operations", `${participant.id}:start`);
+    if (
+      refused?.state === "failed" &&
+      refused.error?.outcome === "not_executed" &&
+      ["lifecycle_revoked", "orchestration_deferred", "stopping", "cancelled"].includes(
+        refused.error.code,
+      )
+    )
+      context.store.delete("operations", `${participant.id}:start`);
     const agent = await operations.run(
       `${participant.id}:start`,
       {
@@ -115,19 +129,35 @@ export async function provisionParticipant(
         directories,
         bypass: task.bypass,
       },
-      () =>
-        herdr.startAgent(ref.paneId, participant.kind, participant.name, {
+      () => {
+        assertLaunch();
+        return herdr.startAgent(ref.paneId, participant.kind, participant.name, {
           directories,
           bypass: task.bypass,
-        }),
+          signal: context.signal,
+          beforeWrite: assertLaunch,
+        });
+      },
     );
     participant.started = true;
     participant.status = agent.status;
     participant.execution.sessionId = agent.sessionId;
     // Establish the output cursor before the first task input can generate a reply.
+    // A start receipt is not readiness; record the observed lifecycle phase too.
+    const observation: ExecutionObservation = { kind: "snapshot", agent };
+    const readiness = reconcileReadiness(context.store, records, task, participant, observation);
+    // Never report a blocked or launch-pending executor as ready.
+    if (!inputReady(readiness) && readiness.phase !== "busy") {
+      participant.cursor = (await herdr.transcript(ref)).cursor;
+      records.saveParticipant(participant);
+      return;
+    }
     participant.cursor = (await herdr.transcript(ref)).cursor;
     records.saveParticipant(participant);
   }
+  // Business input is fenced by any settled business pause; lifecycle
+  // provisioning above is explicitly not.
+  if (businessPaused(task)) return;
   if (participant.initialSent || ["model", "workflow"].includes(task.orchestration?.mode ?? ""))
     return;
   // Round-robin discussion starts one participant. Manual mode waits for the
@@ -137,7 +167,11 @@ export async function provisionParticipant(
   const agent = await herdr.get(ref.paneId);
   if (agent.workspaceId !== ref.workspaceId || agent.kind !== ref.kind)
     fail("agent_replaced", "参与者身份发生变化，停止初始投递。");
-  if (agent.status === "blocked" || !agent.interactiveReady || agent.launchPending) {
+  const fresh = reconcileReadiness(context.store, records, task, participant, {
+    kind: "snapshot",
+    agent,
+  });
+  if (!inputReady(fresh)) {
     participant.status = agent.status;
     records.saveParticipant(participant);
     return;

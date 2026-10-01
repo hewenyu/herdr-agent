@@ -7,6 +7,9 @@ import test from "node:test";
 import { OperationError } from "../../src/core/errors.js";
 import type { InputProgress } from "../../src/core/ports.js";
 import type { AgentSnapshot, ExecutionRef } from "../../src/core/types.js";
+import { HerdrClient } from "../../src/herdr/client.js";
+import { AgentControl } from "../../src/herdr/control.js";
+import { startAgent } from "../../src/herdr/lifecycle.js";
 import { HerdrRuntime } from "../../src/herdr/runtime.js";
 import { HerdrTransport } from "../../src/herdr/transport.js";
 
@@ -49,6 +52,89 @@ async function fixture(
     },
   };
 }
+
+test("agent.start checks lifecycle authorization after connecting, before writing", async () => {
+  const f = await fixture(() => ({}));
+  try {
+    let authorized = true;
+    const transport = new HerdrTransport(f.socket);
+    const call = transport.call.bind(transport);
+    transport.call = (...args) => {
+      const result = call(...args);
+      if (args[0] === "agent.start") authorized = false;
+      return result;
+    };
+    await assert.rejects(
+      startAgent(new HerdrClient(transport), ref.paneId, ref.kind, "executor", {
+        directories: [],
+        bypass: false,
+        beforeWrite: () => {
+          if (!authorized) throw new OperationError("revoked", "lifecycle changed");
+        },
+      }),
+      { code: "revoked", outcome: "not_executed" },
+    );
+    await transport.call("ping");
+    assert.deepEqual(f.requests, ["ping"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("native startup trust rechecks authorization at socket.write and permits a refused attempt to retry", async () => {
+  let authorized = true;
+  let revokeDuringConnect = true;
+  const current: AgentSnapshot = {
+    ...agent,
+    kind: "codex",
+    status: "blocked",
+    terminalId: "term1",
+  };
+  const target: ExecutionRef = { ...ref, kind: "codex" };
+  const f = await fixture((request) => {
+    if (request.method === "agent.send_keys") current.status = "idle";
+    return {};
+  });
+  try {
+    const transport = new HerdrTransport(f.socket);
+    const call = transport.call.bind(transport);
+    transport.call = (...args) => {
+      const result = call(...args);
+      if (args[0] === "agent.send_keys" && revokeDuringConnect) authorized = false;
+      return result;
+    };
+    const client = new HerdrClient(transport);
+    client.get = async () => ({ ...current });
+    client.read = async () => ({
+      truncated: false,
+      text:
+        current.status === "blocked"
+          ? "> You are in /tmp\nDo you trust the contents of this directory?\n› 1. Yes, continue\n2. No, quit\nPress enter to continue"
+          : "Welcome to your coding agent\nReady for input",
+    });
+    const control = new AgentControl(client);
+    const guard = {
+      stateSeq: "1",
+      terminalId: "term1",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      assertCurrent: () => {
+        if (!authorized) throw new OperationError("revoked", "authorization changed");
+      },
+    };
+    await assert.rejects(control.trustDirectory(target, target.cwd, guard), {
+      code: "revoked",
+      outcome: "not_executed",
+    });
+    await transport.call("ping");
+    assert.deepEqual(f.requests, ["ping"]);
+    authorized = true;
+    revokeDuringConnect = false;
+    await control.trustDirectory(target, target.cwd, guard);
+    assert.deepEqual(f.requests, ["ping", "agent.send_keys"]);
+  } finally {
+    await f.close();
+  }
+});
 
 test("a lifecycle change accepted while socket.connect is pending vetoes the real request write", async () => {
   const f = await fixture(() => ({}));

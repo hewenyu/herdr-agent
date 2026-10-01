@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { fail, safeError } from "../core/errors.js";
+import { fail, OperationError, safeError } from "../core/errors.js";
 import { stableId } from "../core/ids.js";
 import type { HerdrPort, Logger } from "../core/ports.js";
 import type { ActorContext, AgentScreen, Participant, Task } from "../core/types.js";
@@ -9,6 +9,13 @@ import { authorizedWorktreeRoot } from "../projects/worktree-trust.js";
 import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
 import { type OperationReceipt, Operations } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
+import { executorHeld } from "../tasks/pause.js";
+import {
+  executionGeneration,
+  recordTrustEffect,
+  startupTrustStatus,
+  trustEffectId,
+} from "../tasks/readiness.js";
 
 const prompt = `你是 myrix 的 pi 启动调度器，仅处理本工具托管参与者的启动确认。
 用户已明确授权：新目录的信任确认由 pi 自动识别、自动确认；其他任何确认选项必须交给任务群中的用户选择。
@@ -21,12 +28,17 @@ Codex 窄终端会在右边缘截断 You are in 标题且不显示省略号；he
 没有调用工具或工具失败时，不得声称已经确认。无法识别时留给用户。只需简短报告实际处理结果。`;
 
 // Re-evaluate old no-effect decisions after recognition changes. Native writes
-// remain frozen across every version by the operation-prefix scan below.
+// remain frozen across every version by the generation-scoped scan below.
 const recognitionVersion = "native-directory-v4";
 const maxModelAttempts = 3;
 const retryDelayMs = 30_000;
 
-/** The model decides; the only available effect can confirm native startup directory trust. */
+/**
+ * The model decides; the only available effect can confirm native startup
+ * directory trust. Business pause never disables this restricted startup route:
+ * recognizing the exact authorized folder gate and confirming it is lifecycle
+ * work, not business dispatch.
+ */
 export class DirectoryTrust {
   private readonly operations: Operations;
   constructor(
@@ -44,22 +56,20 @@ export class DirectoryTrust {
     participant: Participant,
     screen: AgentScreen,
     actor: ActorContext,
+    veto?: () => string | undefined,
   ): Promise<boolean> {
     const ref = participant.execution;
-    if (!ref || !this.herdr.trustDirectory || participant.initialSent) return false;
-    const prefix = `${participant.id}:directory-trust`;
-    // A rejected preflight has no effect and may be re-evaluated at a new stateSeq.
-    // Confirmed/unknown writes stay frozen across all screen versions and restarts.
-    const attempts = this.store
-      .entries<OperationReceipt>("operations")
-      .filter(([id]) => id === prefix || id.startsWith(`${prefix}:`))
-      .map(([, receipt]) => receipt);
-    if (attempts.some((attempt) => attempt.state !== "failed")) return false;
+    if (!ref || !this.herdr.trustDirectory) return false;
+    const status = startupTrustStatus(this.store, participant);
+    // A same-generation confirmed/unknown write stays frozen across all screen
+    // versions and restarts. A definitely new generation starts clean.
+    if (status.frozen || status.confirmed) return false;
     const worktreeRoot = await authorizedWorktreeRoot(this.store, task);
     const scope = worktreeRoot ? stableId("worktree-root-v1", worktreeRoot) : undefined;
-    const operationId = `${prefix}:${recognitionVersion}:${screen.agent.stateSeq}${scope ? `:${scope}` : ""}`;
+    const operationId = trustEffectId(participant, screen.agent.stateSeq, scope);
     const decisionId = stableId(
       participant.id,
+      executionGeneration(participant),
       ref.paneId,
       screen.agent.stateSeq,
       recognitionVersion,
@@ -86,6 +96,44 @@ export class DirectoryTrust {
       nativeMenuRecognized && ref.kind === "codex" && /^\s*Note:/m.test(cleanedScreen);
     let confirmed = false;
     let toolCalled = false;
+    let vetoed = false;
+    const vetoBlocked = (): string | undefined => veto?.();
+    const binding = () => {
+      const currentTask = this.store.get<Task>("tasks", task.id);
+      const current = this.store.get<Participant>("participants", participant.id);
+      if (
+        !currentTask ||
+        !current ||
+        currentTask.ownerId !== actor.ownerId ||
+        actor.taskId !== task.id ||
+        current.taskId !== task.id ||
+        !currentTask.participantIds.includes(current.id) ||
+        !current.started ||
+        current.execution?.paneId !== ref.paneId ||
+        current.execution?.workspaceId !== ref.workspaceId ||
+        current.execution?.kind !== ref.kind ||
+        current.execution?.cwd !== ref.cwd ||
+        current.executionRecovery !== participant.executionRecovery ||
+        ["completed", "destroying", "destroyed"].includes(currentTask.status) ||
+        currentTask.closeRequested ||
+        currentTask.completionRequest ||
+        currentTask.groupDeleted ||
+        ["removed", "gone"].includes(current.status) ||
+        executorHeld(this.store, participant.id)
+      )
+        fail("directory_trust_scope", "当前现场不属于等待首次投递的任务目录。");
+      return currentTask;
+    };
+    const assertCurrent = () => {
+      binding();
+      if (this.store.get<OperationReceipt>("operations", operationId)?.resolution)
+        fail("directory_trust_scope", "启动确认已被其他决议取代。");
+      const blocked = vetoBlocked();
+      if (blocked) {
+        vetoed = true;
+        throw new OperationError("directory_trust_blocked", blocked, "not_executed");
+      }
+    };
     const tool: RuntimeTool = {
       name: "directory_trust_confirm",
       description:
@@ -94,43 +142,51 @@ export class DirectoryTrust {
       parameters: { type: "object", properties: {}, additionalProperties: false },
       execute: async (_args, _actor, signal) => {
         toolCalled = true;
-        const currentTask = this.store.get<Task>("tasks", task.id);
-        const current = this.store.get<Participant>("participants", participant.id);
-        if (
-          !currentTask ||
-          !current ||
-          currentTask.ownerId !== actor.ownerId ||
-          actor.taskId !== task.id ||
-          current.taskId !== task.id ||
-          !currentTask.participantIds.includes(current.id) ||
-          !current.started ||
-          current.initialSent ||
-          ["paused", "completed", "destroying", "destroyed"].includes(currentTask.status) ||
-          ["removed", "gone"].includes(current.status) ||
-          current.execution?.paneId !== ref.paneId ||
-          current.execution?.workspaceId !== ref.workspaceId ||
-          current.execution?.kind !== ref.kind ||
-          current.execution?.cwd !== ref.cwd ||
-          !(await authorizedDirectory(currentTask.directories, ref.cwd))
-        )
+        const currentTask = binding();
+        if (!(await authorizedDirectory(currentTask.directories, ref.cwd)))
           fail("directory_trust_scope", "当前现场不属于等待首次投递的任务目录。");
         if ((await authorizedWorktreeRoot(this.store, currentTask)) !== worktreeRoot)
           fail("directory_trust_scope", "任务 worktree 的原仓库授权归属已变化。");
         if (signal?.aborted || this.signal.aborted) fail("cancelled", "启动确认已取消。");
-        const result = await this.operations.run(
-          operationId,
-          { ref, stateSeq: screen.agent.stateSeq, ...(worktreeRoot ? { worktreeRoot } : {}) },
-          async () => {
-            await this.herdr.trustDirectory?.(ref, ref.cwd, {
-              stateSeq: screen.agent.stateSeq,
-              sessionId: screen.agent.sessionId,
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-              signal: signal ?? this.signal,
-              worktreeRoot,
-            });
-            return { confirmed: true };
-          },
-        );
+        // An owner revocation or an explicitly queued user control must veto the
+        // native write. This freezes *this* effect attempt without disabling the
+        // restricted route for later, legitimately authorized maintenance.
+        const blocked = veto?.();
+        if (blocked) {
+          vetoed = true;
+          fail("directory_trust_blocked", blocked);
+        }
+        // Bind the effect to the generation before the native write so a
+        // replacement can never inherit this receipt.
+        recordTrustEffect(this.store, participant, operationId);
+        let result: { confirmed: boolean };
+        try {
+          result = await this.operations.run(
+            operationId,
+            { ref, stateSeq: screen.agent.stateSeq, ...(worktreeRoot ? { worktreeRoot } : {}) },
+            async () => {
+              await this.herdr.trustDirectory?.(ref, ref.cwd, {
+                stateSeq: screen.agent.stateSeq,
+                sessionId: screen.agent.sessionId,
+                terminalId: screen.agent.terminalId,
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                signal: signal ?? this.signal,
+                worktreeRoot,
+                beforeWrite: async () => assertCurrent(),
+                assertCurrent,
+              });
+              return { confirmed: true };
+            },
+          );
+        } finally {
+          // A veto is provably not executed, so it must leave no receipt behind:
+          // a pending/uncertain record would incorrectly freeze the generation,
+          // and a failed one would strand a legitimate later retry.
+          if (vetoed) {
+            this.store.delete("operations", operationId);
+            this.store.delete("directory_trust_effects", operationId);
+          }
+        }
         confirmed = result.confirmed;
         return result;
       },
@@ -140,6 +196,14 @@ export class DirectoryTrust {
       decision.attempts < maxModelAttempts
         ? new Date(Date.now() + retryDelayMs).toISOString()
         : undefined;
+    // A vetoed attempt never wrote anything, so it must not consume the bounded
+    // attempt budget nor park the restricted route behind a backoff: a later
+    // observation may legitimately run while the authorization is valid again.
+    const vetoDecision = () => ({
+      ...decision,
+      attempts: previous?.attempts ?? 0,
+      confirmed: false as const,
+    });
     // Reserve the attempt before the model call so restarts cannot reset the
     // bound. Any native operation recorded during this call freezes its effect.
     this.store.set("directory_trust_decisions", decisionId, {
@@ -188,10 +252,16 @@ export class DirectoryTrust {
         },
       });
       this.store.set("directory_trust_decisions", decisionId, {
-        ...decision,
+        ...(vetoed ? vetoDecision() : decision),
         confirmed,
         text: answer.text,
-        retryAt: !toolCalled && nativeMenuRecognized && directoryAuthorized ? retryAt() : undefined,
+        // A vetoed attempt is immediately retryable: it refuses this effect only
+        // and must not park the restricted route behind a backoff.
+        retryAt: vetoed
+          ? new Date().toISOString()
+          : !toolCalled && nativeMenuRecognized && directoryAuthorized
+            ? retryAt()
+            : undefined,
       });
     } catch (error) {
       this.logger.warn("启动目录确认未完成", {
@@ -201,10 +271,10 @@ export class DirectoryTrust {
         code: safeError(error).code,
       });
       this.store.set("directory_trust_decisions", decisionId, {
-        ...decision,
+        ...(vetoed ? vetoDecision() : decision),
         confirmed,
         code: safeError(error).code,
-        retryAt: !toolCalled ? retryAt() : undefined,
+        retryAt: vetoed ? new Date().toISOString() : !toolCalled ? retryAt() : undefined,
       });
     }
     return confirmed;

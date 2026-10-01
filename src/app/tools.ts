@@ -7,6 +7,7 @@ import type { ProjectCatalog } from "../projects/catalog.js";
 import type { RuntimeTool, SessionService } from "../runtime/index.js";
 import type { Store } from "../storage/store.js";
 import type { TaskAction } from "../tasks/lifecycle.js";
+import { readinessOf } from "../tasks/readiness.js";
 import type { TaskService } from "../tasks/service.js";
 import { associateTaskUserRequest, requestHistory } from "../tasks/user-request.js";
 import { TASK_DETAIL_MAX_BYTES, TASK_DETAIL_SECTIONS, taskDetailPage } from "./task-details.js";
@@ -101,8 +102,9 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "task_get",
-      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialDelivery=confirmed才证明初始要求投递已确认；initialDelivery=decided只能说已按决策视为送达、未经确认。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
-        "参与者执行现场消失时，系统会在原参与者身份下自动重建一个新的执行器；这只是执行位置修复，不证明旧要求已送达或原工作已恢复，也不会重放旧输入。重建后initialDelivery回到pending，需用户发送新的安排才继续；旧输入与未知回执保留为历史未知。" +
+      "查询当前任务事实、参与者和错误。remoteTaskId证明飞书任务存在；chatId且未groupDeleted证明群已建立；参与者started仅证明启动，initialDelivery=confirmed才证明初始要求投递已确认；initialDelivery=decided只能说已按决策视为送达、未经确认。管理执行就绪度是与任务状态独立的第二个状态机：readiness=ready才表示执行器当前可接收输入，awaiting_trust/awaiting_manual/starting/missing/uncertain/stopped都不是就绪；ready不等于业务正在运行，也不代表用户已验收。缺失字段或queued不能报告资源已创建、已转交。回复结束不等于验收，输出不是独立验证。" +
+        "参与者执行现场消失时，系统会在原参与者身份下自动重建一个新的执行器；这只是执行位置修复，不证明旧要求已送达或原工作已恢复，也不会重放旧输入。重建后initialDelivery回到pending，readiness须重新观察为ready；等待启动目录信任或原生菜单时readiness不是ready，日志也不会声称已完全就绪。业务暂停不阻止执行器重建与受限的启动目录信任。" +
+        "启动目录信任属于用户长期授权：识别到已授权目录的原生信任提示时系统会自动确认，无需用户发送“继续”，该确认也不是业务输入。" +
         "收尾时groupDeleted:false不能概括全部收尾完成，也不证明删群指令已发出。若群等待最后输入或通知送达，本轮群回复自身也在等待范围内；简短说明即将解散并结束本轮，不重复查询等待自己的回复。其他错误或unknown不视作仅等回复。" +
         "默认只返回状态、参与者事实和有界工作流摘要（阶段、节点、未决问题、证据与交付计数）；完整调度历史、不可变决策证据、问题与证据明细、原始材料、输出和报告原文用task_detail按section分页读取，默认摘要缺少某条记录不代表它不存在。",
       true,
@@ -214,6 +216,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
                 started: participant.started,
                 initialSent: participant.initialSent,
                 initialDelivery: participant.initialDelivery,
+                readiness: readinessOf(participant).phase,
                 error: participant.error ? truncateText(participant.error, 200) : undefined,
               })),
               workflow: state
@@ -402,7 +405,7 @@ export function applicationTools(services: Services, actor: ActorContext): Runti
     ),
     tool(
       "participants_restart",
-      "用户明确要求重新拉起并继续时替换指定旧执行器，保留未知投递审计和历史材料，再交自动调度续接。先task_get选准确参与者编号，不用participant_add加出重复成员或用resume冒充重启。返回只证明替换已登记，需后续initialDelivery=confirmed确认续接要求送达；initialDelivery=decided只能说已按决策视为送达、未经确认。仅活跃model/workflow任务支持。",
+      "用户明确要求重新拉起并继续时替换指定旧执行器，保留未知投递审计和历史材料，再交自动调度续接。先task_get选准确参与者编号，不用participant_add加出重复成员或用resume冒充重启。返回只证明替换已登记，需后续initialDelivery=confirmed确认续接要求送达、readiness=ready确认新执行器可接收输入；initialDelivery=decided只能说已按决策视为送达、未经确认。仅活跃model/workflow任务支持。",
       false,
       { taskId, participantIds: { type: "array", items: { type: "string" }, minItems: 1 } },
       ["participantIds"],

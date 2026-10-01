@@ -3,6 +3,7 @@ import { now, stableId } from "../core/ids.js";
 import type { AgentSnapshot, Participant, Task, TranscriptEntry } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { recoverInitialInputs } from "./input-recovery.js";
+import { reconcileReadiness } from "./readiness.js";
 import { relayDiscussion } from "./send.js";
 
 interface PendingOutput {
@@ -46,9 +47,18 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
         error instanceof OperationError &&
         ["agent_not_found", "pane_not_found", "not_found"].includes(error.code)
       ) {
-        participant.status = "gone";
-        participant.error = "参与者执行现场已不存在。";
-        task.discussion.paused = true;
+        const definite = ["agent_not_found", "pane_not_found"].includes(error.code);
+        participant.status = definite ? "gone" : "unknown";
+        participant.error = definite
+          ? "参与者执行现场已不存在。"
+          : "参与者执行现场读取未确认；不能据此重建执行器。";
+        // A definite absence is `missing`; an ambiguous read failure is
+        // `uncertain` and is never authority to respawn.
+        reconcileReadiness(context.store, context.records, task, participant, {
+          kind: definite ? "absent" : "unreadable",
+          code: error.code,
+        });
+        if (definite) task.discussion.paused = true;
         // A process can exit after writing its final transcript. Recover that
         // result before forgetting the execution; a failed read is retried.
         const latest = await context.herdr.sampleLastReply(participant.execution);
@@ -71,6 +81,10 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
         context.records.save(task);
         continue;
       }
+      reconcileReadiness(context.store, context.records, task, participant, {
+        kind: "unreadable",
+        code: error instanceof OperationError ? error.code : "snapshot_unavailable",
+      });
       throw error;
     }
     if (
@@ -79,6 +93,10 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
       agent.kind !== participant.kind
     ) {
       task.discussion.paused = true;
+      reconcileReadiness(context.store, context.records, task, participant, {
+        kind: "snapshot",
+        agent,
+      });
       throw new OperationError("agent_replaced", "参与者身份发生变化，已停止调度。");
     }
     const previousStatus = participant.status;
@@ -115,6 +133,12 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
     participant.status = agent.status;
     participant.execution.sessionId = agent.sessionId;
     participant.lastStateSeq = agent.stateSeq;
+    // Record the live lifecycle/readiness observation for this generation. It
+    // is keyed to the execution identity, so a later replacement cannot inherit it.
+    reconcileReadiness(context.store, context.records, task, participant, {
+      kind: "snapshot",
+      agent,
+    });
     const legacy = context.store.get<{
       taskId: string;
       promptSent: boolean;
@@ -168,6 +192,7 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
     if (
       agent.status === "blocked" &&
       (context.hooks.recheckBlocked?.() ||
+        participant.recoveryPending ||
         !participant.initialSent ||
         participant.lastNotifiedState !== agent.stateSeq ||
         (context.hooks.blockedVersion &&
@@ -197,7 +222,11 @@ export async function observeTask(context: TaskContext, task: Task): Promise<voi
   if (!["completed", "destroying", "destroyed", "paused"].includes(task.status)) {
     const stalled = active.filter((entry) => idleWithoutReply(context, entry));
     task.status =
-      active.some((entry) => entry.status === "gone" || entry.error) || stalled.length > 0
+      active.some((entry) => entry.status === "gone" || entry.error) ||
+      stalled.length > 0 ||
+      // An unresolved (pending/uncertain) task operation must stay visible as
+      // attention; a business pause stops replaying it but never hides it.
+      Boolean(task.pending)
         ? "attention"
         : active.some((entry) => entry.status === "blocked")
           ? "blocked"

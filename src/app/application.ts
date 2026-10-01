@@ -4,6 +4,7 @@ import { newId, stableId } from "../core/ids.js";
 import type { HerdrPort, Logger, PlatformHandlers, PlatformPort } from "../core/ports.js";
 import type {
   ActorContext,
+  AgentScreen,
   CardAction,
   IncomingMessage,
   Participant,
@@ -26,6 +27,8 @@ import { transientTurnFailure } from "../runtime/recovery.js";
 import { Operations } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { NoticeUnavailable } from "../tasks/context.js";
+import { executorHeld } from "../tasks/pause.js";
+import { reconcileReadiness, startupTrustStatus } from "../tasks/readiness.js";
 import { TaskService } from "../tasks/service.js";
 import type { WebReportReceipt } from "../web/contracts.js";
 import { dispatch, snapshot } from "./actions.js";
@@ -522,6 +525,55 @@ export class Application implements ApplicationContext {
       : undefined;
   }
 
+  /** True only when a same-execution startup-trust effect is unresolved. */
+  private startupTrustFrozen(participant: Participant): boolean {
+    return startupTrustStatus(this.store, participant).frozen;
+  }
+
+  /**
+   * A user control queued behind the model call, or an owner whose authorization
+   * was revoked, must veto the in-flight native trust write. This is a veto of
+   * the attempt, not a disable: a later authorized observation may still run the
+   * restricted startup route.
+   */
+  private startupTrustVeto(task: Task): string | undefined {
+    if (!this.config.feishu.allowedOpenIds.includes(task.ownerId))
+      return "任务所有者授权已失效，未确认启动目录信任。";
+    if (this.tasks.approvalsBlocked(task.id)) return "已有待处理的用户控制，未确认启动目录信任。";
+    return undefined;
+  }
+
+  /**
+   * Run the restricted startup directory-trust route independently of Jev and of
+   * the business pause. Returns true only when the exact authorized folder gate
+   * was confirmed (or already confirmed for this generation).
+   */
+  private async startupTrust(
+    task: Task,
+    participant: Participant,
+    screen: AgentScreen,
+    frozen: boolean,
+  ): Promise<boolean> {
+    if (frozen || executorHeld(this.store, participant.id)) return false;
+    if (!this.config.ai.enabled) return false;
+    const ref = participant.execution;
+    if (!ref) return false;
+    // The restricted route is handed every blocked observation, but its guarded
+    // tool only writes after re-checking the exact native folder menu, the real
+    // directory authorization, the execution identity and the generation.
+    const confirmed = await this.directoryTrust.handle(
+      task,
+      participant,
+      screen,
+      this.actor(task, `startup:${participant.id}:${screen.agent.stateSeq}`),
+      () => this.startupTrustVeto(task),
+    );
+    if (!confirmed) return false;
+    await this.approvals.invalidate(ref, "pi 已确认目录信任，此旧卡片已失效。");
+    this.changed();
+    return true;
+  }
+
   private taskService(): TaskService {
     const service = new TaskService({
       config: this.config,
@@ -546,7 +598,34 @@ export class Application implements ApplicationContext {
           (!task.chatId || !this.reportDeliveries.pendingInChat(task.chatId)),
         blocked: async (task, participant) => {
           if (!participant.execution) return;
+          // Same-execution startup-trust uncertainty freezes BOTH the restricted
+          // route and the generic approval route; a definitely new generation
+          // starts clean and is handled by startupTrust below.
+          const frozen = this.startupTrustFrozen(participant);
           let screen = await this.herdr.screen(participant.execution);
+          reconcileReadiness(
+            this.store,
+            service.records,
+            task,
+            participant,
+            { kind: "snapshot", agent: screen.agent },
+            { screenText: screen.text },
+          );
+          // Startup directory trust is lifecycle work, independent of Jev and
+          // of a settled business pause. Recognize the exact authorized folder
+          // gate first; only then may the generic approval route run. Startup
+          // metadata can advance while pi reasons, so re-observe at most once
+          // before concluding; a key whose effect is unknown is never replayed.
+          for (let attempt = 0; !frozen && attempt < 2; attempt++) {
+            const observedSeq = screen.agent.stateSeq;
+            if (await this.startupTrust(task, participant, screen, frozen)) return;
+            screen = await this.herdr.screen(participant.execution);
+            if (screen.agent.status !== "blocked") return;
+            if (screen.agent.stateSeq === observedSeq) break;
+            if (attempt === 1) return;
+          }
+          if (screen.agent.status !== "blocked") return;
+          if (frozen) return;
           if (this.automaticApprovalConfig()) {
             const result = await this.automaticApprovals.handle(
               task,
@@ -564,34 +643,6 @@ export class Application implements ApplicationContext {
               this.changed();
               return;
             }
-          }
-          for (
-            let attempt = 0;
-            !this.automaticApprovalConfig() && this.config.ai.enabled && attempt < 2;
-            attempt++
-          ) {
-            const observedSeq = screen.agent.stateSeq;
-            if (
-              await this.directoryTrust.handle(
-                task,
-                participant,
-                screen,
-                this.actor(task, `startup:${participant.id}:${observedSeq}`),
-              )
-            ) {
-              await this.approvals.invalidate(
-                participant.execution,
-                "pi 已确认目录信任，此旧卡片已失效。",
-              );
-              this.changed();
-              return;
-            }
-            screen = await this.herdr.screen(participant.execution);
-            if (screen.agent.status !== "blocked") return;
-            if (screen.agent.stateSeq === observedSeq) break;
-            // Startup metadata can advance while pi reasons. Re-observe before
-            // offering a manual card; never replay a key whose effect is unknown.
-            if (attempt === 1) return;
           }
           // Re-read after model evaluation: a user may have answered meanwhile.
           if (service.approvalsBlocked(task.id) || approvalIngress(this.store, task).pending)

@@ -22,6 +22,7 @@ import { screenFingerprint } from "../herdr/screen.js";
 import type { ChoiceCandidate, JevOptions } from "../orchestration/jev.js";
 import type { ConversationEngine } from "../runtime/types.js";
 import type { Store } from "../storage/store.js";
+import { executionGeneration, startupTrustStatus } from "../tasks/readiness.js";
 import { type ApprovalChoice, approvalCandidates, chooseApproval } from "./approval-choice.js";
 import { approvalIngress } from "./approval-priority.js";
 import type { Approvals } from "./approvals.js";
@@ -35,6 +36,8 @@ interface Decision {
   id: string;
   taskId: string;
   participantId: string;
+  /** Execution generation this decision belongs to; never inherited by another. */
+  generation?: string;
   execution: NonNullable<Participant["execution"]>;
   terminalId: string;
   stateSeq: string;
@@ -147,8 +150,10 @@ export class AutomaticApprovals {
       p.taskId !== t.id ||
       !t.participantIds.includes(p.id) ||
       !p.started ||
-      ["paused", "completed", "destroying", "destroyed"].includes(t.status) ||
+      // Generic permission menus remain subject to the business pause; only the
+      // tightly scoped startup directory trust is exempt.
       t.discussion.paused ||
+      ["paused", "completed", "destroying", "destroyed"].includes(t.status) ||
       t.closeRequested ||
       t.completionRequest ||
       t.groupDeleted ||
@@ -234,18 +239,27 @@ export class AutomaticApprovals {
     const fingerprint = screenFingerprint(screen.text);
     const directoryIdentity = await realpath(ref.cwd).catch(() => undefined);
     if (!directoryIdentity) return "manual";
+    const generation = executionGeneration(participant);
     const history = this.ports.store
       .list<Decision>(namespace)
       .filter(
         (d) =>
           d.participantId === participant.id &&
+          (d.generation === undefined || d.generation === generation) &&
           d.execution.paneId === ref.paneId &&
+          d.execution.workspaceId === ref.workspaceId &&
           d.terminalId === screen.agent.terminalId,
       );
     // A lost effect ACK freezes this execution, even if its menu/stateSeq changes.
+    // A definitely new generation is not frozen by a retired generation's loss.
     if (history.some((d) => ["executing", "uncertain"].includes(d.state))) return "manual";
     const menu = nativeMenu(screen.text);
     if (!menu) return "manual";
+    // A same-execution startup-trust effect whose result is unknown can never be
+    // bypassed by the generic route, even if its menu/stateSeq changed; a
+    // definitely new generation is not governed by the retired receipts. A
+    // confirmed trust never freezes a later, unrelated permission menu.
+    if (startupTrustStatus(this.ports.store, participant).frozen) return "manual";
     const chatId = task.chatId ?? actor.chatId;
     const approval = this.ports.approvals.create(task.ownerId, chatId, ref, screen);
     if (approval.consumed || approval.screenFingerprint !== fingerprint) return "manual";
@@ -297,6 +311,7 @@ export class AutomaticApprovals {
       id,
       taskId: task.id,
       participantId: participant.id,
+      generation,
       execution: ref,
       terminalId: screen.agent.terminalId as string,
       stateSeq: screen.agent.stateSeq,
@@ -379,9 +394,14 @@ export class AutomaticApprovals {
         fail("approval_scope_changed", "任务或用户要求已变化，未发送按键。");
     };
     // No I/O here: this runs after the final native read, immediately before keys.
+    // A new startup-trust unknown for this same generation vetoes the write too.
     const assertCurrent = () => {
       const latest = this.scope(task, participant, screen, actor, context)?.task;
-      if (!latest || this.inputRevision(latest) !== inputRevision)
+      if (
+        !latest ||
+        this.inputRevision(latest) !== inputRevision ||
+        startupTrustStatus(this.ports.store, participant, decision.id).frozen
+      )
         fail("approval_scope_changed", "任务或用户要求已变化，未发送按键。");
     };
     const action = decision.action;

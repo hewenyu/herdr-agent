@@ -41,15 +41,16 @@ export class HerdrClient {
     ) {
       try {
         const screen = await this.read(agent.paneId, "visible", signal);
-        if (
-          !screen.truncated &&
-          (showsStartupMenu(screen.text) ||
-            directoryTrustKeys(agent.kind, screen.text, agent.cwd) ||
-            (agent.kind === "codex" && trustKeys(screen.text)))
+        if (screen.truncated) agent.status = "unknown";
+        else if (
+          showsStartupMenu(screen.text) ||
+          directoryTrustKeys(agent.kind, screen.text, agent.cwd) ||
+          (agent.kind === "codex" && trustKeys(screen.text))
         )
           agent.status = "blocked";
       } catch {
-        /* The status remains unconfirmed; control performs its own preflight. */
+        // A raw idle bit cannot prove readiness while its startup screen is unreadable.
+        agent.status = "unknown";
       }
     }
     return agent;
@@ -94,7 +95,18 @@ export class HerdrClient {
     return snapshot(result.agent);
   }
 
-  async keys(paneId: string, keys: string[], signal?: AbortSignal): Promise<void> {
-    await this.transport.call("agent.send_keys", { target: paneId, keys }, signal);
+  async keys(
+    paneId: string,
+    keys: string[],
+    signal?: AbortSignal,
+    beforeWrite?: () => void,
+  ): Promise<void> {
+    await this.transport.call(
+      "agent.send_keys",
+      { target: paneId, keys },
+      signal,
+      this.transport.timeoutMs,
+      beforeWrite,
+    );
   }
 }
