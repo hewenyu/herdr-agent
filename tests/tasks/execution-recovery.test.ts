@@ -275,7 +275,8 @@ test("persisted gone and unknown delivery remain historical unknown after execut
 
 for (const effect of ["create", "start"] as const) {
   for (const state of ["pending", "uncertain"] as const) {
-    test(`${state} recovery ${effect} never repeats across restart`, async () => {
+    test(`${state} recovery ${effect} never repeats across restart`, async (t) => {
+      t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
       const f = setup();
       try {
         const task = await f.service.create(actor, discussion);
@@ -308,6 +309,7 @@ for (const effect of ["create", "start"] as const) {
         const counts = [f.herdr.creates, f.herdr.starts];
         const sends = f.herdr.sends.length;
         f.herdr.createError = undefined;
+        t.mock.timers.tick(120_000); // Expired cooldown cannot bypass an unknown native effect.
         await new TaskService(f.options).tick();
         await f.service.tick();
         assert.deepEqual([f.herdr.creates, f.herdr.starts], counts);

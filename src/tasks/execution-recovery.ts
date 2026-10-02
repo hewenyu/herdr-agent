@@ -18,6 +18,7 @@ import {
 import {
   bindLegacyTrustEffects,
   type ExecutionObservation,
+  generationBoundary,
   inputReady,
   isRecoveryDiagnostic,
   readinessDiagnostic,
@@ -257,8 +258,18 @@ export async function recoverMissingExecutions(
       });
       continue;
     }
-    if (recovery?.state !== "building") {
-      if (!participant.started) continue;
+    // A replacement can disappear before it ever becomes input-ready (for
+    // example at the startup trust menu). Only a confirmed start in a NEW pane
+    // lets a building journal enter the missing-execution path; an incomplete
+    // workspace/start effect must keep its original receipt and never be retried
+    // through another generation.
+    const replacementStarted =
+      recovery &&
+      participant.execution.paneId !== recovery.previous.execution?.paneId &&
+      context.store.get<OperationReceipt>("operations", `${recovery.id}:start`)?.state === "done";
+    let missing = false;
+    if (recovery?.state !== "building" || replacementStarted) {
+      if (!participant.started && !replacementStarted) continue;
       let observation: ExecutionObservation;
       try {
         const agent = await context.herdr.get(participant.execution.paneId, context.signal);
@@ -278,11 +289,18 @@ export async function recoverMissingExecutions(
           agent.kind !== participant.kind
         )
           throw new OperationError("agent_replaced", "参与者身份发生变化，已停止调度。");
-        continue;
-      }
+        if (recovery?.state !== "building") continue;
+      } else missing = true;
+    }
+    if (missing) {
       guard();
-      // Do not churn workspaces if the empty replacement itself exits before a fresh arrangement.
-      if (participant.recoveryPending) continue;
+      // recoveryPending fences BUSINESS input, not the executor lifecycle. An
+      // unused replacement may disappear too; permanently skipping it strands
+      // the task after a second close. Rate-limit repeated repairs by the durable
+      // generation boundary instead, including pre-upgrade journals without at.
+      const boundary = generationBoundary(context.store, participant);
+      if (participant.recoveryPending && boundary && Date.now() - Date.parse(boundary) < 60_000)
+        continue;
       const id = `${participant.id}:recovery:${newId("execution")}`;
       recovery = {
         id,
@@ -325,7 +343,12 @@ export async function recoverMissingExecutions(
         const latest = await context.herdr.sampleLastReply(previousExecution);
         guard();
         const baseline = recovery.baseline as { id?: string } | undefined;
-        if (participant.initialSent && latest?.final && latest.id !== baseline?.id)
+        if (
+          !recovery.previous.recoveryPending &&
+          participant.initialSent &&
+          latest?.final &&
+          latest.id !== baseline?.id
+        )
           await recordOutput(context, task, participant, latest);
       } catch (error) {
         guard();
@@ -333,6 +356,7 @@ export async function recoverMissingExecutions(
         context.store.set("execution_recoveries", id, recovery);
       }
     }
+    if (!recovery) continue;
     guard();
     await context.catalog.verifyDirectories(task.directories);
     guard();
