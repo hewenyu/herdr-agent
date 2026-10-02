@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { OperationError } from "../../src/core/errors.js";
 import type { PlatformHandlers } from "../../src/core/ports.js";
 import { FeishuAPI } from "../../src/feishu/api.js";
 import { FetchHttpClient } from "../../src/feishu/http.js";
@@ -171,3 +172,140 @@ for (const stop of ["stop", "abort"] as const) {
     }
   });
 }
+
+for (const reason of [
+  new Error("sensitive handshake cancellation detail"),
+  "sensitive handshake cancellation detail",
+]) {
+  test(`handshake cancellation normalizes ${reason instanceof Error ? "an Error" : "a string"} reason`, {
+    timeout: 1000,
+  }, async () => {
+    let closed = 0;
+    const platform = new FeishuPlatform(credentials, {
+      request: async () => ({ code: 0, bot: { open_id: "bot" } }),
+      connection: () => ({
+        start: async () => {},
+        close: () => {
+          closed++;
+        },
+      }),
+    });
+    const controller = new AbortController();
+    const starting = platform.start(handlers, controller.signal);
+    const rejected = assert.rejects(starting, (error: unknown) => {
+      assert.ok(error instanceof OperationError);
+      assert.equal(error.code, "feishu_aborted");
+      assert.equal(error.outcome, "not_executed");
+      assert.ok(!error.message.includes("sensitive"));
+      return true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(reason);
+    await rejected;
+    assert.ok(closed > 0, "cancellation must close the transport");
+    await platform.stop();
+  });
+}
+
+test("caller abort during the identity gap is classified, not reported as an internal stop", {
+  timeout: 1000,
+}, async () => {
+  let lookedUp: () => void = () => {};
+  const lookup = new Promise<void>((resolve) => {
+    lookedUp = resolve;
+  });
+  let calls = 0;
+  const platform = new FeishuPlatform(credentials, {
+    request: async () => {
+      calls++;
+      if (calls === 1) {
+        lookedUp();
+        // Never settles: the caller aborts while identity is still pending.
+        return new Promise(() => {});
+      }
+      return { code: 0, bot: { open_id: "bot" } };
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const starting = platform.start(handlers, controller.signal);
+    const rejected = assert.rejects(starting, (error: unknown) => {
+      assert.ok(error instanceof OperationError);
+      assert.equal(error.code, "feishu_aborted");
+      assert.equal(error.outcome, "not_executed");
+      assert.ok(!error.message.includes("sensitive"));
+      return true;
+    });
+    await lookup;
+    controller.abort(new Error("sensitive identity-gap detail"));
+    await rejected;
+  } finally {
+    await platform.stop();
+  }
+});
+
+test("a pre-aborted caller never dispatches identity or opens a connection", async () => {
+  let requests = 0;
+  let connections = 0;
+  const platform = new FeishuPlatform(credentials, {
+    request: async () => {
+      requests++;
+      return { code: 0, bot: { open_id: "bot" } };
+    },
+    connection: () => {
+      connections++;
+      return { start: async () => {}, close: () => {} };
+    },
+  });
+  const controller = new AbortController();
+  controller.abort("sensitive pre-abort detail");
+  await assert.rejects(platform.start(handlers, controller.signal), (error: unknown) => {
+    assert.ok(error instanceof OperationError);
+    assert.equal(error.code, "feishu_aborted");
+    assert.equal(error.outcome, "not_executed");
+    assert.ok(!error.message.includes("sensitive"));
+    return true;
+  });
+  assert.equal(requests, 0);
+  assert.equal(connections, 0);
+  await platform.stop();
+});
+
+test("an internal stop keeps feishu_stopped semantics and cannot be mistaken for a caller abort", {
+  timeout: 1000,
+}, async () => {
+  let ready: () => void = () => {};
+  let connected: () => void = () => {};
+  const created = new Promise<void>((resolve) => {
+    connected = resolve;
+  });
+  const platform = new FeishuPlatform(credentials, {
+    request: async () => ({ code: 0, bot: { open_id: "bot" } }),
+    connection: ({ onReady }) => {
+      ready = onReady;
+      return {
+        start: async () => {
+          connected();
+        },
+        close: () => {},
+      };
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const starting = platform.start(handlers, controller.signal);
+    const rejected = assert.rejects(starting, (error: unknown) => {
+      assert.ok(error instanceof OperationError);
+      assert.equal(error.code, "feishu_stopped");
+      assert.equal(error.outcome, "not_executed");
+      return true;
+    });
+    await created;
+    await platform.stop();
+    await rejected;
+    // A late ready must not settle the already-stopped generation.
+    ready();
+  } finally {
+    await platform.stop();
+  }
+});

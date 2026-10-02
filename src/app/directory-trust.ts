@@ -75,10 +75,33 @@ export class DirectoryTrust {
       recognitionVersion,
       scope ?? "",
     );
-    const previous = this.store.get<{ attempts?: number; retryAt?: string }>(
-      "directory_trust_decisions",
-      decisionId,
-    );
+    // A corrupt decision row must not be reinterpreted through numeric/date
+    // coercion. `attempts` is only meaningful as a nonnegative integer and
+    // `retryAt` only as a parseable string; anything else is refused rather than
+    // treated as an exhausted or immediately-retryable decision, so the native
+    // write is never authorized from a record we cannot read. The row is left
+    // untouched.
+    const storedDecision = this.store.get<unknown>("directory_trust_decisions", decisionId);
+    let previous: { attempts?: number; retryAt?: string } | undefined;
+    if (storedDecision !== undefined) {
+      const attempts = (storedDecision as { attempts?: unknown } | null)?.attempts;
+      const retryAt = (storedDecision as { retryAt?: unknown } | null)?.retryAt;
+      if (
+        storedDecision === null ||
+        typeof storedDecision !== "object" ||
+        Array.isArray(storedDecision) ||
+        (attempts !== undefined &&
+          (typeof attempts !== "number" || !Number.isSafeInteger(attempts) || attempts < 0)) ||
+        (retryAt !== undefined &&
+          (typeof retryAt !== "string" || !Number.isFinite(Date.parse(retryAt))))
+      )
+        throw new OperationError(
+          "directory_trust_record_invalid",
+          `启动目录信任决定记录（${decisionId}）无法解读；本次确认已拒绝，原始记录保留供诊断。`,
+          "not_executed",
+        );
+      previous = storedDecision as { attempts?: number; retryAt?: string };
+    }
     if (
       previous &&
       ((previous.attempts ?? 0) >= maxModelAttempts ||

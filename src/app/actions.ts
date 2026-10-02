@@ -1,4 +1,4 @@
-import { saveConfigSection } from "../config/save.js";
+import { saveConfigSections } from "../config/save.js";
 import { modelProvider, validateConfig } from "../config/validate.js";
 import { fail } from "../core/errors.js";
 import { newId } from "../core/ids.js";
@@ -340,14 +340,16 @@ async function modelConfig(
     apiKey: optionalString(input, "apiKey") ?? previous.apiKey,
   };
   validateConfig({ ...context.config, ai, tasks: { ...context.config.tasks, enabled: true } });
-  await saveConfigSection(context.config.stateDir, "ai", {
-    enabled: ai.enabled,
-    provider: ai.provider,
-    model: ai.model,
-    base_url: ai.baseUrl,
-    api_key: ai.apiKey,
+  await saveConfigSections(context.config.stateDir, {
+    ai: {
+      enabled: ai.enabled,
+      provider: ai.provider,
+      model: ai.model,
+      base_url: ai.baseUrl,
+      api_key: ai.apiKey,
+    },
+    tasks: { enabled: true },
   });
-  await saveConfigSection(context.config.stateDir, "tasks", { enabled: true });
   context.changed();
   return { saved: true, restartRequired: true, message: "模型配置已保存，重启服务后生效。" };
 }

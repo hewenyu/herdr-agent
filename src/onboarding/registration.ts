@@ -36,8 +36,38 @@ export function validAuthorizationURL(raw: string): boolean {
     return false;
   }
 }
-function positive(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+/**
+ * Node timers silently collapse delays above 2^31-1 ms to 1 ms, and Date/AbortSignal.timeout
+ * reject non-integer or out-of-range delays. Timer inputs are therefore always finite, integral
+ * and within the native limit before they reach Node.
+ */
+const maxTimerMs = 2_147_483_647;
+/** One slow_down step; accumulation is capped by the native timer limit, not a fixed wait. */
+const slowDownStepMs = 5_000;
+const defaultBudgetMs = 720_000;
+const defaultExpiryMs = 600_000;
+const defaultIntervalMs = 5_000;
+
+type RemoteTiming = { kind: "absent" } | { kind: "invalid" } | { kind: "value"; ms: number };
+
+/**
+ * Classifies a remote seconds value. Absent or non-numeric fields keep the previous lenient
+ * defaults; a numeric value that cannot be a finite positive duration (0, negative, NaN,
+ * Infinity, or one whose millisecond conversion overflows) is malformed and is rejected rather
+ * than silently replaced or used raw.
+ */
+function remoteTiming(value: unknown): RemoteTiming {
+  if (typeof value !== "number") return { kind: "absent" };
+  if (!Number.isFinite(value) || value <= 0) return { kind: "invalid" };
+  const ms = value * 1000;
+  return Number.isFinite(ms) ? { kind: "value", ms } : { kind: "invalid" };
+}
+/** A timer delay must be a positive integer no greater than the native limit. */
+function timerMs(value: number): number {
+  return Math.min(Math.max(1, Math.ceil(value)), maxTimerMs);
+}
+function registrationResponse(message: string): OperationError {
+  return new OperationError("registration_response", message, "unknown");
 }
 
 /** Fixed official device flow. Cancellation also cancels each in-flight HTTP request. */
@@ -47,8 +77,15 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
   if (options.appId !== undefined && !/^cli_[A-Za-z0-9]+$/.test(options.appId)) {
     throw new OperationError("registration_target", "现有应用 ID 格式无效。");
   }
+  // The configured budget is caller-provided; normalize it only so it always forms a valid
+  // timer (fractional values would otherwise throw a RangeError inside AbortSignal.timeout).
+  const requestedBudget = options.timeoutMs ?? defaultBudgetMs;
+  const budgetMs = timerMs(
+    Number.isFinite(requestedBudget) && requestedBudget >= 0 ? requestedBudget : defaultBudgetMs,
+  );
+  const startedAt = Date.now();
   const signal = AbortSignal.any([
-    AbortSignal.timeout(options.timeoutMs ?? 720_000),
+    AbortSignal.timeout(budgetMs),
     ...(options.signal ? [options.signal] : []),
   ]);
   const http = { fetch: options.fetch, requestTimeoutMs: options.requestTimeoutMs, signal };
@@ -72,6 +109,9 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
       auth_method: "client_secret",
       request_user_info: "open_id",
     });
+    // A pre-aborted caller must not receive a QR code for a request that was never useful.
+    if (options.signal?.aborted)
+      throw new OperationError("authorization_aborted", "授权已取消。", "unknown");
     signal.throwIfAborted();
     if (
       !string(begin.device_code) ||
@@ -79,8 +119,23 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
     ) {
       throw new OperationError("registration_response", "飞书未返回有效的授权链接。", "unknown");
     }
-    const expiryMs = positive(begin.expires_in, 600) * 1000;
-    expiresAt = Date.now() + expiryMs;
+    // Remote timing is validated before any callback, timer or wall-clock deadline. Absent
+    // fields fall back to the documented defaults; a numeric field that cannot be a positive
+    // duration is rejected as a malformed response instead of silently replaced.
+    const remoteExpiry = remoteTiming(begin.expires_in);
+    if (remoteExpiry.kind === "invalid") throw registrationResponse("飞书返回的授权有效期无效。");
+    const expiryMs = Math.min(
+      remoteExpiry.kind === "value" ? remoteExpiry.ms : defaultExpiryMs,
+      maxTimerMs,
+    );
+    // Poll pacing never reaches a timer unbounded: an oversized or fractional remote value is
+    // normalized to a valid timer delay, and slow_down accumulation is capped the same way.
+    const remoteInterval = remoteTiming(begin.interval);
+    if (remoteInterval.kind === "invalid") throw registrationResponse("飞书返回的轮询间隔无效。");
+    let interval = timerMs(remoteInterval.kind === "value" ? remoteInterval.ms : defaultIntervalMs);
+    // The advertised deadline is the remote expiry bounded by the caller's own budget: it can
+    // never be an unrepresentable date and never promises more than the caller will wait.
+    expiresAt = Math.min(Date.now() + expiryMs, startedAt + budgetMs);
     const url = new URL(string(begin.verification_uri_complete));
     const addons = {
       scopes: { tenant: requiredScopes(options.tasks ?? true) },
@@ -100,12 +155,15 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
     if (options.createOnly) url.searchParams.set("createOnly", "true");
     options.onURL({
       url: url.toString(),
-      expiresAt: new Date(Date.now() + expiryMs).toISOString(),
+      // Both terms are finite and bounded, so this can never throw or advertise a deadline
+      // the local budget will not honor.
+      expiresAt: new Date(expiresAt).toISOString(),
     });
     const pollSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(expiryMs))]);
-    let interval = positive(begin.interval, 5) * 1000;
     let switched = false;
     while (true) {
+      // Abort reasons never escape this loop: the outer catch maps caller cancellation to
+      // authorization_aborted and the local budget to authorization_expired.
       pollSignal.throwIfAborted();
       const result = await post(
         { action: "poll", device_code: string(begin.device_code) },
@@ -136,7 +194,9 @@ export async function registerApp(options: RegistrationOptions): Promise<Registe
       }
       switch (result.error) {
         case "slow_down":
-          interval += 5_000;
+          // Accumulated backoff is capped by the native timer limit, so repeated slow_down can
+          // never overflow the next delay.
+          interval = Math.min(interval + slowDownStepMs, maxTimerMs);
           options.onStatus?.({ status: "slow_down", interval: interval / 1000 });
           break;
         case "authorization_pending":

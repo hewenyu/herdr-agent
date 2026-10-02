@@ -669,3 +669,52 @@ for (const outcome of ["confirmed", "text_only", "tool_rejected"] as const) {
     }
   });
 }
+
+// A corrupt decision row is refused typed before any trust write; the row is
+// preserved and the guard is not silently treated as exhausted or expired.
+test("a corrupt directory-trust decision refuses typed without a native write", async () => {
+  const h = await fixture();
+  try {
+    let confirms = 0;
+    (h.herdr as HerdrPort).trustDirectory = async () => {
+      confirms++;
+    };
+    let turns = 0;
+    h.engine.handler = async (turn) => {
+      if (turn.sessionId.startsWith("directory-trust:")) {
+        turns++;
+        assert.fail("a corrupt decision must not reach the model");
+      }
+      return { text: '{"notify":false}', messages: [] };
+    };
+    await h.app.tasks.reconcile(h.task.id);
+    const entry = h.store.entries<unknown>("directory_trust_decisions")[0];
+    assert.ok(entry, "a decision row exists after the first attempt");
+    const [key, decision] = entry;
+    const corrupt = { ...(decision as Record<string, unknown>), retryAt: { toString: null } };
+    h.store.set("directory_trust_decisions", key, corrupt);
+    // Only writes performed after the corruption are evidence of a leak.
+    confirms = 0;
+    turns = 0;
+    const participant = h.app.tasks.records.participants(h.task)[0] as Participant;
+    assert.ok(participant.execution);
+    const screen: AgentScreen = await h.herdr.screen(participant.execution);
+    const controller = new DirectoryTrust(h.store, h.herdr, h.engine, logger, h.app.signal);
+    await assert.rejects(
+      controller.handle(h.task, participant, screen, {
+        ownerId: "owner",
+        chatId: "entry",
+        sessionId: "s",
+        taskId: h.task.id,
+        messageId: "corrupt",
+      }),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "directory_trust_record_invalid",
+    );
+    assert.equal(confirms, 0);
+    assert.equal(turns, 0);
+    assert.deepEqual(h.store.get("directory_trust_decisions", key), corrupt);
+  } finally {
+    await h.close();
+  }
+});

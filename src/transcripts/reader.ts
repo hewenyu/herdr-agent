@@ -82,9 +82,23 @@ export class TranscriptReader {
         }
         return { entries: [], cursor: encodeCursor(state), path };
       }
-      state.offset = previous.offset > size ? 0 : previous.offset;
-      state.offset = Math.max(afterOffset, state.offset);
-      state.skipPartial = previous.offset > size ? false : previous.skipPartial;
+      // The verified receipt's afterOffset is the authoritative lower bound; a cursor
+      // never reads before it. Restarting at 0 on a shrink below the previous offset is
+      // safe because the boundary is re-applied here, and it is a record boundary, so a
+      // stale partial flag must not make the first post-receipt record be skipped.
+      const requested = previous.offset > size ? 0 : previous.offset;
+      state.offset = Math.max(afterOffset, requested);
+      state.skipPartial =
+        previous.offset > size || afterOffset > requested ? false : previous.skipPartial;
+      if (state.offset > size) {
+        // The source is shorter than the receipt boundary (the file shrank after the
+        // receipt was resolved, e.g. same-inode truncation). No record after the receipt
+        // can exist yet: report an empty page and pin the cursor at EOF so later growth
+        // resumes at the receipt boundary, never in the earlier transcript.
+        state.offset = size;
+        state.skipPartial = false;
+        return { entries: [], cursor: encodeCursor(state), path };
+      }
       const buffer = Buffer.alloc(Math.min(maxRead, size - state.offset));
       const { bytesRead } = await file.read(buffer, 0, buffer.length, state.offset);
       let data = buffer.subarray(0, bytesRead);

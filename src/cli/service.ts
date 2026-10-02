@@ -241,7 +241,7 @@ async function authorize(
         fail = reject;
       });
       await start(fail);
-      await Promise.race([aborted(signal), connectionFailed]);
+      await connectionEnded(signal, connectionFailed);
       return;
     } catch (error) {
       if (signal.aborted) return;
@@ -269,4 +269,35 @@ export function aborted(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) =>
     signal.addEventListener("abort", () => resolve(), { once: true }),
   );
+}
+
+/**
+ * Resolves once a started connection ends, either because the service signal
+ * aborted or because the platform reported a runtime failure. The abort
+ * listener belongs to this one connection attempt only: it is removed on
+ * failure, on abort, and after the connection ends, so retries never
+ * accumulate listeners on the shared service signal. Rejections from
+ * `connectionFailed` keep propagating to the reconnect handler.
+ */
+function connectionEnded(signal: AbortSignal, connectionFailed: Promise<never>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void connectionFailed.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    // Even an already-aborted wait must consume a racing connection rejection.
+    if (signal.aborted) onAbort();
+  });
 }

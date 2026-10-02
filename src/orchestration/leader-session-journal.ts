@@ -456,7 +456,7 @@ export function boundCheckpointMessages(
     );
   const batches = checkpointBatches(repaired);
   const summaries: string[] = [];
-  let kept = batches.map((batch) => batch.messages);
+  const kept = batches.map((batch) => batch.messages);
   // Omitted batches stay available as bounded summary facts: a dropped read
   // batch is still evidence the Leader already saw its bounded receipt, and a
   // dropped batch carrying a write receipt is recorded explicitly. Omission is
@@ -489,22 +489,20 @@ export function boundCheckpointMessages(
     );
   // Drop whole batches from the oldest end until BOTH the byte limit and the
   // message-count limit hold for the complete stored array, summary included.
-  let dropped = false;
   for (;;) {
     const state = stored();
     if (!state.pending && state.messages.length <= maxHold(maxMessages) && state.bytes <= maxBytes)
       return state;
     if (kept.length > 1) {
       remember(kept.shift());
-      dropped = true;
       continue;
     }
     if (kept.length === 1) {
-      // A single surviving batch is summarized whole rather than sliced, so no
-      // tool result is ever orphaned from its call. Summarizing it a second time
-      // is unnecessary when it is already the last dropped batch.
-      if (!dropped) remember(kept[0]);
-      kept = [];
+      // The last surviving batch is summarized whole rather than sliced, so no
+      // tool result is ever orphaned from its call. It is remembered exactly
+      // once here: a batch that cannot fit the budget must never disappear from
+      // both the stored messages and the omission summary.
+      remember(kept.shift());
       continue;
     }
     throw new OperationError(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
+import { OperationError } from "../../src/core/errors.js";
 import { registerApp, validAuthorizationURL } from "../../src/onboarding/registration.js";
 
 const begin = {
@@ -198,6 +199,174 @@ test("HTTP 400 pending is polled; denial and expiry remain distinguishable", asy
     );
     assert.equal(calls, 3);
   }
+});
+
+test("a pre-aborted caller never dispatches begin and normalizes every abort reason", async () => {
+  for (const reason of [
+    undefined,
+    new Error("sensitive pre-abort detail"),
+    "sensitive pre-abort detail",
+    false,
+  ]) {
+    const controller = new AbortController();
+    reason === undefined ? controller.abort() : controller.abort(reason);
+    let calls = 0;
+    let qr = false;
+    await assert.rejects(
+      registerApp({
+        signal: controller.signal,
+        onURL: () => {
+          qr = true;
+        },
+        fetch: async () => {
+          calls++;
+          return response(begin);
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof OperationError);
+        assert.equal(error.code, "authorization_aborted");
+        assert.ok(!error.message.includes("sensitive"));
+        return true;
+      },
+    );
+    assert.equal(calls, 0);
+    assert.equal(qr, false);
+  }
+});
+
+test("oversized remote interval is capped instead of flooding the endpoint", {
+  timeout: 5000,
+}, async () => {
+  const statuses: Array<number | undefined> = [];
+  let calls = 0;
+  const started = Date.now();
+  await assert.rejects(
+    registerApp({
+      timeoutMs: 150,
+      onURL: () => {},
+      onStatus: ({ status, interval }) => {
+        if (status === "slow_down") statuses.push(interval);
+      },
+      fetch: async () => {
+        calls++;
+        return response(
+          calls === 1
+            ? { ...begin, interval: 5_000_000, expires_in: 600 }
+            : { error: "authorization_pending" },
+        );
+      },
+    }),
+    { code: "authorization_expired" },
+  );
+  // After begin and the first poll, the local budget must expire before another poll.
+  assert.ok(calls <= 2, `expected no repeated polling, saw ${calls} calls`);
+  assert.ok(Date.now() - started >= 100, "the capped interval must actually wait");
+});
+
+test("overflowing finite remote timing never overflows a timer or falsely expires early", async () => {
+  for (const expires_in of [1e12, 1e303]) {
+    let shown = "";
+    let calls = 0;
+    await assert.rejects(
+      registerApp({
+        // A short local budget proves the deadline, not a RangeError, ends the wait.
+        timeoutMs: 100,
+        onURL: ({ expiresAt }) => {
+          shown = expiresAt;
+        },
+        fetch: async () => {
+          calls++;
+          return response(
+            calls === 1 ? { ...begin, expires_in } : { error: "authorization_pending" },
+          );
+        },
+      }),
+      { code: "authorization_expired" },
+    );
+    assert.ok(shown, "an oversized expiry still yields a usable absolute deadline");
+    assert.ok(!Number.isNaN(Date.parse(shown)), "the advertised deadline must be a valid date");
+    // The advertised deadline never exceeds the local budget-derived deadline.
+    const remaining = Date.parse(shown) - Date.now();
+    assert.ok(remaining <= 1_500, `advertised deadline ${shown} must respect the local budget`);
+  }
+});
+
+test("non-finite or millisecond-overflowing remote timing is rejected before callbacks or timers", async () => {
+  // 1e307 seconds cannot even be represented as milliseconds, so it is malformed rather than
+  // silently capped.
+  for (const field of ["expires_in", "interval"] as const)
+    for (const value of [Number.POSITIVE_INFINITY, Number.NaN, 1e307]) {
+      let qr = false;
+      await assert.rejects(
+        registerApp({
+          onURL: () => {
+            qr = true;
+          },
+          fetch: async () => {
+            // JSON cannot carry Infinity/NaN, so the parsed body is supplied directly.
+            const body = new Response("{}");
+            body.json = async () => ({ ...begin, [field]: value });
+            return body;
+          },
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof OperationError);
+          assert.equal(error.code, "registration_response");
+          return true;
+        },
+      );
+      assert.equal(qr, false);
+    }
+});
+
+test("unusable non-positive remote timing is rejected as a malformed response before callbacks", async () => {
+  for (const timing of [{ expires_in: 0 }, { expires_in: -1 }, { interval: 0 }, { interval: -5 }]) {
+    let qr = false;
+    await assert.rejects(
+      registerApp({
+        onURL: () => {
+          qr = true;
+        },
+        fetch: async () => response({ ...begin, ...timing }),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof OperationError);
+        assert.equal(error.code, "registration_response");
+        return true;
+      },
+    );
+    assert.equal(qr, false);
+  }
+});
+
+test("slow_down reports its backoff and the local budget bounds the wait", {
+  timeout: 5000,
+}, async () => {
+  const steps: number[] = [];
+  let calls = 0;
+  await assert.rejects(
+    registerApp({
+      timeoutMs: 120,
+      onURL: () => {},
+      onStatus: ({ status, interval }) => {
+        if (status === "slow_down" && interval !== undefined) steps.push(interval);
+      },
+      fetch: async () => {
+        calls++;
+        // This first backoff exceeds the local budget; waiting must still abort promptly.
+        return response(calls === 1 ? begin : { error: "slow_down" });
+      },
+    }),
+    { code: "authorization_expired" },
+  );
+  assert.ok(steps.length >= 1);
+  assert.ok(
+    steps.every(
+      (seconds) => Number.isFinite(seconds) && seconds > 0 && seconds <= 2_147_483_647 / 1000,
+    ),
+    `slow_down intervals must stay within the native timer range: ${steps.join(", ")}`,
+  );
 });
 
 test("begin request has a bounded aborting timeout", async () => {

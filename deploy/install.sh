@@ -247,6 +247,13 @@ load_job() {
 remove_job() {
   local label=$1
   unload_job "$label"
+  # unload_job bounds its wait but leaves the final decision to its caller.
+  # Preserve the definition and refuse success while launchd still has the job.
+  if job_loaded "$label"; then
+    die "$label is still loaded after bootout; its launch definition was left in place.
+     Stop it with the command below, then retry uninstall:
+     launchctl bootout $DOMAIN/$label"
+  fi
   rm -f "$LA_DIR/$label.plist"
   ok "$label removed"
 }

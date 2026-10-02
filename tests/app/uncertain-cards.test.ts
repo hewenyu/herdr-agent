@@ -138,3 +138,58 @@ test("uncertain card consumed decision stays consumed even if application fails"
     h.close();
   }
 });
+
+// A corrupt card must refuse typed, preserve its original row, and never apply a
+// choice or publish a replacement for a possibly-executed unknown effect.
+test("unreadable uncertain cards refuse typed and never apply or republish", async () => {
+  const h = setup();
+  try {
+    const card = await h.cards.publish(h.request);
+    const corrupt = { ...card, expiresAt: { toString: null } };
+    h.store.set("uncertain_cards", card.nonce, corrupt);
+    assert.throws(
+      () => h.cards.lookup(h.request),
+      (error: unknown) => error instanceof OperationError && error.code === "card_record_invalid",
+    );
+    await assert.rejects(
+      h.cards.answer("owner", "chat", card.nonce, "retry_once"),
+      (error: unknown) => error instanceof OperationError && error.code === "card_record_invalid",
+    );
+    await assert.rejects(
+      h.cards.publish(h.request),
+      (error: unknown) => error instanceof OperationError && error.code === "card_record_invalid",
+    );
+    assert.deepEqual(h.applied, []);
+    assert.equal(h.platform.cards.length, 1);
+    assert.deepEqual(h.store.get("uncertain_cards", card.nonce), corrupt);
+    assert.equal(h.store.get("uncertain_cards", "unknown-nonce"), undefined);
+  } finally {
+    h.close();
+  }
+});
+
+test("a corrupt uncertain card identity index is refused, not read as absence", async () => {
+  const h = setup();
+  try {
+    const card = await h.cards.publish(h.request);
+    const identity = h.store.entries<unknown>("uncertain_card_identity")[0];
+    assert.ok(identity, "identity index exists after publish");
+    const [key, indexed] = identity;
+    assert.equal(indexed, card.nonce);
+    const corruptIndex = 7;
+    h.store.set("uncertain_card_identity", key, corruptIndex);
+    assert.throws(
+      () => h.cards.lookup(h.request),
+      (error: unknown) => error instanceof OperationError && error.code === "card_record_invalid",
+    );
+    await assert.rejects(
+      h.cards.publish(h.request),
+      (error: unknown) => error instanceof OperationError && error.code === "card_record_invalid",
+    );
+    assert.deepEqual(h.store.get("uncertain_card_identity", key), corruptIndex);
+    assert.deepEqual(h.store.get("uncertain_cards", card.nonce), card);
+    assert.equal(h.platform.cards.length, 1);
+  } finally {
+    h.close();
+  }
+});

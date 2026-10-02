@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { OperationError } from "../../src/core/errors.js";
 import { checkAuthorization } from "../../src/onboarding/authorization.js";
 import { saveCredentials } from "../../src/onboarding/credentials.js";
 import { requiredEvents, requiredScopes } from "../../src/onboarding/scopes.js";
@@ -91,6 +92,106 @@ test("chat status requests minimal read scope but accepts already granted offici
           : { state: "required", missingScopes: ["im:chat:read"] },
       );
     }
+});
+
+test("a pre-aborted caller never dispatches a request and never exposes its abort reason", async () => {
+  for (const reason of [
+    undefined,
+    new Error("sensitive cancellation detail"),
+    "sensitive cancellation detail",
+    new OperationError("caller_chosen_code", "sensitive classified cancellation detail"),
+    false,
+  ]) {
+    const controller = new AbortController();
+    reason === undefined ? controller.abort() : controller.abort(reason);
+    let calls = 0;
+    await assert.rejects(
+      checkAuthorization(credentials, {
+        signal: controller.signal,
+        fetch: async () => {
+          calls++;
+          return response({ code: 0, tenant_access_token: "late-token" });
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof OperationError);
+        assert.equal(error.code, "authorization_aborted");
+        assert.equal(error.outcome, "unknown");
+        assert.ok(!error.message.includes("sensitive"));
+        return true;
+      },
+    );
+    assert.equal(calls, 0);
+  }
+});
+
+test("a cancellation completing with the response is classified and never leaks the reason", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(
+    checkAuthorization(credentials, {
+      signal: controller.signal,
+      fetch: async () => {
+        calls++;
+        controller.abort(new Error("sensitive response-race detail"));
+        return response({ code: 0, tenant_access_token: "unusable-token" });
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof OperationError);
+      assert.equal(error.code, "authorization_aborted");
+      assert.ok(!error.message.includes("sensitive"));
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+test("a caller-chosen OperationError cannot escape an in-flight cancellation", async () => {
+  for (const stage of ["fetch", "body"]) {
+    const controller = new AbortController();
+    const reason = new OperationError("caller_chosen_code", "sensitive cancellation detail");
+    let calls = 0;
+    const abort = () => {
+      controller.abort(reason);
+      throw reason;
+    };
+    await assert.rejects(
+      checkAuthorization(credentials, {
+        signal: controller.signal,
+        fetch: async () => {
+          calls++;
+          if (stage === "fetch") return abort();
+          const body = response({ code: 0, tenant_access_token: "unusable-token" });
+          body.json = async () => abort();
+          return body;
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof OperationError);
+        assert.equal(error.code, "authorization_aborted");
+        assert.equal(error.outcome, "unknown");
+        assert.notEqual(error, reason);
+        assert.ok(!error.message.includes("sensitive"));
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("a definite HTTP error keeps its classification during concurrent cancellation", async () => {
+  const controller = new AbortController();
+  await assert.rejects(
+    checkAuthorization(credentials, {
+      signal: controller.signal,
+      fetch: async () => {
+        controller.abort(new Error("sensitive cancellation detail"));
+        return new Response("{}", { status: 403 });
+      },
+    }),
+    { code: "onboarding_http_403", outcome: "unknown" },
+  );
 });
 
 test("credentials save preserves unrelated settings, enforces app identity and private mode", async () => {

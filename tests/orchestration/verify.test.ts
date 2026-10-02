@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { OperationError } from "../../src/core/errors.js";
 import type { Project, Task } from "../../src/core/types.js";
 import { type VerificationRun, VerificationRunner } from "../../src/orchestration/verify.js";
 import { ProjectCatalog } from "../../src/projects/catalog.js";
@@ -276,4 +277,58 @@ test("retry selection cannot bypass a terminal or unconfirmed verification outco
   });
   assert.equal(h.runner.list().length, 2);
   assert.deepEqual(await h.runner.run(h.task, first), cancelled);
+});
+
+// An unreadable run record could still own a directory block. It is refused
+// typed rather than skipped (which would release the gate) or coerced into
+// non-string paths that later make realpath throw a raw TypeError.
+test("a corrupt verification run refuses typed and never releases its directory block", async (t) => {
+  const h = await fixture(t, ["printf ok"]);
+  const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "artifact"));
+  assert.equal(result.status, "passed");
+  for (const corrupt of [
+    { ...result, cwd: { toString: null }, directories: undefined },
+    { ...result, directories: [{ toString: null }] },
+    { ...result, directories: 5 },
+    { ...result, id: 5 },
+    { ...result, status: "unrecognized" },
+    { ...result, exitConfirmed: "false" },
+    { ...result, cwd: "" },
+  ]) {
+    h.store.set("verification_runs", result.id, corrupt);
+    assert.throws(
+      () => h.runner.list(),
+      (error: unknown) => error instanceof OperationError && error.code === "verify_record_invalid",
+    );
+    assert.throws(
+      () => h.runner.blockingDirectories(),
+      (error: unknown) => error instanceof OperationError && error.code === "verify_record_invalid",
+    );
+    assert.throws(
+      () => new VerificationRunner(h),
+      (error: unknown) => error instanceof OperationError && error.code === "verify_record_invalid",
+    );
+    // The store round-trips through JSON, so an explicit `undefined` is dropped.
+    assert.deepEqual(
+      h.store.get("verification_runs", result.id),
+      JSON.parse(JSON.stringify(corrupt)),
+    );
+  }
+});
+
+// A legacy row may predate `exitConfirmed`. Its absence is unconfirmed, not a
+// safe cancellation, so it still cannot authorize a retry or release the gate.
+test("a legacy run without exitConfirmed stays unconfirmed and never authorizes retry", async (t) => {
+  const h = await fixture(t, ["printf legacy"]);
+  const first = candidateFor(h.runner, h.task, "artifact");
+  const passed = await h.runner.run(h.task, first);
+  const { exitConfirmed: _confirmed, ...legacy } = { ...passed, status: "cancelled" as const };
+  h.store.set("verification_runs", passed.id, legacy);
+  assert.deepEqual(h.store.get("verification_runs", passed.id), legacy);
+  assert.equal(h.runner.list()[0]?.exitConfirmed, undefined);
+  assert.deepEqual(h.runner.candidates(h.task, "artifact"), []);
+  await assert.rejects(h.runner.run(h.task, { ...first, retryOf: passed.id }), {
+    code: "verify_retry",
+  });
+  assert.deepEqual(h.store.get("verification_runs", passed.id), legacy);
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -329,6 +330,84 @@ test("runtime connection failure stops the old platform and retries before work 
     );
     assert.deepEqual(h.errors, ["操作未完成，请查看本机诊断状态。"]);
   } finally {
+    h.cleanup();
+  }
+});
+
+test("shutdown at startup completion still handles a simultaneous connection failure", async () => {
+  const h = harness();
+  try {
+    h.config.feishu = {
+      appId: "cli_test",
+      appSecret: "secret",
+      allowedOpenIds: ["owner"],
+      notifyChatId: "",
+    };
+    let fail: ((error: Error) => void) | undefined;
+    const runtimePlatform = h.platform as PlatformPort;
+    runtimePlatform.start = async (_handlers, _signal, onFailure) => {
+      fail = onFailure;
+    };
+    h.app.tick = async () => {
+      queueMicrotask(() => {
+        h.control.abort();
+        fail?.(new Error("connection closed while shutting down"));
+      });
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 0);
+    // Let Node observe any orphan rejection; the test runner must see none.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(h.errors, []);
+    assert.ok(h.events.includes("shutdown"));
+    assert.ok(h.events.includes("unlock"));
+  } finally {
+    h.control.abort();
+    h.cleanup();
+  }
+});
+
+test("runtime reconnects release the previous connection's abort listener", async () => {
+  const h = harness();
+  try {
+    h.config.feishu = {
+      appId: "cli_test",
+      appSecret: "secret",
+      allowedOpenIds: ["owner"],
+      notifyChatId: "",
+    };
+    let starts = 0;
+    let listenerBaseline = 0;
+    let connectionSignal = h.control.signal;
+    const afterDisconnect: number[] = [];
+    const runtimePlatform = h.platform as PlatformPort;
+    runtimePlatform.start = async (_handlers, signal, onFailure) => {
+      assert.ok(signal);
+      connectionSignal = signal;
+      starts++;
+      if (starts === 1) listenerBaseline = getEventListeners(signal, "abort").length;
+      // A macrotask ensures this is a runtime disconnection, after startup and
+      // installation of the connection wait, rather than a handshake failure.
+      setImmediate(() => {
+        if (starts < 12) onFailure?.(new Error("socket closed"));
+        else h.control.abort();
+      });
+    };
+    h.deps.sleep = async () => {
+      afterDisconnect.push(getEventListeners(connectionSignal, "abort").length);
+    };
+    assert.equal(await runCLI(["serve"], h.deps), 0);
+    assert.equal(starts, 12);
+    assert.equal(afterDisconnect.length, 11);
+    assert.deepEqual(
+      afterDisconnect,
+      Array.from({ length: 11 }, () => listenerBaseline),
+      "each completed connection must release its abort listener before retry",
+    );
+    assert.equal(getEventListeners(connectionSignal, "abort").length, 0);
+    assert.ok(h.events.includes("shutdown"));
+    assert.ok(h.events.includes("unlock"));
+  } finally {
+    h.control.abort();
     h.cleanup();
   }
 });

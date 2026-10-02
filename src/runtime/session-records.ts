@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ActorContext, StoredMessage } from "../core/types.js";
 import type { Store } from "../storage/store.js";
-import type { TurnEffect } from "./recovery.js";
+import { assertJournalEffect } from "./recovery.js";
 import type { MessageRecord, TurnReceipt } from "./types.js";
 
 /** Stable identity key for durable receipts, operations and checkpoints. */
@@ -74,7 +74,12 @@ export function restoreDeferredRequests(
   generation: number,
   turnId: string,
 ): void {
-  for (const effect of store.list<TurnEffect>("pi_operations")) {
+  // Validate every row before restoring any intent: a later corrupt row must
+  // not leave partially restored reset/archive requests behind.
+  const effects = store
+    .entries<unknown>("pi_operations")
+    .map(([id, value]) => assertJournalEffect(id, value));
+  for (const effect of effects) {
     if (effect.turnId !== turnId || effect.status !== "complete") continue;
     const reset = effect.deferredReset;
     if (reset?.generation === generation && reset.messageId === actor.messageId)
