@@ -401,6 +401,8 @@ export class VerificationRunner {
       cancelled = true;
       stop();
     };
+    // Anchor the same budget to a clock that advances even while JS is stalled.
+    const deadlineAt = performance.now() + record.timeoutMs;
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
@@ -419,6 +421,9 @@ export class VerificationRunner {
       if (child.pid) this.save({ ...record, status: "running", pid: child.pid, startedAt: now() });
       const result = await closed;
       clearTimeout(timer);
+      // A queued close can beat an overdue timer. Conservatively reject a late
+      // observation: exit 0 alone cannot prove completion within the deadline.
+      if (performance.now() >= deadlineAt) timedOut = true;
       // A shell may exit before its children; they remain part of the verification run.
       const lingeringChildren = !!child.pid && groupExists(child.pid);
       if (lingeringChildren && child.pid) {

@@ -192,9 +192,16 @@ async function verificationFixture(long = false) {
       ? `const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); process.exit(0); } }, 10);`
       : ""
   }`;
+  // The short fixture writes its marker with POSIX shell builtins rather than starting an
+  // unrelated Node interpreter: `cd -P .` reports the same physical cwd as process.cwd() and
+  // `printf` appends no newline, so the existing exact marker assertions stay valid.
   await h.catalog.save({
     ...h.catalog.get("worktree"),
-    verify: [`exec ${shellQuote(process.execPath)} -e ${shellQuote(script)}`],
+    verify: [
+      long
+        ? `exec ${shellQuote(process.execPath)} -e ${shellQuote(script)}`
+        : `cd -P . && printf '%s' "$PWD" > ${shellQuote(marker)}`,
+    ],
     verifyTimeoutMs: 5000,
   });
   await h.service.reconcile(h.task.id);
