@@ -9,6 +9,7 @@ import { Operations } from "../../src/storage/operations.js";
 import type { ExecutionRecovery } from "../../src/tasks/execution-recovery.js";
 import { TaskService } from "../../src/tasks/service.js";
 import { Engine, logger } from "../app/helpers.js";
+import { assertDefined } from "../helpers/assertions.js";
 import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 function recoveryOf(f: ReturnType<typeof setup>, participantId: string): ExecutionRecovery {
@@ -20,18 +21,6 @@ function recoveryOf(f: ReturnType<typeof setup>, participantId: string): Executi
   );
   assert.ok(recovery);
   return recovery;
-}
-
-/** Reflect a genuine user control (pause action/interrupt) that lands outside the mutation lock. */
-function userPause(f: ReturnType<typeof setup>, taskId: string): void {
-  const revision = (f.store.get<number>("task_pause_revision", taskId) ?? 0) + 1;
-  f.store.set("task_pause_revision", taskId, revision);
-  f.store.set("task_user_pause_revision", taskId, revision);
-  const task = f.store.get<Task>("tasks", taskId);
-  assert.ok(task);
-  task.discussion.paused = true;
-  task.status = "paused";
-  f.store.set("tasks", taskId, task);
 }
 
 function lifecycleIngress(f: ReturnType<typeof setup>, remoteTaskId: string, id: string): void {
@@ -58,14 +47,19 @@ for (const kind of ["claude", "codex"] as const) {
           mode === "manual" ? { discussionMode: "manual" } : { orchestration: { mode } },
         );
         await f.service.tick();
-        const before = f.service.get(actor, task.id).participants[0]!;
-        f.herdr.agents.delete(before.execution!.paneId);
+        const before = assertDefined(
+          f.service.get(actor, task.id).participants[0],
+          "the task has a first participant",
+        );
+        f.herdr.agents.delete(
+          assertDefined(before.execution, "the participant has an execution").paneId,
+        );
         const sends = f.herdr.sends.length;
         const oldOperations = f.store.entries<OperationReceipt>("operations");
         await f.service.tick();
         await new TaskService(f.options).tick();
         const current = f.service.get(actor, task.id);
-        const after = current.participants[0]!;
+        const after = assertDefined(current.participants[0], "the task has a first participant");
         assert.equal(after.id, before.id);
         assert.notEqual(after.execution?.paneId, before.execution?.paneId);
         assert.notEqual(after.initialReceipt, before.initialReceipt);
@@ -99,7 +93,10 @@ for (const kind of ["claude", "codex"] as const) {
         );
         assert.equal(f.herdr.sends.length, sends + 1);
         assert.equal(f.service.get(actor, task.id).participants[0]?.recoveryPending, false);
-        assert.match(f.herdr.sends.at(-1)!.text, /新的安排/);
+        assert.match(
+          assertDefined(f.herdr.sends.at(-1), "the fresh arrangement was sent").text,
+          /新的安排/,
+        );
       } finally {
         f.close();
       }
@@ -114,8 +111,13 @@ test("a finished repair never authorizes the automatic orchestrator to resume sc
       orchestration: { mode: "model" },
     });
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).participants[0]?.recoveryPending, true);
     const orchestrator = new TaskOrchestrator({
@@ -146,8 +148,13 @@ test("a fresh user arrangement releases the repair pause and lets automatic sche
       orchestration: { mode: "model" },
     });
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
     const repairing = f.service.get(actor, task.id);
     assert.equal(repairing.discussion.paused, true);
@@ -161,7 +168,15 @@ test("a fresh user arrangement releases the repair pause and lets automatic sche
     assert.equal(released.status, "running");
     // The task is schedulable again: after the fresh turn settles, the automatic
     // orchestrator observes it and produces the next scheduling event.
-    f.herdr.finish(released.participants[0]!.execution!.paneId, "新的安排已完成");
+    const releasedParticipant = assertDefined(
+      released.participants[0],
+      "the released task has a first participant",
+    );
+    f.herdr.finish(
+      assertDefined(releasedParticipant.execution, "the released participant has an execution")
+        .paneId,
+      "新的安排已完成",
+    );
     await f.service.tick();
     const orchestrator = new TaskOrchestrator({
       config: f.config,
@@ -187,8 +202,13 @@ test("a fresh user arrangement never releases an explicit user pause", async () 
       orchestration: { mode: "model" },
     });
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
     await f.service.action({ ...actor, messageId: "pause" }, task.id, "pause");
     // A queued user message arriving while paused cannot resume work.
@@ -210,7 +230,10 @@ test("persisted gone and unknown delivery remain historical unknown after execut
   try {
     const task = await f.service.create(actor, discussion);
     await f.service.tick();
-    const participant = f.service.get(actor, task.id).participants[0]!;
+    const participant = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     f.herdr.delivery = { status: "unconfirmed", acked: true, verified: false, attempts: 1 };
     await assert.rejects(f.service.send(actor, task.id, participant.id, "uncertain old work"));
     const settledSends = f.herdr.sends.length;
@@ -218,20 +241,25 @@ test("persisted gone and unknown delivery remain historical unknown after execut
     const deliveries = f.store.entries("input_deliveries");
     // Model the persisted observation of a previous service run: gone participant,
     // attention + paused task, and no repair journal yet.
-    const before = f.store.get<import("../../src/core/types.js").Participant>(
-      "participants",
-      participant.id,
-    )!;
+    const before = assertDefined(
+      f.store.get<import("../../src/core/types.js").Participant>("participants", participant.id),
+      "the participant is persisted",
+    );
     before.status = "gone";
     before.error = "参与者执行现场已不存在。";
     f.store.set("participants", before.id, before);
-    const stored = f.store.get<Task>("tasks", task.id)!;
+    const stored = assertDefined(f.store.get<Task>("tasks", task.id), "the task is persisted");
     stored.status = "attention";
     stored.discussion.paused = true;
     f.store.set("tasks", task.id, stored);
-    f.herdr.agents.delete(before.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await new TaskService(f.options).tick();
-    const after = f.service.get(actor, task.id).participants[0]!;
+    const after = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.notEqual(after.execution?.paneId, before.execution?.paneId);
     assert.equal(after.recoveryPending, true);
     assert.equal(f.herdr.sends.length, settledSends);
@@ -252,8 +280,13 @@ for (const effect of ["create", "start"] as const) {
       try {
         const task = await f.service.create(actor, discussion);
         await f.service.tick();
-        const before = f.service.get(actor, task.id).participants[0]!;
-        f.herdr.agents.delete(before.execution!.paneId);
+        const before = assertDefined(
+          f.service.get(actor, task.id).participants[0],
+          "the task has a first participant",
+        );
+        f.herdr.agents.delete(
+          assertDefined(before.execution, "the participant has an execution").paneId,
+        );
         if (effect === "create")
           f.herdr.createError = new OperationError("timeout", "unknown creation", "unknown");
         else {
@@ -265,10 +298,12 @@ for (const effect of ["create", "start"] as const) {
           };
         }
         await f.service.tick();
-        const failed = f.store
-          .entries<OperationReceipt>("operations")
-          .find(([id, receipt]) => id.includes(":recovery:") && receipt.state === "uncertain")!;
-        assert.ok(failed);
+        const failed = assertDefined(
+          f.store
+            .entries<OperationReceipt>("operations")
+            .find(([id, receipt]) => id.includes(":recovery:") && receipt.state === "uncertain"),
+          "the uncertain recovery operation is recorded",
+        );
         if (state === "pending") f.store.set("operations", failed[0], { ...failed[1], state });
         const counts = [f.herdr.creates, f.herdr.starts];
         const sends = f.herdr.sends.length;
@@ -291,8 +326,13 @@ test("a definitely-refused recovery create is retried without duplicating the ge
   try {
     const task = await f.service.create(actor, discussion);
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     f.herdr.createError = new OperationError("rate_limited", "not executed", "not_executed");
     await f.service.tick();
     const failed = f.store
@@ -329,15 +369,26 @@ for (const mode of [
     try {
       const task = await f.service.create(actor, discussion);
       await f.service.tick();
-      const before = f.service.get(actor, task.id).participants[0]!;
+      const before = assertDefined(
+        f.service.get(actor, task.id).participants[0],
+        "the task has a first participant",
+      );
       if (mode === "completed") {
-        const stored = f.store.get<Task>("tasks", task.id)!;
+        const stored = assertDefined(f.store.get<Task>("tasks", task.id), "the task is persisted");
         stored.status = mode;
         stored.keepGroup = true;
         f.store.set("tasks", task.id, stored);
-        f.platform.tasks.get(stored.remoteTaskId!)!.completedAt = "123";
+        const remoteTaskId = assertDefined(
+          stored.remoteTaskId,
+          "the completed task has a remote task id",
+        );
+        const remoteTask = assertDefined(
+          f.platform.tasks.get(remoteTaskId),
+          "the completed task exists on the platform",
+        );
+        remoteTask.completedAt = "123";
       } else if (mode === "close") {
-        const stored = f.store.get<Task>("tasks", task.id)!;
+        const stored = assertDefined(f.store.get<Task>("tasks", task.id), "the task is persisted");
         stored.closeRequested = true;
         f.store.set("tasks", task.id, stored);
       } else if (mode === "removed") {
@@ -345,10 +396,16 @@ for (const mode of [
       } else if (mode === "interrupt") {
         await f.service.interrupt(actor, task.id, before.id);
       }
-      if (mode === "foreign") f.herdr.agents.get(before.execution!.paneId)!.workspaceId = "foreign";
-      else if (mode === "timeout" || mode === "not_found")
+      if (mode === "foreign") {
+        const paneId = assertDefined(before.execution, "the participant has an execution").paneId;
+        const agent = assertDefined(f.herdr.agents.get(paneId), "the foreign agent is live");
+        agent.workspaceId = "foreign";
+      } else if (mode === "timeout" || mode === "not_found")
         f.herdr.getError = new OperationError(mode, "read failed");
-      else f.herdr.agents.delete(before.execution!.paneId);
+      else
+        f.herdr.agents.delete(
+          assertDefined(before.execution, "the participant has an execution").paneId,
+        );
       const counts = [f.herdr.creates, f.herdr.starts];
       await f.service.tick();
       await new TaskService(f.options).tick();
@@ -369,13 +426,21 @@ test("an explicit business pause still allows lifecycle repair but never busines
   try {
     const task = await f.service.create(actor, discussion);
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     await f.service.action({ ...actor, messageId: "pause-task" }, task.id, "pause");
-    f.herdr.agents.delete(before.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     const sends = f.herdr.sends.length;
     await f.service.tick();
     const current = f.service.get(actor, task.id);
-    const repaired = current.participants[0]!;
+    const repaired = assertDefined(
+      current.participants[0],
+      "the repaired task has a first participant",
+    );
     assert.notEqual(repaired.execution?.paneId, before.execution?.paneId);
     assert.equal(repaired.recoveryPending, true);
     assert.equal(current.status, "paused");
@@ -391,12 +456,20 @@ test("a missing agent with a surviving shell is replaced in a new workspace, nev
   try {
     const task = await f.service.create(actor, discussion);
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     f.herdr.paneExists = async () => true;
     const start = f.herdr.startAgent.bind(f.herdr);
     f.herdr.startAgent = async (...args) => {
-      assert.notEqual(args[0], before.execution!.paneId);
+      assert.notEqual(
+        args[0],
+        assertDefined(before.execution, "the participant has an execution").paneId,
+      );
       return start(...args);
     };
     await f.service.tick();
@@ -416,9 +489,17 @@ test("a lifecycle ingress arriving during recovery create is deferred, then resu
       participants: [{ kind: "codex", name: "Codex" }],
     });
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    const remoteTaskId = f.service.get(actor, task.id).remoteTaskId!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    const remoteTaskId = assertDefined(
+      f.service.get(actor, task.id).remoteTaskId,
+      "the task has a remote task id",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     const create = f.herdr.createWorkspace.bind(f.herdr);
     f.herdr.createWorkspace = async (cwd: string) => {
       const workspace = await create(cwd);
@@ -427,7 +508,10 @@ test("a lifecycle ingress arriving during recovery create is deferred, then resu
     };
     const starts = f.herdr.starts;
     await f.service.tick();
-    const held = f.service.get(actor, task.id).participants[0]!;
+    const held = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     // The allocated pane is durable even though the start was deferred, so cleanup can
     // always close it; nothing is started and no input is replayed.
     assert.equal(f.herdr.starts, starts);
@@ -439,7 +523,10 @@ test("a lifecycle ingress arriving during recovery create is deferred, then resu
     assert.ok(record);
     f.store.set("inbox", "lifecycle-during-create", { ...record, state: "done" });
     await new TaskService(f.options).tick();
-    const resumed = f.service.get(actor, task.id).participants[0]!;
+    const resumed = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(resumed.started, true);
     assert.equal(resumed.execution?.paneId, "p2");
     assert.equal(f.herdr.starts, starts + 1);
@@ -457,8 +544,13 @@ test("a user control queued during recovery start freezes the generation until t
       participants: [{ kind: "codex", name: "Codex" }],
     });
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     const start = f.herdr.startAgent.bind(f.herdr);
     let interrupt: Promise<void> | undefined;
     f.herdr.startAgent = async (...args) => {
@@ -474,13 +566,20 @@ test("a user control queued during recovery start freezes the generation until t
     assert.equal(frozen.discussion.paused, true);
     assert.equal(frozen.participants[0]?.started, false);
     assert.equal(frozen.participants[0]?.recoveryPending, true);
-    assert.equal(recoveryOf(f, frozen.participants[0]!.id).state, "building");
+    const frozenParticipant = assertDefined(
+      frozen.participants[0],
+      "the frozen task has a first participant",
+    );
+    assert.equal(recoveryOf(f, frozenParticipant.id).state, "building");
     const started = f.herdr.starts;
     await new TaskService(f.options).tick();
     assert.equal(f.herdr.starts, started, "a user pause cannot be overridden by the repair");
     await f.service.action({ ...actor, messageId: "resume-recovery" }, task.id, "resume");
     await f.service.tick();
-    const resumed = f.service.get(actor, task.id).participants[0]!;
+    const resumed = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(resumed.started, true);
     assert.equal(
       f.herdr.starts,
@@ -502,7 +601,10 @@ test("a rebuilt generation refuses to replay a historical result left by a crash
       participants: [{ kind: "codex", name: "Codex" }],
     });
     await f.service.tick();
-    const participant = f.service.get(actor, task.id).participants[0]!;
+    const participant = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     const request = { ...actor, messageId: "old-arrangement-request" };
     // The user's arrangement crossed the native write but the result was lost.
     f.herdr.delivery = { status: "unconfirmed", acked: true, verified: false, attempts: 1 };
@@ -512,9 +614,14 @@ test("a rebuilt generation refuses to replay a historical result left by a crash
       .find(([id, receipt]) => id.startsWith(`${task.id}:send:`) && receipt.state === "uncertain");
     assert.ok(uncertain, "the old delivery keeps its unknown receipt");
     f.herdr.delivery = { status: "delivered", acked: true, verified: true, attempts: 1 };
-    f.herdr.agents.delete(participant.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(participant.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
-    const rebuilt = f.service.get(actor, task.id).participants[0]!;
+    const rebuilt = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(rebuilt.recoveryPending, true);
     const sends = f.herdr.sends.length;
     await assert.rejects(f.service.send(request, task.id, rebuilt.id, "old arrangement"), {
@@ -540,7 +647,10 @@ test("old operation receipts are never replayed or rewritten by a rebuild", asyn
       participants: [{ kind: "codex", name: "Codex" }],
     });
     await f.service.tick();
-    const participant = f.service.get(actor, task.id).participants[0]!;
+    const participant = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     const initialId = `${participant.id}:initial`;
     const initialReceipt = participant.initialReceipt;
     const initialResult = f.store.get<OperationReceipt>("operations", initialId)?.result;
@@ -551,7 +661,9 @@ test("old operation receipts are never replayed or rewritten by a rebuild", asyn
       .find(([id, receipt]) => id.startsWith(`${task.id}:send:`) && receipt.state === "uncertain");
     assert.ok(uncertain);
     const snapshot = f.store.entries<OperationReceipt>("operations");
-    f.herdr.agents.delete(participant.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(participant.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
     for (const [id, receipt] of snapshot)
       assert.deepEqual(f.store.get("operations", id), receipt, `receipt ${id} unchanged`);

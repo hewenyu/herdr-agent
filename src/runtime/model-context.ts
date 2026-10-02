@@ -12,6 +12,7 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { OperationError } from "../core/errors.js";
+import { parseJson, plainObject, serialize } from "./json.js";
 
 /** Hard model-facing budget for one serialized tool result, in UTF-8 bytes. */
 export const MODEL_RESULT_MAX_BYTES = 16384;
@@ -168,14 +169,8 @@ export function boundToolResultContent(options: {
     : { text: "", fits: false, live: false };
 }
 
-/** JSON text for a value, or undefined when it cannot be serialized at all. */
-export function serialize(value: unknown): string | undefined {
-  try {
-    return JSON.stringify(value ?? null) ?? "null";
-  } catch {
-    return undefined;
-  }
-}
+/** Keep the historical public serializer path while sharing its full failure semantics. */
+export { serialize };
 
 /**
  * Margin a durable projection keeps when it proves one of its own reference
@@ -514,12 +509,6 @@ function taskFacts(value: unknown): Record<string, unknown> {
   return facts;
 }
 
-function plainObject(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 function scalar(value: unknown): string | number | boolean | undefined {
   if (typeof value === "boolean" || typeof value === "number") return value;
   if (typeof value === "string" && value.trim()) return truncate(value);
@@ -543,12 +532,4 @@ export function prefix(text: string, maxBytes: number): string {
     used += size;
   }
   return result;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
 }

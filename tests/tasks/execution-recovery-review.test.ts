@@ -3,6 +3,7 @@ import test from "node:test";
 import { OperationError } from "../../src/core/errors.js";
 import type { OperationReceipt } from "../../src/storage/operations.js";
 import type { InputDelivery } from "../../src/tasks/input-delivery.js";
+import { assertDefined } from "../helpers/assertions.js";
 import { actor, createPersistedTask, discussion, setup } from "./helpers.js";
 
 test("late input proof for a surviving peer cannot undo the execution repair scheduling pause", async () => {
@@ -18,15 +19,23 @@ test("late input proof for a surviving peer cannot undo the execution repair sch
     await assert.rejects(
       f.service.send({ ...actor, source: "system" }, task.id, survivor.id, "Existing peer work"),
     );
-    const oldInput = f.store.list<InputDelivery>("input_deliveries")[0]!;
+    const oldInput = assertDefined(
+      f.store.list<InputDelivery>("input_deliveries")[0],
+      "the send recorded an input delivery",
+    );
     assert.equal(oldInput.discussionWasPaused, false);
     f.herdr.agents.delete(missing.execution.paneId);
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).participants[0]?.recoveryPending, true);
     assert.equal(f.service.get(actor, task.id).discussion.paused, true);
     Object.assign(f.herdr, {
-      initialInput: async (ref: { paneId: string }) =>
-        ref.paneId === survivor.execution!.paneId ? oldInput.prompt : undefined,
+      initialInput: async (ref: { paneId: string }) => {
+        const survivorPane = assertDefined(
+          survivor.execution,
+          "the surviving participant has an execution",
+        ).paneId;
+        return ref.paneId === survivorPane ? oldInput.prompt : undefined;
+      },
     });
     await f.service.tick();
     const latest = f.service.get(actor, task.id);
@@ -48,23 +57,33 @@ test("exact fresh-generation proof is not blocked by identical unknown historica
       { orchestration: { mode: "model" } },
     );
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     f.herdr.delivery = { status: "unconfirmed", acked: true, verified: false, attempts: 1 };
     const text = "Read the existing document and propose next steps";
     await assert.rejects(
       f.service.send({ ...actor, messageId: "old-request" }, task.id, before.id, text),
     );
-    const oldInput = f.store.list<InputDelivery>("input_deliveries")[0]!;
+    const oldInput = assertDefined(
+      f.store.list<InputDelivery>("input_deliveries")[0],
+      "the send recorded an input delivery",
+    );
     const oldReceipt = f.store.get<OperationReceipt>("operations", oldInput.operationId);
-    f.herdr.agents.delete(before.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
     await assert.rejects(
       f.service.send({ ...actor, messageId: "fresh-request" }, task.id, before.id, text),
     );
-    const fresh = f.store
-      .list<InputDelivery>("input_deliveries")
-      .find((entry) => entry.generation !== undefined)!;
-    assert.ok(fresh);
+    const fresh = assertDefined(
+      f.store
+        .list<InputDelivery>("input_deliveries")
+        .find((entry) => entry.generation !== undefined),
+      "a fresh-generation input delivery is recorded",
+    );
     assert.notEqual(fresh.receipt, oldInput.receipt);
     Object.assign(f.herdr, {
       initialInput: async (_ref: unknown, receipt: string) =>
@@ -90,13 +109,17 @@ test("arranging one repaired participant does not release peers still awaiting f
     });
     await f.service.tick();
     const before = f.service.get(actor, task.id).participants;
-    for (const participant of before) f.herdr.agents.delete(participant.execution!.paneId);
+    for (const participant of before) {
+      f.herdr.agents.delete(
+        assertDefined(participant.execution, "every participant has an execution").paneId,
+      );
+    }
     await f.service.tick();
     assert.ok(f.service.get(actor, task.id).participants.every((p) => p.recoveryPending));
     await f.service.send(
       { ...actor, messageId: "fresh-first" },
       task.id,
-      before[0]!.id,
+      assertDefined(before[0], "the first participant exists").id,
       "New work",
     );
     const current = f.service.get(actor, task.id);
@@ -120,14 +143,22 @@ for (const explicitPause of [false, true])
         { orchestration: { mode: "model" } },
       );
       await f.service.tick();
-      const before = f.service.get(actor, task.id).participants[0]!;
-      f.herdr.agents.delete(before.execution!.paneId);
+      const before = assertDefined(
+        f.service.get(actor, task.id).participants[0],
+        "the task has a first participant",
+      );
+      f.herdr.agents.delete(
+        assertDefined(before.execution, "the participant has an execution").paneId,
+      );
       await f.service.tick();
       f.herdr.delivery = { status: "unconfirmed", acked: true, verified: false, attempts: 1 };
       await assert.rejects(
         f.service.send({ ...actor, messageId: "fresh-input" }, task.id, before.id, "New work"),
       );
-      const fresh = f.store.list<InputDelivery>("input_deliveries")[0]!;
+      const fresh = assertDefined(
+        f.store.list<InputDelivery>("input_deliveries")[0],
+        "the send recorded a fresh input delivery",
+      );
       assert.ok(fresh.generation);
       if (explicitPause)
         await f.service.action({ ...actor, messageId: "pause-again" }, task.id, "pause");
@@ -197,11 +228,19 @@ test("replacement projection does not claim historical initial delivery reached 
       { discussionMode: "manual" },
     );
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(before.initialDelivery, "confirmed");
-    f.herdr.agents.delete(before.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
-    const after = f.service.get(actor, task.id).participants[0]!;
+    const after = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.notEqual(after.execution?.paneId, before.execution?.paneId);
     assert.equal(after.recoveryPending, true);
     assert.equal(after.initialDelivery, "pending");
@@ -221,26 +260,39 @@ test("legacy cached send receipt cannot mark a replacement as having received in
       { discussionMode: "manual" },
     );
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     const request = { ...actor, messageId: "legacy-arrangement" };
     await f.service.send(request, task.id, before.id, "Old arrangement");
-    const oldDelivery = f.store
-      .entries<{ prompt: string }>("input_deliveries")
-      .find(([, entry]) => entry.prompt.includes("Old arrangement"))!;
-    assert.ok(oldDelivery);
+    const oldDelivery = assertDefined(
+      f.store
+        .entries<{ prompt: string }>("input_deliveries")
+        .find(([, entry]) => entry.prompt.includes("Old arrangement")),
+      "the old arrangement delivery is recorded",
+    );
     // Old releases can have a done receipt without the newer delivery/applied records.
     f.store.delete("input_deliveries", oldDelivery[0]);
     f.store.delete("task_input_applied", oldDelivery[0]);
     // Manual send pauses scheduling; explicitly resume before disappearance.
     await f.service.action({ ...actor, messageId: "resume" }, task.id, "resume");
-    f.herdr.agents.delete(before.execution!.paneId);
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
-    const rebuilt = f.service.get(actor, task.id).participants[0]!;
+    const rebuilt = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(rebuilt.recoveryPending, true);
     const count = f.herdr.sends.length;
     // Returning a historical result or refusing the old id are both safe; applying it anew is not.
     await f.service.send(request, task.id, before.id, "Old arrangement").catch(() => undefined);
-    const after = f.service.get(actor, task.id).participants[0]!;
+    const after = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     assert.equal(f.herdr.sends.length, count);
     assert.equal(after.recoveryPending, true);
     assert.notEqual(after.status, "working");
@@ -259,11 +311,19 @@ test("late old input proof cannot clear a durable repair barrier before workspac
       { orchestration: { mode: "model" } },
     );
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     f.herdr.delivery = { status: "unconfirmed", acked: true, verified: false, attempts: 1 };
     await assert.rejects(f.service.send(actor, task.id, before.id, "Old uncertain input"));
-    const oldInput = f.store.list<{ prompt: string }>("input_deliveries")[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const oldInput = assertDefined(
+      f.store.list<{ prompt: string }>("input_deliveries")[0],
+      "the uncertain send recorded an input delivery",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     f.herdr.createError = new OperationError("timeout", "Unknown workspace creation", "unknown");
     await f.service.tick();
     assert.equal(f.service.get(actor, task.id).participants[0]?.recoveryPending, true);
@@ -290,12 +350,23 @@ test("unsolicited native output before a fresh arrangement is not settled as rec
       { discussionMode: "manual" },
     );
     await f.service.tick();
-    const before = f.service.get(actor, task.id).participants[0]!;
-    f.herdr.agents.delete(before.execution!.paneId);
+    const before = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
+    f.herdr.agents.delete(
+      assertDefined(before.execution, "the participant has an execution").paneId,
+    );
     await f.service.tick();
-    const rebuilt = f.service.get(actor, task.id).participants[0]!;
+    const rebuilt = assertDefined(
+      f.service.get(actor, task.id).participants[0],
+      "the task has a first participant",
+    );
     const originalResult = f.service.get(actor, task.id).result;
-    f.herdr.finish(rebuilt.execution!.paneId, "Startup output, no new task input received.");
+    f.herdr.finish(
+      assertDefined(rebuilt.execution, "the rebuilt participant has an execution").paneId,
+      "Startup output, no new task input received.",
+    );
     await f.service.tick();
     const current = f.service.get(actor, task.id);
     assert.equal(current.participants[0]?.recoveryPending, true);

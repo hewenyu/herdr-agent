@@ -13,10 +13,11 @@
     "binary": "tsx scripts/binary.ts",
     "test": "node --import tsx --test --test-concurrency=2 tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src tests scripts package.json tsconfig.json biome.json",
+    "lint": "biome check --error-on-warnings src tests scripts package.json tsconfig.json biome.json",
     "format": "biome check --write src tests scripts package.json tsconfig.json biome.json",
     "check:lines": "node scripts/check-lines.mjs",
-    "check": "npm run check:lines && npm run typecheck && npm run lint && npm test",
+    "check:boundaries": "tsx scripts/check-boundaries.ts",
+    "check": "npm run check:lines && npm run check:boundaries && npm run typecheck && npm run lint && npm test",
     "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {

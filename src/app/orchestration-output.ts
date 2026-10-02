@@ -1,7 +1,7 @@
 import { fail } from "../core/errors.js";
+import type { SettledTaskOutput } from "../orchestration/contracts.js";
 import { MODEL_RESULT_MAX_BYTES } from "../runtime/model-context.js";
 import type { RuntimeTool } from "../runtime/types.js";
-import type { SettledTaskOutput } from "./task-orchestrator.js";
 
 /** A task-scoped, lossless page, bounded after JSON escaping and envelope metadata. */
 export function orchestrationOutputTool(

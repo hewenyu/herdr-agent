@@ -204,6 +204,8 @@ The owner has confirmed acceptance of PR #54. This is historical v2 evidence; it
 
 Older architecture and audit documents are explicitly marked as Go history and use permanent source links. They are not the current Node runtime specification.
 
+For current module boundaries, reuse principles and the PR checklist, see the [Node/TypeScript code-quality guide](<docs/code-quality.md>) (Chinese). `npm run check` enforces the selected architecture boundaries and treats lint warnings as failures.
+
 This project is MIT; see [LICENSE](LICENSE). Release archives also include `LICENSES/` with the bundled npm dependencies, native addon/header and complete Node notices. Retain these materials when redistributing. See [license generation](licenses/README.md).
 
 See the [local implementation and review record](docs/workflow-implementation-2026-09-27.md) for code mappings, checks, live model evidence and outstanding platform acceptance.

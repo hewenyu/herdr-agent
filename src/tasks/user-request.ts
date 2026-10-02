@@ -1,6 +1,6 @@
-import type { InboxRecord } from "../app/inbox.js";
 import { fail } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
+import type { InboxRecord } from "../core/inbox.js";
 import type { ActorContext, Task, UserRequestSource } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 

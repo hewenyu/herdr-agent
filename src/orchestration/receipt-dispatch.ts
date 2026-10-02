@@ -1,7 +1,7 @@
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail } from "../core/errors.js";
 import type { Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import {
   receiptRepairOwner,
   receiptRepairRevision,

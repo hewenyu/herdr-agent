@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail, safeError } from "../core/errors.js";
 import { canonical } from "../core/ids.js";
 import type { Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 import type { ContractChangeDecision } from "./contract-change.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 import { normalizedDirectories, workspaceRevision } from "./workspace.js";

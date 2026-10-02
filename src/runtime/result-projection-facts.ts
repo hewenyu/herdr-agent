@@ -9,6 +9,7 @@
  * bounded.
  */
 import { createHash } from "node:crypto";
+import { escapedBytes, escapedPrefix } from "./escaped-bytes.js";
 import { serialize } from "./model-context.js";
 
 const MAX_FACT_CHARS = 240;
@@ -37,27 +38,8 @@ export const MANDATORY_FACT_KEYS = [
   "remoteTaskId",
 ];
 
-/** Escaped UTF-8 size of a text field inside a JSON envelope (quotes excluded). */
-export function escapedBytes(text: string): number {
-  const quoted = serialize(text);
-  return quoted === undefined
-    ? Number.MAX_SAFE_INTEGER
-    : Math.max(0, Buffer.byteLength(quoted, "utf8") - 2);
-}
-
-/** Code-point-safe prefix whose JSON-escaped size stays inside `maxBytes`. */
-export function escapedPrefix(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return "";
-  let result = "";
-  let used = 0;
-  for (const character of text) {
-    const size = escapedBytes(character);
-    if (used + size > maxBytes) break;
-    result += character;
-    used += size;
-  }
-  return result;
-}
+/** Escaped-size helpers, re-exported so callers of this module keep their API. */
+export { escapedBytes, escapedPrefix };
 
 /** Bounded scalar fact, kept verbatim in meaning but capped in escaped bytes. */
 export function scalar(value: unknown): string | number | boolean | undefined {

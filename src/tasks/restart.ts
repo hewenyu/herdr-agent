@@ -1,7 +1,5 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { assertTaskIngress, taskIngress } from "../app/task-ingress.js";
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail, safeError } from "../core/errors.js";
 import { canonical, newId, now, stableId } from "../core/ids.js";
 import type { ActorContext, Participant, Task, UserRequestSource } from "../core/types.js";
@@ -9,10 +7,12 @@ import {
   implementationParticipants,
   restoreImplementationParticipants,
 } from "../orchestration/authorship.js";
+import type { OrchestrationEvent } from "../orchestration/contracts.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import { atomicWrite } from "../storage/atomic.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { assertTaskIngress, taskIngress } from "./ingress.js";
 import type { InputDelivery } from "./input-delivery.js";
 import { activeTaskOperation } from "./operation-scope.js";
 import { associateTaskUserRequest, currentUserRequest } from "./user-request.js";

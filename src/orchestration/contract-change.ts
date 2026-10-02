@@ -1,5 +1,5 @@
-import type { InboxRecord } from "../app/inbox.js";
 import { fail } from "../core/errors.js";
+import type { InboxRecord } from "../core/inbox.js";
 import type { ActorContext, StoredMessage, Task } from "../core/types.js";
 import type { ConversationEngine } from "../runtime/types.js";
 import type { Store } from "../storage/store.js";

@@ -1,4 +1,5 @@
 import type { Participant, Task } from "../core/types.js";
+import type { OrchestrationEvent } from "../orchestration/contracts.js";
 import { revisionHash, revisionInputs } from "../orchestration/revision.js";
 import {
   currentUserDecision,
@@ -9,7 +10,6 @@ import { orchestrationUserMessages } from "../orchestration/user-messages.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import { workspaceRevision } from "../orchestration/workspace.js";
 import type { Store } from "../storage/store.js";
-import type { OrchestrationEvent } from "./task-orchestrator.js";
 
 export const quietWorkflow = (task: Task): boolean =>
   task.orchestration?.mode === "workflow" && task.promptVersion === 3;

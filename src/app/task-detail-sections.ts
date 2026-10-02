@@ -1,12 +1,12 @@
 import { stableId } from "../core/ids.js";
 import type { Participant, Task, UserRequestSource } from "../core/types.js";
+import type { OrchestrationEvent, SettledTaskOutput } from "../orchestration/contracts.js";
 import type { DecisionLog } from "../orchestration/decision-log.js";
 import { reportText } from "../orchestration/report.js";
 import { orchestrationUserMessages } from "../orchestration/user-messages.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { Store } from "../storage/store.js";
 import type { TaskUserRevision } from "../tasks/user-request.js";
-import type { OrchestrationEvent, SettledTaskOutput } from "./task-orchestrator.js";
 
 /**
  * One pageable audit entry. `fields` is a bounded projection of the durable

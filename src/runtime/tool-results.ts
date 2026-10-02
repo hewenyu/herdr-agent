@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { OperationError } from "../core/errors.js";
 import type { ActorContext } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import { parseJson } from "./json.js";
 import {
   MODEL_RESULT_MAX_BYTES,
   serialize,
@@ -944,12 +945,4 @@ function referenceForContent(
     .update(text)
     .digest("hex");
   return `${RESULT_REFERENCE_PREFIX}${digest.slice(0, 32)}`;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
 }

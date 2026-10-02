@@ -1,7 +1,7 @@
-import type { OrchestrationEvent, TaskOrchestratorOptions } from "../app/task-orchestrator.js";
 import { safeError } from "../core/errors.js";
 import type { Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import type { OrchestrationEvent, TaskOrchestratorOptions } from "./contracts.js";
 import type { ReportDelivery } from "./report-delivery.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
 

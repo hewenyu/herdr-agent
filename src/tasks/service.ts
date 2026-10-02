@@ -1,4 +1,3 @@
-import { reconcileLeaderReceipts } from "../app/leader-receipts.js";
 import { fail, OperationError, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
@@ -11,6 +10,7 @@ import type {
   TaskCreateInput,
   TaskMutationRevision,
 } from "../core/types.js";
+import { reconcileLeaderReceipts } from "../orchestration/leader-receipts.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
 import { createTask } from "./create.js";

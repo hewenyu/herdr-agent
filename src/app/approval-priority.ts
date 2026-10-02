@@ -1,1 +1,1 @@
-export { taskIngress as approvalIngress } from "./task-ingress.js";
+export { taskIngress as approvalIngress } from "../tasks/ingress.js";

@@ -1,16 +1,20 @@
-import type { AppConfig } from "../config/types.js";
 import { fail, OperationError, safeError } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
-import type { Logger } from "../core/ports.js";
 import type {
   ActorContext,
   Participant,
   StoredMessage,
   Task,
   TaskMutationRevision,
-  TranscriptEntry,
 } from "../core/types.js";
-import type { WorkflowCandidate } from "../orchestration/candidates.js";
+import type {
+  Dispatch,
+  OrchestrationDecision,
+  OrchestrationEvent,
+  SettledTaskOutput,
+  TaskOrchestratorOptions,
+} from "../orchestration/contracts.js";
+import { reconcileLeaderReceipts } from "../orchestration/leader-receipts.js";
 import { runTaskLeader } from "../orchestration/leader-session.js";
 import {
   currentOrchestrationTask,
@@ -21,12 +25,9 @@ import { type RevisionInputs, revisionHash, revisionInputs } from "../orchestrat
 import { WorkflowOrchestrator } from "../orchestration/runner.js";
 import { orchestrationUserMessages } from "../orchestration/user-messages.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
-import type { ProjectCatalog } from "../projects/catalog.js";
-import type { ConversationEngine, RuntimeTool } from "../runtime/types.js";
+import type { RuntimeTool } from "../runtime/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
-import type { Store } from "../storage/store.js";
-import type { TaskService } from "../tasks/service.js";
-import { reconcileLeaderReceipts } from "./leader-receipts.js";
+import { assertTaskIngress, taskIngress } from "../tasks/ingress.js";
 import {
   activationTokenBudget,
   assertMandatoryContextFits,
@@ -38,87 +39,15 @@ import {
   taskContextEnvelope,
 } from "./orchestration-context.js";
 import { orchestrationOutputTool } from "./orchestration-output.js";
-import { assertTaskIngress, taskIngress } from "./task-ingress.js";
 import { workflowWaitText } from "./workflow-notifications.js";
 
-export interface SettledTaskOutput {
-  taskId: string;
-  participantId: string;
-  entry: TranscriptEntry;
-  observedAt: string;
-  sequence?: number;
-}
-
-export interface OrchestrationDecision {
-  action: "continue" | "wait" | "deliver";
-  reason: string;
-  outputId?: string;
-  participantId?: string;
-  reportId?: string;
-  candidateId?: string;
-  source?: "rule" | "jev" | "pi" | "leader";
-}
-
-export interface Dispatch {
-  nodeId?: string;
-  text?: string;
-  inputRevision?: string;
-  artifactRevision?: string;
-  sourceRevision?: string;
-  operationId: string;
-  participantId: string;
-  state: "pending" | "sent" | "failed" | "uncertain";
-}
-
-export interface OrchestrationEvent {
-  id: string;
-  taskId: string;
-  trigger: "ready" | "output" | "user_revision";
-  outputIds: string[];
-  userRevision: string;
-  state: "pending" | "processing" | "done" | "attention" | "superseded";
-  attempts: number;
-  nextAttemptAt?: string;
-  dispatches: Dispatch[];
-  decision?: OrchestrationDecision;
-  selectionLogId?: string;
-  workflow?: {
-    candidate: WorkflowCandidate;
-    planVersion: number;
-    artifactRevision?: string;
-    applied?: boolean;
-  };
-  error?: ReturnType<typeof safeError>;
-  retiredBudgetRecovery?: { at: string; error: ReturnType<typeof safeError> };
-  retiredByRestart?: string;
-  notified?: boolean;
-  notificationState?: "sending" | "sent" | "retryable" | "uncertain";
-  notificationAttempts?: number;
-  notificationNextAttemptAt?: string;
-  notificationCause?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TaskOrchestratorOptions {
-  config?: AppConfig;
-  projects?: ProjectCatalog;
-  fetch?: typeof fetch;
-  store: Store;
-  engine: ConversationEngine;
-  tasks(): TaskService;
-  tools(actor: ActorContext): RuntimeTool[];
-  signal: AbortSignal;
-  logger: Logger;
-  onReply?(task: Task, text: string, eventId: string): Promise<void>;
-  /** Read-only proof that the exact chosen final envelope was already delivered. */
-  replyConfirmed?(task: Task, eventId: string): Promise<boolean>;
-  /** Read-only proof that re-entering this exact notification callback cannot duplicate delivery. */
-  replyRetryable?(task: Task, eventId: string): Promise<boolean>;
-  /** Injection for deterministic recovery tests; production uses wall clock. */
-  clock?: () => number;
-  retryDelayMs?: number;
-}
+export type {
+  Dispatch,
+  OrchestrationDecision,
+  OrchestrationEvent,
+  SettledTaskOutput,
+  TaskOrchestratorOptions,
+};
 
 const TABLE = "task_orchestration_events";
 const OUTPUTS = "task_settled_outputs";

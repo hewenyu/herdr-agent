@@ -1,9 +1,9 @@
 import { fail, OperationError, safeError } from "../core/errors.js";
 import type { Participant, StoredMessage, Task, TaskMutationRevision } from "../core/types.js";
+import type { OrchestrationDecision, OrchestrationEvent } from "../orchestration/contracts.js";
 import { LEADER_PROMPT_MAX_BYTES } from "../orchestration/leader-session-types.js";
 import { modelInputBudgetTokens } from "../runtime/model-context.js";
 import type { ConversationEngine } from "../runtime/types.js";
-import type { OrchestrationDecision, OrchestrationEvent } from "./task-orchestrator.js";
 
 /**
  * Legacy model-mode scheduling context.
