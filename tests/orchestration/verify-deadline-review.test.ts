@@ -98,7 +98,7 @@ function candidateFor(runner: VerificationRunner, task: Task, revision: string) 
  * rejected too, and because the function itself is replaced no real signal can
  * be sent in either branch.
  */
-function installSyntheticChild() {
+function installSyntheticChild(onSpawn?: () => void) {
   const child = new EventEmitter() as EventEmitter & {
     pid: number;
     kill: (signal?: NodeJS.Signals) => boolean;
@@ -106,6 +106,7 @@ function installSyntheticChild() {
   child.pid = SYNTHETIC_PID;
   child.kill = () => true;
   const killCalls: Array<{ pid: number; signal: string | number | undefined }> = [];
+  let spawnCalls = 0;
   const realSpawn = childProcess.spawn;
   const realKill = process.kill;
   process.kill = (pid: number, signal?: string | number): true => {
@@ -113,11 +114,18 @@ function installSyntheticChild() {
     const code = pid === -SYNTHETIC_PID ? "ESRCH" : "EINVAL";
     throw Object.assign(new Error("synthetic process group"), { code });
   };
-  childProcess.spawn = (() => child) as unknown as typeof childProcess.spawn;
+  childProcess.spawn = (() => {
+    spawnCalls += 1;
+    onSpawn?.();
+    return child;
+  }) as unknown as typeof childProcess.spawn;
   syncBuiltinESMExports();
   return {
     child,
     killCalls,
+    get spawnCalls() {
+      return spawnCalls;
+    },
     restore() {
       childProcess.spawn = realSpawn;
       process.kill = realKill;
@@ -254,6 +262,143 @@ test("an overdue deadline whose timer callback never fired still times the run o
     assert.ok(
       synthetic.killCalls.every((call) => call.pid === -SYNTHETIC_PID && call.signal === 0),
       "no termination signal was sent to an already-gone group",
+    );
+  } finally {
+    t.mock.timers.reset();
+    synthetic.restore();
+  }
+});
+
+/** SIGTERM attempts only: signal-0 existence probes are not terminations. */
+function termAttempts(synthetic: ReturnType<typeof installSyntheticChild>): number {
+  return synthetic.killCalls.filter(
+    (call) => call.pid === -SYNTHETIC_PID && call.signal === "SIGTERM",
+  ).length;
+}
+
+// The timer is never ticked: only the launch-anchored monotonic deadline can
+// reject an exit-0 close after synchronous spawn work consumed the budget.
+test("a synchronous spawn stall past the budget is timed_out, not passed", async (t) => {
+  const h = await fixture(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = installControllableMonotonicClock(t);
+  const synthetic = installSyntheticChild(() => clock.advance(DEADLINE_MS + 1));
+  try {
+    interceptRunningPersist(h.store, () => {
+      queueMicrotask(() => synthetic.child.emit("close", 0, null));
+    });
+    const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "spawn-stall"));
+    assert.equal(synthetic.spawnCalls, 1);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitConfirmed, true);
+    assert.equal(result.status, "timed_out");
+    assert.equal(
+      h.store.get<VerificationRun>("verification_runs", result.id)?.status,
+      "timed_out",
+      "the durable record keeps the conservative outcome",
+    );
+    assert.ok(synthetic.killCalls.length >= 1, "the synthetic group was probed");
+    assert.ok(
+      synthetic.killCalls.every((call) => call.pid === -SYNTHETIC_PID && call.signal === 0),
+      "no termination signal was sent to an already-gone group",
+    );
+  } finally {
+    t.mock.timers.reset();
+    synthetic.restore();
+  }
+});
+
+// Control: launch work that stays inside the same budget may still pass.
+test("a synchronous spawn stall inside the budget still passes", async (t) => {
+  const h = await fixture(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = installControllableMonotonicClock(t);
+  const synthetic = installSyntheticChild(() => clock.advance(DEADLINE_MS - 1));
+  try {
+    interceptRunningPersist(h.store, () => {
+      queueMicrotask(() => synthetic.child.emit("close", 0, null));
+    });
+    const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "spawn-inside"));
+    assert.equal(synthetic.spawnCalls, 1);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitConfirmed, true);
+    assert.equal(result.status, "passed");
+    assert.equal(h.store.get<VerificationRun>("verification_runs", result.id)?.status, "passed");
+    assert.ok(synthetic.killCalls.every((call) => call.signal === 0));
+  } finally {
+    t.mock.timers.reset();
+    synthetic.restore();
+  }
+});
+
+// beforeStart runs after log setup but before the final authorization check.
+// Its elapsed time is deliberately outside the command's launch budget.
+test("preflight time before the spawn attempt is not charged to the command", async (t) => {
+  const h = await fixture(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = installControllableMonotonicClock(t);
+  const synthetic = installSyntheticChild();
+  try {
+    interceptRunningPersist(h.store, () => {
+      queueMicrotask(() => synthetic.child.emit("close", 0, null));
+    });
+    const result = await h.runner.run(
+      h.task,
+      candidateFor(h.runner, h.task, "preflight"),
+      undefined,
+      () => clock.advance(DEADLINE_MS + 1),
+    );
+    assert.equal(synthetic.spawnCalls, 1);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitConfirmed, true);
+    assert.equal(result.status, "passed", "preflight time is not part of the command budget");
+    assert.equal(h.store.get<VerificationRun>("verification_runs", result.id)?.status, "passed");
+    assert.ok(synthetic.killCalls.length >= 1, "the synthetic group was probed");
+    assert.ok(
+      synthetic.killCalls.every((call) => call.pid === -SYNTHETIC_PID && call.signal === 0),
+      "no termination signal was sent to the synthetic group",
+    );
+  } finally {
+    t.mock.timers.reset();
+    synthetic.restore();
+  }
+});
+
+// 400ms of launch work leaves 100ms. The TERM assertions make this fail if the
+// timer still receives a fresh 500ms, even when the post-close guard rejects it.
+test("only the budget left after synchronous spawn work is scheduled", async (t) => {
+  const h = await fixture(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = installControllableMonotonicClock(t);
+  const synthetic = installSyntheticChild(() => clock.advance(DEADLINE_MS - 100));
+  let termsAt99 = -1;
+  let termsAtBudget = -1;
+  try {
+    interceptRunningPersist(h.store, () => {
+      clock.advance(99);
+      t.mock.timers.tick(99);
+      termsAt99 = termAttempts(synthetic);
+      clock.advance(1);
+      t.mock.timers.tick(1);
+      termsAtBudget = termAttempts(synthetic);
+      queueMicrotask(() => synthetic.child.emit("close", 0, null));
+    });
+    const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "remaining"));
+    assert.equal(termsAt99, 0, "99ms is still inside the remaining budget");
+    assert.ok(termsAtBudget >= 1, "the remaining budget expired and termination was attempted");
+    assert.equal(
+      termAttempts(synthetic),
+      1,
+      "one termination attempt came from the expired budget",
+    );
+    assert.equal(synthetic.spawnCalls, 1);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitConfirmed, true);
+    assert.equal(result.status, "timed_out");
+    assert.equal(
+      h.store.get<VerificationRun>("verification_runs", result.id)?.status,
+      "timed_out",
+      "the durable record keeps the conservative outcome",
     );
   } finally {
     t.mock.timers.reset();

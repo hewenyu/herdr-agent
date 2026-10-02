@@ -379,6 +379,9 @@ export class VerificationRunner {
     signal: AbortSignal,
   ): Promise<VerificationRun> {
     let child: ChildProcess;
+    // Include synchronous launch work, but exclude preflight and authorization.
+    // This clock advances even while JS cannot dispatch deadline callbacks.
+    const deadlineAt = performance.now() + record.timeoutMs;
     try {
       child = spawn(record.command, {
         cwd: record.cwd,
@@ -401,12 +404,14 @@ export class VerificationRunner {
       cancelled = true;
       stop();
     };
-    // Anchor the same budget to a clock that advances even while JS is stalled.
-    const deadlineAt = performance.now() + record.timeoutMs;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, record.timeoutMs);
+    // Launch work consumes the budget; round up to avoid firing before its end.
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        stop();
+      },
+      Math.max(1, Math.ceil(deadlineAt - performance.now())),
+    );
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     child.once("error", () => {
