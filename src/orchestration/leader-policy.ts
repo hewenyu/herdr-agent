@@ -1,4 +1,3 @@
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail, OperationError } from "../core/errors.js";
 import { now, stableId } from "../core/ids.js";
 import type { ActorContext, Participant, Task } from "../core/types.js";
@@ -6,6 +5,7 @@ import { verificationConfigRevision as verificationRevision } from "../projects/
 import type { ConversationEngine } from "../runtime/types.js";
 import type { Store } from "../storage/store.js";
 import type { WorkflowCandidate } from "./candidates.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import {
   type DecisionLog,
   decisionSnapshotRef,

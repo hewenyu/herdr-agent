@@ -1,6 +1,6 @@
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import type { Participant, Task } from "../core/types.js";
 import type { Store } from "../storage/store.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import { WORKFLOWS, type WorkflowNode, type WorkflowPlan, type WorkflowState } from "./workflow.js";
 import { workspaceRevision } from "./workspace.js";
 

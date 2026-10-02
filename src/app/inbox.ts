@@ -1,26 +1,11 @@
 import { safeError } from "../core/errors.js";
 import { now } from "../core/ids.js";
+import type { InboxRecord } from "../core/inbox.js";
 import type { Logger } from "../core/ports.js";
-import type { ActorContext, CardAction, IncomingMessage } from "../core/types.js";
+import type { ActorContext } from "../core/types.js";
 import type { Store } from "../storage/store.js";
 
-export interface InboxRecord {
-  id: string;
-  type: "message" | "action" | "task" | "group";
-  payload: IncomingMessage | CardAction | { id: string };
-  actor?: ActorContext;
-  generation?: number;
-  lane: string;
-  state: "queued" | "processing" | "done" | "uncertain" | "failed";
-  error?: ReturnType<typeof safeError>;
-  createdAt: string;
-  sequence: number;
-  attempts?: number;
-  nextAttemptAt?: number;
-  failureNotice?: "pending" | "attempted" | "delivered";
-  failureNoticeAttempts?: number;
-  failureNoticeNextAttemptAt?: number;
-}
+export type { InboxRecord } from "../core/inbox.js";
 
 export interface InboxRecovery {
   canRetry(record: InboxRecord, error?: ReturnType<typeof safeError>): boolean;

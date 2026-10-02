@@ -1,9 +1,3 @@
-import type {
-  Dispatch,
-  OrchestrationEvent,
-  SettledTaskOutput,
-  TaskOrchestratorOptions,
-} from "../app/task-orchestrator.js";
 import { fail, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
@@ -20,6 +14,12 @@ import { inspectArtifact, latestArtifacts, publishBoard } from "./board.js";
 import { type WorkflowCandidate, workflowCandidates } from "./candidates.js";
 import { assertCodeDelivery } from "./code-delivery.js";
 import { assertConsensusDocuments } from "./consensus.js";
+import type {
+  Dispatch,
+  OrchestrationEvent,
+  SettledTaskOutput,
+  TaskOrchestratorOptions,
+} from "./contracts.js";
 import { type DecisionLog, linkDecisionDispatches } from "./decision-log.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";

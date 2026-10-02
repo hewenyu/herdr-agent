@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Outbox } from "../app/outbox.js";
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { OperationError, safeError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
@@ -8,8 +6,22 @@ import type { PlatformPort } from "../core/ports.js";
 import type { StoredMessage, Task } from "../core/types.js";
 import type { OperationResolution } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import type { ReportRevisionEvidence } from "./revision.js";
 import { WORKFLOWS, type WorkflowState } from "./workflow.js";
+
+/** The outbox receipt state this module reasons about. */
+type ReportOutboxState = "prepared" | "sending" | "delivered" | "uncertain" | "retryable";
+
+/**
+ * The minimal consumer-owned view of the outbox this module needs: it only reads
+ * an existing receipt and resumes or starts the frozen body send. The concrete
+ * app/Outbox satisfies this structurally, so orchestration never imports app.
+ */
+export interface ReportOutbox {
+  receipt(id: string): { state: ReportOutboxState; ids: string[] } | undefined;
+  send(chatId: string, text: string, id: string, replyTo?: string): Promise<string[]>;
+}
 
 export interface ReportEnvelope {
   taskId: string;
@@ -69,7 +81,7 @@ export class ReportDeliveries {
   private readonly sending = new Set<string>();
   constructor(
     private readonly store: Store,
-    private readonly outbox: Outbox,
+    private readonly outbox: ReportOutbox,
     private readonly platform: () => PlatformPort | undefined,
     private readonly staleReport?: (event: OrchestrationEvent, record: ReportDelivery) => boolean,
     private readonly captureRevision?: (

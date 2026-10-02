@@ -1,10 +1,10 @@
 import { dirname } from "node:path";
-import { assertTaskIngress, taskIngress } from "../app/task-ingress.js";
 import { OperationError, safeError } from "../core/errors.js";
 import { newId, now, stableId } from "../core/ids.js";
 import type { Participant, Task } from "../core/types.js";
 import type { OperationReceipt } from "../storage/operations.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { assertTaskIngress, taskIngress } from "./ingress.js";
 import { launchGuard } from "./input-guard.js";
 import { recordOutput } from "./observe.js";
 import {

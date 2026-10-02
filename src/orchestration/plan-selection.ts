@@ -1,4 +1,3 @@
-import type { OrchestrationEvent } from "../app/task-orchestrator.js";
 import { fail } from "../core/errors.js";
 import { newId } from "../core/ids.js";
 import type { Task } from "../core/types.js";
@@ -9,6 +8,7 @@ import {
   compileWorkflowContract,
   latestContractInput,
 } from "./contract-change.js";
+import type { OrchestrationEvent } from "./contracts.js";
 import { addDocumentDelivery, authorizeDocumentDelivery } from "./document-delivery.js";
 import { createLeaderTemplateChoice, createPlanningLeaderBridge } from "./leader-planning.js";
 import { planWorkflow } from "./planner.js";

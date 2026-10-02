@@ -1,6 +1,6 @@
-import type { Dispatch, SettledTaskOutput } from "../app/task-orchestrator.js";
 import type { Store } from "../storage/store.js";
 import type { InputDelivery } from "../tasks/input-delivery.js";
+import type { Dispatch, SettledTaskOutput } from "./contracts.js";
 import { handoffDirectory } from "./handoff.js";
 import { parseStatusBlock, statusOperationId } from "./status-block.js";
 

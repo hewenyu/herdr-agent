@@ -13,6 +13,7 @@ import type {
   TranscriptEntry,
 } from "../core/types.js";
 import { isLegacyReplay } from "../migration/index.js";
+import type { OrchestrationEvent } from "../orchestration/contracts.js";
 import { ingressRouteFor } from "../orchestration/ingress.js";
 import { reportCard } from "../orchestration/report.js";
 import { ReportDeliveries, reportSummaryText } from "../orchestration/report-delivery.js";
@@ -47,7 +48,7 @@ import { noticeDecision } from "./notice-decision.js";
 import { notificationParticipants, notificationTask } from "./notifications.js";
 import { Outbox } from "./outbox.js";
 import { progressCooling, recordProgressNotice } from "./presentation.js";
-import { type OrchestrationEvent, TaskOrchestrator } from "./task-orchestrator.js";
+import { TaskOrchestrator } from "./task-orchestrator.js";
 import { applicationTools } from "./tools.js";
 import { UncertainResolver } from "./uncertain-resolver.js";
 import { currentWorkflowNotice, quietWorkflow } from "./workflow-notifications.js";

@@ -1,7 +1,7 @@
-import { assertTaskIngress, taskIngress } from "../app/task-ingress.js";
 import { fail } from "../core/errors.js";
 import type { Participant, Task } from "../core/types.js";
 import { assertActive, type TaskContext } from "./context.js";
+import { assertTaskIngress, taskIngress } from "./ingress.js";
 import { executorHeld } from "./pause.js";
 import { startupTrustStatus } from "./readiness.js";
 
