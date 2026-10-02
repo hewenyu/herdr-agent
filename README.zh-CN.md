@@ -195,6 +195,8 @@ myrix serve --state-dir /absolute/state
 
 [当前业务场景与命令取舍](docs/current-business-scenarios.md) 汇总现行入口、职责和遗漏检查。[需求盘点](docs/node-pi-refactor-requirements.md) 是 Go 基线历史快照；[旧代码审计](docs/code-audit.md) 等历史材料已标注版本，不能当作 Node 当前能力说明。B/N 场景的早期离线证据见 [acceptance.md](docs/acceptance.md)，当前尚待核对项目和部署证据见[现场验收矩阵](docs/live-validation.md)。
 
+当前模块边界、复用原则和 PR 检查清单见[Node/TypeScript 代码质量约定](<docs/code-quality.md>)。`npm run check` 会执行选定架构边界检查，并把 lint 警告视为失败。
+
 本项目采用 MIT，见 [LICENSE](LICENSE)。发布包另带 `LICENSES/`，保留嵌入 npm 依赖、原生扩展和 Node 的许可及第三方声明；重新分发请一并保留。生成规则见 [licenses](licenses/README.md)。
 
 本次实现映射、自动检查、真实模型证据及现场验收缺口见[本地交付与复核记录](docs/workflow-implementation-2026-09-27.md)。
