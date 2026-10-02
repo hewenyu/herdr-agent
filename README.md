@@ -1,47 +1,58 @@
 # myrix
 
-[中文说明](README.zh-CN.md) · [npm](https://www.npmjs.com/package/@yuebanlaosiji/myrix) · [Releases](https://github.com/hewenyu/herdr-agent/releases)
+**Coordinate local Claude and Codex agents from Feishu.**
 
-A local orchestration tool built with **Node, TypeScript and pi**, distributed as **@yuebanlaosiji/myrix**. Start projects, arrange requirements discussions and development tasks, and follow progress in Feishu. The local Web interface provides project and model configuration and conversation history.
+[简体中文](<README.zh-CN.md>) · [npm](https://www.npmjs.com/package/@yuebanlaosiji/myrix) · [Releases](https://github.com/hewenyu/herdr-agent/releases)
 
-**myrix is a native-agent remote cockpit in Feishu: pi leads projects, tasks, participants and sessions; herdr hosts Claude/Codex and their native sessions.** Each task normally has its own Feishu group and Feishu task. After a discussion reaches a conclusion, create a child task to have Codex implement it using the frozen parent report and confirmed documents. Claude/Codex handle your project's requirements, design, implementation, tests and reviews; myrix can also run explicitly configured local verification commands. You can bring both into one task group, run multiple instances, and create independent tasks for different projects.
+myrix turns a Feishu conversation into a workspace for discussing requirements, developing features, fixing bugs and reviewing results. It uses **pi to coordinate tasks** and **herdr to run native Claude/Codex sessions** on your machine. Your repositories and execution environment stay local; Feishu is where you give instructions and review delivery.
 
-With AI enabled, entry routing follows **rules → Jev → LLM**. Rules enforce identity, scope, duplicate receipts and the exact `/clear` command. Private-message Jev classification is independently opt-in and defaults off; ordinary text then follows the original pi conversation and tool path. When enabled, Jev only chooses intent and a registered project; a confident, complete request can create a task using unchanged original requirements and fixed template defaults. Other requests go to pi. Business completion claims still require actual operation evidence; a text-only acknowledgement cannot finish an explicit action request. New workflow lifecycle notices use current task facts without a background pi turn.
+The repository is named `herdr-agent`; the current application and command are **myrix**.
 
-The frontend, backend, Node runtime and native locking addon are bundled into one executable. The executable, version output, runtime messages and service names use `myrix`. The GitHub repository keeps its existing URL. Fresh installations use `~/.myrix`; an existing `~/.herdr-agent` directory is reused in place so upgrades retain configuration and conversations.
+## What you can do
 
-With tasks and AI enabled, new tasks default to `orchestration.mode = "workflow"` whether or not a Jev key is configured, and the v3 participant protocol; explicit manual control remains available. Each v3 task has its own durable pi Leader, which reads its workflow board and invokes scoped scheduling tools. Rules enforce legal actions, revisions, dependencies, independent review and native delivery receipts; they do not replace the Leader with a one-shot enum selection. Planning assistance, document authorization and contract changes remain separately guarded. An invalid or failed decision cannot authorize dispatch or expand permissions.
+- **Discuss before implementing.** Ask Claude and Codex to compare approaches, challenge each other and produce a conclusion. Explicitly request a document when you want the discussion written into the project.
+- **Delegate development and bug fixes.** Bind a task to a registered project, assign implementation and independent review, and carry discussion context into a related task.
+- **Stay in control from Feishu.** Ask for progress, revise requirements, pause scheduling, interrupt a participant or handle approval cards.
+- **Receive a complete delivery.** Current workflows send a concise summary and a Markdown report attachment, rather than forwarding every intermediate agent message.
+- **Keep durable history.** Task state, sessions and operation receipts are stored in SQLite. Restart recovery uses confirmed facts rather than blindly repeating external actions.
 
-The Feishu/Web conversation receives bounded task status, not complete task transcripts or decision snapshots. Full requirements, outputs and audit records are available through scoped `task_detail` pages and durable result references. Mandatory constraints remain complete; unknown operations are never replayed just to recover context. See the [durable Leader and context-boundary design](docs/durable-task-leader-context.md).
+```text
+Feishu private chat / task group
+              ↓
+     myrix · pi coordination
+              ↓
+    herdr · native Claude / Codex
+              ↓
+       local project directories
 
-Jev no longer selects workflow actions; it retains native approval-menu selection and optional private-message classification. Existing v2 workflow, `model`, `manual` and persisted `round_robin` tasks keep their execution protocols; existing model orchestration also uses an independent task Leader. Creating `round_robin` tasks is deprecated; multi-participant discussions without AI default to `manual`.
+Local Web: configuration, conversation history and report downloads
+```
 
-In v3 discussions, participants respond in sequence, save detailed material and independently bound receipts in the task's state directory, and use short natural handoffs in their native conversations. Explicitly requested discussion documents can be written to the approved paths and independently reviewed without asking again or starting implementation. Intermediate outputs remain internal. Feishu receives necessary start/blocker notices and a final summary with the complete `report.md` attachment; the local history page can download the frozen report. Requested discussion documents are included with their hashes in the report attachment. Development summaries include observed Git branch/commit and available matching PR evidence. When you ask for progress, pi uses `task_progress` to read only the task's bound native sessions and current evidence. Delivery still awaits user acceptance. See the [v3 behavior and acceptance record](docs/workflow-natural-collaboration-2026-09-28.md), [original design](docs/myrix-jev-llm-orchestration-design.md) and [historical orchestration audit](docs/ai-orchestration-audit-2026-09-25.md).
+The Web UI is **not another chat or task-control interface**. Business requests, approvals and acceptance happen in Feishu. The current workflow uses a persistent pi Leader per task; optional Jev assists private-message classification and native approval menus, not workflow scheduling.
 
-Rejected v3 handoffs retain their material as unverified recovery context. Repairable receipt errors return to the same participant with specific field diagnostics and a checked copy of its notes; the existing dispatch chain records the repair. Repeated identical failures stop with an internal diagnosis. A genuine user decision includes concrete questions, option consequences or exact missing inputs, and reply examples grounded in accepted issues or blockers. Internal protocol errors do not become requests for more business requirements. See the [handoff recovery and actionable questions record](docs/workflow-handoff-recovery-2026-09-29.md).
-
-Ordinary first-round discussions use a fixed plan. Restricted pi selects discussion only, a requested project document at `docs/DESIGN.md`, or that document plus each participant's explicit approval of the same file hashes. Custom document paths and necessary parameter changes use pi planning within the authorized scope; custom node graphs are reserved for replanning. Repeating an identical rejected planning submission stops that planning attempt with a diagnostic, without imposing a discussion-round limit. New workflow requirements retain authenticated user originals; model summaries remain separate audit data. Explicit references to earlier user requests use message IDs in chronological order.
-
-An explicit request to restart participants and continue uses `participants_restart`: it closes the selected old executions, retains their unknown input receipts, and gives replacement instances a recovery file to check before continuing. It never replays unknown commands. An uncertain close or unrelated unknown external operation still needs reconciliation before replacement. Task/group events suspend new inputs through the native socket write boundary, including while the event worker waits for the task lock. See the [2026-09-29 live-use repair record](docs/workflow-live-recovery-2026-09-29.md) for evidence and limits.
-
-When a participant's execution disappears on its own (native process exit, lost pane) while the task still needs to continue, background observation rebuilds it automatically: the same participant identity and roster are kept, a clean instance starts in a fresh workspace, an old shell that is only suspect because of `agent_not_found` is neither closed nor reused, and old inputs and unknown receipts are never replayed or rewritten. The rebuild repairs the execution location only; it does not mean the old requirement was delivered or that prior work resumed. After a rebuild `initialDelivery` returns to `pending` and automatic scheduling stays paused until the user sends a fresh arrangement; unknown deliveries still go through the ordinary read-only reconciliation path. A settled business pause remains in force without suppressing lifecycle maintenance. Completed tasks (including retained execution), removed or explicitly held participants, tasks already finishing, and in-progress explicit user restarts remain lifecycle fences. A non-definitive `timeout`/`not_found` read failure is not evidence that an execution is actually absent. See [two independent state machines](docs/agent-lifecycle-readiness.md).
-
-### Business scheduling vs. agent lifecycle
-
-Business scheduling and agent execution are two independent state machines, and the task status is not the execution state:
-
-- **Business scheduling** decides whether new business input and relays may be dispatched. An explicit pause stops automatic business input, not agent maintenance. Explicit `interrupt` additionally holds only its selected executor; removal and terminal lifecycle actions also fence native effects.
-- **Agent lifecycle/readiness** describes the managed execution: `unallocated`, `provisioning`, `starting`, `awaiting_trust`, `awaiting_manual`, `ready`, `busy`, `missing`, `uncertain`, `stopped`, `removed`. It is exposed per participant as `readiness` (and `readinessReason`) on `task_get` and participant views. `created`/`started` only prove allocation; neither is `ready`, and `ready` means the executor can accept input — it is not "the task is running", and it is not user acceptance.
-
-A business pause therefore still allows first provisioning, executor rebuild after a lost execution, and the restricted startup-directory-trust confirmation, but never automatic business delivery. An explicit fresh send addresses only the selected executor and does not release peer holds or a genuine task-wide pause. Readiness is keyed to the execution generation (`executionRecovery`), so a fresh replacement is never judged by a retired instance's observation.
-
-Startup directory trust is long-term user authorization, not a business turn: when the exact authorized folder gate is recognized on the native menu, the restricted route confirms it without the user sending "continue", independently of Jev being on or off and of the business pause. Only that restricted route is exempt; ordinary permission menus remain subject to the business pause.
-
-A startup-trust effect whose result is unknown freezes that execution generation across restarts, `stateSeq` changes and Jev enablement: it is never auto-replayed and neither generic approval nor business-input delivery can bypass it. A definitely new generation (a rebuilt executor) starts clean, and old receipts stay for audit. A queued user control or a revoked owner vetoes the in-flight trust write, but vetoes only that attempt — startup maintenance is not permanently disabled.
+> This README describes the current source. Installed releases may differ; check `myrix version --json` and the release notes. End-to-end live acceptance is still partial—see the [validation matrix](<docs/live-validation.md>).
 
 ## Install
 
-The Node/pi rewrite starts at **v0.3.0**. Supported release targets are macOS arm64, Linux x64 and Linux arm64. npm users need Node >=18 for the launcher; the standalone executable embeds Node.
+### Prerequisites
+
+- **macOS Apple Silicon**, **Linux x64** or **Linux arm64**. Linux requires **glibc**; Alpine/musl is not supported. Windows and Intel macOS binaries are not provided.
+- A running **herdr server with protocol 19 or later**, **Git**, and the **Claude and/or Codex CLI** you intend to use, already authenticated on that machine. A two-agent discussion requires both CLIs.
+- A **mainland Feishu** account and permission to register or authorize an app. The current setup flow does not support Lark apps.
+- An API endpoint and model supporting **OpenAI Responses** or **Anthropic Messages**, with tool calling, for pi coordination. This is separate from native Claude/Codex authentication.
+
+Install the herdr integration for each CLI you use:
+
+```sh
+herdr integration install claude
+herdr integration install codex
+```
+
+Complete any native hook/trust confirmation, especially for Codex. Start herdr from a normal terminal or a reviewed service configuration, not from inside a coding-agent session: inherited agent environment variables can disable transcript recording. See the [host service configuration](<deploy/herdr-server.service>) for details.
+
+### With npm
+
+The launcher requires **Node.js 18 or later**; the application binary bundles its own Node runtime.
 
 ```sh
 npm install -g @yuebanlaosiji/myrix
@@ -49,163 +60,190 @@ myrix version --json
 myrix help
 ```
 
-npm automatically selects the matching native dependency: `@yuebanlaosiji/myrix-darwin-arm64`, `@yuebanlaosiji/myrix-linux-x64` or `@yuebanlaosiji/myrix-linux-arm64`. Keep optional dependencies enabled. These platform packages supply the executable; **@yuebanlaosiji/myrix is the user-facing package**. Installation has no postinstall download or build. npm exposes both `myrix` and the compatible `herdr-agent` command.
+Keep npm optional dependencies enabled: the matching native binary is distributed as a platform package.
 
-List available versions, install a specific version, or upgrade to the stable release:
+### Without Node.js
 
-```sh
-npm view @yuebanlaosiji/myrix versions --json
-npm install -g @yuebanlaosiji/myrix@0.3.12
-npm install -g @yuebanlaosiji/myrix@latest
+Download the matching archive from [Releases](https://github.com/hewenyu/herdr-agent/releases), verify it against the published `SHA256SUMS`, and extract it. Use `./myrix` in place of `myrix` below, or place the executable on your `PATH`.
+
+The archive includes the runtime and Web assets, but not herdr, Git or the agent CLIs. Linux still needs compatible system libraries. macOS binaries are ad-hoc signed, not notarized; consult the release notes for platform requirements.
+
+## First run
+
+### 1. Configure the coordinator
+
+A fresh installation uses `~/.myrix`. If `~/.herdr-agent` already exists, myrix reuses it instead. Use that existing directory when upgrading, or pass `--state-dir /absolute/path` consistently to select another one.
+
+Create the state directory and save the following as its `config.toml`. Replace the three `YOUR_…` values with your provider's settings; `base_url` must be an explicit API version root, such as `https://api.openai.com/v1` for OpenAI.
+
+```toml
+[tasks]
+enabled = true
+bypass = false
+
+[ai]
+enabled = true
+provider = "openai-responses"
+base_url = "YOUR_API_BASE_URL"
+model = "YOUR_MODEL_ID"
+api_key = "YOUR_API_KEY"
 ```
 
-For an installation without Node, download and extract the matching archive from [Releases](https://github.com/hewenyu/herdr-agent/releases), verify it against the attached `SHA256SUMS`, then run the included executable:
+For Anthropic-compatible services, use `provider = "anthropic-messages"` and the corresponding API version root. A Chat Completions-only endpoint is not sufficient. Protect the state directory and credential files, for example with directory mode `0700` and file mode `0600`.
+
+**The sample deliberately disables Bypass. The application's actual default is `true`.** Bypass starts native agents with their permission/sandbox bypass flags; enable it only for a trusted execution environment. Task orchestration and AI are both disabled unless explicitly enabled.
+
+The [configuration example](<deploy/config.example.toml>) lists additional settings. Project registration can wait until the Web UI is running; no Jev key is needed for the normal pi workflow.
+
+### 2. Connect Feishu
+
+With `tasks.enabled = true` already configured, run:
 
 ```sh
-./myrix version --json
-./myrix setup
-./myrix serve
+myrix setup
 ```
 
-Read the setup section before starting task orchestration. Both installation methods require herdr, Git and the selected authenticated Claude/Codex CLI. Linux also requires compatible system libraries. macOS archives have an ad-hoc signature, without notarization; platform requirements and checksum commands are included in the release notes.
+Follow the authorization instructions, then send a real private message to the bot and click its **“确认连接”** confirmation button. Setup saves the app credentials and adds the verified owner to the allowlist. An empty allowlist grants no Feishu access.
 
-## Release and acceptance status
-
-See [Releases](https://github.com/hewenyu/herdr-agent/releases/latest) for the latest stable build and use `myrix version --json` to inspect the version, source commit and build time of your installation. This README describes the current source; consult a release's notes for changes included in that version. The root `package.json` is a private source package, not the published npm entry package.
-
-A pushed `v*` tag triggers three native builds and smoke tests, verifies the complete npm distribution with an offline global install, publishes the platform packages and then the entry package, and creates the GitHub Release. Publishing uses `TOKEN` from the GitHub environment `NPM`. Artifact downloads inside Actions are only an internal assembly step; users install `@yuebanlaosiji/myrix` from npm or download a release archive, without selecting a workflow download. See [release operations](docs/releasing.md) for versioning and recovery.
-
-Full live acceptance remains **partial and in progress**. [The validation matrix](docs/live-validation.md) separates implementation, automated tests and real Feishu/herdr evidence. [E32](docs/live-evidence-e32-manual-discussion.md) covers manual Claude/Codex discussion and cleanup; [E34](docs/live-evidence-e34-runtime-recovery.md) covers user approval, participant output, cleanup and recovery from an explicitly failed task ID within the same turn. Historical failures remain recorded, including [E33](docs/live-evidence-e33-n02-codex.md). [E35](docs/live-evidence-e35-destroy-notices.md) verified both cleanup notices and resource deletion for an explicitly cancelled task, while its remote task stayed incomplete. [E36](docs/live-evidence-e36-completion-notices.md) also verified completion-path notices and cleanup. Its creation-reply rejection was subsequently fixed and passed the limited creation-to-cleanup recheck in [E37](docs/live-evidence-e37-create-delivery.md). These are limited checks; overall acceptance remains partial.
-
-A locally accepted or queued task does not prove that the remote task or group exists, or that instructions reached a participant. Replies must follow confirmed tool receipts. Release versions and the local development binary can differ; use `myrix version --json` when comparing behavior.
-
-The [pi leader iteration record](docs/pi-leader-iteration-2026-09-29.md) describes the current repairs, compatibility and offline validation limits; it does not establish full live acceptance.
-
-## Build and run
-
-Building requires **Node >=24.13**, npm, Python and a C++/make toolchain for `fs-ext`. macOS needs Command Line Tools. Runtime prerequisites are herdr, the selected authenticated Claude/Codex CLI, Git and compatible system C++ libraries.
+Setup normally reuses an existing app. To select an existing app explicitly or add missing task/group permissions:
 
 ```sh
+myrix setup --app cli_YOUR_APP_ID
+myrix setup --update-permissions
+```
+
+Stop any running myrix instance before setup. Do not register a replacement app just to repair permissions. Exit code `3` means credentials were saved but message/card verification is incomplete.
+
+For existing task-enabled apps, ensure the Feishu developer console subscribes to `task.task.update_user_access_v2` and **publish the app version** so manual task completion reaches myrix. Setup's scope check does not verify console event subscriptions.
+
+### 3. Start the service and register a project
+
+```sh
+myrix doctor
+myrix serve --open
+```
+
+The local UI defaults to **http://127.0.0.1:18790**. Register an existing project, choose its directories and default agent, and check the Bypass setting before starting work. Saving a project initializes Git in its first directory if it is not already a repository.
+
+The first directory is the primary working directory; additional directories are passed to the native agent separately. Once initialized, the project catalog and Bypass setting live in SQLite—edit them through the local UI, not by changing their original TOML seed. Restart after changing model or Jev connection settings.
+
+`doctor` checks configuration, host integration and Feishu permissions. It does **not** make a model request or prove that a CLI is logged in; run a small real task to verify the complete chain.
+
+### 4. Give the bot a task
+
+These are natural-language examples, not special command syntax. Replace `demo` with your registered project:
+
+| Goal | Example message in Feishu |
+| --- | --- |
+| Compare approaches | “Create a discussion for demo. Have Claude and Codex compare two caching strategies. Do not modify files.” |
+| Deliver a design document | “Discuss the caching design and save the agreed proposal to docs/DESIGN.md. Do not implement application code.” |
+| Implement | “Create a development task for demo: implement the agreed caching design, with Codex implementing and Claude reviewing.” |
+| Fix a bug | “Create a bug-fix task for demo: reproduce the login timeout, fix it and review the change.” |
+| Check progress | “What is the current progress? What is blocked, and what has actually been verified?” |
+| Accept delivery | “I accept this task as complete. Keep the task group, but close its execution sessions.” |
+
+Create new tasks in private chat, with **1–8 Claude/Codex participants** per task. A task group is bound to its task; use it for follow-up requirements and questions, not for creating another task. One Feishu bot represents the participants—it does not create separate Claude and Codex bot accounts. Current workflows keep intermediate discussion internal and send necessary start/blocking notices and final delivery; ask for progress when you need it.
+
+**A queued task is not a started agent, a delivered report is not an accepted task, and an idle terminal is not proof of completion.** Review the report and explicitly confirm acceptance.
+
+## Defaults and safety boundaries
+
+| Area | Behavior to know |
+| --- | --- |
+| Completion | Confirmed completion normally closes the task's herdr execution sessions and dissolves its group. Request group retention explicitly, or configure `runtime.group_retention = "retain"` for new tasks. Keeping execution also requires keeping the group when one exists. |
+| Pause vs. interrupt | Pause stops subsequent scheduling; it does not necessarily stop an agent already running. Ask to interrupt a specific participant when needed. |
+| Working directories | Tasks use shared project directories by default. Explicit worktree mode isolates only the first directory; extra directories remain shared. Closing a task does not delete project code or worktrees. |
+| Permissions | Bypass is not an OS sandbox, and disabling it does not make myrix a sandbox. Discussion/read-only instructions and workflow checks do not replace native filesystem permissions. |
+| Verification | Only locally configured project `verify` commands are run by myrix's verifier. They execute with the service account's privileges in the task's working directory and may run scripts modified by agents. Enable them only for trusted workspaces. Reports distinguish command results, independent agent review, self-report and checks not run. |
+| Recovery | State and receipts survive restarts. Unknown external outcomes are not blindly replayed; they require reconciliation and may need your decision. Stopping myrix itself does not destroy herdr sessions. |
+| Local Web | Loopback-only, intended for a trusted local user—not a public or multi-user Web service. It has no business chat, participant controls or acceptance buttons. |
+
+### Optional Jev integration
+
+Jev is **not required** for task coordination. If you configure a Jev key:
+
+- `jev.ingress_enabled` defaults to **false**. Enabling it sends eligible private-message text and registered project names to Jev for classification.
+- `jev.approvals_enabled` defaults to **true** and takes effect when AI is enabled and a Jev key is present. It sends the visible terminal screen and task/user requirements to Jev for automatic native-menu handling, with restricted pi fallback. Set it to `false` and restart to keep ordinary approvals manual; the separate scoped startup-trust flow remains.
+- Automatic menu handling does not accept a task on your behalf or resolve missing credentials and user business decisions.
+
+Review these data flows before adding a key. See [native approval behavior](<docs/native-approval-recovery-2026-09-29.md>) for details. Configured AI providers also receive the conversation and task context needed for coordination; local execution does not mean all data stays offline.
+
+## Daily operation
+
+| Command | Purpose |
+| --- | --- |
+| `myrix serve --open` | Connect Feishu and open the local UI; `serve` is the default command. |
+| `myrix serve --no-config-ui` | Run without the local Web listener. |
+| `myrix serve --config-listen 127.0.0.1:18791` | Select a different loopback address/port. |
+| `myrix configure --open` | Open configuration/history without connecting Feishu. Uses the same state lock; existing local task reconciliation can still run. |
+| `myrix status` | Inspect the state lock/process and available stop/restart guidance. |
+| `myrix doctor` | Run read-only configuration and host diagnostics. |
+| `myrix version --json` | Show the installed command's version and build identity. |
+| `myrix debug ls` | List native agents for diagnosis; `debug screen PANE` and `debug transcript PANE` are also read-only. |
+| `myrix help` | Show all commands and options, including `--state-dir` and `--json`. |
+
+In the bot's **main private conversation**, send exactly `/clear` to archive the current pi session and select a new one. It works without a model response and preserves task state, history and native sessions. Success is acknowledged with `CLEAR_NEW_SESSION_OK`. It is not supported in groups. Long pi contexts also compact automatically without deleting original history.
+
+### Troubleshooting
+
+- **Already running:** inspect `myrix status` and stop the actual foreground process or service before setup, migration or another instance. Do not delete a live lock to force a second process.
+- **Bot cannot connect or task completion is missing:** check `doctor`, owner authorization, required scopes and published Feishu event subscriptions.
+- **Agent starts but makes no progress:** check CLI authentication, herdr hooks, directory-trust prompts and the herdr server's environment. Ask for the task's actual blocking state rather than repeatedly submitting it.
+- **Model settings are invalid:** stop the service, use `myrix configure --open` to repair supported configuration errors, then restart. A model failure does not silently forward your message to a terminal.
+- **Need logs:** myrix prints its log location at startup. Service logs are under the selected state directory's `log/`; see the [logging guide](<docs/local-service-logs.md>). `status` holding a lock is not a health check, and the installed command's version may differ from a still-running process.
+
+For background services, review the [macOS installer](<deploy/install.sh>) or the [Linux myrix unit](<deploy/myrix.service>) and [herdr unit](<deploy/herdr-server.service>). Check their executable paths, environment and state-directory settings before installation; these are not required for the foreground quick start.
+
+### Upgrades and legacy migration
+
+Stop the service and its automatic restart, back up the state directory, update the package or binary, then restart with the **same state directory**. Never run two event consumers for the same Feishu app.
+
+For an old Go installation, preview the import before committing it:
+
+```sh
+myrix migrate --state-dir /absolute/state --dry-run
+myrix migrate --state-dir /absolute/state
+```
+
+Migration backs up legacy JSON and imports it into SQLite; normal startup also performs the idempotent import. There is no automatic reverse migration. Restoring old JSON alone cannot undo external tasks, groups or sessions created since the upgrade. See the [migration design](<docs/node-pi-design.md>) and [release guide](<docs/releasing.md>).
+
+## Development
+
+Source builds require **Node.js ≥24.13.0**, npm, Python and a C++/make toolchain for the native `fs-ext` dependency; macOS needs Command Line Tools.
+
+```sh
+git clone https://github.com/hewenyu/herdr-agent.git
+cd herdr-agent
 npm ci
 npm run check
-npm run build
 npm run binary
 npm run smoke
 ./dist/myrix version --json
 ```
 
-`check` runs the 1000-line-per-file limit, strict TypeScript, Biome formatting/lint and tests. `build` produces `dist/myrix.cjs` with embedded Web assets. `binary` rebuilds the application and uses Node SEA to produce `dist/myrix`, including the Node runtime and native flock extension. The standalone executable needs neither an external Node installation nor `node_modules` or separate frontend files; the npm launcher still requires Node >=18.
+- `npm run check`: source-size and module-boundary checks, TypeScript, Biome with zero warnings, and automated tests.
+- `npm run build`: bundle the application and Web assets. `npm run binary` includes that build and produces the standalone executable for the current platform.
+- `npm run smoke`: validate the standalone package with isolated fixtures. It does not prove a real Feishu/model/herdr deployment works.
+- `npm run dev -- help`: run the CLI from source. Use a built application to test embedded Web assets.
 
-Build natively for each target: macOS arm64, Linux x64 and Linux arm64. A macOS executable is not a Linux executable. `smoke` copies only the binary to a fresh temporary directory and verifies help, version, native locking, SQLite, embedded Web resources, history browsing, protected configuration writes and rejection of Web business writes. Isolated Feishu adapter events are queued before startup; the copied SEA executes the bundled pi loop against local Responses and Anthropic protocol fixtures. Reading history does not acknowledge delivery; without a Feishu connection, an ordinary reply remains undelivered. Frozen Web workflow reports use a separate rendering receipt after their message is displayed; that receipt confirms delivery, not user acceptance. This is packaging coverage, with no real Feishu, herdr or model service. Current platform evidence is recorded in [acceptance](docs/acceptance.md); macOS ad-hoc signing is not notarization.
+Build natively for each supported target. Packaging also requires the complete license file from the Node distribution; if the build reports it missing, use an official Node distribution with that file intact. The root [package manifest](<package.json>) is private and is not the published npm launcher package.
 
-For source development: `npm run dev -- help`. Use the built program to verify embedded Web assets. The examples below use the npm command `myrix`; for a source build, substitute `./dist/myrix`.
+## Further reading
 
-## Setup
+Most detailed design and validation documents are in Chinese. Dated records describe their own implementation stage; they are not release-wide guarantees.
 
-Copy [config.example.toml](deploy/config.example.toml) to the selected state directory as `config.toml`, mode 0600 (`~/.myrix` on a fresh installation; existing `~/.herdr-agent` takes precedence). Enable `tasks.enabled` before setup if you want task/group permissions, then run:
+| Topic | Document |
+| --- | --- |
+| Configuration options | [Configuration example](<deploy/config.example.toml>) |
+| Product behavior and boundaries | [Business scenarios](<docs/current-business-scenarios.md>) |
+| Current task coordination | [Persistent task Leader](<docs/durable-task-leader-context.md>) |
+| Workflows, reports and delivery | [Workflow v3](<docs/workflow-natural-collaboration-2026-09-28.md>) · [Later pi/recovery changes](<docs/pi-leader-iteration-2026-09-29.md>) |
+| Native agent startup and recovery | [Agent lifecycle](<docs/agent-lifecycle-readiness.md>) |
+| Automated vs. live evidence | [Acceptance mapping](<docs/acceptance.md>) · [Live validation matrix](<docs/live-validation.md>) |
+| Contributing and releases | [Code-quality guide](<docs/code-quality.md>) · [Release operations](<docs/releasing.md>) |
 
-```sh
-myrix setup
-myrix serve --open
-```
+Current message input supports text and text inside rich posts. Image understanding, speech transcription and general-purpose artifact hosting are outside the current scope. Report attachments and scoped local report downloads are supported.
 
-Setup reuses an existing app when possible, saves credentials and the verified owner, and requires both a private message and the matching card callback for complete verification. Stop serve before running setup. Use `setup --app cli_EXISTING_APP` to resolve an ambiguous app and `setup --update-permissions` to grant required scopes. Creating a replacement app requires `setup --reregister --yes`.
+## License
 
-For existing apps with tasks enabled, configure event subscriptions in the Feishu developer console, add `task.task.update_user_access_v2`, and publish the app version so manual task completion reaches the service. Per-task API subscriptions do not replace this event configuration and publication. Setup's scope check does not verify developer-console event subscriptions.
-
-The current CLI supports mainland Feishu apps; it refuses to save a Lark registration as a working configuration. Set `[ai]` provider/model/base_url/api_key and `enabled=true` to use pi; tasks must also be enabled. An explicit `base_url` is required when AI is enabled; an empty URL does not select a provider default. Supported model protocols are OpenAI Responses and Anthropic Messages. Model configuration changes require a restart.
-
-Feishu credentials come from process environment, then state `.env`, then repository `.env`. Files use literal `KEY=VALUE`: quotes, hashes and embedded equals signs are literal, and shell `export` syntax is unsupported. Model, Jev and memory keys come from TOML. Keep credential files private.
-
-The optional `[jev]` section accepts `api_key`, `base_url` (default `https://api.typesafe.ai`), `model` (`jev-1.13.0`), `timeout` (`10s`, up to `2m`), `confidence_threshold` (`0.8`), `ingress_enabled` (`false`), `approvals_enabled` (`true`) and `stall_rounds` (`3`). Restart after changing it. Enabling private ingress sends eligible private-message text and registered project names to third-party Jev; it does not send complete history, repository files or attachments. A key alone does not enable ingress. Uncertain projects, low confidence, failures, quoted context and complex requests retain the original pi route.
-
-With AI enabled and a Jev key, `approvals_enabled = true` also enables automatic blocked-menu handling for existing and new managed tasks in every orchestration mode. Jev receives the complete visible terminal screen and task/user requirements, chooses a semantic menu option, and the program derives a navigation or confirmation key from the actual cursor and visible controls. Numeric option labels are not assumed to be keyboard shortcuts. Each key is followed by a fresh observation; Enter is sent only when the chosen option is already selected. The program validates the task, native identity and screen before every write; no fixed approval wording is required. Failed or uncertain Jev choices fall back to pi with only `approval_decide` over the same semantic candidates. Both selectors receive the task’s bound user request and revisions; a pi-generated requirements summary cannot add an approval policy from another task. Missing credentials, user business decisions, unreadable screens and uncertain writes remain for the user. This does not enable private ingress, change Bypass or accept task delivery. Set `approvals_enabled = false` to retain manual ordinary approvals and the existing restricted startup-trust flow. See [the fix and validation scope](docs/native-approvals-2026-09-28.md).
-
-Project owners can set `verify = ["npm run check"]` and optional `verify_timeout = "2m"` in a project seed, or edit commands and timeout in the local Web project form once SQLite owns the catalog. Missing or empty `verify` runs no local commands. myrix runs only configured commands in the task's actual primary cwd, including a worktree, with a finite per-command timeout of up to 10 minutes. Commands use the service account's permissions: a fixed cwd is not an OS sandbox. Configured commands such as `npm run check` may execute scripts, dependencies or configuration inside the participant-writable workspace; pinning the command string does not make those contents trusted or immutable. Only enable verification for workspaces you trust to execute under that account. Models cannot supply command strings or alternate cwd; changing a project with verification to new directories requires the local settings path. Timeout/cancellation stops its POSIX process group; unconfirmed exits keep directories blocked and are not automatically rerun. Evidence retains stdout/stderr, exit facts and configuration/code versions. Reports distinguish configured-command verification, independent **agent review**, participant self-report and not-run results. Without configured commands, an agent rerun is not labelled myrix verification. Clearing commands prevents new runs but does not cancel one already started. When the user explicitly prohibits tests, workflow records the original constraint, disables verification commands, retains independent read-only review and reports verification as not run.
-
-The local page maintains machine configuration and shows conversation history; it is not a task-management fallback when Feishu is unavailable. Its URL is printed on startup; port 0 selects an available port. Only literal loopback IPs are accepted. The local Web page can add, edit or remove project registrations, choose a default project and participant, set Bypass for new tasks, and save the pi model connection. Enter existing directories in order: saving validates every directory and initializes Git in the first directory if needed; additional directories are passed to Claude/Codex in the same order. Removing a registration does not delete its code. Project directories and Bypass defaults apply to new tasks without changing existing execution sessions; verification settings are checked again before each new verification run; model connection changes require a service restart. The Web identity selector only selects authorized history and configuration scope; it does not change the Feishu sender. You can also use the documented configuration files and CLI; initiate business operations in Feishu. `myrix configure --listen 127.0.0.1:0 --open` remains available to start the local page without a Feishu connection. Its HTTP interface exposes protected configuration writes and a scoped rendering receipt for frozen Web workflow reports; task, chat and approval commands remain unavailable. Reading history remains read-only; a separate receipt records only a report actually displayed in the selected owner's session. The command still opens and migrates local state and can process already queued work through the existing scheduler. This is a single-user, single-machine tool, not a remotely authenticated multi-tenant Web service.
-
-Service diagnostics are written by default to `<stateDir>/log/myrix.log` (new installations use `~/.myrix`; existing `~/.herdr-agent` installations keep that state directory); startup prints the path. Logs append across restarts, rotate at 10 MiB, retain five backups and use private file permissions. Startup records identify the running version, commit and PID. If file logging fails, the service reports the failure and falls back to the console without replaying task actions. See [local service logs](docs/local-service-logs.md) for inspection and retention details.
-
-For supervised operation, review the launchd/systemd user templates and installer in [deploy](deploy/). Use the correct account and paths. Stopping the bridge does not automatically destroy herdr-managed tasks.
-
-### Upgrades and an existing instance
-
-Running `myrix` without arguments means `myrix serve`. If another process holds the state lock, a second Feishu connection is refused. Inspect the existing instance first:
-
-```sh
-myrix status
-myrix status --json
-```
-
-`status` checks the kernel lock and reports process and service-manager diagnostics without connecting to Feishu, opening SQLite or requiring valid configuration. A recorded PID is only a hint; a held lock does not prove the Feishu connection is healthy. Do not delete the PID file of a lock holder. Stop a foreground instance with Ctrl+C in its original terminal, then start the updated program. For a supervised instance, follow the service instructions verified by `status`.
-
-An npm upgrade changes installed files, not an already-running process. `myrix version --json` reports the installation used by that command, not the version of a background instance. If launchd still points to an older standalone binary, run the corrected installer from a source checkout to bind the bridge to the current npm command:
-
-```sh
-MYRIX_BIN="$(command -v myrix)" bash deploy/install.sh --bridge-only
-launchctl print "gui/$(id -u)/com.hewenyu.myrix"
-```
-
-This preserves configuration and the herdr service, retires the legacy bridge launchd label, and installs/restarts `com.hewenyu.myrix`. The npm package does not include `deploy/install.sh`. Once the service uses the same npm global directory, subsequent upgrades require `launchctl kickstart -k "gui/$(id -u)/com.hewenyu.myrix"`. Changing an nvm Node version or npm global prefix requires rerunning the installer to update the executable and Node PATH.
-
-SQLite's `ExperimentalWarning` is a notice from the embedded Node runtime, not a lock failure. Help, version, status and a refused duplicate startup no longer load SQLite; warnings remain visible when the database is actually opened. Use `myrix --trace-warnings serve` for warning stacks. The `...` in Node's hint is a placeholder, not a literal argument.
-
-## Workflow and commands
-
-Use the main Feishu private conversation to create projects and tasks or switch pi sessions; use each task group to continue its discussion and handle approvals. Ask pi to start a requirements discussion with Claude and Codex or arrange implementation and review. Discussions may omit a project; development, review and test tasks use a configured project. One Feishu bot labels participant output; Claude and Codex are not separate Feishu accounts.
-
-Task mode is frozen at creation. With AI enabled, new automatic tasks use `workflow` regardless of the Jev key, including stale tool calls that still pass `orchestration.mode = "model"`. Existing tasks and their creation retries keep their recorded mode. Explicit manual control remains available. Multi-participant discussions without AI default to `manual`; explicit `round_robin` on a new task returns a deprecation error, while ordinary alternating discussion uses default workflow. The main pi conversation must preserve each historical constraint’s task scope rather than copy another task’s approval policy into a new task. The application imposes no decision-count, discussion-round, total-duration or tool-call quota; AI budgets belong to the configured gateway. In workflow mode an unchanged current-version open-issue set across `stall_rounds` settled batches asks the user to decide, without forcing synthesis or completion. Persisted `round_robin` discussions continue until paused or ended. Per-operation timeouts and model context management keep stalled calls and oversized requests recoverable. Participant IDs distinguish multiple instances of the same model. Normal text never serves as a permission-menu approval. Unknown pane-close, input-delivery and report-attachment outcomes are never replayed automatically: each tick first tries read-only evidence (pane presence, or an exact native transcript match of the full prompt), then asks restricted pi once per operation revision, then sends the owner a single-use task-group card without an escalate option. Resolutions keep the original receipt; retry is limited to once per operation in code, and only the owner can abandon an unknown pane close. See the [pi leader iteration record](docs/pi-leader-iteration-2026-09-29.md).
-
-Task identity and creation locks are scoped to the selected pi session. Reusing a request or message ID in another session therefore creates an independent task and does not serialize unrelated project creation. The application retains task and conversation history after a group is dissolved, but late messages and card callbacks are rejected at ingress and before inbox execution; they cannot fall back to the main pi session or consume an approval. When Feishu reconnects, the previous task scheduler is stopped before the replacement starts reconciling the same records, so an old connection cannot continue acting on the new connection's work.
-
-With automatic approvals disabled or no Jev key, the existing startup pi flow confirms only the native Claude/Codex directory-trust prompt when the directory matches the authorized task project. For tasks without model orchestration, `manual` discussions only attempt the first participant automatically; later participants wait for the user or scheduler. If the current facts show a published task-group approval card, a `blocked` participant requires the user to handle that card; without a group or card publication fact, the notice reports only that the participant is blocked. Persisted `round_robin` tasks may advance only after the previous participant has produced a verified output. When automatic approvals are disabled, other approval prompts remain in the task group for the user to choose explicitly. `tasks.bypass` still defaults to `true`; the project/task Bypass setting is preserved as an explicit option and is never enabled implicitly by this startup handling.
-
-New tasks dissolve their group after confirmed completion by default; explicitly request `keepGroup: true` to retain it. `review` never triggers dissolution. Explicit retention remains effective. Legacy default or unproven retention is resolved to deletion when completion or closure begins; active historical tasks are not rewritten in bulk. `complete`, including manual Feishu completion, closes the corresponding execution resources through herdr and applies the group policy. Any group dissolution also closes the corresponding herdr-managed Claude/Codex sessions. Explicit `keepExecution: true` on completion is an exception and requires `keepGroup: true` for tasks with a group; `close` confirms completion before execution cleanup; `destroy` cleans up without accepting the task; `reopen` applies to completed tasks whose resources remain. If execution has already closed and a group was retained, explicitly request its dissolution; pi can use `destroy` with `keepGroup: false` (or `close` for an already accepted task). This keeps the original acceptance history and never restarts execution. Session archiving is independent. Shared project directories are the default. Explicit worktree mode isolates only the first directory; additional directories remain shared, and task closure does not delete code or worktrees.
-
-The everyday CLI is `serve / setup / configure / doctor / status / version / help`; `configure` opens the local configuration and conversation-history page, while business controls remain in Feishu. Maintenance adds `migrate` and read-only `debug ls|screen|transcript`. Old top-level pane-writing commands such as `key` and `say`, and the old `watch/dialog/tail` interfaces, are removed; use participant controls and approval cards.
-
-The main Feishu private conversation automatically compacts long pi context when its configured context capacity is reached; compaction preserves the original history and durable operation receipts. Send `/clear` there only when you want to manually archive the current pi session and select a new one. Only after that transaction succeeds does the program reply `CLEAR_NEW_SESSION_OK`. This works with AI disabled or unavailable, preserves history and tasks, and leaves herdr sessions intact. Groups reject the command. Matching uses only the actual message body, with surrounding whitespace removed; quoted text, `/CLEAR`, `／clear`, `/clear now` and mentions of `/clear` do not trigger it. Web has no chat box, `/clear` entry point or clear/reset button. Browsing another history record never changes the active Feishu session.
-
-With AI enabled, other conversational text follows the opt-in classification rule above; slash syntax other than exact `/clear` goes to pi. With AI disabled, task-mode compatibility commands remain available. With tasks disabled, the legacy bridge preserves `/card /say /stop /mirror /close` for existing pane selections; its `/close` only clears selection and never destroys a task. New takeover bindings are deprecated. See `help` for exact CLI options.
-
-Legacy `/ls` now returns a deprecation notice, not a selection card. Card selection and `/mirror` cannot create a new binding, and a single available agent is no longer selected implicitly. Existing selected panes remain usable; unmanaged herdr shell panes remain outside this bridge.
-
-Exit codes: 0 success; 1 failure; 2 usage error; 3 setup credentials saved but verification incomplete; 130 cancellation. The Go CLI's historical exit codes are not all preserved.
-
-## Migration and rollback
-
-Stop the Go service and its automatic restart before migration. Do not run two event consumers for the same Feishu app.
-
-```sh
-myrix migrate --state-dir /absolute/state --dry-run
-myrix migrate --state-dir /absolute/state
-myrix serve --state-dir /absolute/state
-```
-
-Migration validates old JSON, backs up original files under `backups/`, then imports tasks, native resource references, visible conversations and replay-prevention receipts into SQLite transactionally. Old files remain unchanged. The service startup performs the same idempotent migration; explicit maintenance uses `migrate`. Corrupt sources, conflicting new facts or changed previously imported sources refuse overwrite. Interrupted operations remain unresolved; old tools and historical replies are not replayed.
-
-New state is stored in `state.sqlite` with WAL/SHM. TOML and legacy `projects.json` seed the catalog; subsequent project changes made through Feishu or Web configuration write SQLite. There is no automatic reverse migration. Before rollback, stop the new service, preserve the database and backups, and reconcile resources created or removed since migration. Restoring old JSON alone does not restore external state.
-
-## Evidence and scope
-
-Tests cover the real pi loop with protocol fixtures, SQLite/flock/Git, Feishu SDK dispatch, migration, delivery receipts and standalone packaging. Business acceptance requires actual Feishu user ingress and group interactions, matched with model/tool receipts, herdr execution and independent readbacks. Direct Web/API actions and fixtures cannot substitute for this route. Web configuration writes and history browsing are verified separately. Supported inputs are text and text inside rich posts; image understanding, speech transcription and general artifact hosting are outside the first release. The v3 report attachment and scoped local report download are supported.
-
-- [Current business scenarios, command choices and gaps](docs/current-business-scenarios.md)
-- [Current design and D01–D16 decisions](docs/node-pi-design.md)
-- [Jev/LLM orchestration v1.1 and S3/S4 specs (merged in PR #54)](docs/myrix-jev-llm-orchestration-design.md)
-- [B/N scenario mapping and acceptance evidence](docs/acceptance.md)
-- [Active refactor goal](docs/refactor-goal.md)
-- [Original Go requirements inventory](docs/node-pi-refactor-requirements.md)
-
-The [live Jev Choice check](docs/jev-choice-live-evidence-2026-09-27.json) uses synthetic input and does not establish full Feishu/Claude/Codex workflow acceptance.
-
-The owner has confirmed acceptance of PR #54. This is historical v2 evidence; it does not certify the v3 changes linked above. [Follow-up evidence and reproducible probes](docs/workflow-completion-2026-09-27.md) record successful isolated discussion, development and bugfix workflows with real Jev, pi, Claude and Codex, plus synthetic ingress failures and fallback paths. Run `node --import tsx scripts/live/jev-ingress-probe.ts` for classification only, or `node --import tsx scripts/live/workflow-acceptance.ts --template all` for local workflow checks. These manual probes use configured model credentials; they do not send Feishu messages or change service configuration.
-
-Older architecture and audit documents are explicitly marked as Go history and use permanent source links. They are not the current Node runtime specification.
-
-For current module boundaries, reuse principles and the PR checklist, see the [Node/TypeScript code-quality guide](<docs/code-quality.md>) (Chinese). `npm run check` enforces the selected architecture boundaries and treats lint warnings as failures.
-
-This project is MIT; see [LICENSE](LICENSE). Release archives also include `LICENSES/` with the bundled npm dependencies, native addon/header and complete Node notices. Retain these materials when redistributing. See [license generation](licenses/README.md).
-
-See the [local implementation and review record](docs/workflow-implementation-2026-09-27.md) for code mappings, checks, live model evidence and outstanding platform acceptance.
+[MIT](<LICENSE>). Release archives also contain third-party license notices; retain them when redistributing. See the [license packaging guide](<licenses/README.md>).
