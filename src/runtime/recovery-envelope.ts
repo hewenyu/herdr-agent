@@ -20,6 +20,8 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { OperationError } from "../core/errors.js";
+import { escapedBytes, escapedPrefix } from "./escaped-bytes.js";
+import { parseJson, plainObject } from "./json.js";
 import { serialize } from "./model-context.js";
 
 /** One tool call as it appears in an assistant message. */
@@ -116,12 +118,7 @@ export function envelopeBytes(value: unknown): number {
 }
 
 /** UTF-8 bytes one text field costs inside a JSON envelope (quotes excluded). */
-export function escapedBytes(text: string): number {
-  const quoted = serialize(text);
-  return quoted === undefined
-    ? Number.MAX_SAFE_INTEGER
-    : Math.max(0, Buffer.byteLength(quoted, "utf8") - 2);
-}
+export { escapedBytes };
 
 /** Model-facing text of one tool result; never interprets or rewrites it. */
 export function toolResultText(message: ToolResultEnvelope): string {
@@ -469,20 +466,6 @@ function safeProject<T>(hook: ((input: T) => unknown) | undefined, input: T): un
   }
 }
 
-/** Code-point-safe prefix whose JSON-escaped size stays inside `maxBytes`. */
-function escapedPrefix(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return "";
-  let result = "";
-  let used = 0;
-  for (const character of text) {
-    const size = escapedBytes(character);
-    if (used + size > maxBytes) break;
-    result += character;
-    used += size;
-  }
-  return result;
-}
-
 /** Truncate one fact by escaped bytes, keeping the ellipsis inside the cap. */
 function truncateEscaped(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
@@ -491,18 +474,4 @@ function truncateEscaped(value: string, maxBytes: number): string {
   if (maxBytes <= ellipsis) return escapedPrefix(value, maxBytes);
   const prefix = escapedPrefix(value, maxBytes - ellipsis);
   return prefix ? `${prefix}…` : escapedPrefix(value, maxBytes);
-}
-
-function plainObject(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
 }

@@ -24,6 +24,7 @@
  * Everything here is deterministic and byte-exact: chunks are cut on code point
  * boundaries and measured by JSON-escaped UTF-8 size, never by character count.
  */
+import { escapedBytes, escapedPrefix } from "./escaped-bytes.js";
 import { MODEL_RESULT_MAX_BYTES, probeToolCall, serialize } from "./model-context.js";
 
 /** Where a page read starts: page index plus character offset inside that page. */
@@ -32,31 +33,13 @@ export interface PageStart {
   offset: number;
 }
 
-/** Escaped UTF-8 size of a text field inside a JSON envelope (quotes excluded). */
-export function escapedBytes(text: string): number {
-  const quoted = serialize(text);
-  return quoted === undefined
-    ? Number.MAX_SAFE_INTEGER
-    : Math.max(0, Buffer.byteLength(quoted, "utf8") - 2);
-}
-
 /**
- * Longest prefix whose escaped size stays within `maxBytes`. The cut is made
- * on code points, so a surrogate pair is never split: the returned string is
- * always valid UTF-8 and re-serializes to exactly its escaped size.
+ * Escaped-size helpers, re-exported so callers of this module keep their API.
+ * `escapedSlice` is this module's historical name for the code-point-safe
+ * prefix whose escaped size stays within a byte budget: a surrogate pair is
+ * never split, so the result re-serializes to exactly its escaped size.
  */
-export function escapedSlice(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return "";
-  let used = 0;
-  let result = "";
-  for (const character of text) {
-    const size = escapedBytes(character);
-    if (used + size > maxBytes) break;
-    used += size;
-    result += character;
-  }
-  return result;
-}
+export { escapedBytes, escapedPrefix as escapedSlice };
 
 /**
  * Worst-case message cost of one escaped source byte, MEASURED rather than
@@ -308,7 +291,7 @@ export function pageSlice(
   const body = load(start.page);
   if (body === undefined || start.offset > body.length) return undefined;
   const rest = body.slice(start.offset);
-  const text = escapedSlice(rest, room);
+  const text = escapedPrefix(rest, room);
   return { text, end: start.offset + text.length };
 }
 
