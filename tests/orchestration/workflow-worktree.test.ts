@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { constants, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { link, readFile, realpath, symlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
@@ -17,6 +17,13 @@ import type { Store } from "../../src/storage/store.js";
 import { Engine, logger } from "../app/helpers.js";
 import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
+import { logTailFixture } from "./verification-log-fixture.js";
+import {
+  defaultLogTailIo,
+  logTailFlags,
+  selectVerificationLogTails,
+  verificationLogTails,
+} from "./verification-log-tail.js";
 
 const execute = promisify(execFile);
 
@@ -187,7 +194,10 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 // Failure-only observations, not execution proof: a shell pid does not establish
 // Node initialization, and missing/unknown records do not establish nonexecution.
-function startupDiagnostics(original: Logger) {
+function startupDiagnostics(
+  original: Logger,
+  readLogTails?: (rows: readonly unknown[]) => ReturnType<typeof selectVerificationLogTails>,
+) {
   const codes: string[] = [];
   const scalar = (value: unknown): string | number | boolean | null => {
     if (value === null) return null;
@@ -221,6 +231,7 @@ function startupDiagnostics(original: Logger) {
     message(store: Pick<Store, "get" | "list">, taskId: string): string {
       try {
         const snapshot: Record<string, unknown> = {};
+        let runRows: unknown[] = [];
         const section = (name: string, read: () => unknown) => {
           try {
             snapshot[name] = read();
@@ -231,22 +242,21 @@ function startupDiagnostics(original: Logger) {
         section("task", () => pick(store.get("tasks", taskId), ["worktreeReady", "status"]));
         section("runs", () => {
           const rows = store.list("verification_runs");
+          runRows = rows.slice(0, 6);
           return {
             total: rows.length,
-            first: rows
-              .slice(0, 6)
-              .map((row) =>
-                pick(row, [
-                  "status",
-                  "pid",
-                  "startedAt",
-                  "finishedAt",
-                  "exitCode",
-                  "signal",
-                  "exitConfirmed",
-                  "error",
-                ]),
-              ),
+            first: runRows.map((row) =>
+              pick(row, [
+                "status",
+                "pid",
+                "startedAt",
+                "finishedAt",
+                "exitCode",
+                "signal",
+                "exitConfirmed",
+                "error",
+              ]),
+            ),
           };
         });
         section("events", () => {
@@ -259,6 +269,7 @@ function startupDiagnostics(original: Logger) {
             })),
           };
         });
+        if (readLogTails) section("logTails", () => readLogTails(runRows) ?? { selected: 0 });
         snapshot.loggedErrorCodes = codes.slice();
         return `\n[startup diagnostic; observations only] ${JSON.stringify(snapshot)}`;
       } catch {
@@ -407,7 +418,9 @@ async function verificationFixture(long = false) {
   });
   await h.service.reconcile(h.task.id);
   const ready = h.service.get(actor, h.task.id);
-  const diagnostics = startupDiagnostics(h.options.logger);
+  const diagnostics = startupDiagnostics(h.options.logger, (rows) =>
+    selectVerificationLogTails(h.directory, h.task.id, rows),
+  );
   const worker = new TaskOrchestrator({ ...h.options, logger: diagnostics.logger });
   const internals = worker as unknown as VerificationInternals;
   const state = workflowState(h.store, ready, internals.revision(ready, false));
@@ -752,3 +765,225 @@ for (const change of ["readiness", "directories"] as const)
       h.close();
     }
   });
+
+test("verification log tails bound bytes and escaped suffixes without claiming completeness", async () => {
+  const h = await logTailFixture();
+  try {
+    assert.equal(h.read()?.stdout.bytes, 21);
+    assert.equal(h.read()?.stdout.rendered, "log-head\\nTAIL-MARKER\\n");
+    assert.equal(h.read()?.stderr.status, "empty");
+    writeFileSync(h.stdoutPath, `HEAD${"x".repeat(508)}TAIL`);
+    const tail = h.read()?.stdout;
+    assert.equal(tail?.bytes, 512);
+    assert.equal(tail?.truncated, true);
+    assert.equal(tail?.rendered, `${"x".repeat(508)}TAIL`);
+    writeFileSync(h.stdoutPath, Buffer.alloc(2048, 0xff));
+    const escaped = h.read()?.stdout;
+    assert.equal(escaped?.bytes, 512);
+    assert.equal(escaped?.renderTruncated, true);
+    assert.equal(escaped?.rendered, "\\xff".repeat(128));
+    assert.ok(JSON.stringify(escaped).length < 1200);
+    await h.remove(h.stdoutPath);
+    assert.equal(h.read()?.stdout.status, "missing");
+  } finally {
+    await h.close();
+  }
+});
+
+test("verification log tails refuse ineligible rows and static filesystem escapes", async () => {
+  const h = await logTailFixture();
+  try {
+    for (const row of [
+      null,
+      undefined,
+      [],
+      { ...h.row, taskId: "other" },
+      { ...h.row, id: "../escape" },
+      { ...h.row, id: "A".repeat(64) },
+      { ...h.row, exitConfirmed: false },
+      { ...h.row, status: "running" },
+    ])
+      assert.equal(verificationLogTails(h.stateDir, h.taskId, row), undefined);
+    let idReads = 0;
+    const changing = {
+      ...h.row,
+      get id() {
+        return ++idReads <= 2 ? h.row.id : "../../../../outside";
+      },
+    };
+    const captured = verificationLogTails(h.stateDir, h.taskId, changing);
+    assert.equal(idReads, 1, "validate and use the same captured id");
+    assert.equal(captured?.stdout.bytes, 21);
+    const secret = join(h.root, "secret.log");
+    writeFileSync(secret, "SECRET-OUTSIDE");
+    const mismatch = verificationLogTails(h.stateDir, h.taskId, { ...h.row, stdoutPath: secret });
+    assert.equal(mismatch?.stdout.reason, "path_mismatch");
+    await h.remove(h.stdoutPath);
+    await symlink(secret, h.stdoutPath);
+    assert.equal(h.read()?.stdout.reason, "symlink");
+    assert.doesNotMatch(JSON.stringify(h.read()), /SECRET-OUTSIDE/);
+    await h.remove(h.stdoutPath);
+    await link(secret, h.stdoutPath);
+    assert.equal(h.read()?.stdout.reason, "hardlink");
+    await h.remove(h.stdoutPath);
+    mkdirSync(h.stdoutPath);
+    assert.equal(h.read()?.stdout.reason, "nonregular");
+    const verification = dirname(h.directory);
+    await h.remove(verification);
+    await symlink(h.root, verification);
+    assert.equal(h.read()?.stdout.reason, "ancestor_symlink");
+    assert.equal(logTailFlags("win32"), undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("verification log tails isolate IO faults validate identity and always attempt close", async () => {
+  const h = await logTailFixture();
+  try {
+    writeFileSync(h.stderrPath, "stderr-survives");
+    for (const mode of [
+      "getter",
+      "fstat",
+      "read",
+      "inode",
+      "count",
+      "short",
+      "open",
+      "close",
+    ] as const) {
+      let opened = 0,
+        closed = 0,
+        reads = 0;
+      const counts = new Map<number, number>();
+      const io: typeof defaultLogTailIo = {
+        ...defaultLogTailIo,
+        lstat(path) {
+          if (mode === "getter" && path === h.stdoutPath)
+            throw Object.defineProperty({}, "code", {
+              get() {
+                throw undefined;
+              },
+            });
+          return defaultLogTailIo.lstat(path);
+        },
+        open(path, flags, permissions) {
+          assert.equal(flags, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          if (mode === "open") throw 0;
+          const fd = defaultLogTailIo.open(path, flags, permissions);
+          opened++;
+          counts.set(fd, 0);
+          return fd;
+        },
+        fstat(fd) {
+          if (mode === "fstat") throw false;
+          const stat = defaultLogTailIo.fstat(fd);
+          if (mode === "inode") stat.ino += 1;
+          return stat;
+        },
+        read(fd, buffer, offset, length, position) {
+          reads++;
+          if (mode === "read") throw undefined;
+          if (mode === "count") return NaN;
+          if (mode === "short" && counts.get(fd)) return 0;
+          counts.set(fd, 1);
+          return defaultLogTailIo.read(
+            fd,
+            buffer,
+            offset,
+            mode === "short" ? Math.min(2, length) : length,
+            position,
+          );
+        },
+        close(fd) {
+          closed++;
+          defaultLogTailIo.close(fd);
+          if (mode === "close") throw null;
+        },
+      };
+      const result = h.read(io);
+      assert.ok(result);
+      assert.equal(closed, opened, mode);
+      if (mode === "inode") {
+        assert.equal(result.stdout.status, "rejected");
+        assert.equal(reads, 0);
+      } else if (mode === "short") {
+        assert.equal(result.stdout.bytes, 2);
+        assert.equal(result.stdout.rendered, "lo");
+        assert.equal(result.stdout.truncated, true);
+      } else if (mode === "close") assert.equal(result.stderr.rendered, "stderr-survives");
+      else assert.equal(result.stdout.status, "unreadable", mode);
+      if (mode === "getter") assert.equal(result.stderr.rendered, "stderr-survives");
+      if (mode === "count") {
+        assert.equal(result.stdout.bytes, 0);
+        assert.equal(result.stdout.rendered, "");
+      }
+      assert.equal(opened, mode === "open" ? 0 : mode === "getter" ? 1 : 2);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+test("verification log tails read one displayed run only when formatting failure diagnostics", async () => {
+  const h = await logTailFixture();
+  try {
+    let opened = 0,
+      listed = 0,
+      called = 0;
+    const io = {
+      ...defaultLogTailIo,
+      open(...args: Parameters<typeof defaultLogTailIo.open>) {
+        opened++;
+        return defaultLogTailIo.open(...args);
+      },
+    };
+    const throwing = Object.defineProperty({}, "taskId", {
+      get() {
+        throw false;
+      },
+    });
+    const rows = [undefined, { ...h.row, taskId: "other" }, throwing, h.row, h.row, null, h.row];
+    const store: Pick<Store, "get" | "list"> = {
+      get: <T>() => ({ worktreeReady: true, status: "review" }) as T,
+      list: <T>(namespace: string) => {
+        if (namespace !== "verification_runs") return [];
+        listed++;
+        return rows as T[];
+      },
+    };
+    const diagnostics = startupDiagnostics(logger, (shown) => {
+      called++;
+      assert.equal(shown.length, 6);
+      return selectVerificationLogTails(h.stateDir, h.taskId, shown, io);
+    });
+    diagnostics.logger.info("no log reads during normal logging");
+    assert.equal(called, 0);
+    assert.equal(opened, 0);
+    const message = diagnostics.message(store, h.taskId);
+    const snapshot = JSON.parse(message.slice(message.indexOf("{")));
+    assert.equal(called, 1);
+    assert.equal(listed, 1);
+    assert.equal(opened, 2);
+    assert.equal(snapshot.logTails.rowIndex, 3);
+    assert.equal(snapshot.runs.total, 7);
+    assert.equal(snapshot.logTails.stdout.bytes, 21);
+    assert.equal(message.includes(h.root), false);
+    assert.equal(
+      selectVerificationLogTails(h.stateDir, h.taskId, [...Array(6), h.row], io),
+      undefined,
+    );
+    assert.equal(opened, 2);
+    const failed = startupDiagnostics(logger, () => {
+      throw new Error("private reader failure");
+    });
+    const failure = failed.message(store, h.taskId);
+    const partial = JSON.parse(failure.slice(failure.indexOf("{")));
+    assert.equal(partial.logTails, "<unreadable>");
+    assert.equal(partial.task.worktreeReady, true);
+    assert.equal(partial.runs.first.length, 6);
+    assert.doesNotMatch(failure, /private reader failure/);
+  } finally {
+    await h.close();
+  }
+});
