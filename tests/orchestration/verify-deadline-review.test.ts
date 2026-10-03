@@ -364,44 +364,51 @@ test("preflight time before the spawn attempt is not charged to the command", as
   }
 });
 
-// 400ms of launch work leaves 100ms. The TERM assertions make this fail if the
-// timer still receives a fresh 500ms, even when the post-close guard rejects it.
-test("only the budget left after synchronous spawn work is scheduled", async (t) => {
-  const h = await fixture(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const clock = installControllableMonotonicClock(t);
-  const synthetic = installSyntheticChild(() => clock.advance(DEADLINE_MS - 100));
-  let termsAt99 = -1;
-  let termsAtBudget = -1;
-  try {
-    interceptRunningPersist(h.store, () => {
-      clock.advance(99);
-      t.mock.timers.tick(99);
-      termsAt99 = termAttempts(synthetic);
-      clock.advance(1);
-      t.mock.timers.tick(1);
-      termsAtBudget = termAttempts(synthetic);
-      queueMicrotask(() => synthetic.child.emit("close", 0, null));
-    });
-    const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "remaining"));
-    assert.equal(termsAt99, 0, "99ms is still inside the remaining budget");
-    assert.ok(termsAtBudget >= 1, "the remaining budget expired and termination was attempted");
-    assert.equal(
-      termAttempts(synthetic),
-      1,
-      "one termination attempt came from the expired budget",
-    );
-    assert.equal(synthetic.spawnCalls, 1);
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.exitConfirmed, true);
-    assert.equal(result.status, "timed_out");
-    assert.equal(
-      h.store.get<VerificationRun>("verification_runs", result.id)?.status,
-      "timed_out",
-      "the durable record keeps the conservative outcome",
-    );
-  } finally {
-    t.mock.timers.reset();
-    synthetic.restore();
-  }
-});
+// 400ms of launch work leaves 100ms. Fractional launch work must not cause
+// rounding down to terminate early. TERM checks also reject a fresh 500ms timer
+// even when the post-close guard would still reject the eventual exit-0 result.
+for (const launchMs of [400, 400.4])
+  test(
+    launchMs === 400
+      ? "only the budget left after synchronous spawn work is scheduled"
+      : "fractional launch work cannot trigger termination before the deadline",
+    async (t) => {
+      const h = await fixture(t);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const clock = installControllableMonotonicClock(t);
+      const synthetic = installSyntheticChild(() => clock.advance(launchMs));
+      let termsAt99 = -1;
+      let termsAtBudget = -1;
+      try {
+        interceptRunningPersist(h.store, () => {
+          clock.advance(99);
+          t.mock.timers.tick(99);
+          termsAt99 = termAttempts(synthetic);
+          clock.advance(1);
+          t.mock.timers.tick(1);
+          termsAtBudget = termAttempts(synthetic);
+          queueMicrotask(() => synthetic.child.emit("close", 0, null));
+        });
+        const result = await h.runner.run(h.task, candidateFor(h.runner, h.task, "remaining"));
+        assert.equal(termsAt99, 0, "99ms is still inside the remaining budget");
+        assert.ok(termsAtBudget >= 1, "the remaining budget expired and termination was attempted");
+        assert.equal(
+          termAttempts(synthetic),
+          1,
+          "one termination attempt came from the expired budget",
+        );
+        assert.equal(synthetic.spawnCalls, 1);
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.exitConfirmed, true);
+        assert.equal(result.status, "timed_out");
+        assert.equal(
+          h.store.get<VerificationRun>("verification_runs", result.id)?.status,
+          "timed_out",
+          "the durable record keeps the conservative outcome",
+        );
+      } finally {
+        t.mock.timers.reset();
+        synthetic.restore();
+      }
+    },
+  );
