@@ -204,9 +204,8 @@ export function selectVerificationLogTails(
 ): (VerificationLogTails & { rowIndex: number }) | undefined {
   for (let rowIndex = 0; rowIndex < Math.min(6, rows.length); rowIndex++) {
     try {
-      if (!eligibleRun(taskId, rows[rowIndex])) continue;
-      const tails = verificationLogTails(stateDir, taskId, rows[rowIndex], io);
-      if (tails !== undefined) return { rowIndex, ...tails };
+      const run = eligibleRun(taskId, rows[rowIndex]);
+      if (run) return { rowIndex, ...readEligibleRun(stateDir, taskId, run, io) };
     } catch {
       // An unreadable row must not suppress other observations in this window.
     }
@@ -223,7 +222,23 @@ export function verificationLogTails(
 ): VerificationLogTails | undefined {
   try {
     const run = eligibleRun(taskId, row);
-    if (!run) return undefined;
+    return run ? readEligibleRun(stateDir, taskId, run, io) : undefined;
+  } catch {
+    return unreadableRun();
+  }
+}
+
+function unreadableRun(): VerificationLogTails {
+  return { stdout: tailStream("unreadable", "reader"), stderr: tailStream("unreadable", "reader") };
+}
+
+function readEligibleRun(
+  stateDir: string,
+  taskId: string,
+  run: EligibleRun,
+  io: LogTailIo,
+): VerificationLogTails {
+  try {
     const located = locate(stateDir, taskId, run.id, io);
     if (!located.ok) {
       const failed = tailStream(located.status, located.reason);
@@ -248,9 +263,6 @@ export function verificationLogTails(
     };
     return { stdout: read(stdoutPath), stderr: read(stderrPath) };
   } catch {
-    return {
-      stdout: tailStream("unreadable", "reader"),
-      stderr: tailStream("unreadable", "reader"),
-    };
+    return unreadableRun();
   }
 }

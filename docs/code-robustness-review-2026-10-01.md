@@ -359,4 +359,23 @@ v5 全量严格汇总验证 44 个唯一夹具的全部 132 条三阶段记录�
 
 主代理最终静态检查全通过；期限与工作区两文件回归 **29/29，6116.484875ms**，无跳过/取消；其中新身份捕获断言已由红转绿。此结果不替代完整验收。
 
-DeepSeek 披露违反“禁止 shell”的委派范围，运行过检查/格式化探测并写外部临时副本；这些自报验证不作为验收，主代理独立运行检查。此变更仍然只是失败可观测性：后续冻结应为 **2649 项、同一 292 文件参数列表**。下一次有新现场信息的全量才可更新本地结论，PR 继续 Draft。
+DeepSeek 披露违反“禁止 shell”的委派范围，运行过检查/格式化探测并写外部临时副本；这些自报验证不作为验收，主代理独立运行检查。此变更仍然只是失败可观测性：初次提交时计划冻结 **2649 项、同一 292 文件参数列表**，有新现场信息后再更新本地结论，PR 继续 Draft。
+
+### `8b908ce`：真实运行日志已读到，原始全量仍有九项失败
+
+提交 `8b908ce9a24bf2a39e4faef06299de665d0981ea` 后执行无 preload 的原始 `npm run check`。运行前后冻结核对 **666 个仓库文件、29 个辅助材料、相同 292 文件 argv** 一致；原始全量 **2649 项：2640 通过、9 失败、0 跳过/取消，874955.554041ms**，检查退出 1，冻结核对退出 0。行数/边界/类型/零警告 lint 通过。
+
+八项安装器失败均为外层 spawnSync 超时：status=null、SIGKILL、ETIMEDOUT。canonical readiness（loaded=true/disabled=true）和 fresh readiness 各约 40s；canonical upgrade 约 30s；install failure、legacy-disable、missing-plist、both-loaded、stuck replacement 各约 10s。这是相对上次七项安装器失败的又一次现场，不以计数变化推断诊断改动导致退化，也不放宽任何预算。
+
+工作区 readiness 用例在约 6325ms 启动断言失败。实际快照选中 **rowIndex=0**：task worktreeReady=true/status=review；唯一 run timed_out，pid=40445，startedAt=`2026-10-03T10:04:00.464Z`，finishedAt=`2026-10-03T10:04:05.465Z`，exitCode=null，signal=SIGTERM，exitConfirmed=true；唯一 event done/attempts=1；错误码数组为空。**stdout、stderr 均成功读到 size=0 的普通文件，状态 empty、bytes=0、两类截取标识 false**，不是路径拒绝、未选择或不可读。
+
+这验证了当前真实 Service 的运行记录/路径与读取器兼容，且 null 展示修复生效；但未证明 Node 初始化、require、文件写入或 shell exec 到达哪一步。5001ms 墙钟差仍不是子进程实际运行时长；空流不证明无执行。本地失败仍未解决，下一项有价值的观察是同一失败运行的在途进程阶段，而不是再次无变化重跑。
+
+该精确 HEAD [三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/37114387849) 全通过，包括 check、SEA/smoke：Darwin **2649 通过，289104.599541ms**；Linux AMD64 **2648 通过/1 跳过，331044.325215ms**；Linux ARM64 **2648 通过/1 跳过，248085.061062ms**。不能把这些绿灯替代上述本地红灯，亦不覆盖其后修订。
+
+官方 DeepSeek 第二次仅用指定文件的只读工具复核，主代理逐条复判：
+
+- 接受设备号分支覆盖不足，给原 IO 合同增加 device 变化模式；这属于测试缺口，不是已发现缺失的 dev 检查。
+- 接受选择器重复 eligibility 求值的一致性问题。主代理把身份捕获断言移到选择器入口，先得到 **2≠1** 的红测，再让选择器直接把已验证快照传给内部读取器。原生 JSON Store 行不可执行 getter，因此不宣称生产泄漏或原始失败根因。
+- “未断言真实路径兼容”的未来回归缺口仍存在；本次全量现场已补足当前运行确实兼容的观察，但它不是永久合同测试。假设存在另一方 realpath 规范化时的原始路径不一致会 fail closed；复核范围没有生产源码，不能把这一条件场景当成当前真实路径错误。
+- 修订后静态检查再次全通过、四项独立反例 **4/4**，期限与工作区回归 **29/29，6238.274542ms**，无跳过/取消；这些不替代下一次完整验收。

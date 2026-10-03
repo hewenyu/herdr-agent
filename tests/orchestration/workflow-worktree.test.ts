@@ -811,7 +811,7 @@ test("verification log tails refuse ineligible rows and static filesystem escape
         return ++idReads <= 2 ? h.row.id : "../../../../outside";
       },
     };
-    const captured = verificationLogTails(h.stateDir, h.taskId, changing);
+    const captured = selectVerificationLogTails(h.stateDir, h.taskId, [changing]);
     assert.equal(idReads, 1, "validate and use the same captured id");
     assert.equal(captured?.stdout.bytes, 21);
     const secret = join(h.root, "secret.log");
@@ -847,6 +847,7 @@ test("verification log tails isolate IO faults validate identity and always atte
       "fstat",
       "read",
       "inode",
+      "device",
       "count",
       "short",
       "open",
@@ -879,6 +880,7 @@ test("verification log tails isolate IO faults validate identity and always atte
           if (mode === "fstat") throw false;
           const stat = defaultLogTailIo.fstat(fd);
           if (mode === "inode") stat.ino += 1;
+          if (mode === "device") stat.dev += 1;
           return stat;
         },
         read(fd, buffer, offset, length, position) {
@@ -904,7 +906,7 @@ test("verification log tails isolate IO faults validate identity and always atte
       const result = h.read(io);
       assert.ok(result);
       assert.equal(closed, opened, mode);
-      if (mode === "inode") {
+      if (mode === "inode" || mode === "device") {
         assert.equal(result.stdout.status, "rejected");
         assert.equal(reads, 0);
       } else if (mode === "short") {
