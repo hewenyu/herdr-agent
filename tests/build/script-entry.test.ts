@@ -16,6 +16,8 @@ import { basename, dirname, join, relative } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { childResultDiagnosticRequired, childResultSnapshot } from "./child-result.js";
+
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const tsx = createRequire(import.meta.url).resolve("tsx/cli");
 const modes = [
@@ -58,8 +60,13 @@ function run(args: string[]) {
     encoding: "utf8",
     timeout: 10_000,
   });
-  assert.equal(result.error, undefined);
-  assert.equal(result.signal, null);
+  // The success path stays unformatted; a failure adds only a bounded snapshot
+  // of pid/status/signal/error and each stream tail to the original assertions.
+  const diagnostic = childResultDiagnosticRequired(result)
+    ? childResultSnapshot(result)
+    : undefined;
+  assert.equal(result.error, undefined, diagnostic);
+  assert.equal(result.signal, null, diagnostic);
   return result;
 }
 
