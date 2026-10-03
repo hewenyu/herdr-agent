@@ -329,3 +329,16 @@ v5 全量严格汇总验证 44 个唯一夹具的全部 132 条三阶段记录�
 - 独立逐字反向比对确认：除类型导入、诊断/合同新增、局部 logger 连接及失败消息外，整个原测试文件内容未变。原 1000×5ms 轮询、5000ms 命令预算、真实 Node 子进程、最后一次 existsSync、所有后续断言及清理顺序保留；成功分支不读取快照。
 
 这是失败可观测性的补充，不是启动问题修复。后续冻结全量应为 **2645 项、同一 292 文件参数列表**；不得把新增合同或诊断消息误计为原有失败已解决。
+
+### a9a37c9：执行尝试已记录超时，而非只有前置准备未完成
+
+提交 `a9a37c9715a40880e5a65c1a10efda7f02478ae4` 的无 preload 原 `npm run check` 再次冻结验证：664 个仓库文件、20 个辅助材料、同一 292 文件参数列表前后不变；**2645 项，2637 通过、8 失败、0 跳过/取消，853529.454042ms**。静态检查通过。七项安装器失败均为原外层 watchdog：canonical readiness（loaded=true/disabled=true）40s、fresh readiness 40s、成功升级 30s，以及 install/legacy-disable/missing-plist/stuck-replacement 各 10s。升级和 install/legacy-disable/missing-plist 的业务 stdout/stderr 皆空；两个 readiness 已到 bootstrap/恢复阶段；stuck-replacement 已输出部分 preflight。没有入口或 uname 标记，不能把此前插桩的阶段结论移植过来。
+
+第八项仍为 readiness 变更场景的启动断言，5825.884459ms。失败前的新快照显示：
+
+- 任务仍 `worktreeReady=true`，status 为 `review`；一个运行记录已经 `timed_out`，有 pid、startedAt/finishedAt（相差 5001ms）、`signal=SIGTERM`、`exitConfirmed=true`，无 error 字段。
+- 一个编排事件已 `done`、attempts=1、无 error code；本地 logger 没有捕获错误 code。原标记仍不存在。
+- 因而**本次**不能只解释成“尚未走到执行尝试的准备阶段拖慢了轮询”；已存在实际运行及超时收尾记录。但 pid 不证明 Node 初始化，5001ms 是记录时间差而非每个阶段的精确耗时，空日志 code 不证明所有路径均无异常。仍不能定位到 shell exec、Node 启动或标记写入，也不能给安装器指定同一根因。
+- 主代理发现本版显示器把 `null` 和对象一起显示为 `<non-scalar>`，故旧快照的 exitCode **不能反推为 null**。补精确 null/undefined 区分合同先得到 **2/3（新增断言失败）**，再修正标量显示器并补测试数组的类型收窄；静态全通过、两文件回归 **25/25，6085.573584ms**。不修改旧快照，不宣称此诊断修订修复了启动问题。
+
+[该精确提交 CI](https://github.com/hewenyu/herdr-agent/actions/runs/37106270714) 三平台全通过，包含默认全量、SEA 构建与 smoke：Darwin ARM64 **2645/2645，358887.497459ms**；Linux AMD64 **2644 通过/1 跳过，195050.236647ms**；Linux ARM64 **2644 通过/1 跳过，248011.536067ms**。CI 不覆盖此后诊断修订，亦不推翻同提交本地八项失败。PR 继续 Draft，不合并；下一步须增加能区分剩余阶段的新证据，不能无变化重跑或放宽预算。

@@ -189,7 +189,8 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 // Node initialization, and missing/unknown records do not establish nonexecution.
 function startupDiagnostics(original: Logger) {
   const codes: string[] = [];
-  const scalar = (value: unknown): string | number | boolean => {
+  const scalar = (value: unknown): string | number | boolean | null => {
+    if (value === null) return null;
     if (typeof value === "string") return value.slice(0, 96);
     if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)))
       return value;
@@ -341,6 +342,8 @@ test("startup diagnostics bound scalar output and omit full payloads", () => {
     get: <T>() => ({ worktreeReady: false, status: "active", credentials: "secret" }) as T,
     list: <T>(namespace: string) => rows[namespace] as T[],
   };
+  assert.ok(rows.verification_runs);
+  rows.verification_runs[1] = { status: "timed_out", exitCode: null };
   const message = diagnostic.message(store, "task");
   const snapshot = JSON.parse(message.slice(message.indexOf("{")));
   assert.deepEqual(snapshot.task, { worktreeReady: false, status: "active" });
@@ -348,6 +351,8 @@ test("startup diagnostics bound scalar output and omit full payloads", () => {
   assert.equal(snapshot.runs.first.length, 6);
   assert.equal(snapshot.runs.first[0].exitConfirmed, false);
   assert.equal(snapshot.runs.first[0].exitCode, 0);
+  assert.equal(snapshot.runs.first[1].exitCode, null);
+  assert.equal(snapshot.runs.first[1].signal, "<missing>");
   assert.equal(snapshot.runs.first[0].signal.length, 96);
   assert.equal(snapshot.runs.first[0].error, "<non-scalar>");
   assert.equal(snapshot.events.first.length, 4);
