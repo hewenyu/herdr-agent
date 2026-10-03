@@ -8,6 +8,11 @@ import type { Project, Task } from "../../src/core/types.js";
 import { type VerificationRun, VerificationRunner } from "../../src/orchestration/verify.js";
 import { ProjectCatalog } from "../../src/projects/catalog.js";
 import { Store } from "../../src/storage/store.js";
+import {
+  LOG_TAIL_MAX_BYTES,
+  LOG_TAIL_MAX_RENDERED,
+  selectVerificationLogTails,
+} from "./verification-log-tail.js";
 
 async function fixture(t: TestContext, verify?: string[], verifyTimeoutMs = 10_000) {
   const stateDir = await mkdtemp(join(tmpdir(), "myrix-verifier-"));
@@ -75,6 +80,26 @@ test("only configured commands run; cwd, stdout, stderr and nonzero exit are per
   assert.equal(result.exitConfirmed, true);
   assert.equal(await readFile(result.stdoutPath, "utf8"), `${await realpath(h.cwd)}\nout`);
   assert.equal(await readFile(result.stderrPath, "utf8"), "err");
+  // Real persisted records and native IO must agree on paths and eligibility.
+  // Do not assume TMPDIR is short ASCII or lacks escape-worthy characters.
+  const rows = h.store.list<unknown>("verification_runs");
+  assert.equal(rows.length, 1);
+  const tails = selectVerificationLogTails(h.stateDir, h.task.id, rows);
+  assert.ok(tails);
+  assert.equal(tails.rowIndex, 0);
+  const stdoutBytes = Buffer.byteLength(`${await realpath(h.cwd)}\nout`);
+  assert.equal(tails.stdout.status, "readable");
+  assert.equal(tails.stdout.bytes, Math.min(stdoutBytes, LOG_TAIL_MAX_BYTES));
+  assert.equal(tails.stdout.truncated, stdoutBytes > LOG_TAIL_MAX_BYTES);
+  assert.ok(tails.stdout.rendered.endsWith("\\nout"));
+  assert.ok(tails.stdout.rendered.length <= LOG_TAIL_MAX_RENDERED);
+  assert.deepEqual(tails.stderr, {
+    status: "readable",
+    bytes: 3,
+    truncated: false,
+    renderTruncated: false,
+    rendered: "err",
+  });
   assert.equal(result.artifactRevision, "artifact-one");
   assert.ok(result.stdoutPath.startsWith(join(h.stateDir, "tasks", h.task.id)));
   assert.deepEqual(await h.runner.run(h.task, candidate), result);
