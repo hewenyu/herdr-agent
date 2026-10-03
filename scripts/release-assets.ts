@@ -6,7 +6,6 @@ import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
 
 export interface LocalAsset {
   name: string;
@@ -450,7 +449,7 @@ export function githubPort(repository: string, command: Command = run): ReleaseP
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const [repository, tag, commit, directory, notes] = process.argv.slice(2);
   if (!repository || !tag || !commit || !directory)
     throw new Error(

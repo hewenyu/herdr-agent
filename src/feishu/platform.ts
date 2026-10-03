@@ -49,7 +49,9 @@ export class FeishuPlatform implements PlatformPort {
     signal: AbortSignal,
     onFailure?: (error: Error) => void,
   ): Promise<void> {
-    signal.throwIfAborted();
+    // Cancellation is a domain outcome; a caller-chosen reason must never escape.
+    if (signal.aborted)
+      throw new OperationError("feishu_aborted", "飞书连接启动已取消。", "not_executed");
     if (this.started) throw new OperationError("feishu_already_started", "飞书连接已经启动。");
     this.started = true;
     const generation = ++this.generation;
@@ -60,13 +62,18 @@ export class FeishuPlatform implements PlatformPort {
         { method: "GET", url: "/open-apis/bot/v3/info" },
         AbortSignal.any([signal, startup.signal]),
       );
-      signal.throwIfAborted();
+      if (signal.aborted)
+        throw new OperationError("feishu_aborted", "飞书连接启动已取消。", "not_executed");
       if (!this.started || generation !== this.generation)
         throw new OperationError("feishu_stopped", "飞书连接已停止。");
       this.botOpenId = string(object(identity.bot).open_id);
       if (!this.botOpenId)
         throw new OperationError("feishu_bot_identity", "无法确认飞书机器人的身份。");
       const dispatcher = this.dispatcher(handlers, signal, generation);
+      // A caller abort and an internal stop both cancel the same wait, so each settlement
+      // passes an explicit domain error: internal stop -> feishu_stopped, caller abort ->
+      // feishu_aborted, connection failure -> its classified error. A caller-chosen reason
+      // (Error, string, false) therefore can neither settle success nor escape.
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.connection?.close({ force: true });
@@ -77,14 +84,15 @@ export class FeishuPlatform implements PlatformPort {
           reject(new OperationError("feishu_connect_timeout", "等待飞书连接超时。"));
         }, this.dependencies.connectTimeoutMs ?? 30_000);
         let settled = false;
-        const finish = (error?: unknown) => {
+        const finish = (error?: OperationError) => {
           if (settled) return;
           settled = true;
           if (generation === this.generation) this.cancelConnect = undefined;
           clearTimeout(timer);
           error ? reject(error) : resolve();
         };
-        this.cancelConnect = () => finish(new OperationError("feishu_stopped", "飞书连接已停止。"));
+        this.cancelConnect = () =>
+          finish(new OperationError("feishu_stopped", "飞书连接已停止。", "not_executed"));
         const onReady = () => {
           if (generation !== this.generation || signal.aborted || settled) return;
           this.options.logger?.info("飞书长连接已就绪。", { event: "feishu.connection_ready" });
@@ -133,7 +141,7 @@ export class FeishuPlatform implements PlatformPort {
           });
         const abort = () => {
           this.connection?.close({ force: true });
-          finish(signal.reason ?? new Error("aborted"));
+          finish(new OperationError("feishu_aborted", "飞书连接启动已取消。", "not_executed"));
         };
         signal.addEventListener("abort", abort, { once: true });
         this.abort = () => signal.removeEventListener("abort", abort);
@@ -141,9 +149,11 @@ export class FeishuPlatform implements PlatformPort {
         else void this.connection.start({ eventDispatcher: dispatcher }).catch(onError);
       });
     } catch (error) {
+      // An internal stop always wins over a caller abort of the same wait. Either way the
+      // caller sees a stable domain error, never a raw caller abort reason.
       const stopped = startup.signal.aborted;
       if (generation === this.generation) await this.stop();
-      if (stopped) throw new OperationError("feishu_stopped", "飞书连接已停止。");
+      if (stopped) throw new OperationError("feishu_stopped", "飞书连接已停止。", "not_executed");
       throw error;
     } finally {
       if (this.startup === startup) this.startup = undefined;

@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { type BuildStamp, buildApplication, root } from "./build.js";
 
 function run(command: string, args: string[]): void {
@@ -66,7 +65,7 @@ export async function buildBinary(options: { outdir?: string; stamp?: BuildStamp
   return { ...application, binary };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const result = await buildBinary();
   process.stdout.write(`Built standalone ${result.binary} (${process.platform}/${process.arch})\n`);
 }

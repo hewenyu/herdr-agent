@@ -54,6 +54,63 @@ export interface VerificationRun extends VerificationCandidate {
 const namespace = "verification_runs";
 type ActiveRun = { taskId: string; controller: AbortController; result: Promise<VerificationRun> };
 const liveRuns = new WeakMap<Store, Map<string, ActiveRun>>();
+
+const runStatuses: readonly VerificationRun["status"][] = [
+  "prepared",
+  "running",
+  "passed",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "unknown",
+  "not_started",
+];
+
+/**
+ * Narrow structural check for one persisted verification run. It only proves the
+ * fields that decide directory blocking and record identity are interpretable;
+ * `directories` keeps its documented legacy fallback to `cwd` only when absent.
+ * The record identity must equal its own store key, and `exitConfirmed` must be
+ * a real boolean when present so a string cannot stand in for a confirmed exit.
+ * A legacy row may omit `exitConfirmed`; absence is read as unconfirmed and still
+ * cannot authorize a retry. A corrupt row is never rewritten, repaired or dropped.
+ */
+function readableRun(record: unknown, key: string): record is VerificationRun {
+  if (record === null || typeof record !== "object") return false;
+  const value = record as Partial<VerificationRun>;
+  const directories = value.directories;
+  return (
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    value.id === key &&
+    typeof value.taskId === "string" &&
+    typeof value.status === "string" &&
+    runStatuses.includes(value.status as VerificationRun["status"]) &&
+    typeof value.cwd === "string" &&
+    value.cwd.length > 0 &&
+    (value.exitConfirmed === undefined || typeof value.exitConfirmed === "boolean") &&
+    (directories === undefined ||
+      (Array.isArray(directories) &&
+        directories.length > 0 &&
+        directories.every((directory) => typeof directory === "string" && directory.length > 0)))
+  );
+}
+
+/**
+ * Fail-closed read boundary: an uninterpretable run is refused with a typed
+ * diagnostic instead of being skipped (which would release its directory block)
+ * or coerced into `undefined` paths that later make `realpath` throw a raw
+ * TypeError. The original row is preserved.
+ */
+function runRecord(record: unknown, ref: string): VerificationRun {
+  if (readableRun(record, ref)) return record;
+  throw new OperationError(
+    "verify_record_invalid",
+    `验证运行记录（${ref}）无法解读；本次验证与目录放行已拒绝，原始记录保留供诊断。`,
+    "not_executed",
+  );
+}
+
 const blocks = (run: VerificationRun): boolean =>
   ["prepared", "running", "unknown"].includes(run.status);
 const digest = (value: unknown): string =>
@@ -107,7 +164,8 @@ export class VerificationRunner {
 
   list(taskId?: string): VerificationRun[] {
     return this.options.store
-      .list<VerificationRun>(namespace)
+      .entries<unknown>(namespace)
+      .map(([id, stored]) => runRecord(stored, id))
       .filter((run) => taskId === undefined || run.taskId === taskId);
   }
 
@@ -117,6 +175,8 @@ export class VerificationRunner {
       ...new Set(
         this.list()
           .filter(blocks)
+          // `directories` is validated as non-empty strings; only a genuinely
+          // absent array falls back to the documented legacy `cwd`.
           .flatMap((run) => run.directories ?? [run.cwd]),
       ),
     ];
@@ -133,10 +193,14 @@ export class VerificationRunner {
         artifactRevision,
         description: `运行项目已配置的验证命令 ${commandIndex + 1}：${command}`,
       };
-      let previous = this.options.store.get<VerificationRun>(namespace, runId(task.id, candidate));
+      let previous: VerificationRun | undefined;
+      const stored = this.options.store.get<unknown>(namespace, runId(task.id, candidate));
+      if (stored !== undefined) previous = runRecord(stored, runId(task.id, candidate));
       while (previous && safelyCancelled(previous)) {
         candidate.retryOf = previous.id;
-        previous = this.options.store.get<VerificationRun>(namespace, runId(task.id, candidate));
+        const retried = this.options.store.get<unknown>(namespace, runId(task.id, candidate));
+        previous =
+          retried === undefined ? undefined : runRecord(retried, runId(task.id, candidate));
       }
       return previous &&
         ["failed", "timed_out", "cancelled", "unknown", "not_started"].includes(previous.status)
@@ -156,7 +220,8 @@ export class VerificationRunner {
     const id = runId(task.id, candidate);
     const active = this.active.get(id);
     if (active) return active.result;
-    const previous = this.options.store.get<VerificationRun>(namespace, id);
+    const stored = this.options.store.get<unknown>(namespace, id);
+    const previous = stored === undefined ? undefined : runRecord(stored, id);
     if (previous)
       return Promise.resolve(
         previous.status === "prepared" || previous.status === "running"
@@ -190,7 +255,10 @@ export class VerificationRunner {
 
   private save(run: VerificationRun): VerificationRun {
     this.options.store.set(namespace, run.id, run);
-    return this.options.store.get<VerificationRun>(namespace, run.id) as VerificationRun;
+    const stored = this.options.store.get<unknown>(namespace, run.id);
+    // `save` only ever writes a shape this process built, so a failure here is a
+    // store defect rather than corruption; still refuse rather than cast.
+    return runRecord(stored, run.id);
   }
 
   private configuration(task: Task, candidate: VerificationCandidate) {
@@ -211,7 +279,8 @@ export class VerificationRunner {
       fail("verify_platform", "当前验证执行器需要 POSIX 进程组支持。");
     const { project, command } = this.configuration(task, candidate);
     if (candidate.retryOf) {
-      const previous = this.options.store.get<VerificationRun>(namespace, candidate.retryOf);
+      const stored = this.options.store.get<unknown>(namespace, candidate.retryOf);
+      const previous = stored === undefined ? undefined : runRecord(stored, candidate.retryOf);
       if (
         !previous ||
         !safelyCancelled(previous) ||
@@ -310,6 +379,9 @@ export class VerificationRunner {
     signal: AbortSignal,
   ): Promise<VerificationRun> {
     let child: ChildProcess;
+    // Include synchronous launch work, but exclude preflight and authorization.
+    // This clock advances even while JS cannot dispatch deadline callbacks.
+    const deadlineAt = performance.now() + record.timeoutMs;
     try {
       child = spawn(record.command, {
         cwd: record.cwd,
@@ -332,10 +404,14 @@ export class VerificationRunner {
       cancelled = true;
       stop();
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, record.timeoutMs);
+    // Launch work consumes the budget; round up to avoid firing before its end.
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        stop();
+      },
+      Math.max(1, Math.ceil(deadlineAt - performance.now())),
+    );
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     child.once("error", () => {
@@ -350,6 +426,9 @@ export class VerificationRunner {
       if (child.pid) this.save({ ...record, status: "running", pid: child.pid, startedAt: now() });
       const result = await closed;
       clearTimeout(timer);
+      // A queued close can beat an overdue timer. Conservatively reject a late
+      // observation: exit 0 alone cannot prove completion within the deadline.
+      if (performance.now() >= deadlineAt) timedOut = true;
       // A shell may exit before its children; they remain part of the verification run.
       const lingeringChildren = !!child.pid && groupExists(child.pid);
       if (lingeringChildren && child.pid) {

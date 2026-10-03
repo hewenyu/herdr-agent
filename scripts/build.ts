@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { build, type Metafile, type Plugin } from "esbuild";
 import { generateLicenses } from "./licenses.js";
 
@@ -105,7 +105,7 @@ export async function buildApplication(options: { outdir?: string; stamp?: Build
   return { bundle, outdir, stamp };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const result = await buildApplication();
   process.stdout.write(`Built ${result.bundle}\n`);
 }

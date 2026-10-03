@@ -21,6 +21,7 @@ import type {
   TaskOrchestratorOptions,
 } from "./contracts.js";
 import { type DecisionLog, linkDecisionDispatches } from "./decision-log.js";
+import { dispatchProof } from "./dispatch-proof.js";
 import { validateDocumentPaths } from "./document-delivery.js";
 import { assertDocumentSource, prepareDocumentSource } from "./document-source.js";
 import { legacyAssignment, prepareHandoff } from "./handoff.js";
@@ -754,6 +755,24 @@ export class WorkflowOrchestrator {
     dispatch: Dispatch,
   ): Promise<void> {
     if (dispatch.state === "sent") return;
+    // Derive authority from the SAME validated durable receipt as the
+    // reconciliation path. Only an explicitly settled effect (a proven
+    // abandon/retirement) short-circuits to failed, and any corrupt or
+    // otherwise unproven receipt whose effect may have happened keeps the
+    // dispatch unknown instead of re-entering the effect. A delivered receipt,
+    // the single authorized `retry`, a definite `not_executed` failure and a
+    // genuinely absent receipt keep their existing send-path behavior.
+    const proof = dispatchProof(this.ports.store, task, dispatch.operationId);
+    if (proof === "settled") {
+      dispatch.state = "failed";
+      this.ports.save(event);
+      return;
+    }
+    if (proof === "unknown") {
+      dispatch.state = "uncertain";
+      this.ports.save(event);
+      return;
+    }
     if (!dispatch.nodeId || !dispatch.text || !dispatch.inputRevision)
       fail("workflow_dispatch", "派发缺少已保存任务书。");
     this.assertWorkspace(task, event);

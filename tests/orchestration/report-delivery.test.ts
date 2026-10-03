@@ -380,3 +380,85 @@ test("web attachment report uses one visible summary and a hash-bound complete d
     h.store.close();
   }
 });
+
+// A corrupt persisted record keeps its fail-closed effects: it stays
+// non-deliverable and non-deletable, is never replayed, and the typed refusal
+// replaces what would otherwise be a raw crypto TypeError.
+test("a corrupt report record refuses typed and stays non-deliverable and non-deletable", async () => {
+  const h = fixture();
+  try {
+    const record = h.deliveries.prepare(h.input);
+    const corrupt = { ...record, text: { toString: null } };
+    h.store.set("workflow_report_deliveries", record.eventId, corrupt);
+    assert.throws(
+      () => h.deliveries.download("task", record.cardId),
+      (error: unknown) => error instanceof OperationError && error.code === "report_missing",
+    );
+    assert.throws(
+      () => h.deliveries.prepare(h.input),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "report_delivery_conflict",
+    );
+    assert.equal(await h.deliveries.confirmed("task", record.eventId, "report"), false);
+    assert.equal(h.deliveries.retryable("task", record.eventId, "report"), false);
+    assert.equal(
+      h.deliveries.pendingInChat("chat"),
+      true,
+      "an unverifiable receipt must still block group deletion",
+    );
+    assert.deepEqual(h.store.get("workflow_report_deliveries", record.eventId), corrupt);
+  } finally {
+    h.store.close();
+  }
+});
+
+test("a corrupt summary card refuses in summary text instead of coercing a TypeError", () => {
+  const h = fixture();
+  try {
+    assert.equal(
+      reportSummaryText({ header: { title: { content: { toString: null } as never } } }),
+      "报告摘要",
+    );
+    assert.equal(
+      reportSummaryText({ body: { elements: [{ content: { toString: null } as never }] } }),
+      "报告摘要\n\n",
+    );
+  } finally {
+    h.store.close();
+  }
+});
+
+// Absence of the legacy optional `fileState` is not corruption, but a stored
+// falsey value is a damaged receipt that cannot authorize another delivery.
+test("a falsey stored fileState is refused while an absent legacy fileState still delivers", async () => {
+  const h = fixture();
+  let effects = 0;
+  h.platform.sendText = async () => {
+    effects++;
+    return "body-message";
+  };
+  h.platform.sendCard = async () => {
+    effects++;
+    return "card-message";
+  };
+  try {
+    const record = h.deliveries.prepare(h.input);
+    for (const damaged of [0, "", false, null]) {
+      h.store.set("workflow_report_deliveries", record.eventId, { ...record, fileState: damaged });
+      const error: unknown = await h.deliveries.send(h.input).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+      assert.ok(error instanceof OperationError, `fileState=${String(damaged)} is refused typed`);
+      assert.equal(effects, 0);
+    }
+    // A legacy non-attachment envelope legitimately omits `fileState`.
+    h.store.set("workflow_report_deliveries", record.eventId, record);
+    await h.deliveries.send(h.input);
+    assert.deepEqual({ effects }, { effects: 2 });
+    await h.deliveries.send(h.input);
+    assert.deepEqual({ effects }, { effects: 2 });
+  } finally {
+    h.store.close();
+  }
+});

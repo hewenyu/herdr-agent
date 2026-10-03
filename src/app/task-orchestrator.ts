@@ -14,6 +14,7 @@ import type {
   SettledTaskOutput,
   TaskOrchestratorOptions,
 } from "../orchestration/contracts.js";
+import { dispatchProof } from "../orchestration/dispatch-proof.js";
 import { reconcileLeaderReceipts } from "../orchestration/leader-receipts.js";
 import { runTaskLeader } from "../orchestration/leader-session.js";
 import {
@@ -26,7 +27,6 @@ import { WorkflowOrchestrator } from "../orchestration/runner.js";
 import { orchestrationUserMessages } from "../orchestration/user-messages.js";
 import { WORKFLOWS, type WorkflowState } from "../orchestration/workflow.js";
 import type { RuntimeTool } from "../runtime/types.js";
-import type { OperationReceipt } from "../storage/operations.js";
 import { assertTaskIngress, taskIngress } from "../tasks/ingress.js";
 import {
   activationTokenBudget,
@@ -172,14 +172,27 @@ export class TaskOrchestrator {
   }
 
   private reconcileDispatches(event: OrchestrationEvent): void {
+    const task = this.options.store.get<Task>("tasks", event.taskId);
     for (const dispatch of event.dispatches) {
       if (dispatch.state === "sent" || dispatch.state === "failed") continue;
-      const receipt = this.options.store.get<OperationReceipt>("operations", dispatch.operationId);
-      if (receipt?.state === "done" || receipt?.resolution?.choice === "treat_done")
-        dispatch.state = "sent";
-      // TaskService records the operation before any native send. A crash before
-      // that record exists proves this dispatch never crossed the effect boundary.
-      else if (!receipt || receipt.state === "failed") dispatch.state = "failed";
+      const proof = task
+        ? dispatchProof(this.options.store, task, dispatch.operationId)
+        : "unknown";
+      // Only validated delivery evidence can become `sent`; refusal, explicit
+      // resolution and audited retirement settle this dispatch without claiming
+      // delivery. `failed` alone is NOT a replay guard: the workflow runner must
+      // honor the same proof before sending, including retirement superseding
+      // an earlier unused retry. Operations.run has no dedicated retirement gate.
+      // Only undefined is absence. The task service writes the receipt before
+      // native send; a present-but-corrupt or unresolved row remains a barrier.
+      if (proof === "delivered") dispatch.state = "sent";
+      else if (
+        proof === "absent" ||
+        proof === "retry" ||
+        proof === "settled" ||
+        proof === "retryable"
+      )
+        dispatch.state = "failed";
       else dispatch.state = "uncertain";
     }
     if (event.dispatches.some((dispatch) => dispatch.state === "uncertain")) {

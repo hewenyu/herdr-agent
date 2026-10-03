@@ -40,6 +40,52 @@ interface Approval {
   cwd?: string;
 }
 
+/**
+ * Narrow structural check for one persisted approval. It only asks whether the
+ * fields every caller relies on can be interpreted; it never rewrites, repairs
+ * or drops the record. `Date.parse` is reached only after the string check, so a
+ * corrupt value such as `{ toString: null }` cannot become a raw TypeError.
+ * `consumed` is mandatory because a missing/non-boolean flag must not read as
+ * "not yet consumed", and the stored nonce must equal exactly the row key so a
+ * renamed or spliced record cannot authorize the key of another live card.
+ */
+function readableApproval(record: unknown, key: string): record is Approval {
+  if (record === null || typeof record !== "object") return false;
+  const value = record as Partial<Approval>;
+  return (
+    typeof value.nonce === "string" &&
+    value.nonce.length > 0 &&
+    value.nonce === key &&
+    typeof value.ownerId === "string" &&
+    typeof value.chatId === "string" &&
+    typeof value.ref === "object" &&
+    value.ref !== null &&
+    typeof value.ref.workspaceId === "string" &&
+    typeof value.ref.paneId === "string" &&
+    typeof value.ref.kind === "string" &&
+    typeof value.expiresAt === "string" &&
+    Number.isFinite(Date.parse(value.expiresAt)) &&
+    typeof value.consumed === "boolean" &&
+    Array.isArray(value.keys) &&
+    value.keys.every((entry) => typeof entry === "string")
+  );
+}
+
+/**
+ * Fail-closed read boundary: refuse an uninterpretable approval record with a
+ * typed diagnostic instead of letting a coercion TypeError escape. The original
+ * row is preserved, and a refusal here never authorizes a fresh nonce, a native
+ * key or the release of an existing card.
+ */
+function approvalRecord(record: unknown, ref: string): Approval {
+  if (readableApproval(record, ref)) return record;
+  throw new OperationError(
+    "approval_record_invalid",
+    `审批记录（${ref}）无法解读；本次审批操作已拒绝，原始记录保留供诊断。`,
+    "not_executed",
+  );
+}
+
 export class Approvals {
   private readonly locks = new KeyedMutex();
   constructor(
@@ -60,8 +106,13 @@ export class Approvals {
         sessionId: execution.sessionId,
       });
     const execution = identity(ref);
-    const nonces = this.store
-      .list<Approval>("approvals")
+    // An unreadable row could hide a confirmed approval. Skipping it would
+    // change this revision and hand the automatic route a fresh retry budget,
+    // so the whole read is refused instead.
+    const approvals = this.store
+      .entries<unknown>("approvals")
+      .map(([key, record]) => approvalRecord(record, key));
+    const nonces = approvals
       .filter(
         (approval) =>
           approval.confirmed &&
@@ -94,8 +145,36 @@ export class Approvals {
       screen.agent.stateSeq,
       screen.agent.sessionId ?? "",
     );
-    const nonce = this.store.get<string>("approval_identity", identity);
-    const previous = nonce ? this.store.get<Approval>("approvals", nonce) : undefined;
+    // The identity index is itself a persisted field. A non-string index cannot
+    // be handed to the store (SQLite rejects it) and must not be treated as
+    // absence: silently minting a new nonce could duplicate authority over a
+    // card that is still live, so refuse and keep the original row.
+    const indexed = this.store.get<unknown>("approval_identity", identity);
+    if (indexed !== undefined && (typeof indexed !== "string" || !indexed))
+      throw new OperationError(
+        "approval_record_invalid",
+        `审批身份索引（${identity}）无法解读；本次审批操作已拒绝，原始记录保留供诊断。`,
+        "not_executed",
+      );
+    const nonce = indexed as string | undefined;
+    const stored = nonce ? this.store.get<unknown>("approvals", nonce) : undefined;
+    const previous = stored === undefined ? undefined : approvalRecord(stored, nonce ?? "");
+    if (
+      nonce &&
+      (!previous ||
+        previous.ownerId !== ownerId ||
+        previous.chatId !== chatId ||
+        previous.ref.workspaceId !== ref.workspaceId ||
+        previous.ref.paneId !== ref.paneId ||
+        previous.ref.kind !== ref.kind ||
+        previous.stateSeq !== screen.agent.stateSeq ||
+        previous.sessionId !== screen.agent.sessionId)
+    )
+      throw new OperationError(
+        "approval_record_invalid",
+        "审批身份索引指向缺失或不匹配的记录；本次审批已拒绝，原始记录保留供诊断。",
+        "not_executed",
+      );
     const keys = [...new Set([...screen.options.map((option) => option.key), "esc"])];
     const boundScreen =
       screen.source === "visible" && !screen.truncated ? screenFingerprint(screen.text) : undefined;
@@ -167,7 +246,10 @@ export class Approvals {
   ): Promise<Approval> {
     const approval = this.create(ownerId, chatId, ref, screen);
     return this.locks.run(approval.nonce, async () => {
-      const latest = this.store.get<Approval>("approvals", approval.nonce) as Approval;
+      const latest = approvalRecord(
+        this.store.get<unknown>("approvals", approval.nonce),
+        approval.nonce,
+      );
       if (latest.messageId || latest.consumed) return latest;
       if (latest.publication === "sending" || latest.publication === "uncertain") {
         throw new OperationError(
@@ -179,25 +261,37 @@ export class Approvals {
       const platform = this.platform();
       if (!platform) fail("platform_unavailable", "飞书未连接。");
       if (latest.replacesNonce) {
-        const replaced = this.store.get<Approval>("approvals", latest.replacesNonce);
-        if (replaced) await this.disableCard(replaced);
+        // An unreadable replaced record must not be skipped: skipping would let
+        // this publication proceed while that old card may still be live.
+        const stored = this.store.get<unknown>("approvals", latest.replacesNonce);
+        if (stored !== undefined)
+          await this.disableCard(approvalRecord(stored, latest.replacesNonce));
       }
       // Disabling an old remote card yields: an owner/cleanup action may have
       // consumed this replacement in the meantime. Never publish it afterwards.
-      const current = this.store.get<Approval>("approvals", latest.nonce) as Approval;
+      const current = approvalRecord(
+        this.store.get<unknown>("approvals", latest.nonce),
+        latest.nonce,
+      );
       if (current.consumed) return current;
       this.store.set("approvals", latest.nonce, { ...latest, publication: "sending" });
       try {
         const messageId = await platform.sendCard(chatId, this.card(latest, screen), latest.nonce);
         if (!messageId) throw new OperationError("card_uncertain", "缺少卡片发送回执。", "unknown");
         // A callback can arrive before sendCard resolves. Never restore a consumed nonce.
-        const current = this.store.get<Approval>("approvals", latest.nonce) as Approval;
+        const current = approvalRecord(
+          this.store.get<unknown>("approvals", latest.nonce),
+          latest.nonce,
+        );
         const published: Approval = { ...current, messageId, publication: "sent" };
         this.store.set("approvals", latest.nonce, published);
         if (published.consumed) await this.disableCard(published);
         return published;
       } catch (error) {
-        const current = this.store.get<Approval>("approvals", latest.nonce) as Approval;
+        const current = approvalRecord(
+          this.store.get<unknown>("approvals", latest.nonce),
+          latest.nonce,
+        );
         this.store.set("approvals", latest.nonce, {
           ...current,
           publication: isNotExecuted(error) ? "retryable" : "uncertain",
@@ -214,8 +308,12 @@ export class Approvals {
     key: string,
     options: AnswerOptions = {},
   ): Promise<void> {
-    const initial = this.store.get<Approval>("approvals", nonce);
-    if (!initial || initial.ownerId !== ownerId || initial.chatId !== chatId)
+    const stored = this.store.get<unknown>("approvals", nonce);
+    // Absence is a scope failure, not corruption; a present but unreadable
+    // record is refused before any owner/scope comparison can coerce it.
+    if (stored === undefined) fail("approval_scope", "审批不属于当前会话。");
+    const initial = approvalRecord(stored, nonce);
+    if (initial.ownerId !== ownerId || initial.chatId !== chatId)
       fail("approval_scope", "审批不属于当前会话。");
     return this.locks.run(`answer:${initial.ref.workspaceId}:${initial.ref.paneId}`, () =>
       this.answerCurrent(ownerId, chatId, nonce, key, options),
@@ -225,7 +323,12 @@ export class Approvals {
   /** Consume synchronously, including in-flight publications, before updating remote cards. */
   async invalidate(ref: ExecutionRef, reason: string): Promise<void> {
     const updates: Promise<void>[] = [];
-    for (const approval of this.store.list<Approval>("approvals")) {
+    for (const [key, approval] of this.store.entries<unknown>("approvals")) {
+      // An unreadable row is left exactly as written. It cannot release this
+      // cleanup: `answer` refuses it before any scope or expiry comparison, so
+      // it is never a live card. Refusing the whole sweep would instead strand
+      // the readable cards of this pane behind an unrelated corrupt record.
+      if (!readableApproval(approval, key)) continue;
       if (approval.ref.paneId !== ref.paneId || approval.ref.workspaceId !== ref.workspaceId)
         continue;
       const invalidated: Approval = {
@@ -248,8 +351,10 @@ export class Approvals {
     key: string,
     options: AnswerOptions,
   ): Promise<void> {
-    const approval = this.store.get<Approval>("approvals", nonce);
-    if (!approval || approval.ownerId !== ownerId || approval.chatId !== chatId)
+    const stored = this.store.get<unknown>("approvals", nonce);
+    if (stored === undefined) fail("approval_scope", "审批不属于当前会话。");
+    const approval = approvalRecord(stored, nonce);
+    if (approval.ownerId !== ownerId || approval.chatId !== chatId)
       fail("approval_scope", "审批不属于当前会话。");
     if (approval.consumed || Date.parse(approval.expiresAt) < Date.now())
       fail("approval_expired", "审批已处理或已过期，请刷新现场。");
@@ -263,7 +368,8 @@ export class Approvals {
         ...options,
         assertCurrent: () => {
           options.assertCurrent?.();
-          if (this.store.get<Approval>("approvals", nonce)?.invalidatedReason)
+          const current = this.store.get<unknown>("approvals", nonce);
+          if (approvalRecord(current, nonce).invalidatedReason)
             fail("approval_expired", "审批在执行前已失效，未发送按键。");
         },
       });
@@ -279,8 +385,9 @@ export class Approvals {
         error instanceof OperationError &&
         ["stale_guard", "approval_scope_changed"].includes(error.code)
       ) {
+        const current = approvalRecord(this.store.get<unknown>("approvals", nonce), nonce);
         this.store.set("approvals", nonce, {
-          ...this.store.get<Approval>("approvals", nonce),
+          ...current,
           reobserveAllowed: true,
         });
       }
@@ -305,7 +412,10 @@ export class Approvals {
         { cause },
       );
     }
-    const current = this.store.get<Approval>("approvals", approval.nonce) as Approval;
+    const current = approvalRecord(
+      this.store.get<unknown>("approvals", approval.nonce),
+      approval.nonce,
+    );
     // Automatic startup confirmation or another owner action may have invalidated
     // this pane while the navigation readback was pending. Never revive its cards.
     if (current.invalidatedReason) return;
@@ -339,7 +449,7 @@ export class Approvals {
       return;
     }
     this.store.set("approvals", approval.nonce, {
-      ...this.store.get<Approval>("approvals", approval.nonce),
+      ...approvalRecord(this.store.get<unknown>("approvals", approval.nonce), approval.nonce),
       navigationCompleted: true,
     });
     // Only confirmed navigation may replace a consumed nonce at the same native

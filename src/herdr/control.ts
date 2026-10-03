@@ -251,7 +251,14 @@ export class AgentControl {
       await checkScreen();
       guard.assertCurrent?.();
       if (guard.signal?.aborted) throw new OperationError("cancelled", "审批已取消，未发送按键。");
-      await this.writeKeys(ref, input, guard.signal);
+      // socket.connect is asynchronous: authorization can be revoked or the guard
+      // can expire while it is pending. Re-check synchronously at socket.write so a
+      // refusal still counts as not_executed, exactly like restricted directory trust.
+      await this.writeKeys(ref, input, guard.signal, () => {
+        guard.assertCurrent?.();
+        if (guard.signal?.aborted || Date.parse(guard.expiresAt) < Date.now())
+          throw new OperationError("stale_guard", "审批授权已取消或过期，未发送按键。");
+      });
       if (guard.screenFingerprint) {
         let reason = "readback_failed";
         try {

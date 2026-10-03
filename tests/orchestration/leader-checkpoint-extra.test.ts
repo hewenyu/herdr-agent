@@ -197,6 +197,132 @@ test("dropping history is never silent: an unrepresentable marker fails typed", 
   );
 });
 
+/**
+ * A newest batch that ALONE exceeds the whole checkpoint byte budget: one
+ * assistant message with 20 tool calls closed by 20 tool results of ~16KiB text
+ * each. Every result stays inside its own per-result repair, yet the closed
+ * batch is larger than the entire checkpoint budget, so nothing of it can be
+ * kept verbatim — the only honest representation left is the omission summary.
+ */
+function oversizedNewestBatch(olderText: string, newestText: string): AgentMessage[] {
+  const calls = 20;
+  return [
+    { role: "user", content: olderText, timestamp: 1 },
+    {
+      role: "assistant",
+      api: "openai-responses",
+      provider: "myrix",
+      model: "test",
+      timestamp: 1,
+      content: [
+        { type: "text", text: newestText },
+        ...Array.from({ length: calls }, (_, index) => ({
+          type: "toolCall" as const,
+          id: `new-${index}`,
+          name: "inspect",
+          arguments: {},
+        })),
+      ],
+      stopReason: "toolUse",
+      usage: {
+        input: 10,
+        output: 10,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 20,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+    ...Array.from(
+      { length: calls },
+      (_, index): AgentMessage => ({
+        role: "toolResult",
+        toolCallId: `new-${index}`,
+        toolName: "inspect",
+        content: [{ type: "text", text: `newest-result-${index}:${"x".repeat(16000)}` }],
+        isError: false,
+        timestamp: 1,
+      }),
+    ),
+  ];
+}
+
+test("the last surviving batch is summarized too: the newest batch never vanishes silently", () => {
+  // Confirmed regression in boundCheckpointMessages: once an older batch had been
+  // dropped the `dropped` flag was set, so when the LAST surviving batch itself
+  // could not fit, `if (!dropped) remember(kept[0])` skipped its omission marker.
+  // The newest complete batch then disappeared from BOTH the stored messages and
+  // the summary — the model would read a gap as "nothing happened".
+  const olderText = "EARLIER-TURN";
+  const newestText = "NEWEST-FINAL-BATCH";
+  const fixture = oversizedNewestBatch(olderText, newestText);
+  const [older, ...newest] = fixture;
+  assert.ok(older && older.role === "user");
+  // Fixture preconditions: the omission is forced, not incidental.
+  assert.ok(
+    exactBytes(newest) > LEADER_CHECKPOINT_MAX_BYTES,
+    "fixture: the newest batch alone must exceed the whole byte budget",
+  );
+  for (const message of newest) {
+    if (message.role !== "toolResult") continue;
+    assert.ok(
+      exactBytes([message]) <= LEADER_RESULT_MAX_BYTES,
+      "fixture: every result must already fit its own per-result repair",
+    );
+  }
+
+  const checkpoint = boundCheckpointMessages(
+    fixture,
+    LEADER_CHECKPOINT_MAX_BYTES,
+    LEADER_CHECKPOINT_MAX_MESSAGES,
+  );
+
+  assert.equal(checkpoint.summarized, true);
+  assert.ok(checkpoint.summary, "omitting a batch must leave an explicit durable summary");
+  const summary = checkpoint.summary;
+  const stored = JSON.stringify(checkpoint.messages);
+  // Stronger than `summarized === true`: the omission must actually REPRESENT the
+  // newest batch, and the stored transcript must carry that marker to the model.
+  assert.ok(
+    summary.includes(newestText),
+    "the newest batch must be represented in the omission summary",
+  );
+  assert.ok(
+    stored.includes(newestText),
+    "the stored transcript must carry the newest batch's omission marker",
+  );
+  assert.ok(summary.includes(olderText), "the older omitted batch must stay represented too");
+  assert.ok(stored.includes(olderText));
+  // The marker accounts for the WHOLE omitted payload, including the newest batch
+  // (the older batch alone is a few hundred bytes, far below the budget).
+  const marker = JSON.parse(summary) as { bytes?: number };
+  assert.ok(
+    (marker.bytes ?? 0) > LEADER_CHECKPOINT_MAX_BYTES,
+    `omitted bytes must cover the newest batch, got ${String(marker.bytes)}`,
+  );
+  // Every original constraint still holds after the fix.
+  assert.equal(checkpoint.bytes, exactBytes(checkpoint.messages));
+  assert.ok(checkpoint.bytes <= LEADER_CHECKPOINT_MAX_BYTES);
+  assert.ok(checkpoint.messages.length <= LEADER_CHECKPOINT_MAX_MESSAGES);
+  assertPaired(checkpoint.messages);
+});
+
+test("an unrepresentable omission marker is refused typed, never a silent newest-batch drop", () => {
+  // The same forced-omission fixture under a budget too small to hold even the
+  // minimal marker: no honest checkpoint exists, so the call must refuse with a
+  // typed not-executed failure instead of returning a transcript whose newest
+  // batch was dropped without a trace.
+  const fixture = oversizedNewestBatch("EARLIER-TURN", "NEWEST-FINAL-BATCH");
+  assert.throws(
+    () => boundCheckpointMessages(fixture, 40, 80),
+    (error: unknown) =>
+      error instanceof OperationError &&
+      error.code === "orchestration_context_budget" &&
+      error.outcome === "not_executed",
+    "an impossible omission marker must be a typed refusal, never a silent drop",
+  );
+});
+
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "leader-checkpoint-extra-"));
   return {

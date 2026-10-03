@@ -57,14 +57,34 @@ export class Store {
     const row = this.database
       .prepare("SELECT value FROM records WHERE namespace=? AND key=?")
       .get(namespace, key) as { value: string } | undefined;
-    return row ? (JSON.parse(row.value) as T) : undefined;
+    if (!row) return undefined;
+    return this.decode(namespace, key, row.value) as T;
   }
 
   entries<T>(namespace: string): Array<[string, T]> {
     const rows = this.database
       .prepare("SELECT key,value FROM records WHERE namespace=? ORDER BY key")
       .all(namespace) as Array<{ key: string; value: string }>;
-    return rows.map((row) => [row.key, JSON.parse(row.value) as T]);
+    return rows.map((row) => [row.key, this.decode(namespace, row.key, row.value) as T]);
+  }
+
+  /**
+   * A persisted row that cannot be parsed is an unknown fact, never an absent
+   * one: callers must not read corruption as permission to re-perform an
+   * effect or overwrite evidence. The raw value stays untouched in the row and
+   * is deliberately kept out of the diagnostic, because parser messages echo
+   * the offending content.
+   */
+  private decode(namespace: string, key: string, value: string): unknown {
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new OperationError(
+        "state_invalid",
+        `持久记录无法解析（记录 ${namespace}/${key} 保留未改动）；请运行诊断并人工核对。`,
+        "unknown",
+      );
+    }
   }
 
   list<T>(namespace: string): T[] {

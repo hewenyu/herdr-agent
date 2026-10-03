@@ -29,6 +29,65 @@ export interface UncertainCard extends UncertainCardRequest {
 }
 const namespace = "uncertain_cards";
 
+/**
+ * Narrow structural check for one persisted card. It never repairs or drops the
+ * record; it only proves the fields callers read are interpretable. The expiry
+ * string is checked before `Date.parse`, so a corrupt value such as
+ * `{ toString: null }` cannot become a raw TypeError, the card identity index
+ * must be a non-empty string before it reaches the store, `consumed` must be a
+ * real boolean so a falsey value cannot hide an already-consumed card, and the
+ * stored nonce must equal its own key so a row cannot claim another card's
+ * authority.
+ */
+function readableCard(record: unknown, ref: string): record is UncertainCard {
+  if (record === null || typeof record !== "object") return false;
+  const value = record as Partial<UncertainCard>;
+  return (
+    typeof value.nonce === "string" &&
+    value.nonce.length > 0 &&
+    value.nonce === ref &&
+    typeof value.ownerId === "string" &&
+    typeof value.chatId === "string" &&
+    typeof value.expiresAt === "string" &&
+    Number.isFinite(Date.parse(value.expiresAt)) &&
+    typeof value.consumed === "boolean" &&
+    Array.isArray(value.candidates) &&
+    value.candidates.every(
+      (candidate) =>
+        candidate !== null &&
+        typeof candidate === "object" &&
+        typeof candidate.id === "string" &&
+        typeof candidate.description === "string",
+    )
+  );
+}
+
+/**
+ * Fail-closed read boundary: an uninterpretable card is refused with a typed
+ * diagnostic rather than coerced into a raw TypeError. The original row is kept,
+ * and a refusal never applies a choice, disables a card or mints a replacement
+ * nonce for an unknown effect.
+ */
+function cardRecord(record: unknown, ref: string): UncertainCard {
+  if (readableCard(record, ref)) return record;
+  throw new OperationError(
+    "card_record_invalid",
+    `未知操作卡片（${ref}）无法解读；本次操作已拒绝，原始记录保留供诊断。`,
+    "not_executed",
+  );
+}
+
+/** Identity index read boundary; a corrupt index is never treated as absence. */
+function identityValue(record: unknown, ref: string): string | undefined {
+  if (record === undefined) return undefined;
+  if (typeof record === "string" && record.length > 0) return record;
+  throw new OperationError(
+    "card_record_invalid",
+    `未知操作卡片索引（${ref}）无法解读；本次操作已拒绝，原始记录保留供诊断。`,
+    "not_executed",
+  );
+}
+
 /** Durable single-use cards; callbacks delegate auditing/effects to the resolver. */
 export class UncertainCards {
   private readonly locks = new KeyedMutex();
@@ -41,8 +100,30 @@ export class UncertainCards {
 
   /** Durable read of the card bound to this request identity, if any. */
   lookup(request: UncertainCardRequest): UncertainCard | undefined {
-    const nonce = this.store.get<string>("uncertain_card_identity", this.identity(request));
-    return nonce ? this.store.get<UncertainCard>(namespace, nonce) : undefined;
+    const identity = this.identity(request);
+    const nonce = identityValue(
+      this.store.get<unknown>("uncertain_card_identity", identity),
+      identity,
+    );
+    if (nonce === undefined) return undefined;
+    return this.indexedCard(request, nonce);
+  }
+
+  private indexedCard(request: UncertainCardRequest, nonce: string): UncertainCard {
+    const card = cardRecord(this.store.get<unknown>(namespace, nonce), nonce);
+    if (
+      card.taskId !== request.taskId ||
+      card.operationId !== request.operationId ||
+      card.ownerId !== request.ownerId ||
+      card.chatId !== request.chatId ||
+      (card.revision ?? "") !== (request.revision ?? "")
+    )
+      throw new OperationError(
+        "card_record_invalid",
+        "未知操作卡片索引与请求身份不匹配；本次操作已拒绝，原始记录保留供诊断。",
+        "not_executed",
+      );
+    return card;
   }
 
   private identity(request: UncertainCardRequest): string {
@@ -71,8 +152,13 @@ export class UncertainCards {
               !!effect?.options.some((option) => option.choice === "retry")),
         ),
       };
-      const nonce = this.store.get<string>("uncertain_card_identity", identity);
-      let card = nonce ? this.store.get<UncertainCard>(namespace, nonce) : undefined;
+      const nonce = identityValue(
+        this.store.get<unknown>("uncertain_card_identity", identity),
+        identity,
+      );
+      // An existing index must still own its exact request. Neither a missing
+      // nor a foreign target can authorize a replacement card or another effect.
+      let card = nonce === undefined ? undefined : this.indexedCard(request, nonce);
       if (card?.consumed) return card;
       // Never silently replay a card whose publication could have succeeded.
       if (card?.publication === "sending" || card?.publication === "uncertain")
@@ -83,21 +169,24 @@ export class UncertainCards {
         );
       if (card?.messageId && Date.parse(card.expiresAt) > Date.now()) return card;
       if (card && Date.parse(card.expiresAt) <= Date.now()) {
+        // The card is already proven expired, so consuming it cannot replay an
+        // effect; the readable record is rewritten exactly as before.
         this.store.set(namespace, card.nonce, { ...card, consumed: true });
         card = undefined;
       }
       if (!card) {
-        card = {
+        // `card` is narrowed to a live, readable record here.
+        const created: UncertainCard = {
           ...request,
           nonce: newId("uncertain"),
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
           consumed: false,
         };
-        const created = card;
         this.store.transaction(() => {
           this.store.set(namespace, created.nonce, created);
           this.store.set("uncertain_card_identity", identity, created.nonce);
         });
+        card = created;
       }
       if (!this.current(card)) fail("uncertain_card_stale", "此步骤已更新，卡片已失效。");
       const platform = this.platform();
@@ -106,13 +195,13 @@ export class UncertainCards {
       try {
         const messageId = await platform.sendCard(card.chatId, this.card(card), card.nonce);
         if (!messageId) throw new OperationError("card_uncertain", "缺少卡片发送回执。", "unknown");
-        const latest = this.store.get<UncertainCard>(namespace, card.nonce) as UncertainCard;
+        const latest = cardRecord(this.store.get<unknown>(namespace, card.nonce), card.nonce);
         const published: UncertainCard = { ...latest, messageId, publication: "sent" };
         this.store.set(namespace, card.nonce, published);
         if (published.consumed) await this.disable(published);
         return published;
       } catch (error) {
-        const latest = this.store.get<UncertainCard>(namespace, card.nonce) as UncertainCard;
+        const latest = cardRecord(this.store.get<unknown>(namespace, card.nonce), card.nonce);
         this.store.set(namespace, card.nonce, {
           ...latest,
           publication: isNotExecuted(error) ? "retryable" : "uncertain",
@@ -124,8 +213,10 @@ export class UncertainCards {
 
   async answer(ownerId: string, chatId: string, nonce: string, choice: string): Promise<void> {
     return this.locks.run(`answer:${nonce}`, async () => {
-      const card = this.store.get<UncertainCard>(namespace, nonce);
-      if (!card || card.ownerId !== ownerId || card.chatId !== chatId)
+      const stored = this.store.get<unknown>(namespace, nonce);
+      if (stored === undefined) fail("uncertain_card_scope", "卡片不属于当前所有者/会话。");
+      const card = cardRecord(stored, nonce);
+      if (card.ownerId !== ownerId || card.chatId !== chatId)
         fail("uncertain_card_scope", "卡片不属于当前所有者/会话。");
       if (card.consumed) fail("uncertain_card_consumed", "此卡片已处理。");
       if (Date.parse(card.expiresAt) <= Date.now())
@@ -150,7 +241,8 @@ export class UncertainCards {
   }
 
   private async disable(card: UncertainCard) {
-    card = this.store.get<UncertainCard>(namespace, card.nonce) ?? card;
+    const stored = this.store.get<unknown>(namespace, card.nonce);
+    if (stored !== undefined && readableCard(stored, card.nonce)) card = stored;
     if (card.messageId)
       await this.platform()
         ?.updateCard(card.messageId, {
