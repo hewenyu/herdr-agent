@@ -7,11 +7,13 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { type OrchestrationEvent, TaskOrchestrator } from "../../src/app/task-orchestrator.js";
 import type { KeyedMutex } from "../../src/core/mutex.js";
+import type { Logger } from "../../src/core/ports.js";
 import type { Task } from "../../src/core/types.js";
 import { workflowState } from "../../src/orchestration/state.js";
 import type { VerificationRun, VerificationRunner } from "../../src/orchestration/verify.js";
 import { WORKFLOWS, type WorkflowState } from "../../src/orchestration/workflow.js";
 import { workspaceRevision } from "../../src/orchestration/workspace.js";
+import type { Store } from "../../src/storage/store.js";
 import { Engine, logger } from "../app/helpers.js";
 import { chooseLeaderAction, leaderEventPrompt } from "../app/leader-helpers.js";
 import { actor, discussion, setup } from "../tasks/helpers.js";
@@ -183,6 +185,200 @@ function gate() {
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+// Failure-only observations, not execution proof: a shell pid does not establish
+// Node initialization, and missing/unknown records do not establish nonexecution.
+function startupDiagnostics(original: Logger) {
+  const codes: string[] = [];
+  const scalar = (value: unknown): string | number | boolean => {
+    if (typeof value === "string") return value.slice(0, 96);
+    if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)))
+      return value;
+    return value === undefined ? "<missing>" : "<non-scalar>";
+  };
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const pick = (value: unknown, keys: string[]) =>
+    object(value)
+      ? Object.fromEntries(keys.map((key) => [key, scalar(value[key])]))
+      : { invalidShape: true };
+  const wrapped: Logger = {
+    info: (message, fields) => original.info(message, fields),
+    warn: (message, fields) => original.warn(message, fields),
+    error(message, fields) {
+      // Capture must not prevent forwarding, even if diagnostic fields throw.
+      try {
+        codes.push(String(scalar(fields?.code)));
+      } catch {
+        codes.push("<unreadable>");
+      }
+      if (codes.length > 8) codes.shift();
+      original.error(message, fields);
+    },
+  };
+  return {
+    logger: wrapped,
+    message(store: Pick<Store, "get" | "list">, taskId: string): string {
+      try {
+        const snapshot: Record<string, unknown> = {};
+        const section = (name: string, read: () => unknown) => {
+          try {
+            snapshot[name] = read();
+          } catch {
+            snapshot[name] = "<unreadable>";
+          }
+        };
+        section("task", () => pick(store.get("tasks", taskId), ["worktreeReady", "status"]));
+        section("runs", () => {
+          const rows = store.list("verification_runs");
+          return {
+            total: rows.length,
+            first: rows
+              .slice(0, 6)
+              .map((row) =>
+                pick(row, [
+                  "status",
+                  "pid",
+                  "startedAt",
+                  "finishedAt",
+                  "exitCode",
+                  "signal",
+                  "exitConfirmed",
+                  "error",
+                ]),
+              ),
+          };
+        });
+        section("events", () => {
+          const rows = store.list("task_orchestration_events");
+          return {
+            total: rows.length,
+            first: rows.slice(0, 4).map((row) => ({
+              ...pick(row, ["state", "attempts"]),
+              errorCode: scalar(object(row) && object(row.error) ? row.error.code : undefined),
+            })),
+          };
+        });
+        snapshot.loggedErrorCodes = codes.slice();
+        return `\n[startup diagnostic; observations only] ${JSON.stringify(snapshot)}`;
+      } catch {
+        return "\n[startup diagnostic unavailable]";
+      }
+    },
+  };
+}
+
+test("startup diagnostics preserve logger forwarding and contain capture failures", () => {
+  const calls: unknown[][] = [];
+  let throwing = false;
+  let reason: unknown;
+  const original: Logger = Object.freeze({
+    info(...args: Parameters<Logger["info"]>) {
+      calls.push([this, "info", ...args]);
+    },
+    warn(...args: Parameters<Logger["warn"]>) {
+      calls.push([this, "warn", ...args]);
+    },
+    error(...args: Parameters<Logger["error"]>) {
+      calls.push([this, "error", ...args]);
+      if (throwing) throw reason;
+    },
+  });
+  const diagnostic = startupDiagnostics(original);
+  const fields = { code: "example" };
+  for (const level of ["info", "warn", "error"] as const) {
+    diagnostic.logger[level]("message", fields);
+    assert.deepEqual(calls.at(-1), [original, level, "message", fields]);
+  }
+  const hostile = Object.defineProperty({}, "code", {
+    get() {
+      throw new Error("capture");
+    },
+  });
+  diagnostic.logger.error("still forwarded", hostile);
+  assert.equal(calls.length, 4);
+  assert.equal(calls.at(-1)?.[3], hostile);
+  throwing = true;
+  for (reason of [undefined, null, false, 0, "", new Error("original")]) {
+    let caught = false;
+    try {
+      diagnostic.logger.error("original failure");
+    } catch (error) {
+      caught = true;
+      assert.equal(error, reason);
+    }
+    assert.equal(caught, true);
+  }
+  assert.equal(calls.length, 10);
+});
+
+test("startup diagnostics bound scalar output and omit full payloads", () => {
+  const diagnostic = startupDiagnostics(logger);
+  for (let index = 0; index < 20; index++)
+    diagnostic.logger.error("secret message", { code: `code-${index}`, token: "secret token" });
+  const long = "x".repeat(10_000);
+  const rows: Record<string, unknown[]> = {
+    verification_runs: Array.from({ length: 20 }, () => ({
+      status: "unknown",
+      pid: 123,
+      startedAt: "observed",
+      exitConfirmed: false,
+      exitCode: 0,
+      signal: long,
+      error: {
+        toString() {
+          throw new Error("do not coerce");
+        },
+      },
+      command: "secret command",
+    })),
+    task_orchestration_events: Array.from({ length: 20 }, () => ({
+      state: "pending",
+      attempts: 0,
+      error: { code: long, message: "secret event" },
+    })),
+  };
+  const store: Pick<Store, "get" | "list"> = {
+    get: <T>() => ({ worktreeReady: false, status: "active", credentials: "secret" }) as T,
+    list: <T>(namespace: string) => rows[namespace] as T[],
+  };
+  const message = diagnostic.message(store, "task");
+  const snapshot = JSON.parse(message.slice(message.indexOf("{")));
+  assert.deepEqual(snapshot.task, { worktreeReady: false, status: "active" });
+  assert.equal(snapshot.runs.total, 20);
+  assert.equal(snapshot.runs.first.length, 6);
+  assert.equal(snapshot.runs.first[0].exitConfirmed, false);
+  assert.equal(snapshot.runs.first[0].exitCode, 0);
+  assert.equal(snapshot.runs.first[0].signal.length, 96);
+  assert.equal(snapshot.runs.first[0].error, "<non-scalar>");
+  assert.equal(snapshot.events.first.length, 4);
+  assert.equal(snapshot.events.first[0].errorCode.length, 96);
+  assert.deepEqual(
+    snapshot.loggedErrorCodes,
+    Array.from({ length: 8 }, (_, i) => `code-${i + 12}`),
+  );
+  assert.doesNotMatch(message, /secret/);
+  assert.ok(message.length < 5000);
+});
+
+test("startup diagnostics isolate unreadable sections without masking absent records", () => {
+  const diagnostic = startupDiagnostics(logger);
+  const store: Pick<Store, "get" | "list"> = {
+    get() {
+      throw new Error("private read failure");
+    },
+    list: <T>(namespace: string) => {
+      if (namespace === "verification_runs") throw undefined;
+      return [] as T[];
+    },
+  };
+  const message = diagnostic.message(store, "task");
+  const snapshot = JSON.parse(message.slice(message.indexOf("{")));
+  assert.equal(snapshot.task, "<unreadable>");
+  assert.equal(snapshot.runs, "<unreadable>");
+  assert.deepEqual(snapshot.events, { total: 0, first: [] });
+  assert.doesNotMatch(message, /private read failure/);
+});
+
 async function verificationFixture(long = false) {
   const h = await fixture(3, "development");
   const marker = join(h.directory, "verification-started");
@@ -206,7 +402,8 @@ async function verificationFixture(long = false) {
   });
   await h.service.reconcile(h.task.id);
   const ready = h.service.get(actor, h.task.id);
-  const worker = new TaskOrchestrator(h.options);
+  const diagnostics = startupDiagnostics(h.options.logger);
+  const worker = new TaskOrchestrator({ ...h.options, logger: diagnostics.logger });
   const internals = worker as unknown as VerificationInternals;
   const state = workflowState(h.store, ready, internals.revision(ready, false));
   state.planning = "ready";
@@ -218,7 +415,7 @@ async function verificationFixture(long = false) {
   }
   h.store.set(WORKFLOWS, ready.id, state);
   const runs = () => h.store.list<VerificationRun>("verification_runs");
-  return { ...h, ready, worker, internals, marker, release, runs };
+  return { ...h, ready, worker, internals, marker, release, runs, diagnostics };
 }
 
 for (const boundary of ["admission", "availability"] as const)
@@ -333,10 +530,13 @@ for (const change of ["readiness", "directories"] as const)
       ticking = h.worker.tick();
       for (let attempt = 0; attempt < 1000 && !existsSync(h.marker); attempt++)
         await new Promise((resolve) => setTimeout(resolve, 5));
+      const started = existsSync(h.marker);
       assert.equal(
-        existsSync(h.marker),
+        started,
         true,
-        "configured child is executing before workspace changes",
+        `configured child is executing before workspace changes${
+          started ? "" : h.diagnostics.message(h.store, h.task.id)
+        }`,
       );
       h.service.records.save({
         ...h.ready,
