@@ -646,6 +646,11 @@ wait_for_bridge() {
         esac
       fi
     fi
+    # A probe can consume its whole remaining budget and the field extractions
+    # above take time too, so the loop condition is stale by now. Re-read the
+    # clock before late observations can extend the stable count; past the
+    # deadline the caller must treat readiness as not established.
+    if [ "$SECONDS" -ge "$deadline" ]; then break; fi
     if [ -n "$identity" ]; then
       if [ "$identity" = "$previous" ]; then stable=$((stable + 1)); else stable=1; fi
     else
