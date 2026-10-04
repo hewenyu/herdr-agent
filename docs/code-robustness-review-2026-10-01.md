@@ -435,3 +435,21 @@ DeepSeek 披露违反“禁止 shell”的委派范围，运行过检查/格式�
 新增 [永久入口合同](../tests/build/script-entry.test.ts)：六项测试在旧代码 **0/6**；修复后全体 build 回归 **55/55，4211.418041ms**，无跳过/取消，571 文件行数、226 模块边界、typecheck 及 566 文件零警告 lint 通过。测试用真实无参发布 CLI 的 Usage 错误证明主体实际执行，先于任何网络/发布效果；覆盖目录/文件 alias、含空格路径、三种运行方式、preserve flag、普通 import 与伪装 argv。其余三个守卫采用显式结构合同，并仍须由最终 HEAD CI 执行真实 build/SEA/smoke 主体。初版测试数组索引被严格类型检查拒绝，改为只读元组后上述检查通过。
 
 **这是明确的脚本入口修复，不是那七项启动超时的根因修复。** 测试新增六项，后续原始全量应为 293 文件、2655 项；最终提交仍需独立原始全量及精确 HEAD CI 验收。PR 继续 Draft，不合并。
+
+### `6c48d40`：完整输入诊断仍失败，首次启动与恢复必须区分
+
+后续期限与 Shell 启动隔离合同纳入后，`6c48d405770393522ef76ec41b2caf8f88da06a9` 的原始全量为 **295 文件、2666 项：2658 通过、8 失败，882834.900416ms**。其中六项安装器原生超时、一项导入超时，以及一项工作流首次启动断言失败；此处不把历史不同提交的失败集合合并成一次运行。该 HEAD 的 [三平台 CI](https://github.com/hewenyu/herdr-agent/actions/runs/37186818999) 通过 check、SEA/smoke，不能代替上述本地结果。
+
+一次经版本冻结和独立审查的完整输入诊断保留这 295 文件、原有并发和超时，得到 **2666 个真实测试体、2659 个唯一标题、零文件级合成通过项：2665 通过、1 失败，404307.024084ms**。原八项本次均通过；唯一失败是 fresh readiness 的 40s 外层 ETIMEDOUT/SIGKILL，输出到 replacement bootstrap。该调用不在固定的 10/30s 安装器观察范围内，因此没有它的采样；两份身份/窗口有效的调用方采样属于未导致测试失败的被选调用，不能解释该失败。运行前后 884 项冻结哈希、671 个仓库文件及用户原有改动均核对一致。此运行直接启动 Node 且带观察器，不是原始 npm 验收，也不是根因修复。
+
+重新核对原始失败栈，工作流明确失败于 [首次启动断言](../tests/orchestration/workflow-worktree.test.ts)：消息为 `configured child is executing before workspace changes`，仅一个 timed_out 记录，SIGTERM、exitConfirmed=true、实际空日志。测试尚未执行 readiness 变更、取消检查或 release 写入；不能归因于恢复握手，也不需要再次运行来决定失败属于首次还是恢复阶段。5001ms 记录差与现有 5000ms 预算相符，但不能定位 Shell、Node 初始化或标记写入阶段。
+
+主代理复核官方 DeepSeek 的两份只读分析，拒绝将无关的字段提取优化当作此 40s 失败修复，并纠正两项测试提议：命令替换子 Shell 中修改计数/时钟不反馈父 Shell；当前输入仍有效的 timed_out 应保留失败证据，不能断言“任何超时都不写 evidence”。尚无支持修改生产时限或证据规则的根因证据，PR 继续 Draft。
+
+### 两条测试端启动标记：先验证诊断不会阻断原流程
+
+官方 DeepSeek 实现 [长命令夹具构造器](../tests/orchestration/verification-startup-fixture.ts)：Shell builtin `printf` 在原 `exec` 前尝试写固定 stderr 标记；真实 Node 在加载 `node:fs` 后、原 cwd 标记写入前尝试写第二条。不新增外部探针、额外文件或逐轮日志，不输出环境/argv；保留真实 Node、exec、5s 期限、1000×5ms 启动轮询、10ms release 轮询和原断言。短命令分支不变。存在标记只能证明相应语句到达；缺失不能证明未执行，同步日志写入也可能扰动时序，因此仍是诊断增强而非超时根因修复。
+
+主代理没有直接采纳作者结果：作者原有纯测试实际 **8/8**，不是报告中的九项；独立 VM 反例发现 stderr 写失败会阻断原 marker/interval，真实 `/bin/sh -e` 反例发现仅用分号不能隔离失败的 `printf`。新增 [永久回归](../tests/orchestration/verification-startup-fixture.test.ts) 先得到 **8 通过、1 失败**，再将 Node 写入单独 try/catch、Shell 写入改为 `|| :`。仅诊断写入失败可忽略，真实 marker 失败继续传播。作者还披露在禁止 Shell 的委派范围外运行了四次只读 Shell 调用；其“零原生命令”表述不成立，未报告测试、仓库外写入或用户文件改动。
+
+修订后永久纯测试 **9/9**；独立 VM 写失败对照通过；真实私有 Shell/Node 对照 **3/3**，覆盖引号/换行/元字符路径、关闭 stderr 且启用 errexit、真实 marker 写失败。三文件工作流/期限/新夹具集成 **38/38，7262.965541ms**；576 文件行数、226 模块边界、typecheck 和 571 文件零警告 lint 通过。新增九项使下一次完整输入应为 **296 文件、2675 个真实测试体**，不能把这些局部结果称作最终全量通过；仍需原始 `npm run check` 与精确最终 HEAD CI。

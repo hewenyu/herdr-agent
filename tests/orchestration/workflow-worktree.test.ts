@@ -24,6 +24,7 @@ import {
   selectVerificationLogTails,
   verificationLogTails,
 } from "./verification-log-tail.js";
+import { buildVerificationStartupFixture } from "./verification-startup-fixture.js";
 
 const execute = promisify(execFile);
 
@@ -399,21 +400,19 @@ async function verificationFixture(long = false) {
   const h = await fixture(3, "development");
   const marker = join(h.directory, "verification-started");
   const release = join(h.directory, "verification-release");
-  const script = `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, process.cwd()); ${
-    long
-      ? `const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); process.exit(0); } }, 10);`
-      : ""
-  }`;
+  // Positive stage observations only, not completion or root-cause proof. Missing breadcrumbs
+  // do not prove nonexecution; best-effort writes must not replace marker or polling behavior.
+  const startup = buildVerificationStartupFixture({
+    node: process.execPath,
+    marker,
+    release,
+  });
   // The short fixture writes its marker with POSIX shell builtins rather than starting an
   // unrelated Node interpreter: `cd -P .` reports the same physical cwd as process.cwd() and
   // `printf` appends no newline, so the existing exact marker assertions stay valid.
   await h.catalog.save({
     ...h.catalog.get("worktree"),
-    verify: [
-      long
-        ? `exec ${shellQuote(process.execPath)} -e ${shellQuote(script)}`
-        : `cd -P . && printf '%s' "$PWD" > ${shellQuote(marker)}`,
-    ],
+    verify: [long ? startup.command : `cd -P . && printf '%s' "$PWD" > ${shellQuote(marker)}`],
     verifyTimeoutMs: 5000,
   });
   await h.service.reconcile(h.task.id);
