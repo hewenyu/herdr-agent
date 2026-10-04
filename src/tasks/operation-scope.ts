@@ -28,6 +28,8 @@ export function activeTaskOperation(
   return !(
     restart?.taskId === task.id &&
     restart.state === "done" &&
+    Array.isArray(restart.operationIds) &&
+    restart.operationIds.every((entry) => typeof entry === "string" && entry.length > 0) &&
     restart.operationIds.includes(id)
   );
 }

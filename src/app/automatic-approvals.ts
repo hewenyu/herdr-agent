@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { fail, isNotExecuted, safeError } from "../core/errors.js";
+import { fail, isNotExecuted, OperationError, safeError } from "../core/errors.js";
 import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { HerdrPort, Logger } from "../core/ports.js";
@@ -67,6 +67,71 @@ interface Decision {
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+const decisionStates = [
+  "selecting",
+  "selected",
+  "executing",
+  "executed",
+  "failed",
+  "uncertain",
+  "waiting_user",
+] as const;
+
+/**
+ * Narrow structural check for one persisted automatic decision. It only asks
+ * whether the fields the selector relies on can be interpreted; a corrupt row
+ * is never rewritten, repaired or silently discarded. The stored `id` must
+ * equal exactly the row key and `state` must be one of the legal execution
+ * states, so a renamed or spliced record cannot lend authority to another
+ * decision. `attempts` must be a nonnegative safe integer and `retryAt` a
+ * parseable string before either is used for a budget or backoff comparison, so
+ * a corrupt value cannot become a raw TypeError or falsely exhaust/replenish
+ * the bounded automatic-write budget.
+ */
+function readableDecision(record: unknown, key: string): record is Decision {
+  if (record === null || typeof record !== "object") return false;
+  const value = record as Partial<Decision>;
+  const ref = value.execution;
+  const observation = value.observation;
+  return (
+    typeof value.id === "string" &&
+    value.id === key &&
+    typeof value.participantId === "string" &&
+    typeof value.state === "string" &&
+    (decisionStates as readonly string[]).includes(value.state) &&
+    typeof value.attempts === "number" &&
+    Number.isSafeInteger(value.attempts) &&
+    value.attempts >= 0 &&
+    typeof value.fingerprint === "string" &&
+    typeof value.stateSeq === "string" &&
+    typeof value.retryIdentity === "string" &&
+    ref !== null &&
+    typeof ref === "object" &&
+    typeof ref.workspaceId === "string" &&
+    typeof ref.paneId === "string" &&
+    (value.retryAt === undefined ||
+      (typeof value.retryAt === "string" && Number.isFinite(Date.parse(value.retryAt)))) &&
+    observation !== null &&
+    typeof observation === "object" &&
+    Array.isArray(value.candidates)
+  );
+}
+
+/**
+ * Fail-closed read boundary: an uninterpretable decision is refused with a
+ * typed diagnostic instead of being coerced or skipped. Skipping cannot prove
+ * the automatic budget was unused, so the effect is refused; the original row
+ * is preserved for diagnosis and no native key is written.
+ */
+function decisionRecord(record: unknown, key: string): Decision {
+  if (readableDecision(record, key)) return record;
+  throw new OperationError(
+    "automatic_approval_record_invalid",
+    `自动审批决定记录（${key}）无法解读；本次自动选择已拒绝，原始记录保留供诊断。`,
+    "not_executed",
+  );
 }
 
 /** Selector only adds evidence; all effects use the existing consumed approval nonce. */
@@ -240,8 +305,12 @@ export class AutomaticApprovals {
     const directoryIdentity = await realpath(ref.cwd).catch(() => undefined);
     if (!directoryIdentity) return "manual";
     const generation = executionGeneration(participant);
+    // An unreadable decision could hide an executing/uncertain write that must
+    // freeze this execution. Refuse the automatic route entirely rather than
+    // filter the row out and hand the selector a false "no unknown effect" view.
     const history = this.ports.store
-      .list<Decision>(namespace)
+      .entries<unknown>(namespace)
+      .map(([storedId, stored]) => decisionRecord(stored, storedId))
       .filter(
         (d) =>
           d.participantId === participant.id &&
@@ -264,7 +333,8 @@ export class AutomaticApprovals {
     const approval = this.ports.approvals.create(task.ownerId, chatId, ref, screen);
     if (approval.consumed || approval.screenFingerprint !== fingerprint) return "manual";
     const id = stableId("native-approval-v2", approval.nonce, inputRevision);
-    const previous = this.ports.store.get<Decision>(namespace, id);
+    const storedPrevious = this.ports.store.get<unknown>(namespace, id);
+    const previous = storedPrevious === undefined ? undefined : decisionRecord(storedPrevious, id);
     // Nonces bind writes to full snapshots, but dynamic text (even inside an
     // option) must not replenish the selection budget. Only confirmed progress
     // through the shared automatic/manual approval chain starts another epoch.

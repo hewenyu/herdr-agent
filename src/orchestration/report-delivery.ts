@@ -4,7 +4,7 @@ import { canonical, stableId } from "../core/ids.js";
 import { KeyedMutex } from "../core/mutex.js";
 import type { PlatformPort } from "../core/ports.js";
 import type { StoredMessage, Task } from "../core/types.js";
-import type { OperationResolution } from "../storage/operations.js";
+import { isDurableResolution, type OperationResolution } from "../storage/operations.js";
 import type { Store } from "../storage/store.js";
 import type { OrchestrationEvent } from "./contracts.js";
 import type { ReportRevisionEvidence } from "./revision.js";
@@ -68,6 +68,16 @@ export interface ReportDelivery extends ReportEnvelope {
 }
 
 const namespace = "workflow_report_deliveries";
+const deliveryStates = ["prepared", "sending", "delivered", "uncertain", "retryable"] as const;
+const fileTransferStates = [
+  "prepared",
+  "uploading",
+  "uploaded",
+  "sending",
+  "delivered",
+  "uncertain",
+  "retryable",
+] as const;
 const fileTransfers = new WeakMap<Store, Set<string>>();
 
 /** True only while this process is inside an attachment upload/send for the event. */
@@ -90,13 +100,31 @@ export class ReportDeliveries {
   ) {}
 
   prepare(input: ReportEnvelope): ReportDelivery {
+    // The frozen body is hashed below; a non-string text or hash would become a
+    // raw crypto TypeError. Refuse the uninterpretable envelope instead, without
+    // touching an existing durable record.
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      typeof input.text !== "string" ||
+      typeof input.reportHash !== "string" ||
+      input.card === null ||
+      typeof input.card !== "object" ||
+      Array.isArray(input.card)
+    )
+      throw new OperationError("report_invalid", "报告正文或摘要无法解读，已拒绝投递。");
     if (createHash("sha256").update(input.text).digest("hex") !== input.reportHash)
       throw new OperationError("workflow_report", "报告正文与冻结版本不匹配。");
-    const previous = this.store.get<ReportDelivery>(namespace, input.eventId);
-    if (previous) {
+    const previous = this.store.get<unknown>(namespace, input.eventId);
+    if (previous !== undefined) {
+      // A present but uninterpretable row is not absence: it could still own a
+      // live or unknown send. Refuse it typed instead of overwriting it with a
+      // fresh delivery for a possibly-executed effect.
       if (
+        !readableRecord(previous) ||
         !valid(previous) ||
         previous.taskId !== input.taskId ||
+        previous.eventId !== input.eventId ||
         previous.reportId !== input.reportId ||
         previous.reportHash !== input.reportHash ||
         previous.text !== input.text ||
@@ -503,12 +531,18 @@ export class ReportDeliveries {
 
 export function reportSummaryText(card: Record<string, unknown>): string {
   const value = card as {
-    header?: { title?: { content?: string } };
-    body?: { elements?: Array<{ content?: string }> };
+    header?: { title?: { content?: unknown } };
+    body?: { elements?: Array<{ content?: unknown }> };
   };
+  // A persisted card is untrusted: only real strings may reach the join, so a
+  // corrupt `{ toString: null }` field cannot become a raw TypeError here.
+  const text = (entry: unknown, fallback: string): string =>
+    typeof entry === "string" ? entry : fallback;
   return [
-    value.header?.title?.content ?? "报告摘要",
-    ...(value.body?.elements ?? []).map((entry) => entry.content ?? ""),
+    text(value.header?.title?.content, "报告摘要"),
+    ...(Array.isArray(value.body?.elements)
+      ? value.body.elements.map((entry) => text(entry?.content, ""))
+      : []),
   ].join("\n\n");
 }
 
@@ -527,7 +561,91 @@ function fingerprint(input: ReportEnvelope): string {
     }),
   );
 }
-function valid(record: ReportDelivery): boolean {
+
+/**
+ * A historical entry is authority: it records an already-consumed one-shot
+ * retry. Every present entry must therefore be a record carrying a valid
+ * recorded resolution; a damaged history must never re-open the retry budget.
+ * The remaining transport fields stay optional for legacy/minimal rows, so an
+ * entry like `{ fileResolution }` stays readable. Only retry consumption appends
+ * history; another choice cannot stand in for the consumed retry and reopen its
+ * budget.
+ */
+function readableFileHistory(history: unknown): boolean {
+  return (
+    Array.isArray(history) &&
+    history.every((entry: unknown) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+      const resolution = (entry as { fileResolution?: OperationResolution }).fileResolution;
+      return isDurableResolution(resolution) && resolution?.choice === "retry";
+    })
+  );
+}
+
+/** A retry declared while an historical retry already exists is a spent grant. */
+function spentFileRetry(value: Partial<ReportDelivery>): boolean {
+  return (
+    value.fileResolution?.choice === "retry" &&
+    Array.isArray(value.fileHistory) &&
+    value.fileHistory.some((entry) => entry?.fileResolution?.choice === "retry")
+  );
+}
+
+/**
+ * Narrow structural check for a persisted delivery. It only proves the fields
+ * `valid` hashes and compares are interpretable; it never rewrites, repairs or
+ * deletes the row. Only after this passes may `createHash().update()` see
+ * `record.text`, so a corrupt value cannot raise a raw crypto TypeError.
+ *
+ * `cardState` is mandatory and must be a legal state, and a present `fileState`
+ * must be a legal state as well: a falsey or unknown value is a damaged receipt
+ * that cannot stand in for an absent one. A version 2 attachment must carry its
+ * `fileState` (its transport stage is authority-relevant); only a legacy
+ * non-attachment envelope may omit it.
+ *
+ * A present `fileResolution` must be a complete durable resolution (the same
+ * shape `Operations.resolve` accepts), and every present `fileHistory` entry
+ * must carry a valid recorded resolution: history is authority, because its
+ * consumed retry removes the next one-shot grant. A retry already spent in
+ * history therefore cannot authorize another. Absence and the legacy
+ * non-attachment shape stay compatible.
+ */
+function readableRecord(record: unknown): record is ReportDelivery {
+  if (record === null || typeof record !== "object") return false;
+  const value = record as Partial<ReportDelivery>;
+  const legalFileState =
+    value.fileState !== undefined &&
+    typeof value.fileState === "string" &&
+    fileTransferStates.includes(value.fileState as NonNullable<ReportDelivery["fileState"]>);
+  return (
+    typeof value.taskId === "string" &&
+    typeof value.eventId === "string" &&
+    typeof value.reportId === "string" &&
+    typeof value.text === "string" &&
+    typeof value.reportHash === "string" &&
+    typeof value.bodyId === "string" &&
+    typeof value.cardId === "string" &&
+    typeof value.fingerprint === "string" &&
+    typeof value.chatId === "string" &&
+    typeof value.cardState === "string" &&
+    deliveryStates.includes(value.cardState as ReportDelivery["cardState"]) &&
+    (value.presentation === "attachment"
+      ? legalFileState
+      : value.fileState === undefined || legalFileState) &&
+    (value.fileResolution === undefined || isDurableResolution(value.fileResolution)) &&
+    (value.fileHistory === undefined || readableFileHistory(value.fileHistory)) &&
+    !spentFileRetry(value) &&
+    (value.version === 1 || value.version === 2) &&
+    (value.presentation === undefined || value.presentation === "attachment") &&
+    value.card !== null &&
+    typeof value.card === "object" &&
+    !Array.isArray(value.card)
+  );
+}
+
+/** Fail closed: an unreadable record is never a deliverable envelope. */
+function valid(record: unknown): record is ReportDelivery {
+  if (!readableRecord(record)) return false;
   const prefix = `workflow-report:${record.taskId}:${record.eventId}:${record.reportId}`;
   return (
     ((record.version === 1 && !record.presentation) ||
@@ -539,7 +657,7 @@ function valid(record: ReportDelivery): boolean {
   );
 }
 function matches(
-  record: ReportDelivery | undefined,
+  record: unknown,
   taskId: string,
   eventId: string,
   reportId: string,

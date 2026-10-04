@@ -101,6 +101,18 @@ function runInstaller(
   });
 }
 
+// Preserve both output streams and watchdog/spawn metadata in assertion failures.
+function installerDiagnostics(result: SpawnSyncReturns<string>): string {
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  return [
+    `status=${String(result.status)}`,
+    `signal=${String(result.signal)}`,
+    `error=${error ? `${error.name}: ${error.message} (code=${String(error.code)})` : "none"}`,
+    `stdout:\n${result.stdout ?? ""}`,
+    `stderr:\n${result.stderr ?? ""}`,
+  ].join("\n");
+}
+
 // Each successful readiness probe extracts eight fields, for up to thirty
 // attempts. Avoid starting a fresh Node VM for every extraction on Darwin,
 // which ships the same plutil used in production. Other platforms retain the
@@ -146,6 +158,11 @@ function fixture(stateName = ".herdr-agent") {
   }))
     executable(join(tools, name), `#!/bin/sh\n${body}\n`);
   executable(join(tools, "plutil"), plutilBody());
+  // Keep already-disabled unqualified delays in-process for the Bash fixture.
+  // Other shells retain the PATH fallback; explicit /bin/sleep probe watchdogs
+  // remain real. No extra interpreter is needed just to return success.
+  const bashEnv = join(directory, "fixture-bash-env.sh");
+  writeFileSync(bashEnv, "sleep() { :; }\n");
   const log = join(directory, "launchctl.log");
   return {
     directory,
@@ -157,12 +174,14 @@ function fixture(stateName = ".herdr-agent") {
     state,
     tools,
     log,
+    bashEnv,
     env: {
       ...process.env,
       HOME: home,
       MYRIX_BIN: "",
       HERDR_AGENT_BIN: "",
       MYRIX_TEST_LAUNCH_LOG: log,
+      BASH_ENV: bashEnv,
       PATH: [tools, npmBin, nodeBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
     },
   };
@@ -253,7 +272,7 @@ for (const selected of ["npm", "explicit", "alias", "legacy"] as const)
       }
       if (selected === "alias") f.env.HERDR_AGENT_BIN = f.old;
       const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 0, installerDiagnostics(result));
       const plist = readFileSync(
         join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
         "utf8",
@@ -265,6 +284,7 @@ for (const selected of ["npm", "explicit", "alias", "legacy"] as const)
       const path = /<key>PATH<\/key>\s*<string>(.*?)<\/string>/.exec(plist)?.[1];
       assert.ok(path?.split(":").includes(f.nodeBin));
       assert.doesNotMatch(plist, /__[A-Z_]+__/);
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       const calls = readFileSync(f.log, "utf8");
       assert.match(calls, /bootstrap .*com\.hewenyu\.myrix\.plist/);
       assert.doesNotMatch(calls, /herdr-server/);
@@ -284,7 +304,7 @@ test("adding the selected Node directory never shadows earlier selected executor
     }
     f.env.PATH = `${agentBin}:${f.env.PATH}`;
     const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, installerDiagnostics(result));
     const plist = readFileSync(
       join(f.home, "Library", "LaunchAgents", "com.hewenyu.myrix.plist"),
       "utf8",
@@ -305,7 +325,35 @@ test("adding the selected Node directory never shadows earlier selected executor
       assert.equal(resolved.status, 0);
       assert.equal(resolved.stdout.trim(), join(name === "node" ? f.nodeBin : agentBin, name));
     }
+    assert.equal(existsSync(f.log), true, installerDiagnostics(result));
     assert.doesNotMatch(readFileSync(f.log, "utf8"), /herdr-server/);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+// Make a fallback launch observable without a scheduling-sensitive duration assertion.
+test("the fixture no-op sleep is implemented in the installer shell, not the PATH fallback", () => {
+  const f = fixture();
+  try {
+    const marker = join(f.directory, "fallback-sleep-ran");
+    executable(
+      join(f.tools, "sleep"),
+      '#!/bin/sh\nprintf ran > "$MYRIX_TEST_SLEEP_MARKER"\nexit 9\n',
+    );
+    const result = spawnSync(
+      "/bin/bash",
+      ["-c", 'set -e; sleep 0.5; printf "%s\\n" "delay-elapsed"'],
+      {
+        env: { ...f.env, MYRIX_TEST_SLEEP_MARKER: marker },
+        encoding: "utf8",
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    assert.equal(result.status, 0, installerDiagnostics(result));
+    assert.equal(result.stdout, "delay-elapsed\n", installerDiagnostics(result));
+    assert.equal(existsSync(marker), false, installerDiagnostics(result));
   } finally {
     rmSync(f.directory, { recursive: true, force: true });
   }
@@ -323,7 +371,7 @@ for (const directories of ["new", "legacy", "both"] as const)
       writeFileSync(database, "existing task and conversation history");
       if (directories === "both") mkdirSync(join(f.home, ".myrix"));
       const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 0, installerDiagnostics(result));
       const plist = readFileSync(join(agents, "com.hewenyu.myrix.plist"), "utf8");
       assert.match(plist, /<key>Label<\/key>\s*<string>com\.hewenyu\.myrix<\/string>/);
       assert.ok(plist.includes(`<string>${f.state}</string>`));
@@ -332,6 +380,7 @@ for (const directories of ["new", "legacy", "both"] as const)
       assert.equal(readFileSync(database, "utf8"), "existing task and conversation history");
       assert.equal(existsSync(legacyPlist), false);
       if (directories === "legacy") assert.equal(existsSync(join(f.home, ".myrix")), false);
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       const calls = readFileSync(f.log, "utf8").trim().split("\n");
       const disabled = calls.findIndex((line) =>
         /^disable .*com\.hewenyu\.herdr-agent$/.test(line),
@@ -360,13 +409,10 @@ for (const legacy of ["plist", "loaded", "absent"] as const)
         `#!/bin/sh\nprintf '%s\\n' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\ncase "$1" in disable) exit 1;; print) exit ${legacy === "loaded" ? 0 : 1};; print-disabled) echo "{}";; esac\n`,
       );
       const result = runInstaller(f, legacy === "absent" ? INSTALL_SUCCESS_TIMEOUT_MS : 10_000);
-      assert.equal(
-        result.status,
-        legacy === "absent" ? 0 : 1,
-        `${result.stdout}\n${result.stderr}`,
-      );
+      assert.equal(result.status, legacy === "absent" ? 0 : 1, installerDiagnostics(result));
       assert.equal(existsSync(legacyPlist), legacy === "plist");
       assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), legacy === "absent");
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       if (legacy !== "absent") {
         assert.match(result.stderr, /cannot (disable|migrate) com\.hewenyu\.herdr-agent/);
         assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootstrap/);
@@ -395,7 +441,7 @@ test("a rejected new plist never disables or unloads the previous bridge", () =>
     writeFileSync(legacyPlist, "old bridge deployment");
     executable(join(f.tools, "plutil"), plutilBody(true));
     const result = runInstaller(f, 10_000);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, installerDiagnostics(result));
     assert.match(result.stderr, /com\.hewenyu\.myrix\.plist did not render into a valid plist/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "old bridge deployment");
     assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
@@ -429,13 +475,14 @@ esac
 `,
         );
         const result = runInstaller(f, 10_000);
-        assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+        assert.equal(result.status, 1, installerDiagnostics(result));
         assert.match(result.stderr, /previous bridge definition and service state restored/);
         assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
         assert.equal(statSync(legacyPlist).mode & 0o777, 0o600);
         assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
         assert.equal(existsSync(join(f.directory, "old-loaded")), loaded);
         assert.ok(!readdirSync(agents).some((name) => name.startsWith(".myrix-previous-bridge.")));
+        assert.equal(existsSync(f.log), true, installerDiagnostics(result));
         const calls = readFileSync(f.log, "utf8").trim().split("\n");
         const oldStarts = calls.filter((line) =>
           /^bootstrap .*com\.hewenyu\.herdr-agent\.plist$/.test(line),
@@ -463,10 +510,11 @@ test("legacy enablement read failure preserves the old service before any mutati
       '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$MYRIX_TEST_LAUNCH_LOG"\nexit 1\n',
     );
     const result = runInstaller(f, 10_000);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, installerDiagnostics(result));
     assert.match(result.stderr, /cannot read the previous bridge enablement/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
     assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.equal(existsSync(f.log), true, installerDiagnostics(result));
     assert.doesNotMatch(
       readFileSync(f.log, "utf8"),
       /(?:^|\n)(?:disable|enable|bootout|bootstrap) /,
@@ -488,11 +536,12 @@ test("failure to install the new plist still restores the preserved old definiti
       '#!/bin/sh\ncase "$*" in */com.hewenyu.myrix.plist) exit 7;; esac\nexec /usr/bin/install "$@"\n',
     );
     const result = runInstaller(f, 10_000);
-    assert.equal(result.status, 7);
+    assert.equal(result.status, 7, installerDiagnostics(result));
     assert.match(result.stderr, /previous bridge definition and service state restored/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "original private configuration");
     assert.equal(statSync(legacyPlist).mode & 0o777, 0o600);
     assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
+    assert.equal(existsSync(f.log), true, installerDiagnostics(result));
     assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootstrap|herdr-server/);
   } finally {
     rmSync(f.directory, { recursive: true, force: true });
@@ -521,7 +570,7 @@ esac
 `,
     );
     const result = runInstaller(f, 10_000);
-    assert.equal(result.status, 1);
+    assert.equal(result.status, 1, installerDiagnostics(result));
     assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
     const backupName = readdirSync(agents).find((name) =>
       name.startsWith(".myrix-previous-bridge."),
@@ -532,6 +581,7 @@ esac
     assert.equal(statSync(backup).mode & 0o777, 0o600);
     assert.ok(result.stderr.includes(backup));
     assert.equal(existsSync(join(f.directory, "old-loaded")), false);
+    assert.equal(existsSync(f.log), true, installerDiagnostics(result));
     assert.doesNotMatch(
       readFileSync(f.log, "utf8"),
       /bootstrap .*com\.hewenyu\.herdr-agent\.plist|herdr-server/,
@@ -556,7 +606,7 @@ for (const unavailable of ["native-package", "status-command"] as const)
         env.MYRIX_BIN = npmEntry;
       } else env.MYRIX_TEST_STATUS_MODE = "unsupported";
       const result = runInstaller(f, 15_000, env);
-      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 1, installerDiagnostics(result));
       assert.match(result.stderr, /cannot (execute version|inspect status)/);
       assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
       assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), false);
@@ -579,7 +629,7 @@ test("a nonresponsive executable probe is bounded without changing the old deplo
     );
     const started = Date.now();
     const result = runInstaller(f, 15_000);
-    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 1, installerDiagnostics(result));
     assert.ok(Date.now() - started < 15_000);
     assert.match(result.stderr, /cannot execute version/);
     assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
@@ -613,7 +663,7 @@ esac
 `,
       );
       const result = runInstaller(f, 40_000, { ...f.env, MYRIX_TEST_STATUS_MODE: mode });
-      assert.equal(result.status, mode === "stable" ? 0 : 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, mode === "stable" ? 0 : 1, installerDiagnostics(result));
       assert.equal(existsSync(join(f.directory, "old-loaded")), mode !== "stable");
       assert.equal(existsSync(join(f.directory, "new-loaded")), mode === "stable");
       assert.equal(existsSync(join(agents, "com.hewenyu.myrix.plist")), mode === "stable");
@@ -627,6 +677,7 @@ esac
         assert.equal(readFileSync(legacyPlist, "utf8"), "original bridge configuration");
       }
       assert.ok(!readdirSync(agents).some((name) => name.startsWith(".myrix-previous-bridge.")));
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       assert.doesNotMatch(readFileSync(f.log, "utf8"), /herdr-server/);
     } finally {
       rmSync(f.directory, { recursive: true, force: true });
@@ -640,7 +691,7 @@ for (const loaded of [false, true])
         const f = canonicalFixture({ loaded, disabled, failure, legacy: disabled });
         try {
           const result = runInstaller(f, 40_000);
-          assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+          assert.equal(result.status, 1, installerDiagnostics(result));
           assert.match(result.stderr, /previous bridge definition and service state restored/);
           assert.equal(readFileSync(f.canonical, "utf8"), "original canonical configuration");
           assert.equal(statSync(f.canonical).mode & 0o777, 0o600);
@@ -659,6 +710,7 @@ for (const loaded of [false, true])
           assert.ok(
             !readdirSync(f.agents).some((name) => name.startsWith(".myrix-previous-bridge.")),
           );
+          assert.equal(existsSync(f.log), true, installerDiagnostics(result));
           const calls = readFileSync(f.log, "utf8").trim().split("\n");
           assert.equal(
             calls.filter((line) => /^bootstrap .*com\.hewenyu\.myrix\.plist$/.test(line)).length,
@@ -684,13 +736,14 @@ for (const failure of ["bootstrap", "readiness"] as const)
     const f = canonicalFixture({ installed: false, failure, disabled: true });
     try {
       const result = runInstaller(f, 40_000);
-      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 1, installerDiagnostics(result));
       assert.equal(existsSync(f.canonical), false);
       assert.equal(existsSync(f.legacy), false);
       assert.equal(existsSync(join(f.directory, "canonical-loaded")), false);
       assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
       assert.equal(existsSync(join(f.directory, "overlap")), false);
       assert.deepEqual(readdirSync(f.agents), []);
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       const calls = readFileSync(f.log, "utf8").trim().split("\n");
       assert.equal(calls.filter((line) => line.startsWith("bootstrap ")).length, 1);
       const preferences = calls.filter((line) =>
@@ -707,7 +760,7 @@ test("successful canonical upgrade keeps the verified replacement and removes bo
   const f = canonicalFixture({ loaded: true, legacy: true });
   try {
     const result = runInstaller(f, INSTALL_SUCCESS_TIMEOUT_MS);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, installerDiagnostics(result));
     assert.match(readFileSync(f.canonical, "utf8"), /<string>com\.hewenyu\.myrix<\/string>/);
     assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "replacement");
     assert.equal(Number(readFileSync(join(f.directory, "startup-probes"), "utf8")), 3);
@@ -725,17 +778,14 @@ for (const failure of ["install", "legacy-disable"] as const)
     const f = canonicalFixture({ loaded: true, legacy: true, failure });
     try {
       const result = runInstaller(f, 10_000);
-      assert.equal(
-        result.status,
-        failure === "install" ? 7 : 1,
-        `${result.stdout}\n${result.stderr}`,
-      );
+      assert.equal(result.status, failure === "install" ? 7 : 1, installerDiagnostics(result));
       assert.equal(readFileSync(f.canonical, "utf8"), "original canonical configuration");
       assert.equal(readFileSync(f.legacy, "utf8"), "original legacy configuration");
       assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "original");
       assert.equal(existsSync(join(f.directory, "replacement-started")), false);
       assert.equal(existsSync(join(f.directory, "overlap")), false);
       if (failure === "legacy-disable") {
+        assert.equal(existsSync(f.log), true, installerDiagnostics(result));
         assert.doesNotMatch(readFileSync(f.log, "utf8"), /bootout .*myrix|bootstrap /);
       }
     } finally {
@@ -753,7 +803,7 @@ for (const conflict of ["missing-plist", "both-loaded"] as const)
     });
     try {
       const result = runInstaller(f, 10_000);
-      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 1, installerDiagnostics(result));
       assert.match(
         result.stderr,
         conflict === "missing-plist"
@@ -762,6 +812,7 @@ for (const conflict of ["missing-plist", "both-loaded"] as const)
       );
       assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "original");
       assert.equal(readFileSync(f.legacy, "utf8"), "original legacy configuration");
+      assert.equal(existsSync(f.log), true, installerDiagnostics(result));
       assert.doesNotMatch(
         readFileSync(f.log, "utf8"),
         /(?:^|\n)(?:disable|enable|bootout|bootstrap) /,
@@ -776,7 +827,7 @@ test("a stuck replacement retains private backups for both previous labels and r
   const f = canonicalFixture({ loaded: true, legacy: true, failure: "stuck-replacement" });
   try {
     const result = runInstaller(f, 10_000);
-    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 1, installerDiagnostics(result));
     assert.match(result.stderr, /old service was not restarted to avoid duplicate instances/);
     const backups = readdirSync(f.agents).filter((name) =>
       name.startsWith(".myrix-previous-bridge."),
@@ -793,6 +844,7 @@ test("a stuck replacement retains private backups for both previous labels and r
     assert.equal(readFileSync(join(f.directory, "canonical-loaded"), "utf8").trim(), "replacement");
     assert.equal(existsSync(join(f.directory, "legacy-loaded")), false);
     assert.equal(existsSync(join(f.directory, "overlap")), false);
+    assert.equal(existsSync(f.log), true, installerDiagnostics(result));
     assert.equal(
       readFileSync(f.log, "utf8")
         .split("\n")

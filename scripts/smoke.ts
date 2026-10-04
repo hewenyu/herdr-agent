@@ -3,7 +3,6 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { smokeModels } from "./smoke-model.js";
 import { verifyWarningDiagnostics } from "./warning-diagnostics.js";
 
@@ -215,6 +214,6 @@ export async function smokeBinary(binary: string, expectedVersion?: string): Pro
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   await smokeBinary(process.argv[2] ?? "dist/myrix", process.env.VERSION);
 }

@@ -24,6 +24,46 @@ export interface TurnEffect {
   deferredArchive?: { generation: number; messageId: string };
 }
 
+/**
+ * Durable effect states this runtime can interpret. Anything else — a null,
+ * `false`, `0`, `""`, an array, a foreign token or an unrecognized one — is not
+ * absence: it is a recorded barrier whose outcome cannot be established.
+ */
+const journalStates = ["pending", "complete", "not_executed"] as const;
+
+function journalDefect(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "日志不是记录对象";
+  if (!(journalStates as readonly unknown[]).includes((value as { status?: unknown }).status))
+    return "日志执行状态无法识别";
+  return undefined;
+}
+
+/**
+ * Validate one durable `pi_operations` row before any replay decision. A
+ * malformed row must never be read as absent (which would authorize a duplicate
+ * effect) or as `not_executed` (which would fabricate a result): it refuses with
+ * an unknown outcome, and the row is never rewritten, deleted or skipped.
+ *
+ * Legacy rows may omit `turnId`/`tool`/`args`; only the journal state is
+ * required, because every replay decision is derived from that state.
+ */
+export function assertJournalEffect(id: string, value: unknown): TurnEffect {
+  const defect = journalDefect(value);
+  if (defect)
+    throw new OperationError(
+      "state_invalid",
+      `操作日志损坏，已拒绝本操作（记录 ${id} 保留未改动）：${defect}。请人工核对现场后处理。`,
+      "unknown",
+    );
+  return value as TurnEffect;
+}
+
+/** Read one durable effect: a missing row is absence, a malformed row is refused. */
+export function readJournalEffect(store: Store, id: string): TurnEffect | undefined {
+  const stored = store.get<unknown>("pi_operations", id);
+  return stored === undefined ? undefined : assertJournalEffect(id, stored);
+}
+
 /** One model-facing tool result, before or after projection. */
 export interface ProjectableToolResult {
   tool: string;
@@ -161,7 +201,10 @@ function closeMissingCall(
   options: RecoveryOptions,
   restored: { total: number; completed: number },
 ): AgentMessage {
-  const effect = store.get<TurnEffect>("pi_operations", operationId(call.name, call.arguments));
+  const id = operationId(call.name, call.arguments);
+  // A malformed row is an unknown effect, not a missing one, so it must never
+  // become the not_executed marker below.
+  const effect = readJournalEffect(store, id);
   if (effect?.status === "pending")
     throw new OperationError(
       "operation_unconfirmed",
@@ -191,10 +234,16 @@ function closeMissingCall(
 
 /** Refuse recovery while any effect of this turn is pending or unknown. */
 function assertNoUnconfirmed(store: Store, turnId: string): void {
+  // Validate the whole scan before any turn filter: a barrier must never be
+  // excluded from the refusal, or normalized away, by a malformed row.
+  const effects = store
+    .entries<unknown>("pi_operations")
+    .map(([id, value]) => [id, assertJournalEffect(id, value)] as const);
   if (
-    store
-      .list<TurnEffect>("pi_operations")
-      .some((e) => e.turnId === turnId && (e.status === "pending" || unknownResult(e.result)))
+    effects.some(
+      ([, effect]) =>
+        effect.turnId === turnId && (effect.status === "pending" || unknownResult(effect.result)),
+    )
   )
     throw new OperationError(
       "operation_unconfirmed",

@@ -12,6 +12,7 @@ import {
   assertRecoverableCheckpoint,
   boundCheckpointMessages,
   type RecoveryOptions,
+  readJournalEffect,
   recoverMessages,
   recoverMessagesDetailed,
   recoveryCheckpointLimit,
@@ -870,7 +871,8 @@ export class SessionService {
         const clean = { ...args };
         delete clean.request_id;
         const id = this.operationId(actor, generation, tool.name, clean);
-        const receipt = this.database.get<TurnEffect>("pi_operations", id);
+        // Only a missing row or a valid not_executed receipt authorizes the call.
+        const receipt = readJournalEffect(this.database, id);
         if (receipt?.status === "complete") return receipt.result;
         if (receipt?.status === "pending")
           throw new OperationError(

@@ -247,6 +247,13 @@ load_job() {
 remove_job() {
   local label=$1
   unload_job "$label"
+  # unload_job bounds its wait but leaves the final decision to its caller.
+  # Preserve the definition and refuse success while launchd still has the job.
+  if job_loaded "$label"; then
+    die "$label is still loaded after bootout; its launch definition was left in place.
+     Stop it with the command below, then retry uninstall:
+     launchctl bootout $DOMAIN/$label"
+  fi
   rm -f "$LA_DIR/$label.plist"
   ok "$label removed"
 }
@@ -639,6 +646,11 @@ wait_for_bridge() {
         esac
       fi
     fi
+    # A probe can consume its whole remaining budget and the field extractions
+    # above take time too, so the loop condition is stale by now. Re-read the
+    # clock before late observations can extend the stable count; past the
+    # deadline the caller must treat readiness as not established.
+    if [ "$SECONDS" -ge "$deadline" ]; then break; fi
     if [ -n "$identity" ]; then
       if [ "$identity" = "$previous" ]; then stable=$((stable + 1)); else stable=1; fi
     else

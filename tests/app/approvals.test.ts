@@ -275,3 +275,76 @@ test("an unknown navigation result cannot republish a live card or repeat the ke
     await h.close();
   }
 });
+
+// Corruption is not absence and never permission to replay or re-mint authority.
+// Each case asserts a typed refusal, byte/logical preservation of the original
+// row, and that no native key or card side effect happened.
+test("unreadable approval records refuse typed instead of coercing a TypeError", async () => {
+  const h = setup();
+  try {
+    const approval = h.app.approvals.create("owner", "chat", ref, screen);
+    const corrupt = { ...approval, expiresAt: { toString: null } };
+    h.store.set("approvals", approval.nonce, corrupt);
+    let strokes = 0;
+    h.herdr.answer = async () => {
+      strokes++;
+    };
+    await assert.rejects(
+      h.app.approvals.answer("owner", "chat", approval.nonce, "1"),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "approval_record_invalid",
+    );
+    await assert.rejects(
+      h.app.approvals.publish("owner", "chat", ref, screen),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "approval_record_invalid",
+    );
+    assert.equal(strokes, 0);
+    assert.equal(h.platform.cards.length, 0);
+    assert.deepEqual(h.store.get("approvals", approval.nonce), corrupt);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a corrupt approval identity index is refused, not read as absence", async () => {
+  const h = setup();
+  try {
+    const approval = h.app.approvals.create("owner", "chat", ref, screen);
+    const identity = h.store.entries<unknown>("approval_identity")[0];
+    assert.ok(identity, "identity index exists after create");
+    const [key, value] = identity;
+    assert.equal(value, approval.nonce);
+    const corruptIndex = { toString: null };
+    h.store.set("approval_identity", key, corruptIndex);
+    assert.throws(
+      () => h.app.approvals.create("owner", "chat", ref, screen),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "approval_record_invalid",
+    );
+    assert.deepEqual(h.store.get("approval_identity", key), corruptIndex);
+    assert.deepEqual(h.store.get("approvals", approval.nonce), approval);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a corrupt approval history row blocks progress revision instead of skipping it", async () => {
+  const h = setup();
+  try {
+    const approval = h.app.approvals.create("owner", "chat", ref, screen);
+    h.store.set("approvals", "extra-corrupt", { nonce: "extra-corrupt", keys: 5 });
+    assert.throws(
+      () => h.app.approvals.progressRevision(ref, screen.agent.terminalId ?? ""),
+      (error: unknown) =>
+        error instanceof OperationError && error.code === "approval_record_invalid",
+    );
+    assert.deepEqual(h.store.get("approvals", "extra-corrupt"), {
+      nonce: "extra-corrupt",
+      keys: 5,
+    });
+    assert.deepEqual(h.store.get("approvals", approval.nonce), approval);
+  } finally {
+    await h.close();
+  }
+});
